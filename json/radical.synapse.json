@@ -1,0 +1,350 @@
+{
+  "info": {
+    "author": "The RADICAL Group",
+    "author_email": "radical@rutgers.edu",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 5 - Production/Stable",
+      "Environment :: Console",
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: GNU Lesser General Public License v3 or later (LGPLv3+)",
+      "Operating System :: MacOS :: MacOS X",
+      "Operating System :: POSIX",
+      "Operating System :: Unix",
+      "Programming Language :: Python",
+      "Programming Language :: Python :: 2",
+      "Programming Language :: Python :: 2.7",
+      "Topic :: Scientific/Engineering",
+      "Topic :: System :: Distributed Computing",
+      "Topic :: Utilities"
+    ],
+    "description": "Synapse - SYNthetic Application ProfileS and Emulation \n======================================================\n\nGoal: emulate an applications runtime behavior as realistically as possible\n\n    * emulate the application's execution structure (components and relations)\n    * consume same amount of resources (CPU, Mem, Disk, Network)\n\nAt the same time, a Synapse instance is also parameterizable, so as to vary its\nstructure and resource consumption -- without needing to tweak an application\ncode.  Parameterization can be static, dynamic, according to some distribution,\netc.\n\nInitial parameters are obtained by profiling applications\n(`radical.synapse.profile`).  Synapse runs are also profiled again, to\nverify correct emulation -- see [figure 1][experiments/synapse_mandelbrot_boskop.png]\n\nFigure 1: Mandelbrot as master-worker implementation -- measure TTC on a single\nworker instance with varying problem size (sub-image size), and compare to\na synapse emulation of the same worker.  The synapse data include times for the\nindividually contributing load types (disk, mem, cpu).  For small problem sizes,\nnoise in the load generation, startup overhead and self-profiling overhead are\nclearly visible -- for larger problems that quickly *constant* overhead is\nnegligible (>10 seconds ttc).\n\nProfiling\n---------\n\nUses linux command line tools (not always available):\n\n\n    *   `/usr/bin/time -v` for max memory consumption: \n\n        ```\n        $ /usr/bin/time -v      python -c 'for i in range (1,10000000): j = i*3.1415926'\n        \tCommand being timed: \"python -c  for i in range (1,10000000): j = i*3.1415926\"\n        \tUser time (seconds): 1.84\n        \tSystem time (seconds): 0.46\n        \tPercent of CPU this job got: 46%\n        \tElapsed (wall clock) time (h:mm:ss or m:ss): 0:05.00\n            ...\n        \tMaximum resident set size (kbytes): 322072\n            ...\n        ```\n\n        * memory consumption reports seem correct - but do not detail\n          distribution over time, looks like one chunk.\n        * wallclocktime includes profiling time, better to measure wallclock\n          separately\n        * alternative if code can be instrumented (`synapse.utils.get_mem_usage`), \n          which evaluates `/proc/[pid]/status`.\n\n\n    *   `/usr/bin/time -f %e` for TTC:\n\n        ```\n        $ /usr/bin/time -f %e python -c 'for i in range (1,10000000): j = i*3.1415926'\n        1.82\n        ```\n\n\n    *   `/usr/bin/perf stat` for CPU utilization (needs kernel support):\n\n        ```\n        $ /usr/bin/perf stat            python -c 'for i in range (1,10000000): j = i*3.1415926'\n         Performance counter stats for 'python -c  for i in range (1,10000000): j = i*3.1415926':\n        \n               1928.356169 task-clock                #    0.993 CPUs utilized          \n                       185 context-switches          #    0.096 K/sec                  \n                        64 CPU-migrations            #    0.033 K/sec                  \n                    80,648 page-faults               #    0.042 M/sec                  \n             6,158,591,568 cycles                    #    3.194 GHz                     [83.25%]\n             2,427,203,057 stalled-cycles-frontend   #   39.41% frontend cycles idle    [83.25%]\n             1,758,381,453 stalled-cycles-backend    #   28.55% backend  cycles idle    [66.65%]\n             8,898,332,744 instructions              #    1.44  insns per cycle        \n                                                     #    0.27  stalled cycles per insn [83.26%]\n             2,037,169,952 branches                  # 1056.428 M/sec                   [83.44%]\n                28,412,079 branch-misses             #    1.39% of all branches         [83.51%]\n        \n               1.941766011 seconds time elapsed\n        ```\n\n        * 8 instructions ~~ 1 FLOP (architecture dependent)\n        * CPU efficiency not yet evaluated, will be added soon-ish\n        * it is difficult to emulate exact CPU consumption structure \n          (branching, cache misses, idle cycles) -- using assembler \n          instead of C helps a little...\n        * `perf` is quick (only reads kernel counters)\n\n\n    *   `cat /proc/[pid]/io` for disk I/O counters:\n\n        ```\n        $ python -c 'for i in range (1,10000000): j = i*3.1415926' &  cat /proc/$!/io\n        [3] 2110\n        rchar: 7004\n        wchar: 0\n        syscr: 13\n        syscw: 0\n        read_bytes: 0\n        write_bytes: 0\n        cancelled_write_bytes: 0\n        ```\n\n        * timing is problematic, needs constant watching, as it disappears with\n          the process\n        * works ok if code can be instrumented (`synapse.utils.get_io_usage`)\n\n    *   complete profile command:\n\n        `sh -c '/usr/bin/time -v /usr/bin/perf stat /usr/bin/time -f %e python mandelbrot.py'`\n\n    *   For applications under our control (mandelbrot.py), we also use some \n\n    *   For self_profiling, we use `getrusage(2)`, which is embedded into the\n        synapse atoms.\n\n\nEmulation:\n----------\n\nThe synapse incarnation of the above would be:\n\n```\nimport time\nimport radical.synapse as rs\n\n\nstart = time.time ()\nrsa_c = rs.atoms.Compute ()\nrsa_m = rs.atoms.Memory  ()\nrsa_s = rs.atoms.Storage ()\n\nrsa_c.run (info={'n'   : 1100})   # consume  1.1 GFlop Cycles\nrsa_m.run (info={'n'   :  322})   # allocate 0.3 GByte memory\nrsa_s.run (info={'n'   :    0,    # write    0.0 GByte to disk\n                 'mode': 'w',     # write mode!\n                 'tgt' : '%(tmp)s/synapse_storage.tmp.%(pid)s'})\n\n# atoms are now working in separate threads - wait for them.\n\ninfo_c = rsa_c.wait ()\ninfo_m = rsa_m.wait ()\ninfo_s = rsa_s.wait ()\nstop   = time.time ()\n\n# info now contains self-profiled information for the atoms\nprint \"t_c: %.2f\" % info_c['timer']\nprint \"t_m: %.2f\" % info_m['timer']\nprint \"t_s: %.2f\" % info_s['timer']\nprint \"ttc: %.2f\" % (stop - start)\n```\n\nwhich will result in something like:\n\n```\nt_c: 1.84\nt_m: 1.38\nt_s: 0.03\nttc: 1.85\n```\n\nAtom Implementation\n-------------------\n\n    * framework / controller in python (see example above)\n\n    * atom cores as small snippets of C and Assembler code\n\n      Python code has significant overhead, and is hard to predict what\n      operation result in how many instructions.  Controlling memory consumption\n      is even more difficult -- thus the decision for C/ASM\n\n    * code is ANSI-C, and compiled on the fly -- tiny overhead on first \n      invocation:\n      ```\n      $ /usr/bin/time -f %e cc -O0 synapse/atoms/synapse_storage.c \n      0.06\n      ```\n      (same for all atoms, dominated by CC startup and parsing)\n\n    * for actual code, see `synapse/atoms/synapse_{compute,memory,storage}.c` \n      -- very small and accessible (IMHO), `rusage` report is about 30% of it,\n      in total about 60 unique lines of code:\n      ```\n      $ sloccount synapse/atoms/synapse_{compute,memory,storage}.c | grep ansic\n      ansic:          170 (100.00%)\n\n      $ cat synapse/atoms/synapse_{compute,memory,storage}.c | sort -u | grep -v print > t.c ; sloccount t.c | grep ansic\n      ansic:           60 (100.00%)\n      ```   \n\n    * alternative assembler based compute atom can better reproduce CPU\n      utilization -- still not tunable though.  \n\n    * code may grow for better tuning (memory and disk I/O chunksize, CPU \n      intruction types, etc)\n\n\nFuture Plans\n------------\n\n    * complete network atom (can already to basic point-to-point)\n    * add MPI atom\n    * improve composability, via control files\n    * add support for statistic load distributions (simple, on python level)\n\n\n\n\n\n  - For a list of bug fixes, see \n    https://github.com/radical-cybertools/radical.synapse/issues?q=is%3Aissue+is%3Aclosed+sort%3Aupdated-desc\n  - For a list of open issues and known problems, see\n    https://github.com/radical-cybertools/radical.synapse/issues?q=is%3Aissue+is%3Aopen+\n\n\n0.46.2 Release                                                        2017-05-12\n--------------------------------------------------------------------------------\n\n   - prelimiary support for openMP in compute_asm atoms\n   - prelimiary support for multiprocessing in compute_asm atoms\n\n\n0.44 Release                                                          2016-07-29\n--------------------------------------------------------------------------------\n\n   - add hackish setup script to be used in RP CU pre-execs \n   - fix a couple of bugs \n   - implement busy timer \n   - implement named file I/O \n   - make bufsize for disk I/O tunable \n   - more resilience on partial I/O \n   - print warning on empty emulation load \n   - revert to dict based samples, stability, cleanup \n\n\n0.43 Release                                                          2016-05-13\n--------------------------------------------------------------------------------\n\n  - support file based samples for profile and emulation\n\n\n0.42 Release                                                          2016-05-09\n--------------------------------------------------------------------------------\n\n  - installation fixes, minor other changes\n\n\n0.41 Release                                                          2016-02-23\n--------------------------------------------------------------------------------\n\n  - add walltime sampler\n  - replace multiprocessing.Queue with Queue.Queue (former breaks on Gordon)\n\n\n0.40 Release                                                          2016-02-10\n--------------------------------------------------------------------------------\n\n  - add a CHANGES.md :)\n  - make RADICAL_SYNAPSE_WATCHMODE default to None on emulate()\n\n--------------------------------------------------------------------------------",
+    "docs_url": null,
+    "download_url": "UNKNOWN",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://www.github.com/radical-cybertools/radical.utils/",
+    "keywords": "radical emulate workload",
+    "license": "LGPLv3+",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "radical.synapse",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/radical.synapse/",
+    "release_url": "https://pypi.org/project/radical.synapse/0.46.2/",
+    "requires_python": null,
+    "summary": "SYNthetic APplicationS Emulator -- A RADICAL Project (http://radical.rutgers.edu/)",
+    "version": "0.46.2"
+  },
+  "releases": {
+    "0.10": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c419aa9d52011851688b2239cca5b3ba",
+          "sha256": "03b980fd8596eae0b3778a91e9b03b7cc09fb9f57a3b8356778d2ffce8895f29"
+        },
+        "downloads": 1184,
+        "filename": "radical.synapse-0.10.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c419aa9d52011851688b2239cca5b3ba",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 44976,
+        "upload_time": "2015-05-22T22:58:50",
+        "url": "https://files.pythonhosted.org/packages/11/e8/6210c388eeb5606ed10a01a4db94ecd2e90d95008396f2b839154eaf6c00/radical.synapse-0.10.tar.gz"
+      }
+    ],
+    "0.11": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7995961e4ae65d18fed0fb812c89d959",
+          "sha256": "4dbe73a104fd8137a36641dd364e4a435892ed0dbd45f7f7e4b09f5b9485b2da"
+        },
+        "downloads": 3528,
+        "filename": "radical.synapse-0.11.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7995961e4ae65d18fed0fb812c89d959",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 46269,
+        "upload_time": "2015-06-18T15:41:21",
+        "url": "https://files.pythonhosted.org/packages/14/88/cf956db37b505107e77a435c99334e5a13d790f13fae7e28847a66d13a5c/radical.synapse-0.11.tar.gz"
+      }
+    ],
+    "0.12": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "851eca321917643a841dd30fd4be8afa",
+          "sha256": "95dcc5702a152f89d53ba2d3d962d9b517276dcbdd822dd4ea0301e320aabf43"
+        },
+        "downloads": 774,
+        "filename": "radical.synapse-0.12.tar.gz",
+        "has_sig": false,
+        "md5_digest": "851eca321917643a841dd30fd4be8afa",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 46299,
+        "upload_time": "2015-06-18T21:07:13",
+        "url": "https://files.pythonhosted.org/packages/8e/d1/d7280f437b6cfe22459200830ea3fe5e18e3eb4812738d34423013cf9c22/radical.synapse-0.12.tar.gz"
+      }
+    ],
+    "0.13": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9d9cf3514cd5d3e8e1561ecc7a90b08b",
+          "sha256": "1ab3bbb9a2be2330c0d81210280feb3e4c013f9559b89e5a07a32153d6782ed8"
+        },
+        "downloads": 864,
+        "filename": "radical.synapse-0.13.tar.gz",
+        "has_sig": false,
+        "md5_digest": "9d9cf3514cd5d3e8e1561ecc7a90b08b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 45277,
+        "upload_time": "2015-06-18T22:18:11",
+        "url": "https://files.pythonhosted.org/packages/41/20/a40a869096ee781d54b52d65cbd7e300f6b5ed79a85d5f32bed15f21c11e/radical.synapse-0.13.tar.gz"
+      }
+    ],
+    "0.14": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ae39ba2f2017453ff852fc9b0cb2874a",
+          "sha256": "cdd6dea614933c5df55afa9027749538abfee6ef0ec1efd81a0ee2a01c31c090"
+        },
+        "downloads": 239,
+        "filename": "radical.synapse-0.14.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ae39ba2f2017453ff852fc9b0cb2874a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 46349,
+        "upload_time": "2016-01-28T23:43:56",
+        "url": "https://files.pythonhosted.org/packages/bf/af/1ebb5f10ca648db73a0c9a773414568b51c5eeca9aae4bf27020adf8b644/radical.synapse-0.14.tar.gz"
+      }
+    ],
+    "0.15": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "163c0348e17b222a94904ce2ca932d0e",
+          "sha256": "8e0a32677469ed1727c8b47057af3feb9ca98802134b754ec66820f3157de263"
+        },
+        "downloads": 555,
+        "filename": "radical.synapse-0.15.tar.gz",
+        "has_sig": false,
+        "md5_digest": "163c0348e17b222a94904ce2ca932d0e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 46377,
+        "upload_time": "2016-01-29T00:16:08",
+        "url": "https://files.pythonhosted.org/packages/f1/63/5261190a5f70f8f64a63f17db822eae7d3ee8ecc2465a93453072865a600/radical.synapse-0.15.tar.gz"
+      }
+    ],
+    "0.16": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4548dd4bb0a7a9ddf17c4dba19b597bc",
+          "sha256": "154c751e9f21dccb9cb2ad194cae9fb2979d49df8b8da1ba2c51ef71b04c4637"
+        },
+        "downloads": 244,
+        "filename": "radical.synapse-0.16.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4548dd4bb0a7a9ddf17c4dba19b597bc",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 46373,
+        "upload_time": "2016-01-29T00:36:53",
+        "url": "https://files.pythonhosted.org/packages/32/8c/e22d588602f95fcfec76e8e12143cf8aaead4219e1788a82af74ccf62101/radical.synapse-0.16.tar.gz"
+      }
+    ],
+    "0.40": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "268fc5bb7acd5cd6df23edb3fbc41da5",
+          "sha256": "48bed9700c9a8049b5ab92ee9f8bc2ee6b65c21623a0d69e5baae16f74aff8b1"
+        },
+        "downloads": 118,
+        "filename": "radical.synapse-0.40.tar.gz",
+        "has_sig": false,
+        "md5_digest": "268fc5bb7acd5cd6df23edb3fbc41da5",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 46878,
+        "upload_time": "2016-02-09T23:03:23",
+        "url": "https://files.pythonhosted.org/packages/06/66/dbc2355a21ddcb63312c3af981a825977409037b7a1c1ef52c30899ffce2/radical.synapse-0.40.tar.gz"
+      }
+    ],
+    "0.41": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "255bad45fafe5bfaa46679e831318c6c",
+          "sha256": "dbca4be2a1b96c4dbf0e1bcdcf20a3b563e1d694ed1d9a3c9ed74670bf8cd513"
+        },
+        "downloads": 101,
+        "filename": "radical.synapse-0.41.tar.gz",
+        "has_sig": false,
+        "md5_digest": "255bad45fafe5bfaa46679e831318c6c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 48880,
+        "upload_time": "2016-02-23T09:44:58",
+        "url": "https://files.pythonhosted.org/packages/7e/a6/9335cbbdeeb0d92934b539f587b457efaaa21a7f2d58f80704d72abefd27/radical.synapse-0.41.tar.gz"
+      }
+    ],
+    "0.42": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0241a21e0d431ce479d70d8e6a692487",
+          "sha256": "0fd2b09ca331f4dc9fcfb7849fc8609f0f1eb95ebd0fcf372e0e8b0345995e77"
+        },
+        "downloads": 107,
+        "filename": "radical.synapse-0.42.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0241a21e0d431ce479d70d8e6a692487",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 48916,
+        "upload_time": "2016-05-10T11:16:00",
+        "url": "https://files.pythonhosted.org/packages/c5/59/63f2b92453568d82d6c63e948b58e62b663a6e58ada4d4c973bf2394a9ba/radical.synapse-0.42.tar.gz"
+      }
+    ],
+    "0.43": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "678df63fa9aec3bb80ede5210e2e3d10",
+          "sha256": "2d8f5f266391b4f645ff5ac83f7ec0dee82c54a7df3b89fd8b196767d38e816c"
+        },
+        "downloads": 105,
+        "filename": "radical.synapse-0.43.tar.gz",
+        "has_sig": false,
+        "md5_digest": "678df63fa9aec3bb80ede5210e2e3d10",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 49166,
+        "upload_time": "2016-05-13T21:13:00",
+        "url": "https://files.pythonhosted.org/packages/81/73/876973e8ba3caa195f075407b0474c4ac68087d5808b621b2e076f8b6923/radical.synapse-0.43.tar.gz"
+      }
+    ],
+    "0.44": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "dd70ad1d94f3ca765c7cd68fc83fdd27",
+          "sha256": "407e8578486775a7dcc92c543322624641ac945da73ef15fd96d60bb18e85ca3"
+        },
+        "downloads": 117,
+        "filename": "radical.synapse-0.44.tar.gz",
+        "has_sig": false,
+        "md5_digest": "dd70ad1d94f3ca765c7cd68fc83fdd27",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 50406,
+        "upload_time": "2016-07-29T14:20:05",
+        "url": "https://files.pythonhosted.org/packages/b7/52/bc1f8757378123c61ebf10269e3b4c4d795d750c6c803da35b071df079bf/radical.synapse-0.44.tar.gz"
+      }
+    ],
+    "0.45": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "cddce34b92537de98dea65ab32d811a3",
+          "sha256": "0cbddfe622f927bc57cdf749eb9119bd3368954e3af3a783ec7d7f6a861fc9cc"
+        },
+        "downloads": 0,
+        "filename": "radical.synapse-0.45.tar.gz",
+        "has_sig": false,
+        "md5_digest": "cddce34b92537de98dea65ab32d811a3",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 47652,
+        "upload_time": "2017-05-09T20:47:54",
+        "url": "https://files.pythonhosted.org/packages/21/53/105afb028b40b11c553c28af58789f47520c2e9faff5507a299b4ef2d871/radical.synapse-0.45.tar.gz"
+      }
+    ],
+    "0.46": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4093a70ce2c24c780ddfd85d126f746b",
+          "sha256": "6dbfc469b972c7e3f102f29bfb8640cf2477deca734ce7af7e2a8af1acd57a4b"
+        },
+        "downloads": 0,
+        "filename": "radical.synapse-0.46.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4093a70ce2c24c780ddfd85d126f746b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 48221,
+        "upload_time": "2017-05-12T00:16:02",
+        "url": "https://files.pythonhosted.org/packages/ef/69/4b7b6669db1c5170cc0468d4003c9e26bb994a2d7253b540e575824695ee/radical.synapse-0.46.tar.gz"
+      }
+    ],
+    "0.46.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b7ada6c8fb8ee14fd39a81522a9b6069",
+          "sha256": "91463d0a87068180730efe98a1eee6ae6b03aa1005ca750b1a54c31126ebb0aa"
+        },
+        "downloads": 0,
+        "filename": "radical.synapse-0.46.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b7ada6c8fb8ee14fd39a81522a9b6069",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 48280,
+        "upload_time": "2017-05-12T07:52:57",
+        "url": "https://files.pythonhosted.org/packages/45/ee/9d77db3dbbcd57d9b077526073e05fc4dd52065e042e4838c665f7352840/radical.synapse-0.46.1.tar.gz"
+      }
+    ],
+    "0.46.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "adaada60f5cd33e9ce357ca12e496191",
+          "sha256": "086102d2dcb7ae604e1f596e724cbe53d44ec7a49f8d4e3bfb2a3940b24c9d6c"
+        },
+        "downloads": 0,
+        "filename": "radical.synapse-0.46.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "adaada60f5cd33e9ce357ca12e496191",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 48277,
+        "upload_time": "2017-05-12T08:47:28",
+        "url": "https://files.pythonhosted.org/packages/69/93/250c13518fdb2c9ea5273f1dcdae75d2583214234515e3c33cac5c66f1fc/radical.synapse-0.46.2.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "adaada60f5cd33e9ce357ca12e496191",
+        "sha256": "086102d2dcb7ae604e1f596e724cbe53d44ec7a49f8d4e3bfb2a3940b24c9d6c"
+      },
+      "downloads": 0,
+      "filename": "radical.synapse-0.46.2.tar.gz",
+      "has_sig": false,
+      "md5_digest": "adaada60f5cd33e9ce357ca12e496191",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 48277,
+      "upload_time": "2017-05-12T08:47:28",
+      "url": "https://files.pythonhosted.org/packages/69/93/250c13518fdb2c9ea5273f1dcdae75d2583214234515e3c33cac5c66f1fc/radical.synapse-0.46.2.tar.gz"
+    }
+  ]
+}

@@ -1,0 +1,866 @@
+{
+  "info": {
+    "author": "Justin Berka, Alex Kim",
+    "author_email": "justin.berka@gmail.com, alex.kim@uber.com",
+    "bugtrack_url": "",
+    "classifiers": [
+      "Development Status :: 3 - Alpha",
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: MIT License",
+      "Operating System :: OS Independent",
+      "Programming Language :: Python",
+      "Topic :: Database",
+      "Topic :: Database :: Database Engines/Servers"
+    ],
+    "description": "# vertica-python\n\n[![PyPI version](https://badge.fury.io/py/vertica-python.png)](http://badge.fury.io/py/vertica-python)\n\n0.6.x adds python3 support (unicode namedparams support is currently broken in python3, see issue 112)\n\n0.5.x changes the connection method to accept kwargs instead of a dict to be more dbapi compliant.\n      copy methods improved and consolidated in 0.5.1\n\n0.4.x breaks some of the older query interfaces (row_handler callback, and connection.query).\nIt replaces the row_handler callback with an iterate() method. Please see examples below\nIf you are on 0.4.x, please upgrade to 0.4.6 as there are various bug fixes\n\nvertica-python is a native Python adapter for the Vertica (http://www.vertica.com) database.\n\nvertica-python is currently in beta stage; it has been tested for functionality and has a very basic test suite. Please use with caution, and feel free to submit issues and/or pull requests (after running the unit tests).\n\nvertica-python has been tested with Vertica 6.1.2/7.0.0+ and Python 2.7/3.4.\n\n\n## Installation\n\nIf you're using pip >= 1.4 and you don't already have pytz installed:\n\n    pip install --pre pytz\n\nIf you're using pip >= 1.4 and you don't already have python-dateutil installed:\n\n    pip install --pre python-dateutil\n\nTo install vertica-python with pip:\n\n    pip install vertica-python\n\nTo install vertica-python with pip (with optional namedparams dependencies):\n\n    # see 'Using named parameters' section below\n    pip install 'vertica-python[namedparams]'\n\nSource code for vertica-python can be found at:\n\n    http://github.com/uber/vertica-python\n\n\n## Run unit tests\n\nTo run the tests, you must have access to a Vertica database. Heres one way to go about it:\n\nDownload docker kitematic:\nhttps://kitematic.com/\n\nSpin up a vertica container (i use sumitchawla/vertica)\n\nEdit the port number in `tests/test_commons.py` to match the container.\n\nInstall tox:\nhttp://tox.readthedocs.io\n\nEdit `tox.ini` envlist property to list the version(s) of python you have installed\n\nRun tox:\n```bash\ntox\n```\n\n## Usage\n\n\n**Create connection**\n\n```python\nimport vertica_python\n\nconn_info = {'host': '127.0.0.1',\n             'port': 5433,\n             'user': 'some_user',\n             'password': 'some_password',\n             'database': 'a_database',\n             # 10 minutes timeout on queries\n             'read_timeout': 600,\n             # default throw error on invalid UTF-8 results\n             'unicode_error': 'strict',\n             # SSL is disabled by default\n             'ssl': False,\n             'connection_timeout': 5\n             # connection timeout is not enabled by default}\n\n# simple connection, with manual close\nconnection = vertica_python.connect(**conn_info)\n# do things\nconnection.close()\n\n# using with for auto connection closing after usage\nwith vertica_python.connect(**conn_info) as connection:\n    # do things\n```\n\nYou can pass an `ssl.SSLContext` to `ssl` to customize the SSL connection options. For example,\n\n```python\nimport vertica_python\nimport ssl\n\nssl_context = ssl.SSLContext(ssl.PROTOCOL_SSLv23)\nssl_context.verify_mode = ssl.CERT_REQUIRED\nssl_context.check_hostname = True\nssl_context.load_verify_locations(cafile='/path/to/ca_file.pem')\n\nconn_info = {'host': '127.0.0.1',\n             'port': 5433,\n             'user': 'some_user',\n             'password': 'some_password',\n             'database': 'a_database',\n             'ssl': ssl_context}\nconnection = vertica_python.connect(**conn_info)\n\n```\n\nSee more on SSL options [here](https://docs.python.org/2/library/ssl.html).\n\n**Stream query results**:\n\n```python\ncur = connection.cursor()\ncur.execute(\"SELECT * FROM a_table LIMIT 2\")\n\nfor row in cur.iterate():\n    print(row)\n# [ 1, 'some text', datetime.datetime(2014, 5, 18, 6, 47, 1, 928014) ]\n# [ 2, 'something else', None ]\n\n```\nStreaming is recommended if you want to further process each row, save the results in a non-list/dict format (e.g. Pandas DataFrame), or save the results in a file.\n\n\n**In-memory results as list**:\n\n```python\ncur = connection.cursor()\ncur.execute(\"SELECT * FROM a_table LIMIT 2\")\ncur.fetchall()\n# [ [1, 'something'], [2, 'something_else'] ]\n```\n\n\n**In-memory results as dictionary**:\n\n```python\ncur = connection.cursor('dict')\ncur.execute(\"SELECT * FROM a_table LIMIT 2\")\ncur.fetchall()\n# [ {'id': 1, 'value': 'something'}, {'id': 2, 'value': 'something_else'} ]\nconnection.close()\n```\n\n\n**Query using named parameters**:\n\n```python\n# Using named parameter bindings requires psycopg2>=2.5.1 which is not includes with the base vertica_python requirements.\n\ncur = connection.cursor()\ncur.execute(\"SELECT * FROM a_table WHERE a = :propA b = :propB\", {'propA': 1, 'propB': 'stringValue'})\n\ncur.fetchall()\n# [ [1, 'something'], [2, 'something_else'] ]\n```\n\n**Insert and commits** :\n\n```python\ncur = connection.cursor()\n\n# inline commit\ncur.execute(\"INSERT INTO a_table (a, b) VALUES (1, 'aa'); commit;\")\n\n# commit in execution\ncur.execute(\"INSERT INTO a_table (a, b) VALUES (1, 'aa')\")\ncur.execute(\"INSERT INTO a_table (a, b) VALUES (2, 'bb')\")\ncur.execute(\"commit;\")\n\n# connection.commit()\ncur.execute(\"INSERT INTO a_table (a, b) VALUES (1, 'aa')\")\nconnection.commit()\n```\n\n\n**Copy** :\n\n```python\ncur = connection.cursor()\ncur.copy(\"COPY test_copy (id, name) from stdin DELIMITER ',' \",  csv)\n```\n\nWhere `csv` is either a string or a file-like object (specifically, any object with a `read()` method). If using a file, the data is streamed.\n\n\n\n## Rowcount oddities\n\nvertica_python behaves a bit differently than dbapi when returning rowcounts.\n\nAfter a select execution, the rowcount will be -1, indicating that the row count is unknown. The rowcount value will be updated as data is streamed.\n\n```python\ncur.execute('SELECT 10 things')\n\ncur.rowcount == -1  # indicates unknown rowcount\n\ncur.fetchone()\ncur.rowcount == 1\ncur.fetchone()\ncur.rowcount == 2\ncur.fetchall()\ncur.rowcount == 10\n```\n\nAfter an insert/update/delete, the rowcount will be returned as a single element row:\n\n```python\ncur.execute(\"DELETE 3 things\")\n\ncur.rowcount == -1  # indicates unknown rowcount\ncur.fetchone()[0] == 3\n```\n\n## Nextset\n\nIf you execute multiple statements in a single call to execute(), you can use cursor.nextset() to retrieve all of the data.\n\n```python\ncur.execute('SELECT 1; SELECT 2;')\n\ncur.fetchone()\n# [1]\ncur.fetchone()\n# None\n\ncur.nextset()\n# True\n\ncur.fetchone()\n# [2]\ncur.fetchone()\n# None\n\ncur.nextset()\n# None\n```\n\n## UTF-8 encoding issues\n\nWhile Vertica expects varchars stored to be UTF-8 encoded, sometimes invalid strings get into the database. You can specify how to handle reading these characters using the unicode_error connection option. This uses the same values as the unicode type (https://docs.python.org/2/library/functions.html#unicode)\n\n```python\ncur = vertica_python.Connection({..., 'unicode_error': 'strict'}).cursor()\ncur.execute(r\"SELECT E'\\xC2'\")\ncur.fetchone()\n# caught 'utf8' codec can't decode byte 0xc2 in position 0: unexpected end of data\n\ncur = vertica_python.Connection({..., 'unicode_error': 'replace'}).cursor()\ncur.execute(r\"SELECT E'\\xC2'\")\ncur.fetchone()\n# \ufffd\n\ncur = vertica_python.Connection({..., 'unicode_error': 'ignore'}).cursor()\ncur.execute(r\"SELECT E'\\xC2'\")\ncur.fetchone()\n# \n```\n\n## License\n\nMIT License, please see `LICENSE` for details.\n\n\n## Acknowledgements\n\nMany thanks go to the contributors to the Ruby Vertica gem (https://github.com/sprsquish/vertica), since they did all of the wrestling with Vertica's protocol and have kept the gem updated. They are:\n\n * [Matt Bauer](http://github.com/mattbauer)\n * [Jeff Smick](http://github.com/sprsquish)\n * [Willem van Bergen](http://github.com/wvanbergen)\n * [Camilo Lopez](http://github.com/camilo)\n",
+    "docs_url": null,
+    "download_url": "UNKNOWN",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/uber/vertica-python/",
+    "keywords": "database vertica",
+    "license": "MIT",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "vertica-python",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/vertica-python/",
+    "release_url": "https://pypi.org/project/vertica-python/0.7.1/",
+    "requires_python": null,
+    "summary": "A native Python client for the Vertica database.",
+    "version": "0.7.1"
+  },
+  "releases": {
+    "0.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e59e91dc73d900c860425ce6f0e9044d",
+          "sha256": "716788811f3775e76adfc4642b133a4027208e37a59fad0f8a07de1877ccdbf6"
+        },
+        "downloads": 2698,
+        "filename": "vertica-python-0.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e59e91dc73d900c860425ce6f0e9044d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1916,
+        "upload_time": "2013-08-23T21:18:43",
+        "url": "https://files.pythonhosted.org/packages/8b/31/12613db5e58d080d532027a1689f89fdd0d1d93aed48e4674fa4683eedea/vertica-python-0.1.tar.gz"
+      }
+    ],
+    "0.1.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "451c32509281dceb299094185efe469e",
+          "sha256": "c2dc17bb8c7c8a15765c69f7295be9c0daa300740f70cb30447094a1c9552da7"
+        },
+        "downloads": 2218,
+        "filename": "vertica-python-0.1.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "451c32509281dceb299094185efe469e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 3451,
+        "upload_time": "2013-08-27T22:06:45",
+        "url": "https://files.pythonhosted.org/packages/33/1b/afbbadcbaa6807268de7df65d97663ee8eded3e3a4b287943dba275588d3/vertica-python-0.1.1.tar.gz"
+      }
+    ],
+    "0.1.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "46c28eb3ae62835d1cca54343d40f6a4",
+          "sha256": "a77d7400bb206b911fb9498e5423f5edca0b52c61bc53badb2fbb9526ec14c7b"
+        },
+        "downloads": 2228,
+        "filename": "vertica-python-0.1.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "46c28eb3ae62835d1cca54343d40f6a4",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 13216,
+        "upload_time": "2013-08-28T00:43:14",
+        "url": "https://files.pythonhosted.org/packages/0a/c1/3f10dc63f150ab53978ccc59970dfb2ac066417958f47764ecb23a06653f/vertica-python-0.1.2.tar.gz"
+      }
+    ],
+    "0.1.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3a9ed5f8e8021f2c5f34924efd94ec0f",
+          "sha256": "d9b9234c979b1565ef5524370fbadf6900e56e8001bb0f88b71764cebf067919"
+        },
+        "downloads": 2195,
+        "filename": "vertica-python-0.1.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3a9ed5f8e8021f2c5f34924efd94ec0f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 13328,
+        "upload_time": "2013-09-09T18:09:14",
+        "url": "https://files.pythonhosted.org/packages/85/f2/944741e54cfb60d028af13c22d484e34e9886f6a0d36943bcef59b840ecd/vertica-python-0.1.3.tar.gz"
+      }
+    ],
+    "0.1.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e24dfeacc30e23a5a5f369c075211d51",
+          "sha256": "9f2b32bc09e9de8c70f0ca173365d8afa8d877b1c1fb849ee4f2936e816e5666"
+        },
+        "downloads": 2294,
+        "filename": "vertica-python-0.1.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e24dfeacc30e23a5a5f369c075211d51",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 13846,
+        "upload_time": "2013-09-19T23:41:08",
+        "url": "https://files.pythonhosted.org/packages/9a/cf/447b30a8f6e7d69ee9296e5771d4958758d39260edd9322ec9f37b765c33/vertica-python-0.1.4.tar.gz"
+      }
+    ],
+    "0.1.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "65d9949134dc163e96ecfcf43db396ed",
+          "sha256": "be4846594320284dc66bcf4672d663c22bd11fa5a2ef8ed8094b07d58760c504"
+        },
+        "downloads": 2124,
+        "filename": "vertica-python-0.1.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "65d9949134dc163e96ecfcf43db396ed",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 13813,
+        "upload_time": "2013-09-21T00:50:14",
+        "url": "https://files.pythonhosted.org/packages/eb/f0/be2e8bc56a05614433d5d5a2fb3afffde979429eef57f4bfbc42d49f43bd/vertica-python-0.1.5.tar.gz"
+      }
+    ],
+    "0.1.7": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1446e2d94a4542f7e3c1071c7d2e0cae",
+          "sha256": "ee03f2eda78425daa0900723b101ada1ff6fd2db0d899f6acc084b31bcdb9776"
+        },
+        "downloads": 2079,
+        "filename": "vertica-python-0.1.7.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1446e2d94a4542f7e3c1071c7d2e0cae",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 13873,
+        "upload_time": "2013-09-23T23:24:41",
+        "url": "https://files.pythonhosted.org/packages/54/cc/9a709d4b02cfe5777baad84f66d85a983ff009ec3d09ffdb190272e32ad3/vertica-python-0.1.7.tar.gz"
+      }
+    ],
+    "0.1.8": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1069ccceb2a543811b02a3e7329318e8",
+          "sha256": "22f1132d3d22ed4a1dbf9dfa3168aeee4cbd07733079f6b85a179de570005b9a"
+        },
+        "downloads": 4480,
+        "filename": "vertica-python-0.1.8.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1069ccceb2a543811b02a3e7329318e8",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 13982,
+        "upload_time": "2013-10-09T17:34:35",
+        "url": "https://files.pythonhosted.org/packages/88/80/45d0fa4e0918ec47aa20bd7aca5a2521bfd96f4b6a80581a4193296e14ae/vertica-python-0.1.8.tar.gz"
+      }
+    ],
+    "0.1.9": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "dfa585e682b96573200c86493a6ee6ac",
+          "sha256": "43d4f89ab8efffc0b9b1b11cd635e45ae9a3763f223d7574f5c2eadbc9affb0b"
+        },
+        "downloads": 2152,
+        "filename": "vertica-python-0.1.9.tar.gz",
+        "has_sig": false,
+        "md5_digest": "dfa585e682b96573200c86493a6ee6ac",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 14053,
+        "upload_time": "2013-11-15T22:50:51",
+        "url": "https://files.pythonhosted.org/packages/a4/92/6a47b0f39a0cd8b2ac527e8d49f0a0c9e5218dae665ce82fcb72944c0646/vertica-python-0.1.9.tar.gz"
+      }
+    ],
+    "0.2.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "998822e9fda248c5fc8b3e2c267d6da8",
+          "sha256": "3df8b8c1d166005b3d7661156705c4ccc5822e0ff2b5a3db6b5abe91415b159a"
+        },
+        "downloads": 45798,
+        "filename": "vertica-python-0.2.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "998822e9fda248c5fc8b3e2c267d6da8",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 14932,
+        "upload_time": "2014-01-14T02:04:15",
+        "url": "https://files.pythonhosted.org/packages/10/8b/3ae0107b8925f747d18573d1b6ec74a3e41262886e6d7cf8873ea20729a9/vertica-python-0.2.0.tar.gz"
+      }
+    ],
+    "0.2.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7c02e55913b18f2e082f166dfc40894f",
+          "sha256": "acfea303b332ac5f8e9609ada84aabfb11c4fd6a5c885b3f355e9fb1c6893ac6"
+        },
+        "downloads": 2612,
+        "filename": "vertica-python-0.2.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7c02e55913b18f2e082f166dfc40894f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 14957,
+        "upload_time": "2014-04-02T00:27:09",
+        "url": "https://files.pythonhosted.org/packages/f1/37/47a432013d5cf235167ba0712647b038f78564c9d386a1b77224f4d7fb43/vertica-python-0.2.1.tar.gz"
+      }
+    ],
+    "0.2.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8fe9710a324c640cf4efc4594349361c",
+          "sha256": "22582ac239c88f658443406b3f8c241eb9e7983e7cb30549628ecccda1288a8f"
+        },
+        "downloads": 1662,
+        "filename": "vertica-python-0.2.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8fe9710a324c640cf4efc4594349361c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 14976,
+        "upload_time": "2014-05-29T00:18:57",
+        "url": "https://files.pythonhosted.org/packages/6c/eb/c0dd5f0e5914259191f463d7c6086985da7d00253ddd7f82e614d508167d/vertica-python-0.2.2.tar.gz"
+      }
+    ],
+    "0.2.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b29e71d2b152ecc267cbb1b6057e217b",
+          "sha256": "5637551801d307532c10d13899b8f54d55f26a73d1639002e4d27462dc202f5e"
+        },
+        "downloads": 3497,
+        "filename": "vertica-python-0.2.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b29e71d2b152ecc267cbb1b6057e217b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 15051,
+        "upload_time": "2014-06-11T18:45:01",
+        "url": "https://files.pythonhosted.org/packages/48/bd/15142e2dd6baad9cfefab1ce9adc3eaa4d09ae4d45b6e3eb98cf4f7e68d8/vertica-python-0.2.3.tar.gz"
+      }
+    ],
+    "0.3.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4a9e73f5ab1f4bdab1a846997cd4a397",
+          "sha256": "63e685bac3defef50c774b4fbfcc94bb78fcc0056a63c9e4ee73af4dc81660ae"
+        },
+        "downloads": 18320,
+        "filename": "vertica-python-0.3.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4a9e73f5ab1f4bdab1a846997cd4a397",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 15091,
+        "upload_time": "2014-10-09T00:44:10",
+        "url": "https://files.pythonhosted.org/packages/fa/e0/dc81dc2b52d53ced38a620306bf4824cfc84534c20194210679aa11e8e3b/vertica-python-0.3.0.tar.gz"
+      }
+    ],
+    "0.3.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "bc90b1c72aa5a1832bc682bf43b32a41",
+          "sha256": "8788d36f66709fff23482a2a0d3d4dfbd658a4a4e58adb36b9b79c59331cb2cf"
+        },
+        "downloads": 1891,
+        "filename": "vertica-python-0.3.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "bc90b1c72aa5a1832bc682bf43b32a41",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 17664,
+        "upload_time": "2015-04-13T18:45:42",
+        "url": "https://files.pythonhosted.org/packages/51/d1/0a1ba2fa0e7537b8ff0b4d26f09449ea9a265977d35604e9599f56856ac3/vertica-python-0.3.6.tar.gz"
+      }
+    ],
+    "0.4.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5f0b805c997038ece100187d5ab38a68",
+          "sha256": "eb1c33dbba013ac3b29a65a4c8547e974e469c635080332e0ab04a8d65062a20"
+        },
+        "downloads": 1043,
+        "filename": "vertica-python-0.4.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5f0b805c997038ece100187d5ab38a68",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 17439,
+        "upload_time": "2015-04-23T19:55:16",
+        "url": "https://files.pythonhosted.org/packages/be/a7/ad49109085fb591a8fbff3c413638734cd8ae130a027d52fb1e92fa60e06/vertica-python-0.4.0.tar.gz"
+      }
+    ],
+    "0.4.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "66b7482248e7c9d9d446f4a4cf9b77b3",
+          "sha256": "43badd75dfe9c1349af1b50cda9063792e1281e4e554ad305ae2dff2ac6b8aab"
+        },
+        "downloads": 1134,
+        "filename": "vertica-python-0.4.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "66b7482248e7c9d9d446f4a4cf9b77b3",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 17505,
+        "upload_time": "2015-04-28T00:12:11",
+        "url": "https://files.pythonhosted.org/packages/57/ec/fcc5b6e5a8d997c9c7c7d65265bdab835f1a3ddf2d8a6c07640043542300/vertica-python-0.4.1.tar.gz"
+      }
+    ],
+    "0.4.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "52eb49d37518011a1c8efb7b0537b041",
+          "sha256": "ff9d20716d05d55ae764c08d60171aba3339cb90153b3f4acc62fabe88c06a5e"
+        },
+        "downloads": 1017,
+        "filename": "vertica-python-0.4.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "52eb49d37518011a1c8efb7b0537b041",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 17424,
+        "upload_time": "2015-05-05T17:45:01",
+        "url": "https://files.pythonhosted.org/packages/8d/be/de7cc25fc3b0e63381476ebc4a94b04abc6c0fa338907c4979da2a962181/vertica-python-0.4.3.tar.gz"
+      }
+    ],
+    "0.4.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "96fe91a1e1760e61316d59f4b903fc7e",
+          "sha256": "1855c423c24ec3eb359da2aa4f6d551eac49b4e44aa6882b868b6646b70d0358"
+        },
+        "downloads": 942,
+        "filename": "vertica-python-0.4.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "96fe91a1e1760e61316d59f4b903fc7e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 19330,
+        "upload_time": "2015-05-08T23:33:58",
+        "url": "https://files.pythonhosted.org/packages/f9/d2/af24be2d3d5cda5c529736f2c01fd9e2faa3301f23ee48cf38c01881dd4f/vertica-python-0.4.5.tar.gz"
+      }
+    ],
+    "0.4.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "182723d6d81dc400ca8494697ab60f87",
+          "sha256": "a0094c70fae56fc0aa76124dc605800750963e9d37c2e3f0baacadd09ace0bda"
+        },
+        "downloads": 31262,
+        "filename": "vertica-python-0.4.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "182723d6d81dc400ca8494697ab60f87",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 19365,
+        "upload_time": "2015-05-11T18:38:03",
+        "url": "https://files.pythonhosted.org/packages/7e/80/e46eac515b69a4f6d8800dd58cc85fafee0879d7c10fef76ef45d92fc3b3/vertica-python-0.4.6.tar.gz"
+      }
+    ],
+    "0.5.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "afbb3fbf7391398728c4ba342b317551",
+          "sha256": "fa83bb8cf3a786f241bc882309b4a88410552c660751075f8ca209d39b26fcb0"
+        },
+        "downloads": 3083,
+        "filename": "vertica-python-0.5.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "afbb3fbf7391398728c4ba342b317551",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 20431,
+        "upload_time": "2015-07-03T01:30:11",
+        "url": "https://files.pythonhosted.org/packages/c8/39/435749a3e6b8267e90dcb94ac6b0433b78b325dd16acb13bea37f2ac5502/vertica-python-0.5.0.tar.gz"
+      }
+    ],
+    "0.5.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1d7c36e05a090de0322873df1d327124",
+          "sha256": "a9d3188459514d02bb269c0fbc35b92c26bd227dc23b510c04ee790357d94a4e"
+        },
+        "downloads": 22851,
+        "filename": "vertica-python-0.5.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1d7c36e05a090de0322873df1d327124",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 20943,
+        "upload_time": "2015-07-29T21:15:04",
+        "url": "https://files.pythonhosted.org/packages/84/8f/532022cd3eab3be5063760623386d40769b91d2d5c93888402e6dfd520cb/vertica-python-0.5.1.tar.gz"
+      }
+    ],
+    "0.5.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "cd6f569c61e85393217f2d0030fe9568",
+          "sha256": "02ace309674c16477672e1d1e3c8e61c34277615d2491a7430cdbeca0d392557"
+        },
+        "downloads": 10237,
+        "filename": "vertica-python-0.5.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "cd6f569c61e85393217f2d0030fe9568",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 22066,
+        "upload_time": "2015-09-20T23:01:36",
+        "url": "https://files.pythonhosted.org/packages/a0/53/b4c708909095cc0348b2baa7f0e9d021726c02353691ab5e48da09663519/vertica-python-0.5.2.tar.gz"
+      }
+    ],
+    "0.5.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a3f1ae1fc582ef5f29935105465a9c0d",
+          "sha256": "f536eb6bdfb14fa0ae3c5155de71f17ccfe14fe2a5e827bf048cff0bf97a5821"
+        },
+        "downloads": 504,
+        "filename": "vertica-python-0.5.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a3f1ae1fc582ef5f29935105465a9c0d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 22383,
+        "upload_time": "2015-12-01T21:39:09",
+        "url": "https://files.pythonhosted.org/packages/74/81/e0b7d32032982d0021c1b796cc49b0338fefb49dfcbabf93fd05507b5da3/vertica-python-0.5.4.tar.gz"
+      }
+    ],
+    "0.5.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1245202ba58cce49fae7fe42625fa82c",
+          "sha256": "6551f4dd6c3bfb26c6370333715319ad282b32f27f1a60712bcf446db2321da5"
+        },
+        "downloads": 6558,
+        "filename": "vertica-python-0.5.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1245202ba58cce49fae7fe42625fa82c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 22383,
+        "upload_time": "2015-12-02T21:04:48",
+        "url": "https://files.pythonhosted.org/packages/07/fb/51706d863b3754b8326a48b60964914b29e1025181af7d0eb588e4e86232/vertica-python-0.5.5.tar.gz"
+      }
+    ],
+    "0.5.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e6a88c17bda6f938851a758ab123d560",
+          "sha256": "cbb768592ce8feb42df3cca0ab11ba5124afc506362f72a46de0068f89bb3316"
+        },
+        "downloads": 173,
+        "filename": "vertica-python-0.5.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e6a88c17bda6f938851a758ab123d560",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 23113,
+        "upload_time": "2016-04-11T17:06:20",
+        "url": "https://files.pythonhosted.org/packages/99/20/3853f1d7351ae0f581f594ff317f946f95c931922b6b42425f687bb659c7/vertica-python-0.5.6.tar.gz"
+      }
+    ],
+    "0.5.7": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8f0ab472b384f8876569f757d883d2fe",
+          "sha256": "ca1afef3999ded4f6bda12d969f7c12a5d880652891f48253e56528db1f70b6b"
+        },
+        "downloads": 102,
+        "filename": "vertica-python-0.5.7.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8f0ab472b384f8876569f757d883d2fe",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 23438,
+        "upload_time": "2016-04-20T01:17:05",
+        "url": "https://files.pythonhosted.org/packages/19/db/ab6e94705908647855e475bd71badace6af8d2c5c68474f9e5799c202412/vertica-python-0.5.7.tar.gz"
+      }
+    ],
+    "0.5.8": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "327cb4c729e13e4f917ad6c40555e9bb",
+          "sha256": "6b65bad2728726eae3e5d32da966af3e2b05bb4ab2c5157217b79a2cf5e3f75f"
+        },
+        "downloads": 318,
+        "filename": "vertica-python-0.5.8.tar.gz",
+        "has_sig": false,
+        "md5_digest": "327cb4c729e13e4f917ad6c40555e9bb",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 23441,
+        "upload_time": "2016-04-21T01:34:08",
+        "url": "https://files.pythonhosted.org/packages/60/ae/2c055f09b90ccc917eba01561afe8d6e8df72548d626e169acfaee3a82ee/vertica-python-0.5.8.tar.gz"
+      }
+    ],
+    "0.6.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7a9ae9f3749bc845484b18780034dd64",
+          "sha256": "b1c820c70394a4e8bab1725e8d78dfd18f57c4497b5680c507e21e565dd62b40"
+        },
+        "downloads": 112,
+        "filename": "vertica-python-0.6.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7a9ae9f3749bc845484b18780034dd64",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 23440,
+        "upload_time": "2016-04-28T04:17:37",
+        "url": "https://files.pythonhosted.org/packages/20/28/010950c3f1084ced2d7f9706ec41aa63cda4a41ad6b984fb40fb5b08226e/vertica-python-0.6.0.tar.gz"
+      }
+    ],
+    "0.6.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1a043f16abd2367fd7e0af39ae4c570e",
+          "sha256": "9c29b79045b82a23bf7cc26c657fb8932ff757912e16084fbc3fa59d91df52e9"
+        },
+        "downloads": 103,
+        "filename": "vertica-python-0.6.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1a043f16abd2367fd7e0af39ae4c570e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 23711,
+        "upload_time": "2016-04-28T17:15:58",
+        "url": "https://files.pythonhosted.org/packages/19/b8/122d220cda31e9bbf52e8e3331e0673f6fe5a1bf8054d7466b093f447a4a/vertica-python-0.6.1.tar.gz"
+      }
+    ],
+    "0.6.10": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8226488fdfdebae49a6e0c9240d8ad1a",
+          "sha256": "93211bd6e350a715eea1dc765a6eecd3bb9cd6a625fc2c98ae8d30833ff6c67b"
+        },
+        "downloads": 43,
+        "filename": "vertica-python-0.6.10.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8226488fdfdebae49a6e0c9240d8ad1a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 24871,
+        "upload_time": "2016-12-09T19:17:38",
+        "url": "https://files.pythonhosted.org/packages/27/be/adbce982daa470e059908906b90ccb3b739dc49443389b7a7f86c781464c/vertica-python-0.6.10.tar.gz"
+      }
+    ],
+    "0.6.11": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "99c331c78f4064113ca69d30e5a92ffd",
+          "sha256": "e74162f52eef7e8f85cd0319fa764a47412fc48df025f8834a413d195da1ab1d"
+        },
+        "downloads": 2170,
+        "filename": "vertica-python-0.6.11.tar.gz",
+        "has_sig": false,
+        "md5_digest": "99c331c78f4064113ca69d30e5a92ffd",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 24902,
+        "upload_time": "2016-12-10T01:56:13",
+        "url": "https://files.pythonhosted.org/packages/1d/0f/f40d66144c775ffb3104c6fa47e2824f63963dab27297832b888b868bae4/vertica-python-0.6.11.tar.gz"
+      }
+    ],
+    "0.6.12": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "621970dfc81f22a30276c4e990a45587",
+          "sha256": "016055c2940a22e1817e009f5cd8d83dea46acff05a29b5b6a58619eaa244f70"
+        },
+        "downloads": 20,
+        "filename": "vertica-python-0.6.12.tar.gz",
+        "has_sig": false,
+        "md5_digest": "621970dfc81f22a30276c4e990a45587",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 24934,
+        "upload_time": "2017-02-09T19:05:09",
+        "url": "https://files.pythonhosted.org/packages/0a/ae/74a4a05d1dab1427e91d1951afff930e7fcc631cd3a0b17a9cf7aded83ab/vertica-python-0.6.12.tar.gz"
+      }
+    ],
+    "0.6.13": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c95b0b6199e01bfe26a9a854a8d56c18",
+          "sha256": "f809821a8780cdb02a61d56e646fd73e71ab3f7a89ba9511a50390a025cdbaf0"
+        },
+        "downloads": 193,
+        "filename": "vertica-python-0.6.13.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c95b0b6199e01bfe26a9a854a8d56c18",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 24999,
+        "upload_time": "2017-02-28T03:12:18",
+        "url": "https://files.pythonhosted.org/packages/0a/ac/93fecece929af39242f43536baaf3cfba4135b469548e7192c861ebd005f/vertica-python-0.6.13.tar.gz"
+      }
+    ],
+    "0.6.14": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5366a27eb85ea35a026b048670394dec",
+          "sha256": "595aa85b03873cbbd31dfef615e88f6239ffe1925e90bf27fb346a2d4d8df1c0"
+        },
+        "downloads": 295,
+        "filename": "vertica-python-0.6.14.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5366a27eb85ea35a026b048670394dec",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 25129,
+        "upload_time": "2017-03-23T18:46:01",
+        "url": "https://files.pythonhosted.org/packages/f3/f9/605d294bb3e3020a4199a3c7f9eab0f8a6ff64cdfa7df5ca0b44a5a46fbb/vertica-python-0.6.14.tar.gz"
+      }
+    ],
+    "0.6.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "975267ff2361d08e9fcd90ca8a0ec032",
+          "sha256": "477cb5e63400a637762e50a55e87075f1f900d030cee8c50be9ec2e4604e42b8"
+        },
+        "downloads": 233,
+        "filename": "vertica-python-0.6.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "975267ff2361d08e9fcd90ca8a0ec032",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 23790,
+        "upload_time": "2016-05-03T17:45:38",
+        "url": "https://files.pythonhosted.org/packages/1d/c3/25bb3505f3e96756dc1de191986b0fefe6e928854384b4299cd1a9f117e4/vertica-python-0.6.2.tar.gz"
+      }
+    ],
+    "0.6.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "443e460fd59c196b10670844f41d1892",
+          "sha256": "3bdeab83dca785d47455bb4e54d5099df089de5bbedc8ae7259000157738d56b"
+        },
+        "downloads": 149,
+        "filename": "vertica-python-0.6.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "443e460fd59c196b10670844f41d1892",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 24261,
+        "upload_time": "2016-05-23T18:27:34",
+        "url": "https://files.pythonhosted.org/packages/ce/f6/a4a607637ad0655d356f0203cea153e13bc20ae2748df8492d5e9eccdfd9/vertica-python-0.6.3.tar.gz"
+      }
+    ],
+    "0.6.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f8ff5fd4fce987497b5d66bd140bb547",
+          "sha256": "7835fc552fc0b885c07c64bd3e260267cebd938002b8336f4d7c8816100c754f"
+        },
+        "downloads": 615,
+        "filename": "vertica-python-0.6.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f8ff5fd4fce987497b5d66bd140bb547",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 24350,
+        "upload_time": "2016-06-09T17:42:26",
+        "url": "https://files.pythonhosted.org/packages/25/5b/7931bda3433aef21d45bbd4100c50ebdebaf5764f3a88c6fda4061a5161b/vertica-python-0.6.4.tar.gz"
+      }
+    ],
+    "0.6.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "bc291063cbeae4428b5faf255698e9fc",
+          "sha256": "1be8404b73754505345a8383d98ed2b34c7f62a269469968369e45222a70a926"
+        },
+        "downloads": 1927,
+        "filename": "vertica-python-0.6.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "bc291063cbeae4428b5faf255698e9fc",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 24348,
+        "upload_time": "2016-06-23T00:50:45",
+        "url": "https://files.pythonhosted.org/packages/23/d9/2447d1c1857af5a1be53c13c6e0be995c5abdb36d7dbdc1bbb7ba6f4e28e/vertica-python-0.6.5.tar.gz"
+      }
+    ],
+    "0.6.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "71db9b8a5a14b6f0a58bd78335b5dd1a",
+          "sha256": "81affc20a7b2d969e731862761d22cc670e04ead4d3c63dbc0aab79bfb5e2acf"
+        },
+        "downloads": 1885,
+        "filename": "vertica-python-0.6.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "71db9b8a5a14b6f0a58bd78335b5dd1a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 24422,
+        "upload_time": "2016-08-17T18:35:00",
+        "url": "https://files.pythonhosted.org/packages/36/b0/85263ef6cbcb18d7490e756100e8ffb2b5253084e178d375480da3e57011/vertica-python-0.6.6.tar.gz"
+      }
+    ],
+    "0.6.7": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "de421cb0f4e99ca237de17bdb62b7ea5",
+          "sha256": "5460584e9bae05853fc6662b362ee2a1de7c5eace1a66666d4bb085c5a35dd78"
+        },
+        "downloads": 1228,
+        "filename": "vertica-python-0.6.7.tar.gz",
+        "has_sig": false,
+        "md5_digest": "de421cb0f4e99ca237de17bdb62b7ea5",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 24504,
+        "upload_time": "2016-09-23T18:19:22",
+        "url": "https://files.pythonhosted.org/packages/40/e7/148f1112a1a4b618e2bb47dbc70d7b36074ff085e660a1a0fabd14810c15/vertica-python-0.6.7.tar.gz"
+      }
+    ],
+    "0.6.8": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a19f4569bfca729c9112ddddb7a6fc94",
+          "sha256": "b8ad1de0c7f83e44b4df3463b2a0e0ee397e6a2b0066008a53f3a0c7707aecd1"
+        },
+        "downloads": 1844,
+        "filename": "vertica-python-0.6.8.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a19f4569bfca729c9112ddddb7a6fc94",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 24698,
+        "upload_time": "2016-10-06T21:32:01",
+        "url": "https://files.pythonhosted.org/packages/a6/7e/e84b8b59dd64b1193618cb3e07791affad15ec04447ee7ce7aa380f731e5/vertica-python-0.6.8.tar.gz"
+      }
+    ],
+    "0.6.9": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d280621c88bdd7c35c790f7597129d26",
+          "sha256": "d7622a649438ef106c35ed599c23d51e889fe9582c498aae95f53838b78f8143"
+        },
+        "downloads": 508,
+        "filename": "vertica-python-0.6.9.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d280621c88bdd7c35c790f7597129d26",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 24746,
+        "upload_time": "2016-11-28T18:57:11",
+        "url": "https://files.pythonhosted.org/packages/26/bf/9a3d06742fd81fa45ae36e444c07e52c73ecadc38b058e51d39b9ed26709/vertica-python-0.6.9.tar.gz"
+      }
+    ],
+    "0.7.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "65504db84984fc81de5246e75962b6e9",
+          "sha256": "ffffa47c8a80929594d3aca079cd858c569eb800b07b948921711a05e6931582"
+        },
+        "downloads": 0,
+        "filename": "vertica-python-0.7.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "65504db84984fc81de5246e75962b6e9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 28600,
+        "upload_time": "2017-05-13T20:47:51",
+        "url": "https://files.pythonhosted.org/packages/57/d6/00568369c2062b5d7d5611ccf0482f8d1bed69db8af314b0b3eaaa1b2b0f/vertica-python-0.7.0.tar.gz"
+      }
+    ],
+    "0.7.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "36ab810c9b329dbd58132c2ebb5afa8c",
+          "sha256": "8954baac4f9d3c7a7dd0972377836fb2ba63adc274d42d483f42d4538831004e"
+        },
+        "downloads": 0,
+        "filename": "vertica-python-0.7.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "36ab810c9b329dbd58132c2ebb5afa8c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 28752,
+        "upload_time": "2017-05-13T22:41:51",
+        "url": "https://files.pythonhosted.org/packages/2b/de/e58952de926a877cec0cfc1f22f9dc14c8020419d9d587e2640624f30794/vertica-python-0.7.1.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "36ab810c9b329dbd58132c2ebb5afa8c",
+        "sha256": "8954baac4f9d3c7a7dd0972377836fb2ba63adc274d42d483f42d4538831004e"
+      },
+      "downloads": 0,
+      "filename": "vertica-python-0.7.1.tar.gz",
+      "has_sig": false,
+      "md5_digest": "36ab810c9b329dbd58132c2ebb5afa8c",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 28752,
+      "upload_time": "2017-05-13T22:41:51",
+      "url": "https://files.pythonhosted.org/packages/2b/de/e58952de926a877cec0cfc1f22f9dc14c8020419d9d587e2640624f30794/vertica-python-0.7.1.tar.gz"
+    }
+  ]
+}

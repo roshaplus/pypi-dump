@@ -1,0 +1,4549 @@
+{
+  "info": {
+    "author": "Common workflow language working group",
+    "author_email": "common-workflow-language@googlegroups.com",
+    "bugtrack_url": "",
+    "classifiers": [
+      "Development Status :: 5 - Production/Stable",
+      "Operating System :: OS Independent",
+      "Operating System :: POSIX",
+      "Programming Language :: Python :: 2 :: Only"
+    ],
+    "description": "==================================================================\nCommon workflow language tool description reference implementation\n==================================================================\n\nCWL Conformance test: |Build Status|\n\nThis is the reference implementation of the Common Workflow Language.  It is\nintended to be feature complete and provide comprehensive validation of CWL\nfiles as well as provide other tools related to working with CWL.\n\nThis is written and tested for Python 2.7.\n\nThe reference implementation consists of two packages.  The \"cwltool\" package\nis the primary Python module containing the reference implementation in the\n\"cwltool\" module and console executable by the same name.\n\nThe \"cwlref-runner\" package is optional and provides an additional entry point\nunder the alias \"cwl-runner\", which is the implementation-agnostic name for the\ndefault CWL interpreter installed on a host.\n\nInstall\n-------\n\nInstalling the official package from PyPi (will install \"cwltool\" package as\nwell)::\n\n  pip install cwlref-runner\n\nIf installling alongside another CWL implementation then::\n\n  pip install cwltool\n\nTo install from source::\n\n  git clone https://github.com/common-workflow-language/cwltool.git\n  cd cwltool && python setup.py install\n  cd cwlref-runner && python setup.py install  # co-installing? skip this\n\nRemember, if co-installing multiple CWL implementations then you need to\nmaintain which implementation ``cwl-runner`` points to via a symbolic file\nsystem link or `another facility <https://wiki.debian.org/DebianAlternatives>`_.\n\nRunning tests locally\n---------------------\n\n-  Running basic tests ``(/tests)``:\n\n.. code:: bash\n\n    python setup.py test\n\n-  Running the entire suite of CWL conformance tests:\n\nThe GitHub repository for the CWL specifications contains a script that tests a CWL\nimplementation against a wide array of valid CWL files using the `cwltest <https://github.com/common-workflow-language/cwltest>`_\nprogram\n\nInstructions for running these tests can be found in the Common Workflow Language Specification repository at https://github.com/common-workflow-language/common-workflow-language/blob/master/CONFORMANCE_TESTS.md\n\nRun on the command line\n-----------------------\n\nSimple command::\n\n  cwl-runner [tool-or-workflow-description] [input-job-settings]\n\nOr if you have multiple CWL implementations installed and you want to override\nthe default cwl-runner use::\n\n  cwltool [tool-or-workflow-description] [input-job-settings]\n\nUse with boot2docker\n--------------------\nboot2docker is running docker inside a virtual machine and it only mounts ``Users``\non it. The default behavoir of CWL is to create temporary directories under e.g.\n``/Var`` which is not accessible to Docker containers.\n\nTo run CWL successfully with boot2docker you need to set the ``--tmpdir-prefix``\nand ``--tmp-outdir-prefix`` to somewhere under ``/Users``::\n\n    $ cwl-runner --tmp-outdir-prefix=/Users/username/project --tmpdir-prefix=/Users/username/project wc-tool.cwl wc-job.json\n\n.. |Build Status| image:: https://ci.commonwl.org/buildStatus/icon?job=cwltool-conformance\n   :target: https://ci.commonwl.org/job/cwltool-conformance/\n\nTool or workflow loading from remote or local locations\n-------------------------------------------------------\n\n``cwltool`` can run tool and workflow descriptions on both local and remote\nsystems via its support for HTTP[S] URLs.\n\nInput job files and Workflow steps (via the `run` directive) can reference CWL\ndocuments using absolute or relative local filesytem paths. If a relative path\nis referenced and that document isn't found in the current directory then the\nfollowing locations will be searched:\nhttp://www.commonwl.org/v1.0/CommandLineTool.html#Discovering_CWL_documents_on_a_local_filesystem\n\n\nUse with GA4GH Tool Registry API\n--------------------------------\n\nCwltool can launch tools directly from `GA4GH Tool Registry API`_ endpoints.\n\nBy default, cwltool searches https://dockstore.org/ .  Use --add-tool-registry to add other registries to the search path.\n\nFor example ::\n\n  cwltool --non-strict quay.io/collaboratory/dockstore-tool-bamstats:master test.json\n\nand (defaults to latest when a version is not specified) ::\n\n  cwltool --non-strict quay.io/collaboratory/dockstore-tool-bamstats test.json\n\nFor this example, grab the test.json (and input file) from https://github.com/CancerCollaboratory/dockstore-tool-bamstats\n\n.. _`GA4GH Tool Registry API`: https://github.com/ga4gh/tool-registry-schemas\n\nImport as a module\n------------------\n\nAdd::\n\n  import cwltool\n\nto your script.\n\nThe easiest way to use cwltool to run a tool or workflow from Python is to use a Factory::\n\n  import cwltool.factory\n  fac = cwltool.factory.Factory()\n\n  echo = f.make(\"echo.cwl\")\n  result = echo(inp=\"foo\")\n\n  # result[\"out\"] == \"foo\"\n\n\nCwltool control flow\n--------------------\n\nTechnical outline of how cwltool works internally, for maintainers.\n\n#. Use CWL `load_tool()` to load document.\n\n   #. Fetches the document from file or URL\n   #. Applies preprocessing (syntax/identifier expansion and normalization)\n   #. Validates the document based on cwlVersion\n   #. If necessary, updates the document to latest spec\n   #. Constructs a Process object using `make_tool()` callback.  This yields a\n      CommandLineTool, Workflow, or ExpressionTool.  For workflows, this\n      recursively constructs each workflow step.\n   #. To construct custom types for CommandLineTool, Workflow, or\n      ExpressionTool, provide a custom `make_tool()`\n\n#. Iterate on the `job()` method of the Process object to get back runnable jobs.\n\n   #. `job()` is a generator method (uses the Python iterator protocol)\n   #. Each time the `job()` method is invoked in an iteration, it returns one\n      of: a runnable item (an object with a `run()` method), `None` (indicating\n      there is currently no work ready to run) or end of iteration (indicating\n      the process is complete.)\n   #. Invoke the runnable item by calling `run()`.  This runs the tool and gets output.\n   #. Output of a process is reported by an output callback.\n   #. `job()` may be iterated over multiple times.  It will yield all the work\n      that is currently ready to run and then yield None.\n\n#. \"Workflow\" objects create a corresponding \"WorkflowJob\" and \"WorkflowJobStep\" objects to hold the workflow state for the duration of the job invocation.\n\n   #. The WorkflowJob iterates over each WorkflowJobStep and determines if the\n      inputs the step are ready.\n   #. When a step is ready, it constructs an input object for that step and\n      iterates on the `job()` method of the workflow job step.\n   #. Each runnable item is yielded back up to top level run loop\n   #. When a step job completes and receives an output callback, the\n      job outputs are assigned to the output of the workflow step.\n   #. When all steps are complete, the intermediate files are moved to a final\n      workflow output, intermediate directories are deleted, and the output\n      callback for the workflow is called.\n\n#. \"CommandLineTool\" job() objects yield a single runnable object.\n\n   #. The CommandLineTool `job()` method calls `makeJobRunner()` to create a\n      `CommandLineJob` object\n   #. The job method configures the CommandLineJob object by setting public\n      attributes\n   #. The job method iterates over file and directories inputs to the\n      CommandLineTool and creates a \"path map\".\n   #. Files are mapped from their \"resolved\" location to a \"target\" path where\n      they will appear at tool invocation (for example, a location inside a\n      Docker container.)  The target paths are used on the command line.\n   #. Files are staged to targets paths using either Docker volume binds (when\n      using containers) or symlinks (if not).  This staging step enables files\n      to be logically rearranged or renamed independent of their source layout.\n   #. The run() method of CommandLineJob executes the command line tool or\n      Docker container, waits for it to complete, collects output, and makes\n      the output callback.\n\n\nExtension points\n----------------\n\nThe following functions can be provided to main(), to load_tool(), or to the\nexecutor to override or augment the listed behaviors.\n\nexecutor(tool, job_order_object, **kwargs)\n  (Process, Dict[Text, Any], **Any) -> Tuple[Dict[Text, Any], Text]\n\n  A toplevel workflow execution loop, should synchronously execute a process\n  object and return an output object.\n\nmakeTool(toolpath_object, **kwargs)\n  (Dict[Text, Any], **Any) -> Process\n\n  Construct a Process object from a document.\n\nselectResources(request)\n  (Dict[Text, int]) -> Dict[Text, int]\n\n  Take a resource request and turn it into a concrete resource assignment.\n\nversionfunc()\n  () -> Text\n\n  Return version string.\n\nmake_fs_access(basedir)\n  (Text) -> StdFsAccess\n\n  Return a file system access object.\n\nfetcher_constructor(cache, session)\n  (Dict[unicode, unicode], requests.sessions.Session) -> Fetcher\n\n  Construct a Fetcher object with the supplied cache and HTTP session.\n\nresolver(document_loader, document)\n  (Loader, Union[Text, dict[Text, Any]]) -> Text\n\n  Resolve a relative document identifier to an absolute one which can be fetched.\n\nlogger_handler\n  logging.Handler\n\n  Handler object for logging.",
+    "docs_url": null,
+    "download_url": "https://github.com/common-workflow-language/cwltool",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/common-workflow-language/cwltool",
+    "keywords": "",
+    "license": "Apache 2.0",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "cwltool",
+    "platform": "",
+    "project_url": "https://pypi.org/project/cwltool/",
+    "release_url": "https://pypi.org/project/cwltool/1.0.20170525215327/",
+    "requires_python": "",
+    "summary": "Common workflow language reference implementation",
+    "version": "1.0.20170525215327"
+  },
+  "releases": {
+    "0.1.20141118163626.cbb1b06": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b14a4622c44f4d8f3b952ca8c10a98e8",
+          "sha256": "f70b8e2550772660188a00808fd74dafcb8d5d8c22986300470129e3d22e85bf"
+        },
+        "downloads": 1429,
+        "filename": "cwltool-0.1.20141118163626.cbb1b06.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b14a4622c44f4d8f3b952ca8c10a98e8",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 6738,
+        "upload_time": "2014-11-18T16:41:24",
+        "url": "https://files.pythonhosted.org/packages/00/42/da748975556345275d6e8dbc1ab1fcffb98c86ea5166d8c2c569a1fd57a4/cwltool-0.1.20141118163626.cbb1b06.tar.gz"
+      }
+    ],
+    "0.1.20141118185349.d594c3e": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a12234f810725f823cf6257fba5e7f47",
+          "sha256": "12afa95f1fdae8ce72a3e56a606e90e461d4002aa14a1813f0f183f23a6074f5"
+        },
+        "downloads": 1407,
+        "filename": "cwltool-0.1.20141118185349.d594c3e.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a12234f810725f823cf6257fba5e7f47",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 6752,
+        "upload_time": "2014-11-18T21:18:46",
+        "url": "https://files.pythonhosted.org/packages/2f/10/cf6a4823624f36cefa257c73626d17550aa0857a3b8de832e269d9e8d84b/cwltool-0.1.20141118185349.d594c3e.tar.gz"
+      }
+    ],
+    "0.1.20141119031726.8dcd753": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d338c9935163b70b3998ea732d3c7506",
+          "sha256": "b08945d1af8732a8111e42de1bc63bae9bd753deb00e6656c3cea78f1c771c49"
+        },
+        "downloads": 1434,
+        "filename": "cwltool-0.1.20141119031726.8dcd753.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d338c9935163b70b3998ea732d3c7506",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 6822,
+        "upload_time": "2014-11-19T17:01:25",
+        "url": "https://files.pythonhosted.org/packages/02/f9/df3dc8bd1ee3878d10a70cfccdf6d0ec31d33246e78afb6843ba26b6daeb/cwltool-0.1.20141119031726.8dcd753.tar.gz"
+      }
+    ],
+    "0.1.20141125184103.2d72b5c": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7e199486291914dae5da12b8c52202d7",
+          "sha256": "15e707031c69246ee1801c14e67091fcb19916972311f3680aa8327767a30b39"
+        },
+        "downloads": 1376,
+        "filename": "cwltool-0.1.20141125184103.2d72b5c.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7e199486291914dae5da12b8c52202d7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 7185,
+        "upload_time": "2014-11-25T21:39:56",
+        "url": "https://files.pythonhosted.org/packages/76/91/79332c87e5fb948533647ba027a42d1d4af7ac072d7d244cbabe2452d490/cwltool-0.1.20141125184103.2d72b5c.tar.gz"
+      }
+    ],
+    "0.1.20141128210437.24bfcbd": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1032920e79f7b782d8ed53df723e1b1c",
+          "sha256": "d63d616f2923b4d2be5f75ada7386f94250ab659513ae68cf0b6359ec5b62c85"
+        },
+        "downloads": 1370,
+        "filename": "cwltool-0.1.20141128210437.24bfcbd.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1032920e79f7b782d8ed53df723e1b1c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 7472,
+        "upload_time": "2014-12-01T15:33:30",
+        "url": "https://files.pythonhosted.org/packages/7e/5f/b7a0f713f16be4fd3a3097377c3aa68a2a8c7a283be83d8634a79ae0f337/cwltool-0.1.20141128210437.24bfcbd.tar.gz"
+      }
+    ],
+    "0.1.20141205194642.2cec11a": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7c60da185cf576938b2beb55ac5ba406",
+          "sha256": "d3b223a0be58879f8ef8042274a470a45c6c4cb2f71f373a79ae6b62832c3829"
+        },
+        "downloads": 1582,
+        "filename": "cwltool-0.1.20141205194642.2cec11a.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7c60da185cf576938b2beb55ac5ba406",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 7508,
+        "upload_time": "2014-12-16T18:35:40",
+        "url": "https://files.pythonhosted.org/packages/6d/b3/2fd9cf2313e909a8969a843de50a8014cf960297bc3457dc8099a64a875e/cwltool-0.1.20141205194642.2cec11a.tar.gz"
+      }
+    ],
+    "0.1.20150123125045.772314e": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "99005effe72cfbd1ac58c337ab1d5627",
+          "sha256": "b6b910f3de1008bed39b0a0f64ebba4913cc27fa7bdf48560b66a5805a992993"
+        },
+        "downloads": 1219,
+        "filename": "cwltool-0.1.20150123125045.772314e.tar.gz",
+        "has_sig": false,
+        "md5_digest": "99005effe72cfbd1ac58c337ab1d5627",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 7662,
+        "upload_time": "2015-01-23T19:48:10",
+        "url": "https://files.pythonhosted.org/packages/20/d6/b72588b5167854534bae724ef9002b5008ebf1df05f89a19f258533e552a/cwltool-0.1.20150123125045.772314e.tar.gz"
+      }
+    ],
+    "0.1.20150123213120.f1cfee1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c0d0f7408be2a916ca9e3c45eda00108",
+          "sha256": "fff183790b74790a3d11a8f8e14fab607ed0051429bc734dea357549084fd61f"
+        },
+        "downloads": 1242,
+        "filename": "cwltool-0.1.20150123213120.f1cfee1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c0d0f7408be2a916ca9e3c45eda00108",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 8098,
+        "upload_time": "2015-01-23T22:23:40",
+        "url": "https://files.pythonhosted.org/packages/d4/5e/def7e72744bdc8c861159d81372f154c0559b5a4ca98de5f66048bb63ce4/cwltool-0.1.20150123213120.f1cfee1.tar.gz"
+      }
+    ],
+    "1.0.20150317015350": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "697a5c966e9822df99e1f1b3165cbdf6",
+          "sha256": "14145032d455bb7b80e0c4b50ac428dc23214b5810dcd423c2e0ecf587fe7d02"
+        },
+        "downloads": 1168,
+        "filename": "cwltool-1.0.20150317015350.tar.gz",
+        "has_sig": false,
+        "md5_digest": "697a5c966e9822df99e1f1b3165cbdf6",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 14398,
+        "upload_time": "2015-03-17T05:22:09",
+        "url": "https://files.pythonhosted.org/packages/2b/e2/5ebb8f1104850d67547e680d0ddcc6a42436a116d9130b01bd92aadfef3c/cwltool-1.0.20150317015350.tar.gz"
+      }
+    ],
+    "1.0.20150318010828": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e68fe4324bf19b261e79b40c51d10798",
+          "sha256": "74b72df9b6a0db65db7fa69917e79297b287a3254a015c77b9ef9fb0ecdacb06"
+        },
+        "downloads": 1163,
+        "filename": "cwltool-1.0.20150318010828.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e68fe4324bf19b261e79b40c51d10798",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 14541,
+        "upload_time": "2015-03-18T01:34:25",
+        "url": "https://files.pythonhosted.org/packages/bf/82/acf300029bcd2628b823aab463cf5fc38fb4e29572d8db5d80b7afbd8807/cwltool-1.0.20150318010828.tar.gz"
+      }
+    ],
+    "1.0.20150318015654": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8262aed33d36f4f5b6eadd16960e083a",
+          "sha256": "f8f762acc23505f334a4b0e6323b885077a102f56687cb8f374298d81368d8ad"
+        },
+        "downloads": 1165,
+        "filename": "cwltool-1.0.20150318015654.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8262aed33d36f4f5b6eadd16960e083a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 14809,
+        "upload_time": "2015-03-18T13:22:54",
+        "url": "https://files.pythonhosted.org/packages/78/6c/85ac718fd3bd9cfdb25e2ba7547bfc5428a6229e0e96041afea319e83d81/cwltool-1.0.20150318015654.tar.gz"
+      }
+    ],
+    "1.0.20150324011020": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0a3b60a25ef671a4c1dfe6c028c22c13",
+          "sha256": "e7b1019f3355a237b8f9d11c8173283c91f47e31e17bd7f077a1a40b85d4be38"
+        },
+        "downloads": 1155,
+        "filename": "cwltool-1.0.20150324011020.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0a3b60a25ef671a4c1dfe6c028c22c13",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 14815,
+        "upload_time": "2015-03-24T01:07:55",
+        "url": "https://files.pythonhosted.org/packages/7a/a1/cf058b957813685ae37545bf8c718d6f6829d56b0f72e52772dc057bf1b2/cwltool-1.0.20150324011020.tar.gz"
+      }
+    ],
+    "1.0.20150324012706": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "80dc5610f98a66d90e94d25b13cdfafa",
+          "sha256": "72ec60e289525282b117d8161749290158e9e2318a3d738fcb8287e6875acca2"
+        },
+        "downloads": 1160,
+        "filename": "cwltool-1.0.20150324012706.tar.gz",
+        "has_sig": false,
+        "md5_digest": "80dc5610f98a66d90e94d25b13cdfafa",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 14808,
+        "upload_time": "2015-03-24T01:26:14",
+        "url": "https://files.pythonhosted.org/packages/43/4a/329a102aeeb30552f85e2ea484592a34989560ec6a42496c24348644bfc7/cwltool-1.0.20150324012706.tar.gz"
+      }
+    ],
+    "1.0.20150324172633": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "298d934a05d86ff7e69cbb3478d5ca02",
+          "sha256": "7b7c82ad0f18303ae9b8c5686f4a5a3998efe9351c3d3e1ebb5162a6d5075e30"
+        },
+        "downloads": 1146,
+        "filename": "cwltool-1.0.20150324172633.tar.gz",
+        "has_sig": false,
+        "md5_digest": "298d934a05d86ff7e69cbb3478d5ca02",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 14931,
+        "upload_time": "2015-03-24T17:27:53",
+        "url": "https://files.pythonhosted.org/packages/5e/e9/8d4b98ae5f2e9541176cb00d356521bb769a633e328c23201a909f26cec5/cwltool-1.0.20150324172633.tar.gz"
+      }
+    ],
+    "1.0.20150324173916": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "91a1126da9832de6f021516e8280b28f",
+          "sha256": "96a3652d06b88ea662e0333bb8da88d09e55ec1f92a990bb6748a63eec8168c2"
+        },
+        "downloads": 1160,
+        "filename": "cwltool-1.0.20150324173916.tar.gz",
+        "has_sig": false,
+        "md5_digest": "91a1126da9832de6f021516e8280b28f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 15038,
+        "upload_time": "2015-03-24T17:44:58",
+        "url": "https://files.pythonhosted.org/packages/f0/f5/a6c3b5c5b8b08b1ac9b3e7334b97be2df20e2e7d855ad0ba9e6c37b13310/cwltool-1.0.20150324173916.tar.gz"
+      }
+    ],
+    "1.0.20150324194338": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a30cd91c1255455f818c3d8b87726a4d",
+          "sha256": "6af75cb1242360a57f9026bf3109dee1b3a06cebf384002f847bb7b48ea5320c"
+        },
+        "downloads": 1163,
+        "filename": "cwltool-1.0.20150324194338.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a30cd91c1255455f818c3d8b87726a4d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 15010,
+        "upload_time": "2015-03-24T19:45:06",
+        "url": "https://files.pythonhosted.org/packages/db/4d/2c276f300508ccb713da1ee6c05483e3e9fb36216cac616d7854531473e1/cwltool-1.0.20150324194338.tar.gz"
+      }
+    ],
+    "1.0.20150324200038": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7c32c6512543a79d805c544b0a2d5bf3",
+          "sha256": "635b3cc8242e2635d923cf43e81f9af6d6b7bb7b144eb2ba429d1bc1024f98df"
+        },
+        "downloads": 1148,
+        "filename": "cwltool-1.0.20150324200038.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7c32c6512543a79d805c544b0a2d5bf3",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 19034,
+        "upload_time": "2015-03-24T20:19:13",
+        "url": "https://files.pythonhosted.org/packages/3e/7b/20e15a3fdc3cb4481754c43ee7cca87397294a2d81067179d3e2ec610a87/cwltool-1.0.20150324200038.tar.gz"
+      }
+    ],
+    "1.0.20150324203244": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d2dfd0c46b8dfd0ce6400c562c84ed04",
+          "sha256": "7dad59b36410c9cbdd1728e869e5fc81ee6b362979b43081e53305c14f47416f"
+        },
+        "downloads": 1165,
+        "filename": "cwltool-1.0.20150324203244.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d2dfd0c46b8dfd0ce6400c562c84ed04",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 19067,
+        "upload_time": "2015-03-24T20:31:28",
+        "url": "https://files.pythonhosted.org/packages/8c/a0/113c45dcdbcac36f0ed83dce0bbbd24a5fef6b0a33bebe8049831193d1a1/cwltool-1.0.20150324203244.tar.gz"
+      }
+    ],
+    "1.0.20150324211351": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d37fe3a2d793522b1d9eae5390ffc6fc",
+          "sha256": "a1d7c35697cf402d74f935ca6d376c5be9280dc3728414a291e7898a592a233b"
+        },
+        "downloads": 1173,
+        "filename": "cwltool-1.0.20150324211351.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d37fe3a2d793522b1d9eae5390ffc6fc",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 19076,
+        "upload_time": "2015-03-24T21:26:05",
+        "url": "https://files.pythonhosted.org/packages/89/c3/cd9398ef32db12d7ec5a2b3d1bf3c3257dd8e09fc16465f8f2dffd3731ab/cwltool-1.0.20150324211351.tar.gz"
+      }
+    ],
+    "1.0.20150326005309": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "11ae94bf03a5055568213edddea93551",
+          "sha256": "0915f64253618c2ea0cac7e6ee1a3fb0aeb750841d14ede019949bc288642f88"
+        },
+        "downloads": 1243,
+        "filename": "cwltool-1.0.20150326005309.tar.gz",
+        "has_sig": false,
+        "md5_digest": "11ae94bf03a5055568213edddea93551",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 19072,
+        "upload_time": "2015-03-26T05:23:07",
+        "url": "https://files.pythonhosted.org/packages/26/43/925d24d3e64995e4144b9037fb01164d6af83931546c3b11c482c0a2a568/cwltool-1.0.20150326005309.tar.gz"
+      }
+    ],
+    "1.0.20150326211508": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a5265fa533817782ad1b917787737393",
+          "sha256": "22e02b7c8640e874cb335993d13a2ba7a56158cf8254999ce56fc4ccbcd0c19c"
+        },
+        "downloads": 1140,
+        "filename": "cwltool-1.0.20150326211508.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a5265fa533817782ad1b917787737393",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 18589,
+        "upload_time": "2015-03-27T05:22:36",
+        "url": "https://files.pythonhosted.org/packages/78/2f/7188b07c6029ddd472a7b4cc8e5c6cecef71ce4f93fb61d3c07f10e61087/cwltool-1.0.20150326211508.tar.gz"
+      }
+    ],
+    "1.0.20150327211418": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ef7141d1b34bbf5f6adf771a87856d72",
+          "sha256": "77ab19ba505f7efe5b9289429ae67e5d9c99c69b33c8c1fcbe4f9ded748856f3"
+        },
+        "downloads": 1138,
+        "filename": "cwltool-1.0.20150327211418.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ef7141d1b34bbf5f6adf771a87856d72",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 18800,
+        "upload_time": "2015-03-27T21:42:47",
+        "url": "https://files.pythonhosted.org/packages/ef/ff/4f3a85929b56782eb1ce9f9cabe5c3997bbfb846a9b935364152d9109030/cwltool-1.0.20150327211418.tar.gz"
+      }
+    ],
+    "1.0.20150331014533": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7727c27f3fa42f82583cfcec18406112",
+          "sha256": "bfd678b1f62d981fb260946a2bf263aafd9f52f110ad15004a8a3f77e6f76a74"
+        },
+        "downloads": 1137,
+        "filename": "cwltool-1.0.20150331014533.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7727c27f3fa42f82583cfcec18406112",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 18800,
+        "upload_time": "2015-03-31T05:22:43",
+        "url": "https://files.pythonhosted.org/packages/b2/db/374e5c798f3b241e6fb896d36f2cb87fbd33c499d1e02b75a918d8da7ec1/cwltool-1.0.20150331014533.tar.gz"
+      }
+    ],
+    "1.0.20150401014645": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "111a7b8a606e109d7d0c9226f7622b7c",
+          "sha256": "a90beba9132205440945fb883c165031602b640bb8866bb4848c85c50ef01f68"
+        },
+        "downloads": 1130,
+        "filename": "cwltool-1.0.20150401014645.tar.gz",
+        "has_sig": false,
+        "md5_digest": "111a7b8a606e109d7d0c9226f7622b7c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 18811,
+        "upload_time": "2015-04-01T05:22:48",
+        "url": "https://files.pythonhosted.org/packages/63/fe/0afde82ea8efd6dce734940bebaae5c39890a9753e5574271a821ebc9aea/cwltool-1.0.20150401014645.tar.gz"
+      }
+    ],
+    "1.0.20150403144650": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6d350c8a1d569ac4b4ad1b445518ac1f",
+          "sha256": "c13c1ad84f3be0373ce7a952b6ea4e27e2e6749b8c65e47c696c20f75a22649a"
+        },
+        "downloads": 1148,
+        "filename": "cwltool-1.0.20150403144650.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6d350c8a1d569ac4b4ad1b445518ac1f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 18807,
+        "upload_time": "2015-04-03T14:55:11",
+        "url": "https://files.pythonhosted.org/packages/b7/7f/27d02fa3117fc6a089a7da556910e57de8be8ef959ca42daed7b78234655/cwltool-1.0.20150403144650.tar.gz"
+      }
+    ],
+    "1.0.20150407211342": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1730d4439ef19464b244edff89d51278",
+          "sha256": "414fad4c20d0eed9e50e8704d15addea503677c4893adc11156b61145fafb701"
+        },
+        "downloads": 1119,
+        "filename": "cwltool-1.0.20150407211342.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1730d4439ef19464b244edff89d51278",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 19249,
+        "upload_time": "2015-04-07T22:20:26",
+        "url": "https://files.pythonhosted.org/packages/fc/e8/7de027e99c5d186af12ded268b7455d70782c9d4ec3cfbc4eefaecbb7561/cwltool-1.0.20150407211342.tar.gz"
+      }
+    ],
+    "1.0.20150409193818": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "258908004fc202b67978e684ffc6e827",
+          "sha256": "f354fb49c060d865acf63394dc1c49ded102d848ab9e163b29f229fff89e0af2"
+        },
+        "downloads": 1119,
+        "filename": "cwltool-1.0.20150409193818.tar.gz",
+        "has_sig": false,
+        "md5_digest": "258908004fc202b67978e684ffc6e827",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 20098,
+        "upload_time": "2015-04-10T13:58:58",
+        "url": "https://files.pythonhosted.org/packages/f9/68/d713856cc61850448376e7c5dbfe9d37e65e9fe5d5c3f2cd20750a937cec/cwltool-1.0.20150409193818.tar.gz"
+      }
+    ],
+    "1.0.20150415152714": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "01c316b3a9ae9eec8ad03609ac0da93d",
+          "sha256": "fa51071a4cc491fd557498ee7a983a86e24d8034ebb52e367304cf8bf8df4028"
+        },
+        "downloads": 1183,
+        "filename": "cwltool-1.0.20150415152714.tar.gz",
+        "has_sig": false,
+        "md5_digest": "01c316b3a9ae9eec8ad03609ac0da93d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 21542,
+        "upload_time": "2015-04-15T19:45:21",
+        "url": "https://files.pythonhosted.org/packages/24/e9/85aef1cc689a2461b689cef8a2f628352b2bcafc605a46f56eaace4cbb54/cwltool-1.0.20150415152714.tar.gz"
+      }
+    ],
+    "1.0.20150429022405": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "172887d4237f897e7eb1f03d02ee306b",
+          "sha256": "57fec7cf16d8bbf5c26d6f456e6f272e66730421659a0871f242cc94a93cde64"
+        },
+        "downloads": 1243,
+        "filename": "cwltool-1.0.20150429022405.tar.gz",
+        "has_sig": false,
+        "md5_digest": "172887d4237f897e7eb1f03d02ee306b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 21551,
+        "upload_time": "2015-04-29T05:26:10",
+        "url": "https://files.pythonhosted.org/packages/0c/d1/220c4c95aa5c32d57128afef81ceeb39b20680b17bbdda8b5f2807283715/cwltool-1.0.20150429022405.tar.gz"
+      }
+    ],
+    "1.0.20150508023316": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0b0a61c8e5baac653529fd0e49c699fc",
+          "sha256": "7e235cb179a0c8abc18366e6fa46ff901b1a984896bf5b8c277826a42440d285"
+        },
+        "downloads": 1045,
+        "filename": "cwltool-1.0.20150508023316.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0b0a61c8e5baac653529fd0e49c699fc",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 21545,
+        "upload_time": "2015-05-08T05:25:17",
+        "url": "https://files.pythonhosted.org/packages/73/c3/e99c929204e8510338a65290e92ed1475be784f8b2d2d134530babb745ba/cwltool-1.0.20150508023316.tar.gz"
+      }
+    ],
+    "1.0.20150512154247": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3d04bf672fda900ae5d85599cc4179d9",
+          "sha256": "a6bb63e1ee4ab02eafd8d88e1cbb88ada39fd441f7e5922e9b17f05a4c34f887"
+        },
+        "downloads": 1025,
+        "filename": "cwltool-1.0.20150512154247.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3d04bf672fda900ae5d85599cc4179d9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 25473,
+        "upload_time": "2015-05-12T16:04:00",
+        "url": "https://files.pythonhosted.org/packages/63/d5/13ebe957dc86707876c093350d418ee444d28144e49c30f77a9ad31485d3/cwltool-1.0.20150512154247.tar.gz"
+      }
+    ],
+    "1.0.20150512164512": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ee7169ac64aae0d6edef7f7a896f6852",
+          "sha256": "7a3bbda3a66e74fa788829e9c5b78288d0c6358f575bbf26c1c85b091d2b7c45"
+        },
+        "downloads": 1119,
+        "filename": "cwltool-1.0.20150512164512.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ee7169ac64aae0d6edef7f7a896f6852",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 25493,
+        "upload_time": "2015-05-12T17:19:51",
+        "url": "https://files.pythonhosted.org/packages/b0/4a/815462363dff610dba815721ac461688422cf9734475bfbb26a52452990f/cwltool-1.0.20150512164512.tar.gz"
+      }
+    ],
+    "1.0.20150522025529": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e82cbc46d6206944fce30a93ea7b5cc0",
+          "sha256": "009de0d1cbf830ab73566683022e5223ad81eb4cbdc9212dda099c94f59f2b25"
+        },
+        "downloads": 1259,
+        "filename": "cwltool-1.0.20150522025529.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e82cbc46d6206944fce30a93ea7b5cc0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 25674,
+        "upload_time": "2015-05-22T05:27:01",
+        "url": "https://files.pythonhosted.org/packages/51/60/3ae6cc2a74b4646354afe4b33ee1c98b9296fe26e29dc490804d10661785/cwltool-1.0.20150522025529.tar.gz"
+      }
+    ],
+    "1.0.20150525010411": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1cef5b859ade423a2b46ca875a535188",
+          "sha256": "02ad4fe3accd604883a71608a0d70482397ca7a915e62b35f80aaa07ddd33bb2"
+        },
+        "downloads": 1015,
+        "filename": "cwltool-1.0.20150525010411.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1cef5b859ade423a2b46ca875a535188",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 25776,
+        "upload_time": "2015-05-25T05:26:41",
+        "url": "https://files.pythonhosted.org/packages/c3/e2/a43b5d451b690ae9db5c1949d0200bebea4cf83dd0993cabd334e4aa7c70/cwltool-1.0.20150525010411.tar.gz"
+      }
+    ],
+    "1.0.20150527172438": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "67b59f5b2cb41bb9eb65f37a3fc3ea7f",
+          "sha256": "d8fcec9686cafd8c70652edc97c05b69c25b98a6e3095aa4641d7df0df5690be"
+        },
+        "downloads": 1731,
+        "filename": "cwltool-1.0.20150527172438.tar.gz",
+        "has_sig": false,
+        "md5_digest": "67b59f5b2cb41bb9eb65f37a3fc3ea7f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 26122,
+        "upload_time": "2015-05-27T18:50:34",
+        "url": "https://files.pythonhosted.org/packages/96/27/06d5adcfddda38de352bc65ad4a4d8a0401c31c4240481a6f496e506ed5f/cwltool-1.0.20150527172438.tar.gz"
+      }
+    ],
+    "1.0.20150601172915": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "df463684ef242015d2f6984b7a27d315",
+          "sha256": "7a139182381dd03d0c3afeb21637fdcb456082c9716a02bd6b752da98cf93879"
+        },
+        "downloads": 979,
+        "filename": "cwltool-1.0.20150601172915.tar.gz",
+        "has_sig": false,
+        "md5_digest": "df463684ef242015d2f6984b7a27d315",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 34438,
+        "upload_time": "2015-06-01T17:30:23",
+        "url": "https://files.pythonhosted.org/packages/82/fd/b33df5c69ab8dbff86cbd76ce80492b4043091ac04951a6645ae36fce839/cwltool-1.0.20150601172915.tar.gz"
+      }
+    ],
+    "1.0.20150601200103": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5af1b51ff577bb02e3686ff567c51f1c",
+          "sha256": "8b20010081b58218c3561a849a24672012731f7df830568d85b9cc087723353f"
+        },
+        "downloads": 978,
+        "filename": "cwltool-1.0.20150601200103.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5af1b51ff577bb02e3686ff567c51f1c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 34513,
+        "upload_time": "2015-06-02T04:55:49",
+        "url": "https://files.pythonhosted.org/packages/a5/81/05d988718d2ab0466479605bb7cac5cb7a6e7beffe1f50cd1470f22d697c/cwltool-1.0.20150601200103.tar.gz"
+      }
+    ],
+    "1.0.20150602212140": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "056693fc87bbadb649b61ebe513948a3",
+          "sha256": "cf84a28dc343ee9106245ebd3da81c924131ced3ea608a5f67d0228c8a309ba6"
+        },
+        "downloads": 970,
+        "filename": "cwltool-1.0.20150602212140.tar.gz",
+        "has_sig": false,
+        "md5_digest": "056693fc87bbadb649b61ebe513948a3",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 34596,
+        "upload_time": "2015-06-02T21:22:37",
+        "url": "https://files.pythonhosted.org/packages/54/52/4215f503c12fb1115af75a75eab876aba8003a0f596a7c47c0c78fbef362/cwltool-1.0.20150602212140.tar.gz"
+      }
+    ],
+    "1.0.20150605134212": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "feb5052557983a697559066a2c3696a3",
+          "sha256": "699c625874250810496472e4f0b43926299ff459ec8a3c41cfd2ef23037d8a0e"
+        },
+        "downloads": 960,
+        "filename": "cwltool-1.0.20150605134212.tar.gz",
+        "has_sig": false,
+        "md5_digest": "feb5052557983a697559066a2c3696a3",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 34974,
+        "upload_time": "2015-06-06T04:56:52",
+        "url": "https://files.pythonhosted.org/packages/4a/1e/e8929dc5fef4f0bf20c9a466c24ee83a746ff82e2a94bb96321ebd5edf2a/cwltool-1.0.20150605134212.tar.gz"
+      }
+    ],
+    "1.0.20150606210100": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5693ab99b922b18621a0fff583f5af3f",
+          "sha256": "39d8a71edad10d9c233d4120e7099b752cc93d77b5ddecd8109d2d7be51076b3"
+        },
+        "downloads": 1115,
+        "filename": "cwltool-1.0.20150606210100.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5693ab99b922b18621a0fff583f5af3f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 36900,
+        "upload_time": "2015-06-07T04:56:54",
+        "url": "https://files.pythonhosted.org/packages/06/13/d89630374046331cbd2ca4721224643702bd056989e9cc0214edb4407ff3/cwltool-1.0.20150606210100.tar.gz"
+      }
+    ],
+    "1.0.20150609024148": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "547d4eab333d4c65afb0c3c6df2e0417",
+          "sha256": "0432d938fb2e89f57ddf8bd08247d1fe064be6cf83317634c2e920091dcd3e93"
+        },
+        "downloads": 1271,
+        "filename": "cwltool-1.0.20150609024148.tar.gz",
+        "has_sig": false,
+        "md5_digest": "547d4eab333d4c65afb0c3c6df2e0417",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 39516,
+        "upload_time": "2015-06-09T04:56:55",
+        "url": "https://files.pythonhosted.org/packages/a0/d8/d67bc80d29230549b5f50a4ca82ded6d05281e52df47dabcc37b112c5ddc/cwltool-1.0.20150609024148.tar.gz"
+      }
+    ],
+    "1.0.20150609205603": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2df448c5d103745513ab0390fcf4ce85",
+          "sha256": "e842a9d9eaad6b7786db133975e4bdf8f3d288b9e108f3e098d9ea380916c6ad"
+        },
+        "downloads": 957,
+        "filename": "cwltool-1.0.20150609205603.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2df448c5d103745513ab0390fcf4ce85",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 40183,
+        "upload_time": "2015-06-09T20:58:33",
+        "url": "https://files.pythonhosted.org/packages/bc/9f/fe05ff445f65ae541bc8064f756a52293c00ef7014edc0ac5ff5091fbaa0/cwltool-1.0.20150609205603.tar.gz"
+      }
+    ],
+    "1.0.20150610150530": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "abb04818ecc7ede4d7f301332c5acef7",
+          "sha256": "371d76229cf7cd1ba56cb75ff5245db033c64e34815f5857afd070054b631acf"
+        },
+        "downloads": 963,
+        "filename": "cwltool-1.0.20150610150530.tar.gz",
+        "has_sig": false,
+        "md5_digest": "abb04818ecc7ede4d7f301332c5acef7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 40178,
+        "upload_time": "2015-06-10T15:07:03",
+        "url": "https://files.pythonhosted.org/packages/c3/88/8cf2d100837b5138958e8b6797086dc90a87ad190dfff0a3708480e08575/cwltool-1.0.20150610150530.tar.gz"
+      }
+    ],
+    "1.0.20150621213723": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "68618b04faca77c0e4c1e2fa936e4495",
+          "sha256": "5b1860327ff306a272637684dc78b082833bb5c083f03ce446bb6fadc7a094eb"
+        },
+        "downloads": 935,
+        "filename": "cwltool-1.0.20150621213723.tar.gz",
+        "has_sig": false,
+        "md5_digest": "68618b04faca77c0e4c1e2fa936e4495",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 40352,
+        "upload_time": "2015-06-21T21:51:46",
+        "url": "https://files.pythonhosted.org/packages/34/9e/5bf09ebb0ff0e4b059ce306acc8821ca130e02542f40a9ee9e06f83d46d2/cwltool-1.0.20150621213723.tar.gz"
+      }
+    ],
+    "1.0.20150621230545": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "513a1470923c327186b47340bbf6254c",
+          "sha256": "829355ef89577201b36581e168d07019c5ecb4f9f672ff5cf60ccd6ef8dd1c1a"
+        },
+        "downloads": 1432,
+        "filename": "cwltool-1.0.20150621230545.tar.gz",
+        "has_sig": false,
+        "md5_digest": "513a1470923c327186b47340bbf6254c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 40442,
+        "upload_time": "2015-06-21T23:06:47",
+        "url": "https://files.pythonhosted.org/packages/1d/55/526438163640405178af9985dd91db18ef343981c5ffb39383e55a141c38/cwltool-1.0.20150621230545.tar.gz"
+      }
+    ],
+    "1.0.20150622134207": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5e73522b89051713b6bcf7e4000401b9",
+          "sha256": "d94a5a4090d9b36c7fbfa982c2d0c3a6912617ae2dcf47f24e0062be22ba98dd"
+        },
+        "downloads": 938,
+        "filename": "cwltool-1.0.20150622134207.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5e73522b89051713b6bcf7e4000401b9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 40407,
+        "upload_time": "2015-06-22T13:43:10",
+        "url": "https://files.pythonhosted.org/packages/12/58/99a6937a84ab0a7311c9f97b8193344a317fa4bf19a471246e48d7ba6ee6/cwltool-1.0.20150622134207.tar.gz"
+      }
+    ],
+    "1.0.20150622144406": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b43f1901cbd046dba8a3f3718cce67a8",
+          "sha256": "ff2aee6bcfea13e341e530bc4456cd5d1a42b6961756a91f406ebe1344edaa33"
+        },
+        "downloads": 928,
+        "filename": "cwltool-1.0.20150622144406.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b43f1901cbd046dba8a3f3718cce67a8",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 40892,
+        "upload_time": "2015-06-22T14:45:04",
+        "url": "https://files.pythonhosted.org/packages/8a/99/47bdc477eb4b36cd75a85a0211e2e387dacb2bec0e4ca39552cdb3a2e57b/cwltool-1.0.20150622144406.tar.gz"
+      }
+    ],
+    "1.0.20150622183905": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a18a788f0a6cf316cff073f1cd1429f9",
+          "sha256": "7793f983c446f2182ceadc9a2e40d20d3065f9222d49581cd18deec06221b2f1"
+        },
+        "downloads": 933,
+        "filename": "cwltool-1.0.20150622183905.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a18a788f0a6cf316cff073f1cd1429f9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 41075,
+        "upload_time": "2015-06-22T18:40:03",
+        "url": "https://files.pythonhosted.org/packages/28/1b/eaa54df5e166ddb8d0c7dcfc3529377e6ccd4b348e12a34aacedf5228647/cwltool-1.0.20150622183905.tar.gz"
+      }
+    ],
+    "1.0.20150623020304": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b51de45a137d0f0a15508f826f362c34",
+          "sha256": "396dd5eb7d617384b3a9fadde113656e48b5f1981473fe2c909c25f514cf1631"
+        },
+        "downloads": 926,
+        "filename": "cwltool-1.0.20150623020304.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b51de45a137d0f0a15508f826f362c34",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 40973,
+        "upload_time": "2015-06-23T02:06:09",
+        "url": "https://files.pythonhosted.org/packages/87/4e/48b6edad37d2478ce8ec295bf91a5fc582528057b481f1171031d1673936/cwltool-1.0.20150623020304.tar.gz"
+      }
+    ],
+    "1.0.20150623031442": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "fd2ea59b92f861a3abdbadcf04609eb9",
+          "sha256": "1ffda98412132370566b3be7cc84b5f042824f29ccad2202e8f577314939bd93"
+        },
+        "downloads": 928,
+        "filename": "cwltool-1.0.20150623031442.tar.gz",
+        "has_sig": false,
+        "md5_digest": "fd2ea59b92f861a3abdbadcf04609eb9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 41046,
+        "upload_time": "2015-06-23T04:56:15",
+        "url": "https://files.pythonhosted.org/packages/69/db/f9b03c63961c3856bc112d69e43089688c489de14165ff269ff5fb84fe68/cwltool-1.0.20150623031442.tar.gz"
+      }
+    ],
+    "1.0.20150624181807": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d5dba0698e7a2fe7d8ae7ce8ffcb0e48",
+          "sha256": "20fcc36d8a5de74a1f8ed44c6c600f4093593154689f6bef86e755632d696389"
+        },
+        "downloads": 936,
+        "filename": "cwltool-1.0.20150624181807.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d5dba0698e7a2fe7d8ae7ce8ffcb0e48",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 42010,
+        "upload_time": "2015-06-24T18:19:45",
+        "url": "https://files.pythonhosted.org/packages/b4/c0/e423b544e935e5e365adec784fdfab3a5efa3e3674b00749551ddb1a909b/cwltool-1.0.20150624181807.tar.gz"
+      }
+    ],
+    "1.0.20150624201710": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e8055c7308cb579e5bfd9767a8e9cfa3",
+          "sha256": "1af563b89117c80f8207595aed2c19d85322d73b22136fe72207a2e31b658edc"
+        },
+        "downloads": 930,
+        "filename": "cwltool-1.0.20150624201710.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e8055c7308cb579e5bfd9767a8e9cfa3",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 41986,
+        "upload_time": "2015-06-24T20:19:00",
+        "url": "https://files.pythonhosted.org/packages/90/ce/b31ba81a1a58274f40942bb5c0e2e8fdd2b438042833450c2be9bdb055f3/cwltool-1.0.20150624201710.tar.gz"
+      }
+    ],
+    "1.0.20150626032845": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4a56544ae2a1c1bf7cb0ea909d3e5b3a",
+          "sha256": "b61471c270afe5d7e29425e30e73522d5623c4423b8ac428e910b96a1cf822fe"
+        },
+        "downloads": 923,
+        "filename": "cwltool-1.0.20150626032845.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4a56544ae2a1c1bf7cb0ea909d3e5b3a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 42170,
+        "upload_time": "2015-06-26T03:31:49",
+        "url": "https://files.pythonhosted.org/packages/23/ae/6485958f1dcc134945420615e97d9f8afe09a60478fddeb4c36bd7c35c70/cwltool-1.0.20150626032845.tar.gz"
+      }
+    ],
+    "1.0.20150626035015": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "dd78f73620947a3994a5b039f78298f8",
+          "sha256": "a80643f042cf517e366306a0fa335e15a9bdf3c19f03b21e3afce81df48a1389"
+        },
+        "downloads": 931,
+        "filename": "cwltool-1.0.20150626035015.tar.gz",
+        "has_sig": false,
+        "md5_digest": "dd78f73620947a3994a5b039f78298f8",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 42199,
+        "upload_time": "2015-06-26T03:53:18",
+        "url": "https://files.pythonhosted.org/packages/5d/2e/dd63352c965142a2dd3984ee8b65c346170430f4f1aa6cdea001ab1722ee/cwltool-1.0.20150626035015.tar.gz"
+      }
+    ],
+    "1.0.20150626035417": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2d0a654e3e03da6c7c92226a1755cba4",
+          "sha256": "1915aaac5b31adddd6b6ebee4f72acce10427a1b2e3e4c2b0b5c429594772c5b"
+        },
+        "downloads": 919,
+        "filename": "cwltool-1.0.20150626035417.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2d0a654e3e03da6c7c92226a1755cba4",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 42201,
+        "upload_time": "2015-06-26T03:56:26",
+        "url": "https://files.pythonhosted.org/packages/a2/f9/02bc5301b8ddb62491e1b7264983456ed337cb75615eb43f00e2f35c7db1/cwltool-1.0.20150626035417.tar.gz"
+      }
+    ],
+    "1.0.20150627015636": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "40ec754bd6d15eddd6a6afb1bb375476",
+          "sha256": "38c225a455d02f29f61136f9d46c01a5b6875e74deedecf8b4624b4bd853005a"
+        },
+        "downloads": 934,
+        "filename": "cwltool-1.0.20150627015636.tar.gz",
+        "has_sig": false,
+        "md5_digest": "40ec754bd6d15eddd6a6afb1bb375476",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 42442,
+        "upload_time": "2015-06-27T04:56:55",
+        "url": "https://files.pythonhosted.org/packages/ec/05/ec5779b036416e05ecdce47e0c4a8209050b40e831e9a19e4a672a8fadf6/cwltool-1.0.20150627015636.tar.gz"
+      }
+    ],
+    "1.0.20150706174116": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "129330685708d58cb4616a473783145e",
+          "sha256": "5b0130c9ff44bbbae062da5e0686ed592724b0b0b8a194a2e643c8093edbbbb9"
+        },
+        "downloads": 904,
+        "filename": "cwltool-1.0.20150706174116.tar.gz",
+        "has_sig": false,
+        "md5_digest": "129330685708d58cb4616a473783145e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 43717,
+        "upload_time": "2015-07-06T17:42:10",
+        "url": "https://files.pythonhosted.org/packages/6e/43/6279e8736b682454754e7d6126f41cedb602d6774024e26d20c19d82e39f/cwltool-1.0.20150706174116.tar.gz"
+      }
+    ],
+    "1.0.20150707043955": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e8a45b07a4576b5bd83a0d78214efead",
+          "sha256": "2a7d09fe97380e699829e36fe7c59eda7f1a43cbf869a3ed7790616feaef9002"
+        },
+        "downloads": 918,
+        "filename": "cwltool-1.0.20150707043955.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e8a45b07a4576b5bd83a0d78214efead",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 43725,
+        "upload_time": "2015-07-07T04:56:40",
+        "url": "https://files.pythonhosted.org/packages/91/b2/1f60eecbfafabcf1bbbc1dbc29486ac5751fbbb5919f7a6564b706c18663/cwltool-1.0.20150707043955.tar.gz"
+      }
+    ],
+    "1.0.20150708115452": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2dca222effdcce6c591c150fbc5927c2",
+          "sha256": "eefcda585a472aaba7e3954e1e1a566c51db5688cd974f99602dc2d32793267b"
+        },
+        "downloads": 904,
+        "filename": "cwltool-1.0.20150708115452.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2dca222effdcce6c591c150fbc5927c2",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 44013,
+        "upload_time": "2015-07-08T12:10:02",
+        "url": "https://files.pythonhosted.org/packages/6c/19/49a4adc0f0dbb06e35f86757a49e35342b5bb8930bad149a458f07d30129/cwltool-1.0.20150708115452.tar.gz"
+      }
+    ],
+    "1.0.20150709135652": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "840a4e2538789b98e52c7395a0719d85",
+          "sha256": "7d877f9dee8b49d5d4e99285c57192b73128ac1a426095a4de9fac9480652e5f"
+        },
+        "downloads": 918,
+        "filename": "cwltool-1.0.20150709135652.tar.gz",
+        "has_sig": false,
+        "md5_digest": "840a4e2538789b98e52c7395a0719d85",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 44793,
+        "upload_time": "2015-07-10T04:56:54",
+        "url": "https://files.pythonhosted.org/packages/f9/ac/300cdfd64db2575c7bdfe65caac544572bf7773a2f1da588bd6733b53e20/cwltool-1.0.20150709135652.tar.gz"
+      }
+    ],
+    "1.0.20150711153503": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7ce4e4d948072b1dab117ab00e16d7e0",
+          "sha256": "72c1e595b25e8d14e2b830da975364c1e956a341e16cafc1ac6d71aad82c4f7f"
+        },
+        "downloads": 3058,
+        "filename": "cwltool-1.0.20150711153503.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7ce4e4d948072b1dab117ab00e16d7e0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 44916,
+        "upload_time": "2015-07-12T04:56:54",
+        "url": "https://files.pythonhosted.org/packages/06/98/a052a48405e4878ed1c09f9ebec3df36ab5cdcedf4dbabf7f034bcfd4126/cwltool-1.0.20150711153503.tar.gz"
+      }
+    ],
+    "1.0.20150713135958": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "70bd2adea1c27a606d6e7722f4952d00",
+          "sha256": "426f45d1964ab301ab4405cafae029d02aa81fa19320ed54b5833e602725415a"
+        },
+        "downloads": 893,
+        "filename": "cwltool-1.0.20150713135958.tar.gz",
+        "has_sig": false,
+        "md5_digest": "70bd2adea1c27a606d6e7722f4952d00",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 45687,
+        "upload_time": "2015-07-13T14:07:30",
+        "url": "https://files.pythonhosted.org/packages/a3/b7/f6f1e269da66a6e08f6d3c913ec24d502fc835838723bd549ef82eb73662/cwltool-1.0.20150713135958.tar.gz"
+      }
+    ],
+    "1.0.20150713152138": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7f84b3a88628ce155eb80e481711f213",
+          "sha256": "c55c4dc40008ff7cec57f6898b76e8c50e03b57fe4e02f18405a5a09d17d248d"
+        },
+        "downloads": 888,
+        "filename": "cwltool-1.0.20150713152138.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7f84b3a88628ce155eb80e481711f213",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 45686,
+        "upload_time": "2015-07-13T18:18:05",
+        "url": "https://files.pythonhosted.org/packages/58/d2/d4d5cb3113859e56d567b70bb56fd3c64cab5ad65c870ba377d08087790c/cwltool-1.0.20150713152138.tar.gz"
+      }
+    ],
+    "1.0.20150713185212": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a2365af14b23f04153d3d1645db11154",
+          "sha256": "498df399ce26f100111c47b34cd54bf02e97830036d5bca7dab2890ed5463ff5"
+        },
+        "downloads": 887,
+        "filename": "cwltool-1.0.20150713185212.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a2365af14b23f04153d3d1645db11154",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 45722,
+        "upload_time": "2015-07-14T04:57:01",
+        "url": "https://files.pythonhosted.org/packages/9e/a5/84bb7e690c9f466813b8edbc44e997d93227ef90a863badd2d1cc67da772/cwltool-1.0.20150713185212.tar.gz"
+      }
+    ],
+    "1.0.20150714132635": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e59a44f281dffd35c7c2aec10d91556c",
+          "sha256": "c7c8b66c12627c2d2c6cedd9250c544fa4af570a4032853bacdb4dfb25ee31f6"
+        },
+        "downloads": 886,
+        "filename": "cwltool-1.0.20150714132635.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e59a44f281dffd35c7c2aec10d91556c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 47101,
+        "upload_time": "2015-07-14T13:27:16",
+        "url": "https://files.pythonhosted.org/packages/25/95/fb1e6965f64a051655040dfde4bfc376bd4219bfd36c03dedfc145ae0a9b/cwltool-1.0.20150714132635.tar.gz"
+      }
+    ],
+    "1.0.20150715173345": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2e8223db456f16388a0f9389ec0f5156",
+          "sha256": "115854204e50e227db9d287c04e1522742530189a1769b0bcb9e86b8491d3a61"
+        },
+        "downloads": 884,
+        "filename": "cwltool-1.0.20150715173345.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2e8223db456f16388a0f9389ec0f5156",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 47101,
+        "upload_time": "2015-07-15T17:42:57",
+        "url": "https://files.pythonhosted.org/packages/92/e2/b7b107a1b39c60b794171a618862dcbcef93b4075d08a2cf6b798efc9afd/cwltool-1.0.20150715173345.tar.gz"
+      }
+    ],
+    "1.0.20150720194125": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ef46e2278ca0748bfc60a056f01c070c",
+          "sha256": "e7f8fda69c18a4912e50fb6e5d794727a007e9530886b97f302bff7c121b09e8"
+        },
+        "downloads": 881,
+        "filename": "cwltool-1.0.20150720194125.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ef46e2278ca0748bfc60a056f01c070c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 47127,
+        "upload_time": "2015-07-21T04:58:20",
+        "url": "https://files.pythonhosted.org/packages/3a/97/4035f635a7bbcfcc55d0008981be01b1258cc9ec07599a0f8ae2130f8e77/cwltool-1.0.20150720194125.tar.gz"
+      }
+    ],
+    "1.0.20150722144138": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d93b2a75637dac9b7df43dde476854fd",
+          "sha256": "7e8bdf5cfcadc76d30182409d329269029150272c2c6c36105c07fbf61a41770"
+        },
+        "downloads": 878,
+        "filename": "cwltool-1.0.20150722144138.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d93b2a75637dac9b7df43dde476854fd",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 47198,
+        "upload_time": "2015-07-23T04:56:32",
+        "url": "https://files.pythonhosted.org/packages/f5/ab/c8ec8c3fee76ab4b82dfff5564c2652ec46a8dc7f01b068694e50c58b81c/cwltool-1.0.20150722144138.tar.gz"
+      }
+    ],
+    "1.0.20150723141036": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "11bfc03e473203540b0c47aa90419fcf",
+          "sha256": "28fef653d99c2a7035375c364df2b7926a474137ced3ebbf392be672687b718d"
+        },
+        "downloads": 869,
+        "filename": "cwltool-1.0.20150723141036.tar.gz",
+        "has_sig": false,
+        "md5_digest": "11bfc03e473203540b0c47aa90419fcf",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 48032,
+        "upload_time": "2015-07-24T04:56:28",
+        "url": "https://files.pythonhosted.org/packages/fd/cb/a04c7b4b72474fc4b97ad0e125ed7b4a9aac1695699f5e55654ef31fa0ca/cwltool-1.0.20150723141036.tar.gz"
+      }
+    ],
+    "1.0.20150728161219": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0d27cbf1b4099f4ba19e47c90e4d5641",
+          "sha256": "905b37b4e75b8d0b1d169b9c8fff4789ec9af67ef0163cd686e40f647da90a82"
+        },
+        "downloads": 854,
+        "filename": "cwltool-1.0.20150728161219.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0d27cbf1b4099f4ba19e47c90e4d5641",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 48158,
+        "upload_time": "2015-07-28T16:14:14",
+        "url": "https://files.pythonhosted.org/packages/dd/12/0f25090d295bb15871c83c9bf728ed1ad925c35fa5448c6517422c503384/cwltool-1.0.20150728161219.tar.gz"
+      }
+    ],
+    "1.0.20150808190318": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "047e4189820250444732aaaa89fb8259",
+          "sha256": "f6b426ded70d2c19e6d4d6a82234b63e5721f72e933fcfaa88dc7a7fe7c9b46a"
+        },
+        "downloads": 823,
+        "filename": "cwltool-1.0.20150808190318.tar.gz",
+        "has_sig": false,
+        "md5_digest": "047e4189820250444732aaaa89fb8259",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 48169,
+        "upload_time": "2015-08-09T04:57:20",
+        "url": "https://files.pythonhosted.org/packages/20/f3/7e45b0c58dda4c047f365830dfff2475857cae1ef3a7da1d539cfaabb953/cwltool-1.0.20150808190318.tar.gz"
+      }
+    ],
+    "1.0.20150813132038": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "cd5c08ca4a98afdf1c4055370e5cc10d",
+          "sha256": "df9fbbf33249c236d3084148b2a4a2640ec6cbd12ae42eb1edf1aaf4076cfc7e"
+        },
+        "downloads": 798,
+        "filename": "cwltool-1.0.20150813132038.tar.gz",
+        "has_sig": false,
+        "md5_digest": "cd5c08ca4a98afdf1c4055370e5cc10d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 49249,
+        "upload_time": "2015-08-13T13:31:00",
+        "url": "https://files.pythonhosted.org/packages/af/94/52747b430a1de5ec83bd69a4bf143984c2ea77e08d1b227493511efc67f6/cwltool-1.0.20150813132038.tar.gz"
+      }
+    ],
+    "1.0.20150814015745": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d3d5d6ae1cd76ca43a822e19d3b73d89",
+          "sha256": "2417ba345a1f0ab9b67e40b3d6fd921b93a72cc29bb0f6217b4f14e97939b29f"
+        },
+        "downloads": 786,
+        "filename": "cwltool-1.0.20150814015745.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d3d5d6ae1cd76ca43a822e19d3b73d89",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 49213,
+        "upload_time": "2015-08-14T04:56:37",
+        "url": "https://files.pythonhosted.org/packages/40/5f/9263b90cf3f1dc6d181879e094a1014d314ae61b6ca7f6b307dfd9be7f83/cwltool-1.0.20150814015745.tar.gz"
+      }
+    ],
+    "1.0.20150814191928": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8fcdd239d3333712159c60c67a740406",
+          "sha256": "7ef4b7fb5822d17aa6f87949eb97647b3e83b69fb597bc7a010c358d1c942fe3"
+        },
+        "downloads": 749,
+        "filename": "cwltool-1.0.20150814191928.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8fcdd239d3333712159c60c67a740406",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 49275,
+        "upload_time": "2015-08-15T04:56:35",
+        "url": "https://files.pythonhosted.org/packages/cf/3d/5fdc0c3736d61369db532c5eea8c0ef5d6d07d21779db56bb01d40b37760/cwltool-1.0.20150814191928.tar.gz"
+      }
+    ],
+    "1.0.20150910021332": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2cc54205afbd0e2f5dc16103f214b4bd",
+          "sha256": "98d8e6d9bf6bc93dd98058e7d89e5c65c219f60d7e8b315ab71f9a5dfea86f56"
+        },
+        "downloads": 735,
+        "filename": "cwltool-1.0.20150910021332.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2cc54205afbd0e2f5dc16103f214b4bd",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 49279,
+        "upload_time": "2015-09-10T04:56:45",
+        "url": "https://files.pythonhosted.org/packages/f3/5c/06faa84af086769426da5d7f1cb63bfe204f7408df312eddae83edffed34/cwltool-1.0.20150910021332.tar.gz"
+      }
+    ],
+    "1.0.20150915034626": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0c81adc29506300fa5414cfdc043a964",
+          "sha256": "04a989857e8c750f7fbf232f534ec9125b31b1e101514a22b5618f9246566a3b"
+        },
+        "downloads": 716,
+        "filename": "cwltool-1.0.20150915034626.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0c81adc29506300fa5414cfdc043a964",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 49474,
+        "upload_time": "2015-09-15T04:56:05",
+        "url": "https://files.pythonhosted.org/packages/3b/0c/d0ebb73d8c6acf3acd7e8cd7bdf2779f19459b3cb95e59fb3ff3d3d85083/cwltool-1.0.20150915034626.tar.gz"
+      }
+    ],
+    "1.0.20150916041152": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "96206454621a463d319d3d0bd2492da0",
+          "sha256": "02b7918b83d2c848d2d7f0ad7ae5bb517de84c6ccca7b11b46d912bcad611dcf"
+        },
+        "downloads": 710,
+        "filename": "cwltool-1.0.20150916041152.tar.gz",
+        "has_sig": false,
+        "md5_digest": "96206454621a463d319d3d0bd2492da0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 59941,
+        "upload_time": "2015-09-16T04:57:02",
+        "url": "https://files.pythonhosted.org/packages/fa/5b/bd056a691459b5d9001caa55bf5d695d33b42f1d55ece9aa9de5dd75d10d/cwltool-1.0.20150916041152.tar.gz"
+      }
+    ],
+    "1.0.20150916124227": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3bbc2216980d05a10d3c5d4628477944",
+          "sha256": "00202c8bc9acf34462c63b9dae9da0ad9ed46de767856234c026a784ca451371"
+        },
+        "downloads": 713,
+        "filename": "cwltool-1.0.20150916124227.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3bbc2216980d05a10d3c5d4628477944",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 59984,
+        "upload_time": "2015-09-17T04:57:53",
+        "url": "https://files.pythonhosted.org/packages/2e/aa/01e097baf93d1ce7af065437b3d83eb552f4ced784284de4d6bdcdbf315b/cwltool-1.0.20150916124227.tar.gz"
+      }
+    ],
+    "1.0.20150918080732": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f316d1d728787d8ea7a53553da611b2f",
+          "sha256": "5de32b380fe4091ec259a5f7f2f43a7fbc35f4fb0fd5cd12cca1810686a07a47"
+        },
+        "downloads": 700,
+        "filename": "cwltool-1.0.20150918080732.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f316d1d728787d8ea7a53553da611b2f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 60007,
+        "upload_time": "2015-09-19T04:57:55",
+        "url": "https://files.pythonhosted.org/packages/94/90/55a0611846818f8ec02988d776d1429e5f3f8aef1d18ff8e9f9a4c941eef/cwltool-1.0.20150918080732.tar.gz"
+      }
+    ],
+    "1.0.20150923183439": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2a05ec6d6f8762500785dee414e35785",
+          "sha256": "c08623b94a392876f02066203c03b72b04a674b57cb8f56e2491efb9ed6513f4"
+        },
+        "downloads": 707,
+        "filename": "cwltool-1.0.20150923183439.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2a05ec6d6f8762500785dee414e35785",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 60203,
+        "upload_time": "2015-09-24T04:57:51",
+        "url": "https://files.pythonhosted.org/packages/07/9e/c158dcebff4349979e2a4c3c79c76d6bf1123350a12c066fa5d48265b4ed/cwltool-1.0.20150923183439.tar.gz"
+      }
+    ],
+    "1.0.20150925123259": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7867f13d5132cc0b0a5032120f2ea67f",
+          "sha256": "8fedd25ff0221b18dc4578fedca50555abc62a6cf612b4443562794374370e82"
+        },
+        "downloads": 693,
+        "filename": "cwltool-1.0.20150925123259.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7867f13d5132cc0b0a5032120f2ea67f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 60384,
+        "upload_time": "2015-09-26T04:57:55",
+        "url": "https://files.pythonhosted.org/packages/4e/d0/0c6fc81877c1c7ef897205dac117af3e856a1aeee7bd30d37790d5127ee4/cwltool-1.0.20150925123259.tar.gz"
+      }
+    ],
+    "1.0.20150929170517": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c076a64a219162458c7b8d03115e3673",
+          "sha256": "4e81944486d61573afb46fbbeb364bfede1a4a4a91dc7618b8d9e57ffdc782ec"
+        },
+        "downloads": 698,
+        "filename": "cwltool-1.0.20150929170517.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c076a64a219162458c7b8d03115e3673",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 60575,
+        "upload_time": "2015-09-29T17:06:28",
+        "url": "https://files.pythonhosted.org/packages/90/de/1b3c324ccc001537a526d97be2a18e89e90a71714e9935fe40e3502be01c/cwltool-1.0.20150929170517.tar.gz"
+      }
+    ],
+    "1.0.20151007133346": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "11081ebf385f76c04ad6c765c33dd685",
+          "sha256": "ff86998dc848c6cd7fae13851a46d34bd2258d7fb1fe1b99d7252c681941feba"
+        },
+        "downloads": 689,
+        "filename": "cwltool-1.0.20151007133346.tar.gz",
+        "has_sig": false,
+        "md5_digest": "11081ebf385f76c04ad6c765c33dd685",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 58713,
+        "upload_time": "2015-10-07T14:05:15",
+        "url": "https://files.pythonhosted.org/packages/c9/3c/91bf235cc36461437be319285ab3b5888e4fdb69ab0821aeedb2118e3307/cwltool-1.0.20151007133346.tar.gz"
+      }
+    ],
+    "1.0.20151009020717": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b8294436cbe623d983a8402ed7b03636",
+          "sha256": "898a7ccdc2e8dd8c11f346aaea1ea5490238df0aff3cdc273c29405387ea5ce7"
+        },
+        "downloads": 683,
+        "filename": "cwltool-1.0.20151009020717.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b8294436cbe623d983a8402ed7b03636",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 58939,
+        "upload_time": "2015-10-09T04:57:42",
+        "url": "https://files.pythonhosted.org/packages/c7/8b/9ba373a1f5a8ecebd06a55d3c62b5e9caffe32e81a57bed6eb9563e784ee/cwltool-1.0.20151009020717.tar.gz"
+      }
+    ],
+    "1.0.20151012161407": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "16427cd6bd1d4a95c23c4d72e4cbe260",
+          "sha256": "a4f066a57343f5250c2dae05219fc6589cd793f136457200a1920689a46ab192"
+        },
+        "downloads": 641,
+        "filename": "cwltool-1.0.20151012161407.tar.gz",
+        "has_sig": false,
+        "md5_digest": "16427cd6bd1d4a95c23c4d72e4cbe260",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 58983,
+        "upload_time": "2015-10-12T16:18:34",
+        "url": "https://files.pythonhosted.org/packages/76/d3/5fa16792f6e853d5bee895685ebd8b8164294198ddfc8b0c2112e3d9382b/cwltool-1.0.20151012161407.tar.gz"
+      }
+    ],
+    "1.0.20151012173709": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c957c287a514e2ea8a761a5ac3def87f",
+          "sha256": "6a2365241b34d6499e442f699e8f116962143f20f52c35014c1bca71b48af3fb"
+        },
+        "downloads": 645,
+        "filename": "cwltool-1.0.20151012173709.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c957c287a514e2ea8a761a5ac3def87f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 59029,
+        "upload_time": "2015-10-12T20:35:06",
+        "url": "https://files.pythonhosted.org/packages/08/de/ff690c8f16b934be16694ad8ebe36dc11676d53e3f6e8a4528cf9b759fe6/cwltool-1.0.20151012173709.tar.gz"
+      }
+    ],
+    "1.0.20151013134821": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "94f77bc643477d7358e44196773e1f27",
+          "sha256": "bcad1cf62da388d29226999ddeefc9355b69c35b4016593e71e5a5fdfe5ee806"
+        },
+        "downloads": 633,
+        "filename": "cwltool-1.0.20151013134821.tar.gz",
+        "has_sig": false,
+        "md5_digest": "94f77bc643477d7358e44196773e1f27",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 59057,
+        "upload_time": "2015-10-13T13:50:25",
+        "url": "https://files.pythonhosted.org/packages/83/5b/1904fb3a23363b7556dfe3b3c065be0e49cbf2e4e560e3bb85498cec258e/cwltool-1.0.20151013134821.tar.gz"
+      }
+    ],
+    "1.0.20151013135545": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a46e4b439f4e73a6bf626032a2ec5e0e",
+          "sha256": "fb14b3c72b327a7281a22deb62e08eceddcf11e3c13c5bb1dbe00c6372abd71e"
+        },
+        "downloads": 657,
+        "filename": "cwltool-1.0.20151013135545.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a46e4b439f4e73a6bf626032a2ec5e0e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 59067,
+        "upload_time": "2015-10-13T13:57:56",
+        "url": "https://files.pythonhosted.org/packages/3a/ab/fe9e60ea4d4d552afbe18bd83458ced653b8fc17700eda127b82478128a9/cwltool-1.0.20151013135545.tar.gz"
+      }
+    ],
+    "1.0.20151013173827": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ce6a90a6872a7df21c860e69167d7813",
+          "sha256": "e31556b1d645832af6ccf0858f63ed0d48e37222b68db18d78b79e00ae140ba4"
+        },
+        "downloads": 763,
+        "filename": "cwltool-1.0.20151013173827.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ce6a90a6872a7df21c860e69167d7813",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 59076,
+        "upload_time": "2015-10-14T05:00:32",
+        "url": "https://files.pythonhosted.org/packages/49/ac/d6476bb1bb2c300e5c275c6995f2cc6606faa2b55de947196056731d4317/cwltool-1.0.20151013173827.tar.gz"
+      }
+    ],
+    "1.0.20151022085449": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5c5aa46ea5d2707ce60e18422e29d9d8",
+          "sha256": "d6ca21c371118e615a340780a3b84c06d1ead0a447283c8a7f386e46f3de911e"
+        },
+        "downloads": 615,
+        "filename": "cwltool-1.0.20151022085449.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5c5aa46ea5d2707ce60e18422e29d9d8",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 59076,
+        "upload_time": "2015-10-23T05:00:06",
+        "url": "https://files.pythonhosted.org/packages/2b/d5/40922462fb1a14857e58d0ba76bafa2c514ab7801b5657cb5b4910126e99/cwltool-1.0.20151022085449.tar.gz"
+      }
+    ],
+    "1.0.20151026181844": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4d38c56c0101f62ef83b6c037e09c666",
+          "sha256": "24bb35994504f8feb56a9c29fee62b4a037ae2899f29fd70318ae273e5caae4f"
+        },
+        "downloads": 882,
+        "filename": "cwltool-1.0.20151026181844.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4d38c56c0101f62ef83b6c037e09c666",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 59082,
+        "upload_time": "2015-10-27T05:00:13",
+        "url": "https://files.pythonhosted.org/packages/f7/3c/4a120b24dcf600b8fd08eb5d23dc18199fd5fc6ceab9ad040c3ded4f561f/cwltool-1.0.20151026181844.tar.gz"
+      }
+    ],
+    "1.0.20151104062100": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "55775a2641c3ef36fb62c5af75b2d9e8",
+          "sha256": "a78f801f6a65a1bc30444c3fb02810a00be225945893d64b4507b0b2104e9e0c"
+        },
+        "downloads": 842,
+        "filename": "cwltool-1.0.20151104062100.tar.gz",
+        "has_sig": false,
+        "md5_digest": "55775a2641c3ef36fb62c5af75b2d9e8",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 59282,
+        "upload_time": "2015-11-05T05:00:29",
+        "url": "https://files.pythonhosted.org/packages/4f/d8/d706f4ff574b4cea9b6b0e7d177b8942f016ffcff148fbd2e4eb1daab788/cwltool-1.0.20151104062100.tar.gz"
+      }
+    ],
+    "1.0.20151110030107": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c9059f38e8fce8c9b24c26a6ed9361c0",
+          "sha256": "5453d4145391d056045d42b643c62ef0d94d46e8f3567c6e3945c5c38dd04f29"
+        },
+        "downloads": 706,
+        "filename": "cwltool-1.0.20151110030107.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c9059f38e8fce8c9b24c26a6ed9361c0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 59665,
+        "upload_time": "2015-11-10T18:37:31",
+        "url": "https://files.pythonhosted.org/packages/58/09/7c053e65916acb9392601f5837b414e4747d83c96fbc9d3767a73b28fcfb/cwltool-1.0.20151110030107.tar.gz"
+      }
+    ],
+    "1.0.20151112194920": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "dcb11319e83dbbc4e510bc842ca528b1",
+          "sha256": "7055c5dee9d61375cf736bc4dfb447981ba43eff62722616c512c1472012176b"
+        },
+        "downloads": 873,
+        "filename": "cwltool-1.0.20151112194920.tar.gz",
+        "has_sig": false,
+        "md5_digest": "dcb11319e83dbbc4e510bc842ca528b1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 59682,
+        "upload_time": "2015-11-13T05:00:16",
+        "url": "https://files.pythonhosted.org/packages/32/2a/2cf0838d3a2d3f8f59a55b77931f4e8853d5fb70cdf607855f979fd53637/cwltool-1.0.20151112194920.tar.gz"
+      }
+    ],
+    "1.0.20151120220905": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7e4cb5c8603eb3a21627990a525a7fad",
+          "sha256": "47e92830ac9c26bc59d29716d5cb5ccb5fc851c54fcb0542e4d0b02fe85bfd0f"
+        },
+        "downloads": 536,
+        "filename": "cwltool-1.0.20151120220905.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7e4cb5c8603eb3a21627990a525a7fad",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 63210,
+        "upload_time": "2015-11-21T02:22:57",
+        "url": "https://files.pythonhosted.org/packages/63/95/847abfea08a48ccedfff52b1ea986d0757e8f4e96111efbd2af7b0f0cc9f/cwltool-1.0.20151120220905.tar.gz"
+      }
+    ],
+    "1.0.20151121025646": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "91e3a7e994fa24e1ce03ce1645b3c075",
+          "sha256": "e3ea54f8d9611223a009eaaaeaad402efe33fc60347a7aab018439c5b7e3cae5"
+        },
+        "downloads": 536,
+        "filename": "cwltool-1.0.20151121025646.tar.gz",
+        "has_sig": false,
+        "md5_digest": "91e3a7e994fa24e1ce03ce1645b3c075",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 63344,
+        "upload_time": "2015-11-21T03:07:11",
+        "url": "https://files.pythonhosted.org/packages/f8/dc/2280423ffb4d5c7052889da2a46274f164b576d3a95b96442ae0bb0d3bee/cwltool-1.0.20151121025646.tar.gz"
+      }
+    ],
+    "1.0.20151121032923": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5b388c1c756b1772986fd3fc92bcb0bb",
+          "sha256": "3d3124c23bb14f3ba680f93383804ec41444f0e327e77a9a5f58cbb9e7d25f4e"
+        },
+        "downloads": 553,
+        "filename": "cwltool-1.0.20151121032923.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5b388c1c756b1772986fd3fc92bcb0bb",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 63347,
+        "upload_time": "2015-11-21T03:33:51",
+        "url": "https://files.pythonhosted.org/packages/78/49/be117ac630a3147745ad91071ea2e36ef866728686b31626a4b5d8fb61f9/cwltool-1.0.20151121032923.tar.gz"
+      }
+    ],
+    "1.0.20151122025918": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0d1bbfaaf7be6a6bbf5cc60483d95789",
+          "sha256": "e63ae9c4352fc3c3b2ff3417f051edefcfe3e94f73025e217bf9c6868a9b3d79"
+        },
+        "downloads": 599,
+        "filename": "cwltool-1.0.20151122025918.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0d1bbfaaf7be6a6bbf5cc60483d95789",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 64693,
+        "upload_time": "2015-11-22T03:05:12",
+        "url": "https://files.pythonhosted.org/packages/be/f0/09d2227d51a46626e5cb05abd6ad02455c8cf786ec47277f15bfec97935c/cwltool-1.0.20151122025918.tar.gz"
+      }
+    ],
+    "1.0.20151124040259": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "06598241e381a56afb6c3ee850fbfb52",
+          "sha256": "e41ef437ff7e228912450e124836b117228a56a6b955232a06592363155f9557"
+        },
+        "downloads": 547,
+        "filename": "cwltool-1.0.20151124040259.tar.gz",
+        "has_sig": false,
+        "md5_digest": "06598241e381a56afb6c3ee850fbfb52",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 64769,
+        "upload_time": "2015-11-24T04:12:51",
+        "url": "https://files.pythonhosted.org/packages/70/ff/2c5ee6c4cc90021ebccc903fea6fa6db377f4103678ffad392cf3650eb82/cwltool-1.0.20151124040259.tar.gz"
+      }
+    ],
+    "1.0.20151124220039": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "12e03328c9a0e9929914120d6735dacc",
+          "sha256": "def0dbaed99d5e1a12aca018290aa2446bc3c34f40c8dbb1fc3e1facf856aed7"
+        },
+        "downloads": 547,
+        "filename": "cwltool-1.0.20151124220039.tar.gz",
+        "has_sig": false,
+        "md5_digest": "12e03328c9a0e9929914120d6735dacc",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 64811,
+        "upload_time": "2015-11-25T01:19:41",
+        "url": "https://files.pythonhosted.org/packages/2e/23/d58c7bf00419597cb64e5f77901f70cc7fc29be45514900dfb51865551f0/cwltool-1.0.20151124220039.tar.gz"
+      }
+    ],
+    "1.0.20151125172224": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "718df11b0d0ccfcd7344a467faad06f2",
+          "sha256": "56483f08b122cd69761c5ef0cca94c3bd437102f1809f4c3ce72f46e4bfb1828"
+        },
+        "downloads": 531,
+        "filename": "cwltool-1.0.20151125172224.tar.gz",
+        "has_sig": false,
+        "md5_digest": "718df11b0d0ccfcd7344a467faad06f2",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 64977,
+        "upload_time": "2015-11-25T17:45:28",
+        "url": "https://files.pythonhosted.org/packages/f2/b9/c83f4e9e1400c32154ee0ce92eb9e9b6fc956b4c8aa3fbd40c7d59b4956a/cwltool-1.0.20151125172224.tar.gz"
+      }
+    ],
+    "1.0.20151125211848": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8c64b10c0bd1143ff45f24a56032c025",
+          "sha256": "39f8acb03d76a26c4d751b3c0b619788c5ba5d02b0ba31b221a5f447eea8315c"
+        },
+        "downloads": 531,
+        "filename": "cwltool-1.0.20151125211848.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8c64b10c0bd1143ff45f24a56032c025",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 65116,
+        "upload_time": "2015-11-25T21:24:13",
+        "url": "https://files.pythonhosted.org/packages/02/2f/e5ea87f29c7291fc9363f3d22009b96fc96073bf7544c74c79179975666c/cwltool-1.0.20151125211848.tar.gz"
+      }
+    ],
+    "1.0.20151125221324": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d7dd561f0f5adcbdb1980835fc123dc4",
+          "sha256": "be74db7175dd5582233baf61587b43d697672ad054f6e53690f9579e6831aaf3"
+        },
+        "downloads": 954,
+        "filename": "cwltool-1.0.20151125221324.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d7dd561f0f5adcbdb1980835fc123dc4",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 65130,
+        "upload_time": "2015-11-25T22:18:13",
+        "url": "https://files.pythonhosted.org/packages/aa/17/0a8af82f4d0848e9282279d17ab5d196be2213d3c86bd42c533ac4d3c9d1/cwltool-1.0.20151125221324.tar.gz"
+      }
+    ],
+    "1.0.20151130190253": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d1e7f63b99cdf3fa0f58db4d121c11f3",
+          "sha256": "e2de081849ef0eef6d9e7acbe1c5109c876c609adaebc3de63d3fbc80fb77e76"
+        },
+        "downloads": 539,
+        "filename": "cwltool-1.0.20151130190253.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d1e7f63b99cdf3fa0f58db4d121c11f3",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 65117,
+        "upload_time": "2015-11-30T19:28:42",
+        "url": "https://files.pythonhosted.org/packages/be/0c/9015bf95fceac20756ad75f2b321d752c61355808b827aac3adbcc0e38cd/cwltool-1.0.20151130190253.tar.gz"
+      }
+    ],
+    "1.0.20151130204648": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "21e1b1522cfac5b8c2caf35980b56815",
+          "sha256": "d7fa476d3455e7afa10b2eb68c73f24fab889bf3db872125fbfb7e02bcbd4f04"
+        },
+        "downloads": 918,
+        "filename": "cwltool-1.0.20151130204648.tar.gz",
+        "has_sig": false,
+        "md5_digest": "21e1b1522cfac5b8c2caf35980b56815",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 65142,
+        "upload_time": "2015-12-01T05:01:51",
+        "url": "https://files.pythonhosted.org/packages/3a/59/79f314c2b74272dc3ea5e90754b9ec3cb35fb817cfb676fa77da23ad65a1/cwltool-1.0.20151130204648.tar.gz"
+      }
+    ],
+    "1.0.20151209160516": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a91131196f29747c9f878d613dd90cf6",
+          "sha256": "b5a192f0a9d25f69fb29a7534091d0487d363d8697ba8bb5084f289bb9563da1"
+        },
+        "downloads": 443,
+        "filename": "cwltool-1.0.20151209160516.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a91131196f29747c9f878d613dd90cf6",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 66360,
+        "upload_time": "2015-12-09T16:31:22",
+        "url": "https://files.pythonhosted.org/packages/2f/2c/2e2570436747d4bd2ced24b6d54fb8969b188c54f12080e91bdae2e170a4/cwltool-1.0.20151209160516.tar.gz"
+      }
+    ],
+    "1.0.20151210154014": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "50a0b501f59c147732110e3af963f49f",
+          "sha256": "88ab13fe19374682edc50a1ee1c79475ff8ebba80ce131c7fba527b5dd6b4b09"
+        },
+        "downloads": 351,
+        "filename": "cwltool-1.0.20151210154014.tar.gz",
+        "has_sig": false,
+        "md5_digest": "50a0b501f59c147732110e3af963f49f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 66352,
+        "upload_time": "2015-12-10T15:48:21",
+        "url": "https://files.pythonhosted.org/packages/61/52/06fb8c731eefdeb7dffe44865108dfaf5175a29d7afa6394b41d6d35b8d5/cwltool-1.0.20151210154014.tar.gz"
+      }
+    ],
+    "1.0.20151211141743": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a88e69231af2ce32a6aa5557329a350d",
+          "sha256": "003ed2c1a977360881024234049858c1400d270783857aa814d139d113e5a165"
+        },
+        "downloads": 442,
+        "filename": "cwltool-1.0.20151211141743.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a88e69231af2ce32a6aa5557329a350d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 66363,
+        "upload_time": "2015-12-11T14:22:56",
+        "url": "https://files.pythonhosted.org/packages/2e/ea/a952dd938bb5b69a2f9884d479bf30a6a659f5bdab28bcdd859ef75d87c8/cwltool-1.0.20151211141743.tar.gz"
+      }
+    ],
+    "1.0.20151211155311": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "07f0d28fbdff13bd85c3a2493799c254",
+          "sha256": "8e95c1f8fefdf5cb115d7da8926497232e531bc7d4f767699a5a2c55d81d99ab"
+        },
+        "downloads": 1033,
+        "filename": "cwltool-1.0.20151211155311.tar.gz",
+        "has_sig": false,
+        "md5_digest": "07f0d28fbdff13bd85c3a2493799c254",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 66410,
+        "upload_time": "2015-12-11T16:00:56",
+        "url": "https://files.pythonhosted.org/packages/49/a2/8bf301f1d0b0f57d72c7818eb58a7012aa90f525c02356f391e863018cba/cwltool-1.0.20151211155311.tar.gz"
+      }
+    ],
+    "1.0.20160108161501": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8ed77ffe70d8fa0176f25cc60e094e4d",
+          "sha256": "71d91e73568429ebc9730b4c325d855471b50462330a48c04508623c5f16f1cc"
+        },
+        "downloads": 405,
+        "filename": "cwltool-1.0.20160108161501.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8ed77ffe70d8fa0176f25cc60e094e4d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 71244,
+        "upload_time": "2016-01-08T16:29:50",
+        "url": "https://files.pythonhosted.org/packages/50/38/b47cdcc281d4bc13bad09fd36af0a7a8478856c262c658d1100b885b8d35/cwltool-1.0.20160108161501.tar.gz"
+      }
+    ],
+    "1.0.20160108200940": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "646bc20643f551f0b9f6856e90ddca75",
+          "sha256": "d13d9f4c53856757352be2223f0288e72129177ad6278022903bc1081ba7f31d"
+        },
+        "downloads": 697,
+        "filename": "cwltool-1.0.20160108200940.tar.gz",
+        "has_sig": false,
+        "md5_digest": "646bc20643f551f0b9f6856e90ddca75",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 75125,
+        "upload_time": "2016-01-08T20:19:47",
+        "url": "https://files.pythonhosted.org/packages/25/65/0581abf2235564e80ffe4c647977d31fd2cd5053d00fb0d08e93dea537a9/cwltool-1.0.20160108200940.tar.gz"
+      }
+    ],
+    "1.0.20160115132942": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1b2376867b1903ccdfdb8569b836878c",
+          "sha256": "bda3e0764a491078d8d6a8cb8d948e4166265d4835ce8a7a59dd8e2606afa8ed"
+        },
+        "downloads": 637,
+        "filename": "cwltool-1.0.20160115132942.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1b2376867b1903ccdfdb8569b836878c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 75411,
+        "upload_time": "2016-01-16T05:03:45",
+        "url": "https://files.pythonhosted.org/packages/2b/c6/633d6f9d7435b9d26babd9834f71884310c330110d205986fc7613b15a87/cwltool-1.0.20160115132942.tar.gz"
+      }
+    ],
+    "1.0.20160126152227": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3b9abd5ff6b8ea475f2cda39ff30a064",
+          "sha256": "a040afdf721e66f968d6503f3a182131bdc63b7c1929c61d7ae665680d6c369d"
+        },
+        "downloads": 347,
+        "filename": "cwltool-1.0.20160126152227.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3b9abd5ff6b8ea475f2cda39ff30a064",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 75530,
+        "upload_time": "2016-01-26T15:29:32",
+        "url": "https://files.pythonhosted.org/packages/58/05/2891c397cd044c63c17b21d6d9919706b9bfd31fca1f183af6925f261154/cwltool-1.0.20160126152227.tar.gz"
+      }
+    ],
+    "1.0.20160126211726": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4fba612637a7ce266ab8f04d28ac5ef3",
+          "sha256": "10ff0b02949550c743f8cd1342cd0c7cd1569db0bc737ac5a1e36c87a3ab56af"
+        },
+        "downloads": 338,
+        "filename": "cwltool-1.0.20160126211726.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4fba612637a7ce266ab8f04d28ac5ef3",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 77361,
+        "upload_time": "2016-01-26T21:45:04",
+        "url": "https://files.pythonhosted.org/packages/da/93/fd0885312894cda09ad4bcb04c7091ec7b6da15ab10e14f468cdc54caed5/cwltool-1.0.20160126211726.tar.gz"
+      }
+    ],
+    "1.0.20160127144612": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d8ee78b18c4b6b585f74eb506f4d439e",
+          "sha256": "5a209c9502d5a05c6c9998178eaa282160d8fb74ab71ce2cf540403bac08130b"
+        },
+        "downloads": 356,
+        "filename": "cwltool-1.0.20160127144612.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d8ee78b18c4b6b585f74eb506f4d439e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 77722,
+        "upload_time": "2016-01-27T14:53:41",
+        "url": "https://files.pythonhosted.org/packages/8e/b3/c9326f44854d8ca71668070fb09746f4b0c1fe4f5d749de7db3d737eee88/cwltool-1.0.20160127144612.tar.gz"
+      }
+    ],
+    "1.0.20160128142049": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b57b755da79916903c28ea4f51719503",
+          "sha256": "58a0ead067a941996e613fb343e645681f13a76fbc594df19cad6e4de3bff5a3"
+        },
+        "downloads": 319,
+        "filename": "cwltool-1.0.20160128142049.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b57b755da79916903c28ea4f51719503",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 77914,
+        "upload_time": "2016-01-28T14:38:19",
+        "url": "https://files.pythonhosted.org/packages/43/85/80d149d3be68eedab8541e96ed0ca816b49769d74eca221544a40fc835ac/cwltool-1.0.20160128142049.tar.gz"
+      }
+    ],
+    "1.0.20160129152024": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "bb95224e04865f2964aafadc0878fb2e",
+          "sha256": "b35ff28727c3b7dbc48a45994f8581f3d0ece47fde29cd7e119e6f1df64368b0"
+        },
+        "downloads": 288,
+        "filename": "cwltool-1.0.20160129152024.tar.gz",
+        "has_sig": false,
+        "md5_digest": "bb95224e04865f2964aafadc0878fb2e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 78084,
+        "upload_time": "2016-01-29T15:28:09",
+        "url": "https://files.pythonhosted.org/packages/1b/71/9c8693a109a5aeb27af3de4dff23a9c982e1d6f2b6137cb9323d7e8b19ed/cwltool-1.0.20160129152024.tar.gz"
+      }
+    ],
+    "1.0.20160129161544": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6de2fd95091663a114134fd6e3a125c1",
+          "sha256": "e0f32f155bf419a5d32469bf72445aecc0a03bc442afaf8258ea463e5d6f7cd5"
+        },
+        "downloads": 280,
+        "filename": "cwltool-1.0.20160129161544.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6de2fd95091663a114134fd6e3a125c1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 78093,
+        "upload_time": "2016-01-29T16:22:44",
+        "url": "https://files.pythonhosted.org/packages/d3/48/15d439bc5837f912bf1ebe1ce11676308517581c9dcccd2091a0ceaaafcf/cwltool-1.0.20160129161544.tar.gz"
+      }
+    ],
+    "1.0.20160129183049": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "559ba672658f6dba1f902b9807436b4f",
+          "sha256": "1370c2548c5bee39b4544d8708e1b6ccf48d0b18fb79f229deda0cd6e3934c83"
+        },
+        "downloads": 599,
+        "filename": "cwltool-1.0.20160129183049.tar.gz",
+        "has_sig": false,
+        "md5_digest": "559ba672658f6dba1f902b9807436b4f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 78113,
+        "upload_time": "2016-01-29T18:37:41",
+        "url": "https://files.pythonhosted.org/packages/ad/4b/694c5dd4da90205ba00e322cf3f7190d1da36aa2d5fe2857872fdd7a2e5f/cwltool-1.0.20160129183049.tar.gz"
+      }
+    ],
+    "1.0.20160203144931": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "862b23679d259cdf55ce0fea3d04c2ee",
+          "sha256": "6b248a8963ea87292fcb39b3b84a04638185340976f4402b94eafed4b0947f14"
+        },
+        "downloads": 163,
+        "filename": "cwltool-1.0.20160203144931.tar.gz",
+        "has_sig": false,
+        "md5_digest": "862b23679d259cdf55ce0fea3d04c2ee",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 78550,
+        "upload_time": "2016-02-03T15:00:06",
+        "url": "https://files.pythonhosted.org/packages/3e/9e/37b4e98aa02707e0913e24969c3865b79b29b03093d432b6429283f3d3df/cwltool-1.0.20160203144931.tar.gz"
+      }
+    ],
+    "1.0.20160203221531": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5991446844f816f374be81d9d5ffb810",
+          "sha256": "c03a70a06ae7449bdd56d2d3840253bbe8a707e1dc44beee2d5534eff8c2ec5f"
+        },
+        "downloads": 173,
+        "filename": "cwltool-1.0.20160203221531.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5991446844f816f374be81d9d5ffb810",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 78548,
+        "upload_time": "2016-02-04T14:07:31",
+        "url": "https://files.pythonhosted.org/packages/4a/71/569de239963474e2bc4aeaa6afffb33f704eeb1e07fa2964b5fdb47c2e75/cwltool-1.0.20160203221531.tar.gz"
+      }
+    ],
+    "1.0.20160209222805": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6c6f31bdd46c192f92771e798e0a363f",
+          "sha256": "dc68dd5ce2c5acfc7464b9360590ad09bc89981247e4ffa8964c490703840564"
+        },
+        "downloads": 158,
+        "filename": "cwltool-1.0.20160209222805.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6c6f31bdd46c192f92771e798e0a363f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 78810,
+        "upload_time": "2016-02-18T05:04:29",
+        "url": "https://files.pythonhosted.org/packages/8a/b4/2c8353ef96863e5f80cf77c6adda911b94e63ecb159096852564f4bcb992/cwltool-1.0.20160209222805.tar.gz"
+      }
+    ],
+    "1.0.20160222205901": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "dfd4f5f42cb2c461744aa48f8739464a",
+          "sha256": "242792cf8fb65ba3630b334d7798fa5d6f6c1550584c7b542c3f42b6dce5697b"
+        },
+        "downloads": 176,
+        "filename": "cwltool-1.0.20160222205901.tar.gz",
+        "has_sig": false,
+        "md5_digest": "dfd4f5f42cb2c461744aa48f8739464a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 78839,
+        "upload_time": "2016-02-23T05:04:17",
+        "url": "https://files.pythonhosted.org/packages/4f/1b/58d061cd21a46e70971add064cc40c224c75f64e03d829bf12778ed3524e/cwltool-1.0.20160222205901.tar.gz"
+      }
+    ],
+    "1.0.20160225033850": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "aa740319d96a5b6ce988f7d62a54fc75",
+          "sha256": "925e979e653620504697914604c6a31fd88b368ba7a344873be1bddccf9d2653"
+        },
+        "downloads": 175,
+        "filename": "cwltool-1.0.20160225033850.tar.gz",
+        "has_sig": false,
+        "md5_digest": "aa740319d96a5b6ce988f7d62a54fc75",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 79752,
+        "upload_time": "2016-02-25T03:49:41",
+        "url": "https://files.pythonhosted.org/packages/8a/ca/a6fce07e7f0c34041ff0812bba089f47a53b6babaf1e51070d2c325f299b/cwltool-1.0.20160225033850.tar.gz"
+      }
+    ],
+    "1.0.20160225040942": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9931745cf0e5973b5a52667f2debb16e",
+          "sha256": "4097e355ed637c0aeb899390a4b9979ccfd4d4bdfbc8bac94286af230b4fc762"
+        },
+        "downloads": 159,
+        "filename": "cwltool-1.0.20160225040942.tar.gz",
+        "has_sig": false,
+        "md5_digest": "9931745cf0e5973b5a52667f2debb16e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 79802,
+        "upload_time": "2016-02-25T04:22:43",
+        "url": "https://files.pythonhosted.org/packages/b5/eb/4579af6d03f66d9c35c41e60931217184d128f8cb93c253adfea612f0c68/cwltool-1.0.20160225040942.tar.gz"
+      }
+    ],
+    "1.0.20160225202307": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "bee78f6937aa7e3668d2fa92f9364c50",
+          "sha256": "edcbd3c458c3a3e766022c576378fe0a781ea06ac5fdd7c46a03b2836af3b456"
+        },
+        "downloads": 161,
+        "filename": "cwltool-1.0.20160225202307.tar.gz",
+        "has_sig": false,
+        "md5_digest": "bee78f6937aa7e3668d2fa92f9364c50",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 79804,
+        "upload_time": "2016-02-25T20:30:23",
+        "url": "https://files.pythonhosted.org/packages/55/df/5013c785e064c66e378117b66a8fdd1ea3bdb30ad011239197e4896804ef/cwltool-1.0.20160225202307.tar.gz"
+      }
+    ],
+    "1.0.20160226205952": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "cd59be32d2c65ca5f6a8ccb6cf4fc7ca",
+          "sha256": "e3b6e30da5d83fdd4b11a6c17bb91b8b3c0e0da45739752f5925d986f77f97f6"
+        },
+        "downloads": 161,
+        "filename": "cwltool-1.0.20160226205952.tar.gz",
+        "has_sig": false,
+        "md5_digest": "cd59be32d2c65ca5f6a8ccb6cf4fc7ca",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 80759,
+        "upload_time": "2016-02-27T05:05:18",
+        "url": "https://files.pythonhosted.org/packages/0c/a9/907417be56288e8ebbf2dcf182f202db5a0c08a2ad37e480f95ce84c0752/cwltool-1.0.20160226205952.tar.gz"
+      }
+    ],
+    "1.0.20160302134341": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "65f96f1bacb1ceb6e621fdcfff02115d",
+          "sha256": "ea3f656072b4aebf83128ea458f5e2972a93910f2722f63f6e82751762d36d68"
+        },
+        "downloads": 183,
+        "filename": "cwltool-1.0.20160302134341.tar.gz",
+        "has_sig": false,
+        "md5_digest": "65f96f1bacb1ceb6e621fdcfff02115d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 80774,
+        "upload_time": "2016-03-02T15:56:39",
+        "url": "https://files.pythonhosted.org/packages/78/80/8da2dd56b74169c4cda76b907fbb9c0361d70969707864b7f7a7684f8132/cwltool-1.0.20160302134341.tar.gz"
+      }
+    ],
+    "1.0.20160304012934": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b4c9187b8617b08a65935535644d41c9",
+          "sha256": "2c4b852794ab037fd3836ef63eb65b93e1e9ceaae682f7a88bdc0e9b1d214b59"
+        },
+        "downloads": 162,
+        "filename": "cwltool-1.0.20160304012934.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b4c9187b8617b08a65935535644d41c9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 80855,
+        "upload_time": "2016-03-04T05:04:38",
+        "url": "https://files.pythonhosted.org/packages/4d/5b/26cc4fa666063f80aba64dbf55c347cc55f1baa6d2d617641214dc27ff36/cwltool-1.0.20160304012934.tar.gz"
+      }
+    ],
+    "1.0.20160307200623": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "65de1aae110730dadff7f5496223fbc4",
+          "sha256": "cc86c5bb89bb6459b4222a37319f5ae1bf0c881c12d6352bd206529f2bef9125"
+        },
+        "downloads": 162,
+        "filename": "cwltool-1.0.20160307200623.tar.gz",
+        "has_sig": false,
+        "md5_digest": "65de1aae110730dadff7f5496223fbc4",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 80937,
+        "upload_time": "2016-03-07T20:53:55",
+        "url": "https://files.pythonhosted.org/packages/03/e6/0cf2f60de29f6be95b9b4540f79263d46a6b35a4513d9c19a0f04e567de1/cwltool-1.0.20160307200623.tar.gz"
+      }
+    ],
+    "1.0.20160308152645": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8a6b5fcecbeca87e5a73bb39d8376f02",
+          "sha256": "b780d123776baa3e1ea890b7b70e5ce81f300bc96397aa8c1f68779cb2e9ec9d"
+        },
+        "downloads": 154,
+        "filename": "cwltool-1.0.20160308152645.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8a6b5fcecbeca87e5a73bb39d8376f02",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 81012,
+        "upload_time": "2016-03-08T15:37:07",
+        "url": "https://files.pythonhosted.org/packages/60/d3/f574a72562935ab2721d4fb082596c1ab1b26dfd35b02f95919e4a7e8bcb/cwltool-1.0.20160308152645.tar.gz"
+      }
+    ],
+    "1.0.20160309204538": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ac008586bfaaff3460268f6706294441",
+          "sha256": "3de5cc79e46b7ecc9c87156f412c40319eb6bc490b3e79b6401509817f2027a3"
+        },
+        "downloads": 164,
+        "filename": "cwltool-1.0.20160309204538.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ac008586bfaaff3460268f6706294441",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 81064,
+        "upload_time": "2016-03-10T05:02:41",
+        "url": "https://files.pythonhosted.org/packages/da/84/350a35fe6a8847cb68742c18ad2ac03828e32a123f12318078a3e56e6263/cwltool-1.0.20160309204538.tar.gz"
+      }
+    ],
+    "1.0.20160310140736": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "39bba238119334fc4a133168bb143ead",
+          "sha256": "532de10fe75e3ba86bc3316294ca67ef0dd2c77c8379d8179f94b087f8f98b69"
+        },
+        "downloads": 174,
+        "filename": "cwltool-1.0.20160310140736.tar.gz",
+        "has_sig": false,
+        "md5_digest": "39bba238119334fc4a133168bb143ead",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 81198,
+        "upload_time": "2016-03-10T14:15:49",
+        "url": "https://files.pythonhosted.org/packages/17/92/a6b057653a1dbd0fcdb0bb9efc9d894ea2f121c48cbdf17fa277ef69bcf5/cwltool-1.0.20160310140736.tar.gz"
+      }
+    ],
+    "1.0.20160310215251": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b46b0e49f46f2ed9cb38d83f50641b3e",
+          "sha256": "d0615b236f6a438f1f498d09f78a0c8d64e7c320223a098e60cdfaaaf8e4ed42"
+        },
+        "downloads": 160,
+        "filename": "cwltool-1.0.20160310215251.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b46b0e49f46f2ed9cb38d83f50641b3e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 81201,
+        "upload_time": "2016-03-11T14:30:38",
+        "url": "https://files.pythonhosted.org/packages/7b/5f/ca539613f19bd31b491b18f8345c0a7214ad1f69270763ca9fc1d60c5239/cwltool-1.0.20160310215251.tar.gz"
+      }
+    ],
+    "1.0.20160311170456": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6c9b73d0e1b8d83df1deda1761126f49",
+          "sha256": "8b007ab20a6dd501ce71b7377f4fd1667c6110c592255dfa84d25915492e8dbd"
+        },
+        "downloads": 162,
+        "filename": "cwltool-1.0.20160311170456.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6c9b73d0e1b8d83df1deda1761126f49",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 81292,
+        "upload_time": "2016-03-11T17:13:19",
+        "url": "https://files.pythonhosted.org/packages/88/e8/ffb7ba05e7c450d522524147a8fc047b3bde845e400f291011c1abb994d3/cwltool-1.0.20160311170456.tar.gz"
+      }
+    ],
+    "1.0.20160311201238": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "bb7e177f53de0fbbf2ba8f251d92c599",
+          "sha256": "c5e750770664788e1fbd0226e93a6e5a597a8597ae19c054c20d76136730ba04"
+        },
+        "downloads": 161,
+        "filename": "cwltool-1.0.20160311201238.tar.gz",
+        "has_sig": false,
+        "md5_digest": "bb7e177f53de0fbbf2ba8f251d92c599",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 81388,
+        "upload_time": "2016-03-11T20:21:13",
+        "url": "https://files.pythonhosted.org/packages/24/61/2ca218b601eecb8563d496689ca209c46a3865ff8f2b8524e04df8099197/cwltool-1.0.20160311201238.tar.gz"
+      }
+    ],
+    "1.0.20160315233236": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9e106477bf145eebc3374339f64292cf",
+          "sha256": "96aa163c59a681873be839c1f1584a8581c710bc56d1ccb686f2f0a4bc868963"
+        },
+        "downloads": 163,
+        "filename": "cwltool-1.0.20160315233236.tar.gz",
+        "has_sig": false,
+        "md5_digest": "9e106477bf145eebc3374339f64292cf",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 81346,
+        "upload_time": "2016-03-16T01:57:49",
+        "url": "https://files.pythonhosted.org/packages/0c/67/3d60e17aa6f4d72f82550c32e08da280edd72cfb076d0ef3a56a547f7837/cwltool-1.0.20160315233236.tar.gz"
+      }
+    ],
+    "1.0.20160316150250": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "bbef2bd98e417c49ce1fcea8b1af871e",
+          "sha256": "aff48e994d746e658aa1212ccb20ed643288e5b48aa31546faaca0a4667fb2f2"
+        },
+        "downloads": 193,
+        "filename": "cwltool-1.0.20160316150250.tar.gz",
+        "has_sig": false,
+        "md5_digest": "bbef2bd98e417c49ce1fcea8b1af871e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 84858,
+        "upload_time": "2016-03-16T15:12:48",
+        "url": "https://files.pythonhosted.org/packages/4e/80/d7006175c8e135ad7a73e531b2c22478a8f051994afa05f42a86faf9a9b3/cwltool-1.0.20160316150250.tar.gz"
+      }
+    ],
+    "1.0.20160316204054": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6d88b09260dad924572db333169b857b",
+          "sha256": "d9f0f394c6eb0cd7f28db2f7765bdbb43b8446bacc49770f60ff577903caa372"
+        },
+        "downloads": 160,
+        "filename": "cwltool-1.0.20160316204054.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6d88b09260dad924572db333169b857b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 84851,
+        "upload_time": "2016-03-16T20:51:28",
+        "url": "https://files.pythonhosted.org/packages/39/c7/ae50a33f1faf7504da7b07ee6dfce430703faa9eedfb4a49b8a82b262904/cwltool-1.0.20160316204054.tar.gz"
+      }
+    ],
+    "1.0.20160322201127": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d04d2b845e374b8bcf624a082b626f6b",
+          "sha256": "df2afde0a1c8c6b98ac0626e0418305881b4d720bbf16808ab596d6ed2d69806"
+        },
+        "downloads": 176,
+        "filename": "cwltool-1.0.20160322201127.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d04d2b845e374b8bcf624a082b626f6b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 85419,
+        "upload_time": "2016-03-22T20:21:48",
+        "url": "https://files.pythonhosted.org/packages/33/6a/a9feac94e2c0dd811b91c0a1922307f1620d06b24dfe17f3c3905b24cb85/cwltool-1.0.20160322201127.tar.gz"
+      }
+    ],
+    "1.0.20160323212343": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3cb2629116dce1838e3946347a6f9c5c",
+          "sha256": "026afd375990a2e8b7a0e081be817890dfa37b342b2ff9e53b31cc636e11897b"
+        },
+        "downloads": 231,
+        "filename": "cwltool-1.0.20160323212343.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3cb2629116dce1838e3946347a6f9c5c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 85498,
+        "upload_time": "2016-03-23T22:24:05",
+        "url": "https://files.pythonhosted.org/packages/aa/94/2dc14c204d568eea0395f6fd74f52e2a781412782e7bf34a9e3f0c6d663f/cwltool-1.0.20160323212343.tar.gz"
+      }
+    ],
+    "1.0.20160325200114": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b59799b2a8b6350576ad08cc87e876ce",
+          "sha256": "80badc52d9daffcffe43d2b964b03ecc09a54c0f56ec54c00b5755c57a6daabc"
+        },
+        "downloads": 170,
+        "filename": "cwltool-1.0.20160325200114.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b59799b2a8b6350576ad08cc87e876ce",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 85504,
+        "upload_time": "2016-03-26T05:04:15",
+        "url": "https://files.pythonhosted.org/packages/c3/44/d3e938bce74f3a09529b1df91536599949414f9dd63e70884c6a95db867d/cwltool-1.0.20160325200114.tar.gz"
+      }
+    ],
+    "1.0.20160325210917": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "bb98359b22cc1e2d7e4048d8a4b63690",
+          "sha256": "9abded65a2103a2eb165571f856fc9391e2fd2d62a47db3ac0ff6b528df6b031"
+        },
+        "downloads": 163,
+        "filename": "cwltool-1.0.20160325210917.tar.gz",
+        "has_sig": false,
+        "md5_digest": "bb98359b22cc1e2d7e4048d8a4b63690",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 85599,
+        "upload_time": "2016-03-28T15:51:32",
+        "url": "https://files.pythonhosted.org/packages/47/3e/0e6744c34c06cd4ddd6f656a2247c75876c340ecbb2376bd3d8e14f82081/cwltool-1.0.20160325210917.tar.gz"
+      }
+    ],
+    "1.0.20160331184641": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ba5b08e74ef97ec9f6dde8747583eedd",
+          "sha256": "74c7b7e458eb8f21d3c440d7dd9e8be76c07333bbdfa1832ec77e3d3a511c7cb"
+        },
+        "downloads": 174,
+        "filename": "cwltool-1.0.20160331184641.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ba5b08e74ef97ec9f6dde8747583eedd",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 85599,
+        "upload_time": "2016-03-31T18:56:50",
+        "url": "https://files.pythonhosted.org/packages/4b/9f/bf0ddb881c4aa6ba5065011781b6444c0502743aa4fcd6069b03805f399c/cwltool-1.0.20160331184641.tar.gz"
+      }
+    ],
+    "1.0.20160408133555": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2a48f0431e6c97aecfea0dbe15cb1250",
+          "sha256": "f60187fc4aee9bc1bf812ad797067fc3cedb1fc4bebac0c8717a445be40caddd"
+        },
+        "downloads": 157,
+        "filename": "cwltool-1.0.20160408133555.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2a48f0431e6c97aecfea0dbe15cb1250",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 85698,
+        "upload_time": "2016-04-08T13:44:57",
+        "url": "https://files.pythonhosted.org/packages/7e/48/5cb2dce38e24ba2d45931be9b56a64a4df64e5a7293aadf81afc05e233de/cwltool-1.0.20160408133555.tar.gz"
+      }
+    ],
+    "1.0.20160411021840": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "34f823af0fe518f9c49a2e28fdb11a57",
+          "sha256": "7cb829b5a0da35a6c33e2b87c05f6ac1cc0fe38cab4343e549872c53c194beff"
+        },
+        "downloads": 160,
+        "filename": "cwltool-1.0.20160411021840.tar.gz",
+        "has_sig": false,
+        "md5_digest": "34f823af0fe518f9c49a2e28fdb11a57",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 85825,
+        "upload_time": "2016-04-11T05:03:43",
+        "url": "https://files.pythonhosted.org/packages/f5/8b/d869f909c6e297fe1a12c34be51557045aa86c5cd5466dc71aeacf03b66a/cwltool-1.0.20160411021840.tar.gz"
+      }
+    ],
+    "1.0.20160411194133": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9b3a9ad0ddf1cec2d22a7e697590210d",
+          "sha256": "07d229f291003a04b4a547f42f27641a495e21220f09159ba5a637bd0a2e31c6"
+        },
+        "downloads": 170,
+        "filename": "cwltool-1.0.20160411194133.tar.gz",
+        "has_sig": false,
+        "md5_digest": "9b3a9ad0ddf1cec2d22a7e697590210d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 85891,
+        "upload_time": "2016-04-11T19:51:55",
+        "url": "https://files.pythonhosted.org/packages/f8/82/93b5724fc53644cf3dc432bcb8295b7d62bb63a0baca480fc31a4747f805/cwltool-1.0.20160411194133.tar.gz"
+      }
+    ],
+    "1.0.20160412203002": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "54dd63dce3c43f27f6bc8010566aae1c",
+          "sha256": "4eec39eb3abd3e88470db51193dfea144f6fea3a474df536ec1a2110d3b886b6"
+        },
+        "downloads": 184,
+        "filename": "cwltool-1.0.20160412203002.tar.gz",
+        "has_sig": false,
+        "md5_digest": "54dd63dce3c43f27f6bc8010566aae1c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 85959,
+        "upload_time": "2016-04-13T05:03:57",
+        "url": "https://files.pythonhosted.org/packages/65/91/e7c5554748d3c2bb7eb0f46e86bb6f3fd3e08207a8bdde38f8dd3b243b1c/cwltool-1.0.20160412203002.tar.gz"
+      }
+    ],
+    "1.0.20160413143011": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "132c1cb03900cc6ca3c860555c5ab709",
+          "sha256": "8460d81f348fd989cb6dc20230f7ee1ed8c99f212dd6ca9103007d00e4c61938"
+        },
+        "downloads": 164,
+        "filename": "cwltool-1.0.20160413143011.tar.gz",
+        "has_sig": false,
+        "md5_digest": "132c1cb03900cc6ca3c860555c5ab709",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 85965,
+        "upload_time": "2016-04-13T14:39:57",
+        "url": "https://files.pythonhosted.org/packages/86/69/d03c9754d00a0c337d64797c83e63ed9d9b49014c10d6e87b541818f6a30/cwltool-1.0.20160413143011.tar.gz"
+      }
+    ],
+    "1.0.20160415153333": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f22a7107ac26b6c165907498e1edc6c1",
+          "sha256": "86e2ce86b58a4d2348e441c3663b3fa969f1e69ef9775b372cb3a70089563196"
+        },
+        "downloads": 156,
+        "filename": "cwltool-1.0.20160415153333.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f22a7107ac26b6c165907498e1edc6c1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 88917,
+        "upload_time": "2016-04-20T20:35:26",
+        "url": "https://files.pythonhosted.org/packages/81/0f/93d867cb14bbb5c16f8448cd5fb60c12510f47e5341e851cf2dfe995278c/cwltool-1.0.20160415153333.tar.gz"
+      }
+    ],
+    "1.0.20160421140153": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "64762a573ffdceea3ebae37f53e3bb0c",
+          "sha256": "039beea7afba04852309ec0581385b1637fef89147ca57956bdec3349167195e"
+        },
+        "downloads": 158,
+        "filename": "cwltool-1.0.20160421140153.tar.gz",
+        "has_sig": false,
+        "md5_digest": "64762a573ffdceea3ebae37f53e3bb0c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 88936,
+        "upload_time": "2016-04-21T14:13:05",
+        "url": "https://files.pythonhosted.org/packages/e7/de/d827c8b5e79b079b6961fc16a6033f52dd87ba7acec9f1bb81b0e66b0bcb/cwltool-1.0.20160421140153.tar.gz"
+      }
+    ],
+    "1.0.20160421171618": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b30434723383c0506762ab5e0565300e",
+          "sha256": "09b789b1ac473d4d07502e2acaa93c0570749371da487fbe0dbfef8b76d3c762"
+        },
+        "downloads": 156,
+        "filename": "cwltool-1.0.20160421171618.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b30434723383c0506762ab5e0565300e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 88932,
+        "upload_time": "2016-04-22T05:04:02",
+        "url": "https://files.pythonhosted.org/packages/35/c8/6bd856eb934b434f5fd682cce7041d3859df772e0684aadcaf63c66a6a47/cwltool-1.0.20160421171618.tar.gz"
+      }
+    ],
+    "1.0.20160422203349": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "cba0de593d999b5d1b7e8f411185379a",
+          "sha256": "f0b0b87dc010e54c4602069927683c5e8692fbeac7e1a3cfc97aafea8fcc6f7c"
+        },
+        "downloads": 164,
+        "filename": "cwltool-1.0.20160422203349.tar.gz",
+        "has_sig": false,
+        "md5_digest": "cba0de593d999b5d1b7e8f411185379a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 88918,
+        "upload_time": "2016-04-22T20:43:24",
+        "url": "https://files.pythonhosted.org/packages/bc/3d/257fbbea1a33a884843535e37997d26453238c2ebdbae3caf5b6dc63528c/cwltool-1.0.20160422203349.tar.gz"
+      }
+    ],
+    "1.0.20160422204730": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c4a1278568c7e94502b7b6d2d9eaea3a",
+          "sha256": "b14201e00c4c6a9d09ce64ff9b7c4409c01930e54dd0f78466d9414059f56c7b"
+        },
+        "downloads": 274,
+        "filename": "cwltool-1.0.20160422204730.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c4a1278568c7e94502b7b6d2d9eaea3a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 88928,
+        "upload_time": "2016-04-23T05:04:02",
+        "url": "https://files.pythonhosted.org/packages/0d/50/4b92010907d8aa13edb2cd1ee53db46bc21e3fd10c48347db12d6392b8aa/cwltool-1.0.20160422204730.tar.gz"
+      }
+    ],
+    "1.0.20160425140546": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "887858810c6006f8a3d7302cc0155be1",
+          "sha256": "c2a77cda737406ae2c64ffea3cf178476d9abfd8f4ec151df7db0903f7eec5ef"
+        },
+        "downloads": 162,
+        "filename": "cwltool-1.0.20160425140546.tar.gz",
+        "has_sig": false,
+        "md5_digest": "887858810c6006f8a3d7302cc0155be1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 89006,
+        "upload_time": "2016-04-25T14:16:31",
+        "url": "https://files.pythonhosted.org/packages/d5/1a/97baad4c2c687e3a392b7fe93da6b0048fc9a52f1ed3c216a9ab942e4e1b/cwltool-1.0.20160425140546.tar.gz"
+      }
+    ],
+    "1.0.20160426185417": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "17035a1e3236a255cee70a31a6086871",
+          "sha256": "24cb31f059187494e894ce6b6abcebec0e7d66eb79dcc10968ce6508055b8904"
+        },
+        "downloads": 170,
+        "filename": "cwltool-1.0.20160426185417.tar.gz",
+        "has_sig": false,
+        "md5_digest": "17035a1e3236a255cee70a31a6086871",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 88986,
+        "upload_time": "2016-04-27T05:03:43",
+        "url": "https://files.pythonhosted.org/packages/4f/05/04ef8c567cf5bbe4e23537d687696b0999651f9c0b8b04468a352b9b4b95/cwltool-1.0.20160426185417.tar.gz"
+      }
+    ],
+    "1.0.20160427142240": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4f5ac0d494ddd559c7267374ecb971eb",
+          "sha256": "4b47b98ffacc2076fa1df6001cf2fb8e0852118672b6fe6f212e9ded5af58ebf"
+        },
+        "downloads": 291,
+        "filename": "cwltool-1.0.20160427142240.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4f5ac0d494ddd559c7267374ecb971eb",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 89008,
+        "upload_time": "2016-04-27T14:31:51",
+        "url": "https://files.pythonhosted.org/packages/b6/4e/5d015bbc4eef04dcd5411e19e4a2788c6a38ae260fd8fe14b34672464932/cwltool-1.0.20160427142240.tar.gz"
+      }
+    ],
+    "1.0.20160504183010": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5440c1fbea2c31615ed3cc0706592d8b",
+          "sha256": "f824ac642bef14d5b013697467e899bd630e2a167eb59c4dbc9c60c677aa8b04"
+        },
+        "downloads": 180,
+        "filename": "cwltool-1.0.20160504183010.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5440c1fbea2c31615ed3cc0706592d8b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 90306,
+        "upload_time": "2016-05-04T18:56:10",
+        "url": "https://files.pythonhosted.org/packages/a3/a1/cc38b07c3645526d0d07e643bba985ceb231ad85bfcf60a766ef57f217d1/cwltool-1.0.20160504183010.tar.gz"
+      }
+    ],
+    "1.0.20160505211047": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "febb34fe57086c947790e70b540e653e",
+          "sha256": "59904f2c4aa53abccb76e19b1d4a4e1979947b1ffd7db1ef78e05988289c7949"
+        },
+        "downloads": 164,
+        "filename": "cwltool-1.0.20160505211047.tar.gz",
+        "has_sig": false,
+        "md5_digest": "febb34fe57086c947790e70b540e653e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 90323,
+        "upload_time": "2016-05-07T05:03:45",
+        "url": "https://files.pythonhosted.org/packages/aa/0a/f3fe8159fc74a2bef0e5e8bbe73126129cddbd7f4af77122aafc00eacb85/cwltool-1.0.20160505211047.tar.gz"
+      }
+    ],
+    "1.0.20160507101510": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b71bbed9faed09eae80fab9d04b28630",
+          "sha256": "30a822e8d79ab0199da6725fdc1a3ba4ccdb826bc3ef9432d573d02546f5dbd5"
+        },
+        "downloads": 170,
+        "filename": "cwltool-1.0.20160507101510.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b71bbed9faed09eae80fab9d04b28630",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 90346,
+        "upload_time": "2016-05-08T05:03:46",
+        "url": "https://files.pythonhosted.org/packages/5b/ad/c1f165804fa7dfb5c43345b1f9797f0267532fb1a73fa42fd6b4a36a60dd/cwltool-1.0.20160507101510.tar.gz"
+      }
+    ],
+    "1.0.20160510161706": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8c93e717ab3d7d071d736006dca603a0",
+          "sha256": "37e85abea3cd3457a81548e0bfb023d83e3452df44b4c601b13b05c0fce2265f"
+        },
+        "downloads": 158,
+        "filename": "cwltool-1.0.20160510161706.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8c93e717ab3d7d071d736006dca603a0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 154671,
+        "upload_time": "2016-05-10T16:58:27",
+        "url": "https://files.pythonhosted.org/packages/e6/f6/d34e34c28bacbec8a145f1a09b726dc41d23c78b3977c13272344c0a5c92/cwltool-1.0.20160510161706.tar.gz"
+      }
+    ],
+    "1.0.20160511142738": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e59e8d998ddc332197fd5c420ffe066e",
+          "sha256": "fa4a497202da7084a636cedfbc40d21ee03660b2e3476b6ce967b763ef7bac6c"
+        },
+        "downloads": 159,
+        "filename": "cwltool-1.0.20160511142738.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e59e8d998ddc332197fd5c420ffe066e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 154688,
+        "upload_time": "2016-05-11T14:32:47",
+        "url": "https://files.pythonhosted.org/packages/8e/5a/7e7a88cf13d6accdf139d588c4dac8f5aa4b31e6c3728b25c47f6e149c56/cwltool-1.0.20160511142738.tar.gz"
+      }
+    ],
+    "1.0.20160511162129": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8591835f226c39cdb94205fef9836e2f",
+          "sha256": "3a3f24aa9f11f3d5b8778fef556ba18c82b4e71334c407f9d17a7985d25f890f"
+        },
+        "downloads": 201,
+        "filename": "cwltool-1.0.20160511162129.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8591835f226c39cdb94205fef9836e2f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 154771,
+        "upload_time": "2016-05-11T16:27:50",
+        "url": "https://files.pythonhosted.org/packages/83/27/033a7514764977e4b03b7bb1fe4a47cb0fe58cc2896158f5606d9670cc81/cwltool-1.0.20160511162129.tar.gz"
+      }
+    ],
+    "1.0.20160511213450": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2667aaed6e02ea2d65f8ff21621134b3",
+          "sha256": "847f967564757cf0739cbe2c929f35470cf2fb3a50f4cae14f4fad4b0c84e6d8"
+        },
+        "downloads": 158,
+        "filename": "cwltool-1.0.20160511213450.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2667aaed6e02ea2d65f8ff21621134b3",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 154759,
+        "upload_time": "2016-05-12T04:59:55",
+        "url": "https://files.pythonhosted.org/packages/c7/b0/32171214288c95f2ef06fcba6ee13407ce1017dad135d749603d65d9a67e/cwltool-1.0.20160511213450.tar.gz"
+      }
+    ],
+    "1.0.20160515155531": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b4db6a7f9cce2ae3dfe8861976dd8794",
+          "sha256": "021c8c9e635eeb61fb5372e5593a12cb1f35f0372404e48673eca1943fede5c3"
+        },
+        "downloads": 169,
+        "filename": "cwltool-1.0.20160515155531.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b4db6a7f9cce2ae3dfe8861976dd8794",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 154813,
+        "upload_time": "2016-05-16T04:59:43",
+        "url": "https://files.pythonhosted.org/packages/83/26/8eed6ae9db5f12a45183ca91d6fc984fa27211ef53fe568d62471787c81c/cwltool-1.0.20160515155531.tar.gz"
+      }
+    ],
+    "1.0.20160518200809": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "028340daa0bbf9a0804e44e0d3e861b6",
+          "sha256": "9f6f03089efb1ddf9c51ecab2f6c159d1dd8e02d8088bc2d8b95bd75e6cf2aa6"
+        },
+        "downloads": 159,
+        "filename": "cwltool-1.0.20160518200809.tar.gz",
+        "has_sig": false,
+        "md5_digest": "028340daa0bbf9a0804e44e0d3e861b6",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 155002,
+        "upload_time": "2016-05-18T20:13:17",
+        "url": "https://files.pythonhosted.org/packages/87/55/1c4ef406072391c36890e102f82b57ae8cb08b1661a3bbb2b77c394f2b28/cwltool-1.0.20160518200809.tar.gz"
+      }
+    ],
+    "1.0.20160518201549": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0e92b7a9332a7bd70144a99ad7962b58",
+          "sha256": "56d48a7821c727a22a0d3bc1e8d0bb0bd6a2341f511cbe7902d86bf56d492c37"
+        },
+        "downloads": 165,
+        "filename": "cwltool-1.0.20160518201549.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0e92b7a9332a7bd70144a99ad7962b58",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 154996,
+        "upload_time": "2016-05-18T20:21:25",
+        "url": "https://files.pythonhosted.org/packages/04/e1/95ba1eadd550118f55a0b95287de811a7830045f052280f368ce93e2decf/cwltool-1.0.20160518201549.tar.gz"
+      }
+    ],
+    "1.0.20160519182434": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b974a1018bbca1c0036881b4b6a5247c",
+          "sha256": "15e3f55fb3973fdcef2b6174737f015a4d1ad54ded9d20cae89e289ce279c223"
+        },
+        "downloads": 188,
+        "filename": "cwltool-1.0.20160519182434.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b974a1018bbca1c0036881b4b6a5247c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 155014,
+        "upload_time": "2016-05-19T18:30:50",
+        "url": "https://files.pythonhosted.org/packages/ed/8f/f13bab757c172891d8641262671554823fd48bd1834bffcea98025a75598/cwltool-1.0.20160519182434.tar.gz"
+      }
+    ],
+    "1.0.20160523144113": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "64deb0d5d6d4bb04d82031c77114baf0",
+          "sha256": "975b0f28fb669f908c109dde47d4b7b1d3042ea54810bedf5001ec6a941edf08"
+        },
+        "downloads": 169,
+        "filename": "cwltool-1.0.20160523144113.tar.gz",
+        "has_sig": false,
+        "md5_digest": "64deb0d5d6d4bb04d82031c77114baf0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 155538,
+        "upload_time": "2016-05-23T14:46:25",
+        "url": "https://files.pythonhosted.org/packages/44/e7/1db5f5d0c6abdfc92f6496128a7b30367bf53790c4e229b68f8023f1bfd4/cwltool-1.0.20160523144113.tar.gz"
+      }
+    ],
+    "1.0.20160531173804": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9f03945c9e567e2605802a203182b4bf",
+          "sha256": "07c99e019dc012265d01539d93eec586bd3c1ad810536505a8d7c82b40ea5f4a"
+        },
+        "downloads": 168,
+        "filename": "cwltool-1.0.20160531173804.tar.gz",
+        "has_sig": false,
+        "md5_digest": "9f03945c9e567e2605802a203182b4bf",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 155560,
+        "upload_time": "2016-06-01T04:59:47",
+        "url": "https://files.pythonhosted.org/packages/c0/2e/9e5a09d77252b55ccc27b2a1534ac4b622543fe6cba0b220eb2e0811c228/cwltool-1.0.20160531173804.tar.gz"
+      }
+    ],
+    "1.0.20160608124624": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5156f0a4a27f8fd73abff88082b46972",
+          "sha256": "cec40cdc40c3dab3a420e2ab02c2c680cdcf9921a45a786179659415ae70b892"
+        },
+        "downloads": 190,
+        "filename": "cwltool-1.0.20160608124624.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5156f0a4a27f8fd73abff88082b46972",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 156181,
+        "upload_time": "2016-06-09T04:59:48",
+        "url": "https://files.pythonhosted.org/packages/8f/89/3a0c1cd92779b7cbd33dd09976c293f048527d2b87c6393de73949096c0b/cwltool-1.0.20160608124624.tar.gz"
+      }
+    ],
+    "1.0.20160609160402": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d21cf833758577a140abf1d7614f27db",
+          "sha256": "ba2d645b0849737141412fdae0db079f30968eeaafac91aea6965533c64a2187"
+        },
+        "downloads": 210,
+        "filename": "cwltool-1.0.20160609160402.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d21cf833758577a140abf1d7614f27db",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 156197,
+        "upload_time": "2016-06-09T16:10:13",
+        "url": "https://files.pythonhosted.org/packages/f1/41/f77566b425be819f6eaf2946f2a3bb3050100a03210da5a3b403b1d306c6/cwltool-1.0.20160609160402.tar.gz"
+      }
+    ],
+    "1.0.20160610111115": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "80c4d462e8fcc1c30b7829c5794ef47d",
+          "sha256": "a2a4b731d79fc8126703261a3f1eeb4cec012c5a334abcc75af288e1f2a19b98"
+        },
+        "downloads": 183,
+        "filename": "cwltool-1.0.20160610111115-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "80c4d462e8fcc1c30b7829c5794ef47d",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 192705,
+        "upload_time": "2016-06-10T13:30:31",
+        "url": "https://files.pythonhosted.org/packages/a1/fe/45f8a367d03e2db306ab819077db81a7a508f00802a6e4817321f1bac352/cwltool-1.0.20160610111115-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f713560de31d3d433ae0df8d470b85f4",
+          "sha256": "edcb764cdc7718495802afd6b6aad760c428ea8ecb07ba8cb379b9addcc128ff"
+        },
+        "downloads": 169,
+        "filename": "cwltool-1.0.20160610111115.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f713560de31d3d433ae0df8d470b85f4",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 156831,
+        "upload_time": "2016-06-10T13:30:13",
+        "url": "https://files.pythonhosted.org/packages/a7/85/7cff331f6390a96a32c15a10c98ea0b872c123ff09b7a9010037b69bcec9/cwltool-1.0.20160610111115.tar.gz"
+      }
+    ],
+    "1.0.20160614212644": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7669e23f8bbee07f54e7a4c69b85ff28",
+          "sha256": "a41b31be098075896ccf8a8ac1edfc13e61967939403b407007f803b879c7c7f"
+        },
+        "downloads": 176,
+        "filename": "cwltool-1.0.20160614212644-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "7669e23f8bbee07f54e7a4c69b85ff28",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 192719,
+        "upload_time": "2016-06-14T21:33:27",
+        "url": "https://files.pythonhosted.org/packages/9b/32/1d6e7be50c0b0204aecfb44df0e4f83f55402d7ed1f0f7ec3c8add8ae8c1/cwltool-1.0.20160614212644-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6336d756b4ef9522a655cc6ba1cfeeca",
+          "sha256": "32a7f96ade336114b2866b683d8007302a6fa3823b074fc1554698619eb27012"
+        },
+        "downloads": 179,
+        "filename": "cwltool-1.0.20160614212644.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6336d756b4ef9522a655cc6ba1cfeeca",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 156866,
+        "upload_time": "2016-06-14T21:33:22",
+        "url": "https://files.pythonhosted.org/packages/63/ea/76d488afb54ca9da2dbe070468894d7b0968656fad7f659da20427c278a9/cwltool-1.0.20160614212644.tar.gz"
+      }
+    ],
+    "1.0.20160616182520": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e05b3a03e07ee3f70c6fb5f86064f191",
+          "sha256": "2c8b46b5bf3b463cce4a86af7ab28c0c0c74b78263ba96f1ea0347dbf8aad2dd"
+        },
+        "downloads": 209,
+        "filename": "cwltool-1.0.20160616182520.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e05b3a03e07ee3f70c6fb5f86064f191",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 157988,
+        "upload_time": "2016-06-16T18:31:52",
+        "url": "https://files.pythonhosted.org/packages/63/29/8318467dce2edfbc5e6e9b2ecaa1dc31ef696bf083227dc7358bc5b2a554/cwltool-1.0.20160616182520.tar.gz"
+      }
+    ],
+    "1.0.20160623183600": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "094f064577939e271355d38515f58990",
+          "sha256": "c4c9c560a46750eed8e2a6888208f60ba0202046598878e5f9887a10af6af4bc"
+        },
+        "downloads": 303,
+        "filename": "cwltool-1.0.20160623183600.tar.gz",
+        "has_sig": false,
+        "md5_digest": "094f064577939e271355d38515f58990",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 157669,
+        "upload_time": "2016-06-24T05:01:00",
+        "url": "https://files.pythonhosted.org/packages/be/76/dcc70b8f8deca2eaeba1496a7d4723e0dc8d00482a9cf4c87d1e40105a08/cwltool-1.0.20160623183600.tar.gz"
+      }
+    ],
+    "1.0.20160626203316": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "cf52fbc2402ee19f37cbc436afc8221f",
+          "sha256": "dde2c60de909080d283cf40b41fd603ea15bcac65f584fd7343086b92bc39a22"
+        },
+        "downloads": 174,
+        "filename": "cwltool-1.0.20160626203316.tar.gz",
+        "has_sig": false,
+        "md5_digest": "cf52fbc2402ee19f37cbc436afc8221f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 157646,
+        "upload_time": "2016-06-27T05:00:58",
+        "url": "https://files.pythonhosted.org/packages/85/f7/2661e23e80e979a0e11fef8778cb86fa94627c263d0c3fb9906a1da68f05/cwltool-1.0.20160626203316.tar.gz"
+      }
+    ],
+    "1.0.20160627152300": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "33aae7ade95ee9a98baf140a14ca92e5",
+          "sha256": "28aafbdcb2d6f7630381357e2d5d6b38cf733effbae535dd4a58b160f0a25a61"
+        },
+        "downloads": 175,
+        "filename": "cwltool-1.0.20160627152300.tar.gz",
+        "has_sig": false,
+        "md5_digest": "33aae7ade95ee9a98baf140a14ca92e5",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 157737,
+        "upload_time": "2016-06-28T05:01:03",
+        "url": "https://files.pythonhosted.org/packages/91/3e/9c15986646bdd51b01d6a0cd7e5a627a21d566cf18b47a55e96f35eb169e/cwltool-1.0.20160627152300.tar.gz"
+      }
+    ],
+    "1.0.20160628194545": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "feb09c9e4e97a38f79068e5268d0da2a",
+          "sha256": "71108c588ae6841f359855a499735e29f83daa136e998730c25e79602eca0e84"
+        },
+        "downloads": 167,
+        "filename": "cwltool-1.0.20160628194545.tar.gz",
+        "has_sig": false,
+        "md5_digest": "feb09c9e4e97a38f79068e5268d0da2a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 158002,
+        "upload_time": "2016-06-29T05:01:11",
+        "url": "https://files.pythonhosted.org/packages/bc/14/f63210ee0cf1e002833fdac4e29f67c9b1eeb5d8ee287b6d1ad757b6d477/cwltool-1.0.20160628194545.tar.gz"
+      }
+    ],
+    "1.0.20160629140624": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a7f2ef800024005d588e2cfa4aa2c7b7",
+          "sha256": "a70584d5e5154870b02172fa30393de389de8b326339b31f0deea2c06e158c2e"
+        },
+        "downloads": 170,
+        "filename": "cwltool-1.0.20160629140624.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a7f2ef800024005d588e2cfa4aa2c7b7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 157987,
+        "upload_time": "2016-06-29T14:32:55",
+        "url": "https://files.pythonhosted.org/packages/ca/54/da4d058ae9a2d7419dbdc4f3bde8a46a2706838a3472c307c10d8a3d6ad9/cwltool-1.0.20160629140624.tar.gz"
+      }
+    ],
+    "1.0.20160630171631": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "926f7cbec69853f544c5bc59b82b2049",
+          "sha256": "1d5aa523cae97714c43f04afc296c8af20cd026d49fd2e83ce0f638940a84f6b"
+        },
+        "downloads": 180,
+        "filename": "cwltool-1.0.20160630171631.tar.gz",
+        "has_sig": false,
+        "md5_digest": "926f7cbec69853f544c5bc59b82b2049",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 155894,
+        "upload_time": "2016-06-30T17:22:14",
+        "url": "https://files.pythonhosted.org/packages/3a/a9/4cd8f42ce1211db0b1e55fb2f4348a8b411e5b12b36415976481a3a2c2b1/cwltool-1.0.20160630171631.tar.gz"
+      }
+    ],
+    "1.0.20160706132520": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1f4af4616335db25c64b8b64d5a7988d",
+          "sha256": "ad695ce6bbefd6ebbc4f1c5b847e95a597688c61e88fc3137a25f901888b1860"
+        },
+        "downloads": 229,
+        "filename": "cwltool-1.0.20160706132520.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1f4af4616335db25c64b8b64d5a7988d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 163002,
+        "upload_time": "2016-07-06T13:35:50",
+        "url": "https://files.pythonhosted.org/packages/27/22/a79bb22544ef0116a707c3113dfc55c0b3d87f3473a128b977062af43db3/cwltool-1.0.20160706132520.tar.gz"
+      }
+    ],
+    "1.0.20160707195347": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "fb5beae6a1d07f365f955a4c6f17141f",
+          "sha256": "8a67a8bc664c67b692c601acd737d16559473134d8f3c7517fa38b1bb1b7ab60"
+        },
+        "downloads": 404,
+        "filename": "cwltool-1.0.20160707195347-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "fb5beae6a1d07f365f955a4c6f17141f",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 200135,
+        "upload_time": "2016-07-07T20:11:30",
+        "url": "https://files.pythonhosted.org/packages/81/88/e9ceb38d62474f3757d24946f92587af36655c31e3d619740aa34e6ec630/cwltool-1.0.20160707195347-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "79427d6f490a7ccac4bc450eea0f82b9",
+          "sha256": "833ad8d819b60a018cd064a986193070ce5efb9110e10f0d98b0c6fb4d8a1ab1"
+        },
+        "downloads": 370,
+        "filename": "cwltool-1.0.20160707195347.tar.gz",
+        "has_sig": false,
+        "md5_digest": "79427d6f490a7ccac4bc450eea0f82b9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 164032,
+        "upload_time": "2016-07-07T20:11:26",
+        "url": "https://files.pythonhosted.org/packages/9f/57/488dcf9d081e563d26c4b3f45adc005fd406287a1f40b804c1564ac5eb44/cwltool-1.0.20160707195347.tar.gz"
+      }
+    ],
+    "1.0.20160708190014": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7007d99af6e0c1714b1cd71f679b9ff5",
+          "sha256": "770c6cf0b0d07ed5c673a0eee0ce312ca2081478f9eab1f5dd36234d0595e049"
+        },
+        "downloads": 363,
+        "filename": "cwltool-1.0.20160708190014-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "7007d99af6e0c1714b1cd71f679b9ff5",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 200136,
+        "upload_time": "2016-07-08T19:01:24",
+        "url": "https://files.pythonhosted.org/packages/15/d2/1362f8dd0a755d65782dd74b2826445b58e036b2255d986a9ba9052d8606/cwltool-1.0.20160708190014-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d7eaf4abb23e93a72a67ca486f0492e7",
+          "sha256": "a0180b323101bb1589660a5d420f2faf4021447d25ffe1bca9e510c1fb395e92"
+        },
+        "downloads": 366,
+        "filename": "cwltool-1.0.20160708190014.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d7eaf4abb23e93a72a67ca486f0492e7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 164371,
+        "upload_time": "2016-07-08T19:01:19",
+        "url": "https://files.pythonhosted.org/packages/35/3d/4faddcb1c642df14a60122a0afe614d99c82bb834c442c139ac4becdeb48/cwltool-1.0.20160708190014.tar.gz"
+      }
+    ],
+    "1.0.20160712154127": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "94ef36374b58cdf97bafb415323cb2c2",
+          "sha256": "a140bbeaad5f1388cff473212756657e86161e0d60cffcb6b0602c1aa6672165"
+        },
+        "downloads": 828,
+        "filename": "cwltool-1.0.20160712154127.tar.gz",
+        "has_sig": false,
+        "md5_digest": "94ef36374b58cdf97bafb415323cb2c2",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 163828,
+        "upload_time": "2016-07-12T19:41:58",
+        "url": "https://files.pythonhosted.org/packages/98/06/61642e9fed4bcbaac43db2f5b915fa7b96c2ef3d93812f9d2a4e9743afc0/cwltool-1.0.20160712154127.tar.gz"
+      }
+    ],
+    "1.0.20160714182449": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e3c4c0e2de8b664215e70a639096a93f",
+          "sha256": "f4ab3603911ea71b2b6d000f102b2446eb93cc0786971d6c8f8254030445f8f9"
+        },
+        "downloads": 1127,
+        "filename": "cwltool-1.0.20160714182449.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e3c4c0e2de8b664215e70a639096a93f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 163848,
+        "upload_time": "2016-07-14T18:53:26",
+        "url": "https://files.pythonhosted.org/packages/ca/e9/925d71a466a9eed4c6b23911c7e07b309481fc705380d560316df8a3a949/cwltool-1.0.20160714182449.tar.gz"
+      }
+    ],
+    "1.0.20160726135535": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5d59e8e7c1294e115cbfe1576ebf3d5f",
+          "sha256": "95a43e1dd7e6041be86ecc6f1e2bb2c5495943b80ad72eccc190ea91f1ac08aa"
+        },
+        "downloads": 2451,
+        "filename": "cwltool-1.0.20160726135535-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "5d59e8e7c1294e115cbfe1576ebf3d5f",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 202236,
+        "upload_time": "2016-07-26T14:06:37",
+        "url": "https://files.pythonhosted.org/packages/d9/a9/35797853eb881ee8f1465e15a89067ad130f1d2d20fab4a299bbaa29bfbf/cwltool-1.0.20160726135535-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0fee2a8c2a179db6d0c886e46769a7df",
+          "sha256": "95953bec5f51e902dab8528ad379552179ba574f0d7087b560f517ade7d5aae3"
+        },
+        "downloads": 258,
+        "filename": "cwltool-1.0.20160726135535.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0fee2a8c2a179db6d0c886e46769a7df",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 166075,
+        "upload_time": "2016-07-26T14:06:35",
+        "url": "https://files.pythonhosted.org/packages/18/d2/2f63ac95b2daebc2724628d0c7a71fdb04d72abc4f3f4972380aca0d0966/cwltool-1.0.20160726135535.tar.gz"
+      }
+    ],
+    "1.0.20160805221855": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "13c8112f16c862e5ae5f40ea53caa1b5",
+          "sha256": "8d9de507a6f445a0bcea65afa9c866b32db95a5ddb903c9f68cbca1ec754c61e"
+        },
+        "downloads": 261,
+        "filename": "cwltool-1.0.20160805221855.tar.gz",
+        "has_sig": false,
+        "md5_digest": "13c8112f16c862e5ae5f40ea53caa1b5",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 166450,
+        "upload_time": "2016-08-05T22:25:24",
+        "url": "https://files.pythonhosted.org/packages/9a/c1/3a2c0f94754974b6a9dc97ed947a837282541a7bb138a96fb4d516dadd54/cwltool-1.0.20160805221855.tar.gz"
+      }
+    ],
+    "1.0.20160810161358": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f50e0d5bc9b138bce54dddeb1f7b5fd1",
+          "sha256": "c3402c3bc3b471d37197821593d0230469240897bf8a74473bfddde4e907873e"
+        },
+        "downloads": 134,
+        "filename": "cwltool-1.0.20160810161358.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f50e0d5bc9b138bce54dddeb1f7b5fd1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 166547,
+        "upload_time": "2016-08-10T16:24:52",
+        "url": "https://files.pythonhosted.org/packages/e9/da/30d7863dbbd30172491205e1cd42f221613749c599baa201a2c6359a07e3/cwltool-1.0.20160810161358.tar.gz"
+      }
+    ],
+    "1.0.20160810200423": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b11d11f30ea805a74d81146c7204393a",
+          "sha256": "423af2658ac51a6c742ddf5dee64ce082594dfdb9bf230388a97d04bbc86fd23"
+        },
+        "downloads": 143,
+        "filename": "cwltool-1.0.20160810200423.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b11d11f30ea805a74d81146c7204393a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 166294,
+        "upload_time": "2016-08-10T20:06:06",
+        "url": "https://files.pythonhosted.org/packages/ff/12/ad01b5378e34cc871d707ca4aadf01beae4065349e9c67d185fa589c25bf/cwltool-1.0.20160810200423.tar.gz"
+      }
+    ],
+    "1.0.20160811184335": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "85514832feee74b0f6bc604e93860526",
+          "sha256": "2945c85a7b8af2a5516ef5036f0a79e8990d5509320620d622ccc08ce8dd4e35"
+        },
+        "downloads": 289,
+        "filename": "cwltool-1.0.20160811184335.tar.gz",
+        "has_sig": false,
+        "md5_digest": "85514832feee74b0f6bc604e93860526",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 166412,
+        "upload_time": "2016-08-11T18:44:09",
+        "url": "https://files.pythonhosted.org/packages/47/d3/08dc72dcd5c6e30aa4938dc08f7b47028dd65c90adc781eb2ebd461c8a8b/cwltool-1.0.20160811184335.tar.gz"
+      }
+    ],
+    "1.0.20160829192223": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0a5dea9880ea489646901bc3865d9213",
+          "sha256": "d1d2c78cd691932884afdd48d720716efecc6eb012eb6f798bbc4674197e725d"
+        },
+        "downloads": 339,
+        "filename": "cwltool-1.0.20160829192223.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0a5dea9880ea489646901bc3865d9213",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 166451,
+        "upload_time": "2016-08-29T19:24:16",
+        "url": "https://files.pythonhosted.org/packages/62/66/4a95023fd784fa23c4b5390fb0fe0e78a0c0c2697126cb27d36d5b158e65/cwltool-1.0.20160829192223.tar.gz"
+      }
+    ],
+    "1.0.20160829211335": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "50f465d835482eb86868c27acc0504a9",
+          "sha256": "e3d80aa4b5478b72e3f8683c1162fdd65b0ba86a3ed6cca450142535f5fba65b"
+        },
+        "downloads": 342,
+        "filename": "cwltool-1.0.20160829211335.tar.gz",
+        "has_sig": false,
+        "md5_digest": "50f465d835482eb86868c27acc0504a9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 166451,
+        "upload_time": "2016-08-29T21:21:42",
+        "url": "https://files.pythonhosted.org/packages/a5/74/a0ba9d3f1932ff3dbe53ef0ccc3cbcbc10ec208a9cd07c02c8d343a95c2e/cwltool-1.0.20160829211335.tar.gz"
+      }
+    ],
+    "1.0.20160901133827": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "eab347f0941795157239285d93c04de6",
+          "sha256": "9bc1b6a1f0960298a69edd2632114f2d7eae1ac1e5722044d13d47cee7ec3fc0"
+        },
+        "downloads": 251,
+        "filename": "cwltool-1.0.20160901133827.tar.gz",
+        "has_sig": false,
+        "md5_digest": "eab347f0941795157239285d93c04de6",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 167209,
+        "upload_time": "2016-09-01T13:40:18",
+        "url": "https://files.pythonhosted.org/packages/08/af/ca68e4f37d85fd7e540af8811503ea13cf93254db92b8fde4887702c86af/cwltool-1.0.20160901133827.tar.gz"
+      }
+    ],
+    "1.0.20160907141844": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "99fa6d2672801b91004879d2eb7d3eaa",
+          "sha256": "94a91bf8da0a4c7b5cd367c17fedf83dcac916a7dd32c302faac6e3922aec534"
+        },
+        "downloads": 245,
+        "filename": "cwltool-1.0.20160907141844.tar.gz",
+        "has_sig": false,
+        "md5_digest": "99fa6d2672801b91004879d2eb7d3eaa",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 210075,
+        "upload_time": "2016-09-07T14:20:12",
+        "url": "https://files.pythonhosted.org/packages/41/41/c5bdac9d8003771347aa2a58a83a9676d7b81a0e7843c54a9e7db408f699/cwltool-1.0.20160907141844.tar.gz"
+      }
+    ],
+    "1.0.20160912182208": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "58aa948d234f1d209671a0a217f279e3",
+          "sha256": "decd6e1dabfe5783cd84dbdff3f1d18a9955f6336561e1b8e8bc845bd1614e9f"
+        },
+        "downloads": 106,
+        "filename": "cwltool-1.0.20160912182208.tar.gz",
+        "has_sig": false,
+        "md5_digest": "58aa948d234f1d209671a0a217f279e3",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 210322,
+        "upload_time": "2016-09-13T01:50:38",
+        "url": "https://files.pythonhosted.org/packages/88/de/d7522604a00dc2ba1a2bfb80b7005cbc5f9ff6900f3ef3c6ab3be27b5b03/cwltool-1.0.20160912182208.tar.gz"
+      }
+    ],
+    "1.0.20160913171024": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d1e467913fc4f13a54c57cd2d74215e9",
+          "sha256": "9296db90031125a539d105ed77802ee3b5658ab63ffb33e16428f3018b0cb582"
+        },
+        "downloads": 105,
+        "filename": "cwltool-1.0.20160913171024.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d1e467913fc4f13a54c57cd2d74215e9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 210352,
+        "upload_time": "2016-09-13T17:11:24",
+        "url": "https://files.pythonhosted.org/packages/a7/dd/150e0be144f51e84c36d4d349b20e849e516d33e6e9e726c2ed6844b10f5/cwltool-1.0.20160913171024.tar.gz"
+      }
+    ],
+    "1.0.20160915202519": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "35e5a021dd4ace8a0a6fdf6f33aef4e4",
+          "sha256": "b6bb1b5857f2903fc2cf2e796d1fd3546deee08dcd796a4371e902d0858a86b8"
+        },
+        "downloads": 102,
+        "filename": "cwltool-1.0.20160915202519.tar.gz",
+        "has_sig": false,
+        "md5_digest": "35e5a021dd4ace8a0a6fdf6f33aef4e4",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 210385,
+        "upload_time": "2016-09-15T21:03:20",
+        "url": "https://files.pythonhosted.org/packages/fc/eb/2261a95752772f0a8450b89d91c461ca8033dc3ad6a07a0c923661963d30/cwltool-1.0.20160915202519.tar.gz"
+      }
+    ],
+    "1.0.20160918012352": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a1fb9c4cc6abe0de00e4d10fd275e05d",
+          "sha256": "3cf876ceeefe39d6cd01a8fa7beb98ea25e6a5c74674189bc3100f385a0732b8"
+        },
+        "downloads": 110,
+        "filename": "cwltool-1.0.20160918012352.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a1fb9c4cc6abe0de00e4d10fd275e05d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 210419,
+        "upload_time": "2016-09-18T01:25:50",
+        "url": "https://files.pythonhosted.org/packages/b1/98/bb72f6335aa785e6b603fcdfe7602617ff7fd8ac547f57c23858502b3bb2/cwltool-1.0.20160918012352.tar.gz"
+      }
+    ],
+    "1.0.20160919152321": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d90907ac87594924c1bccee24f59dc00",
+          "sha256": "af0800a4075cac50214c4a886bc98235a3e65ccb80bc0bff11b28d0f00f5c081"
+        },
+        "downloads": 116,
+        "filename": "cwltool-1.0.20160919152321.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d90907ac87594924c1bccee24f59dc00",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 210459,
+        "upload_time": "2016-09-19T15:29:28",
+        "url": "https://files.pythonhosted.org/packages/42/dc/8be8930ffbc086cc29e166a226ddef582ba1a33d6144d1921acae92044b8/cwltool-1.0.20160919152321.tar.gz"
+      }
+    ],
+    "1.0.20160922135240": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0bdd216df0673795cb2c7b7024b57a3d",
+          "sha256": "fbc59e0b342399146c647a2a2082ea395d798dc1b9ce6f714ab745a8c3c00478"
+        },
+        "downloads": 335,
+        "filename": "cwltool-1.0.20160922135240.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0bdd216df0673795cb2c7b7024b57a3d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 210491,
+        "upload_time": "2016-09-22T13:54:25",
+        "url": "https://files.pythonhosted.org/packages/29/33/d3044c2a408ffa04e2506cb2eabbaccc2dcd8abc4edecf833c74619b0a45/cwltool-1.0.20160922135240.tar.gz"
+      }
+    ],
+    "1.0.20160923180109": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e4e512be186b7c08ac4662d8b9ee054b",
+          "sha256": "b361e1397575c024796673f0083e8f968c2443bc2186098dd3cc8f79ba8a1c01"
+        },
+        "downloads": 102,
+        "filename": "cwltool-1.0.20160923180109.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e4e512be186b7c08ac4662d8b9ee054b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 210722,
+        "upload_time": "2016-09-23T18:02:08",
+        "url": "https://files.pythonhosted.org/packages/1e/2c/ae1140b0da0ba25c1a4cb95209952f4a903dd9fbde8a204ad3229c263390/cwltool-1.0.20160923180109.tar.gz"
+      }
+    ],
+    "1.0.20160930152149": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b5f8da128bbd2230c29dbd312c262467",
+          "sha256": "a7342e691d27af14e9ef71b466387bcc0b66b597e07934f1e0beae601ba2c85e"
+        },
+        "downloads": 160,
+        "filename": "cwltool-1.0.20160930152149.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b5f8da128bbd2230c29dbd312c262467",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 210773,
+        "upload_time": "2016-09-30T15:22:55",
+        "url": "https://files.pythonhosted.org/packages/a6/a6/5d5403870241c537a796aa830754e2b5aaaefbbee2bb9b2d1245c214bd06/cwltool-1.0.20160930152149.tar.gz"
+      }
+    ],
+    "1.0.20161005195021": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1906ba9713975461c9477b73d2b998ae",
+          "sha256": "86976ea3a0cc0ac4beba5da389688e33c708df6dabe07012c830029c9d49167c"
+        },
+        "downloads": 329,
+        "filename": "cwltool-1.0.20161005195021.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1906ba9713975461c9477b73d2b998ae",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 211063,
+        "upload_time": "2016-10-05T19:51:23",
+        "url": "https://files.pythonhosted.org/packages/c3/d9/ed2876f6bb9fab744694cea8cf4803552e93ec0fdef5df0d4e3d5a751706/cwltool-1.0.20161005195021.tar.gz"
+      }
+    ],
+    "1.0.20161007181528": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "39b1dab843927a9dedb3f636c2a60bb0",
+          "sha256": "7252a8c7bf3a24f858a0ceedcc18bcc259e696c1a59d14c938cca787ba6bcdc9"
+        },
+        "downloads": 299,
+        "filename": "cwltool-1.0.20161007181528.tar.gz",
+        "has_sig": false,
+        "md5_digest": "39b1dab843927a9dedb3f636c2a60bb0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 211195,
+        "upload_time": "2016-10-07T18:16:10",
+        "url": "https://files.pythonhosted.org/packages/90/52/03efb70882bb75c9a5b6e3273e3bcc51a64e77ecc2a366c028371173b75b/cwltool-1.0.20161007181528.tar.gz"
+      }
+    ],
+    "1.0.20161107145355": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c91bba9332f917547c3f6a8f4e06957a",
+          "sha256": "391b77928928d78bd3fd5668651b784beb2c43997d9780b0e8363233f6f24e09"
+        },
+        "downloads": 70,
+        "filename": "cwltool-1.0.20161107145355.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c91bba9332f917547c3f6a8f4e06957a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 212555,
+        "upload_time": "2016-11-07T15:05:48",
+        "url": "https://files.pythonhosted.org/packages/65/3d/5df6a9bc769cbf334bbb64a7a6c5ebb33efecf8a31f85d875a6ee7977c36/cwltool-1.0.20161107145355.tar.gz"
+      }
+    ],
+    "1.0.20161114152756": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "67890e7a46ec89facb43a0355d8472fe",
+          "sha256": "8b2285fa1643ac6e963b7abd50d284c7ce0b8ac659f626306f69faf59476d753"
+        },
+        "downloads": 173,
+        "filename": "cwltool-1.0.20161114152756-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "67890e7a46ec89facb43a0355d8472fe",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 262602,
+        "upload_time": "2016-11-14T15:31:02",
+        "url": "https://files.pythonhosted.org/packages/9b/53/df9603778244c6cfdc94fed8aaa55bdf66e9fc8e09b20b5ab43cff67743e/cwltool-1.0.20161114152756-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f6f575446cbbfaab8af1404ade507fda",
+          "sha256": "73a269be98985682a0ea5a3b606dc3feadcc529769baa28616b589a93254284d"
+        },
+        "downloads": 69,
+        "filename": "cwltool-1.0.20161114152756.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f6f575446cbbfaab8af1404ade507fda",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 215099,
+        "upload_time": "2016-11-14T15:30:58",
+        "url": "https://files.pythonhosted.org/packages/b2/16/a2779217c5f7b728d1bc858facd6d3f8f88790b6f86a740c2f8a2b18dfc4/cwltool-1.0.20161114152756.tar.gz"
+      }
+    ],
+    "1.0.20161115095848": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ea3febbb0298f6972391bda866c3f71b",
+          "sha256": "afe4398254d6b09ea2b8756162f918635d0f46f33e22a0bd8e632beb50ff526e"
+        },
+        "downloads": 69,
+        "filename": "cwltool-1.0.20161115095848-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "ea3febbb0298f6972391bda866c3f71b",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 262563,
+        "upload_time": "2016-11-15T10:26:30",
+        "url": "https://files.pythonhosted.org/packages/b3/fe/b518c99f63ff7849afece5642f3fae8ae85362d7edd6de586f64c32e7822/cwltool-1.0.20161115095848-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "318d2ed1a9f07b5ccacbd443a1bb94fd",
+          "sha256": "db29f5965dc4b71bacab4ccaa923d9e2d10a62586e0f2e985147b5eec369b6b3"
+        },
+        "downloads": 76,
+        "filename": "cwltool-1.0.20161115095848.tar.gz",
+        "has_sig": false,
+        "md5_digest": "318d2ed1a9f07b5ccacbd443a1bb94fd",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 215227,
+        "upload_time": "2016-11-15T10:26:22",
+        "url": "https://files.pythonhosted.org/packages/cf/60/3431958310d45bb7d31d35694a24ed31c1c04561914ccef850234006e344/cwltool-1.0.20161115095848.tar.gz"
+      }
+    ],
+    "1.0.20161122201220": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b640148a0a73d162f9b87d4078592dfa",
+          "sha256": "9aa6f2260834c131d7bd42b5981e46ab1f5c32c11418f053aebd96b5f59adb0d"
+        },
+        "downloads": 117,
+        "filename": "cwltool-1.0.20161122201220.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b640148a0a73d162f9b87d4078592dfa",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 214814,
+        "upload_time": "2016-11-22T20:13:23",
+        "url": "https://files.pythonhosted.org/packages/63/a1/3ede8b5cfb2a9d848fbbfd4d954046138cc83add012d0d9f8e49f6a31c53/cwltool-1.0.20161122201220.tar.gz"
+      }
+    ],
+    "1.0.20161123190203": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3e47068883d69834ad00499466d8e265",
+          "sha256": "33447c7f6329d96686be9cd12895b00c1ccabe8fd04d1727972c18a26138bba4"
+        },
+        "downloads": 344,
+        "filename": "cwltool-1.0.20161123190203.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3e47068883d69834ad00499466d8e265",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 214858,
+        "upload_time": "2016-11-23T19:03:09",
+        "url": "https://files.pythonhosted.org/packages/83/79/5ad5d1b86aad5997dd0a7853101bb0091552022886471bc51b318b1fd42a/cwltool-1.0.20161123190203.tar.gz"
+      }
+    ],
+    "1.0.20161128202906": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "93463d110e2e27c3e736c96e77d18540",
+          "sha256": "6a6f33b1c0509732453f256b5986b41cfe1047d41a4dc24093ac2270b735e22f"
+        },
+        "downloads": 239,
+        "filename": "cwltool-1.0.20161128202906.tar.gz",
+        "has_sig": false,
+        "md5_digest": "93463d110e2e27c3e736c96e77d18540",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 214990,
+        "upload_time": "2016-11-28T20:29:51",
+        "url": "https://files.pythonhosted.org/packages/2b/9e/a7f5b67e2988aab0bd23624d9464868be10bcbc8db9f6863a048ed6b8449/cwltool-1.0.20161128202906.tar.gz"
+      }
+    ],
+    "1.0.20161202203310": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6c0574c14c7655e3dc5fc14b0b3fcb3c",
+          "sha256": "747146d95f45a5305f1f0be7111d08d45e343222ba80a8d368abec2f07b0b4a5"
+        },
+        "downloads": 60,
+        "filename": "cwltool-1.0.20161202203310.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6c0574c14c7655e3dc5fc14b0b3fcb3c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 215312,
+        "upload_time": "2016-12-02T20:34:27",
+        "url": "https://files.pythonhosted.org/packages/f7/43/22dc360aa09bacb75446a4dccc5b8bb395f44815367d681035415bba0fb7/cwltool-1.0.20161202203310.tar.gz"
+      }
+    ],
+    "1.0.20161206195941": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2f3c29b264cb3f00dcb4a9f6422096bc",
+          "sha256": "be5be5762473f6009b3e256d1e3a3367807caa250af880d56571cafc068e8f92"
+        },
+        "downloads": 60,
+        "filename": "cwltool-1.0.20161206195941.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2f3c29b264cb3f00dcb4a9f6422096bc",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 215404,
+        "upload_time": "2016-12-06T20:02:06",
+        "url": "https://files.pythonhosted.org/packages/ce/18/e59815656c6da4836ac0b37d4ede22db9d451af498edc1f6d1bd90628e6a/cwltool-1.0.20161206195941.tar.gz"
+      }
+    ],
+    "1.0.20161206204434": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b1f718b7c7324782e6e4e61699448aa8",
+          "sha256": "20e77086f51c17e914fcb72ea88751ae522ce6dd3b8a499e4f5d1595459f4519"
+        },
+        "downloads": 60,
+        "filename": "cwltool-1.0.20161206204434.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b1f718b7c7324782e6e4e61699448aa8",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 215341,
+        "upload_time": "2016-12-06T20:56:57",
+        "url": "https://files.pythonhosted.org/packages/f0/cc/0dc66121b20497c101270944ff9fc2fc4b699ab1476459bd83b35b57e21a/cwltool-1.0.20161206204434.tar.gz"
+      }
+    ],
+    "1.0.20161207161158": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c3768de97c490fd47e8830af03663ab2",
+          "sha256": "9e4db900d755e329a4df8fa3484afca491d5393794743bb44adf24dbfa0e045b"
+        },
+        "downloads": 176,
+        "filename": "cwltool-1.0.20161207161158.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c3768de97c490fd47e8830af03663ab2",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 215417,
+        "upload_time": "2016-12-07T16:13:02",
+        "url": "https://files.pythonhosted.org/packages/9a/11/e4e3a32269ae9bf8f2d261d597fe9f2a6ee2d7e320ad2d8669d48faa4e3d/cwltool-1.0.20161207161158.tar.gz"
+      }
+    ],
+    "1.0.20161216212910": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4f652bf7b4d6f5c7ac3d3767cedbd074",
+          "sha256": "daa51f4402664957e0558086a43d70c943e3eee4533a85f0674aec939dded325"
+        },
+        "downloads": 312,
+        "filename": "cwltool-1.0.20161216212910.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4f652bf7b4d6f5c7ac3d3767cedbd074",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 216272,
+        "upload_time": "2016-12-16T21:30:55",
+        "url": "https://files.pythonhosted.org/packages/95/0d/3707567545f3f3cbef9171563757c789e04fa639680fa6b16dcf22745cc0/cwltool-1.0.20161216212910.tar.gz"
+      }
+    ],
+    "1.0.20161221171240": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "98144a466a1a7b3e92911840807328f0",
+          "sha256": "00abc2e5bbeb440165ddcf1a822c48084abe02f690e2132202f68bfee356fbb8"
+        },
+        "downloads": 243,
+        "filename": "cwltool-1.0.20161221171240-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "98144a466a1a7b3e92911840807328f0",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 264194,
+        "upload_time": "2016-12-21T17:19:31",
+        "url": "https://files.pythonhosted.org/packages/02/64/e65853d4ea864ab5b8d614143adb2105e307be314b8526dba6a2304f9266/cwltool-1.0.20161221171240-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0dcbb290dc29094ff48d6c12a4c4f128",
+          "sha256": "d0b336d929d0d7e16d6838de0ca54b253e21bb313b999ebd1153cf2309ca8fe5"
+        },
+        "downloads": 100,
+        "filename": "cwltool-1.0.20161221171240.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0dcbb290dc29094ff48d6c12a4c4f128",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 216693,
+        "upload_time": "2016-12-21T17:19:27",
+        "url": "https://files.pythonhosted.org/packages/81/29/38b35011a0e557e071c3868391bfee28616919e2143c5d68b69f77cb9c57/cwltool-1.0.20161221171240.tar.gz"
+      }
+    ],
+    "1.0.20161223144155": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b4ea5a26398524f7b819583fcf9b4429",
+          "sha256": "f6e67207aeff522bb88c0e46aa7f84f24c0ed115650235560ad6db77db8418ec"
+        },
+        "downloads": 385,
+        "filename": "cwltool-1.0.20161223144155.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b4ea5a26398524f7b819583fcf9b4429",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 216510,
+        "upload_time": "2016-12-23T14:43:51",
+        "url": "https://files.pythonhosted.org/packages/36/54/54845bd81c14cbf33be49ab103747279649d4fdc986455b996204da78e0f/cwltool-1.0.20161223144155.tar.gz"
+      }
+    ],
+    "1.0.20161227200419": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e0db6bd936d20e1f8beb654e891e1dde",
+          "sha256": "4f2918ac4f36e8316af8c42aff7a6881d2151fc2cdec7d596f59584e75e3c817"
+        },
+        "downloads": 499,
+        "filename": "cwltool-1.0.20161227200419.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e0db6bd936d20e1f8beb654e891e1dde",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 216480,
+        "upload_time": "2016-12-27T20:04:55",
+        "url": "https://files.pythonhosted.org/packages/e8/e8/c0556020f5e2b241610ee5813c00dd86dbbb35b468f4c9f25c422f2065a6/cwltool-1.0.20161227200419.tar.gz"
+      }
+    ],
+    "1.0.20170105144051": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "caee92e0998ff076dc94e01361329c82",
+          "sha256": "af21c55507810d3c33de65488cbab8b53f3b5698ff4d4a22209a696fdefe7fff"
+        },
+        "downloads": 332,
+        "filename": "cwltool-1.0.20170105144051.tar.gz",
+        "has_sig": false,
+        "md5_digest": "caee92e0998ff076dc94e01361329c82",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 216723,
+        "upload_time": "2017-01-05T14:46:53",
+        "url": "https://files.pythonhosted.org/packages/30/0c/88e33090c3422c4ef6d682ed482d6b54fadce362be1660a0c5e54d48c15e/cwltool-1.0.20170105144051.tar.gz"
+      }
+    ],
+    "1.0.20170111193653": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "61aa5575378a81ad13c86867847e0796",
+          "sha256": "c67698d32928235acf63c1d7bea6222ba83fbfd482cd789210e8e383a7bbcb1f"
+        },
+        "downloads": 14,
+        "filename": "cwltool-1.0.20170111193653.tar.gz",
+        "has_sig": false,
+        "md5_digest": "61aa5575378a81ad13c86867847e0796",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 216701,
+        "upload_time": "2017-01-11T19:45:51",
+        "url": "https://files.pythonhosted.org/packages/4d/5a/cd00b8d85bb3763f5bb4d7d4a5d5fcc90f6ef3606d77a4058fd408a32b4b/cwltool-1.0.20170111193653.tar.gz"
+      }
+    ],
+    "1.0.20170112154257": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "11fa9f313f9c188fee2001b1101c414b",
+          "sha256": "c653d050ad87b17febde6f29272c52339f7fe252acec714af06305eaab420949"
+        },
+        "downloads": 14,
+        "filename": "cwltool-1.0.20170112154257.tar.gz",
+        "has_sig": false,
+        "md5_digest": "11fa9f313f9c188fee2001b1101c414b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 216756,
+        "upload_time": "2017-01-12T15:45:05",
+        "url": "https://files.pythonhosted.org/packages/35/de/39b4c894e8417d6af5e232fbdcd1fe7edc5ae71d29dca8b96c45c3595b92/cwltool-1.0.20170112154257.tar.gz"
+      }
+    ],
+    "1.0.20170112185927": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "444d48ad8709029f5cd713b121f9569f",
+          "sha256": "089f5bef504c4e068688cc5ae4ffb7324b8eeb0cebc908974c7b270787128e99"
+        },
+        "downloads": 13,
+        "filename": "cwltool-1.0.20170112185927.tar.gz",
+        "has_sig": false,
+        "md5_digest": "444d48ad8709029f5cd713b121f9569f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 216955,
+        "upload_time": "2017-01-12T18:59:59",
+        "url": "https://files.pythonhosted.org/packages/97/4f/488fc018443285ff6645c5d655ec99ac4690045f41cfb293fdd38a702864/cwltool-1.0.20170112185927.tar.gz"
+      }
+    ],
+    "1.0.20170114120503": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e4c61803ea664b3b823c267e06cd3d0b",
+          "sha256": "f6609ffeedf061cc9881620ebf2f8ee005fbaf4facc5a935a2ed1ad0f4719d4d"
+        },
+        "downloads": 9,
+        "filename": "cwltool-1.0.20170114120503-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "e4c61803ea664b3b823c267e06cd3d0b",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 264595,
+        "upload_time": "2017-01-14T12:06:36",
+        "url": "https://files.pythonhosted.org/packages/c0/a6/9054e3daf952a63c610d8780f024d7155a431569d5979784cbe67b7f70e7/cwltool-1.0.20170114120503-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "083905143eedeb4ad33b457f72d981b1",
+          "sha256": "20f3ded4b59b7864b9a676e8a83822240c45d0fe37712aebf653796b2efb78e2"
+        },
+        "downloads": 12,
+        "filename": "cwltool-1.0.20170114120503.tar.gz",
+        "has_sig": false,
+        "md5_digest": "083905143eedeb4ad33b457f72d981b1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 217234,
+        "upload_time": "2017-01-14T12:06:33",
+        "url": "https://files.pythonhosted.org/packages/04/64/3ae69b4812a577b1da1534f6309d5b50df0863589b666dec913959b4cbc8/cwltool-1.0.20170114120503.tar.gz"
+      }
+    ],
+    "1.0.20170118141124": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6b9620d207d09fdbcb9309de8ae02ba0",
+          "sha256": "372436a74d9455356b821ddd3b9822094b5a228918932a2b409d5ca48299d922"
+        },
+        "downloads": 12,
+        "filename": "cwltool-1.0.20170118141124.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6b9620d207d09fdbcb9309de8ae02ba0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 216938,
+        "upload_time": "2017-01-18T14:12:36",
+        "url": "https://files.pythonhosted.org/packages/44/9b/5f967ae60e55c49bd197de9bf1b026522daaa1ff75ca1e479bb318ea9aca/cwltool-1.0.20170118141124.tar.gz"
+      }
+    ],
+    "1.0.20170119182607": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7a6585ea7bc93738056d3d1b4d8b20b7",
+          "sha256": "4bad1506893c148679f566637c69ecb322a5a7d21de36bdbfd737edb423d8de6"
+        },
+        "downloads": 10,
+        "filename": "cwltool-1.0.20170119182607.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7a6585ea7bc93738056d3d1b4d8b20b7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 217246,
+        "upload_time": "2017-01-19T18:27:08",
+        "url": "https://files.pythonhosted.org/packages/e1/5a/46bcb31651b4ec71335de9671606da02747e1cccbf52dfe8017da03ad834/cwltool-1.0.20170119182607.tar.gz"
+      }
+    ],
+    "1.0.20170119234115": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a5ad58fd81e4a7f894a10716332dc562",
+          "sha256": "fc609f1802ad1970624533f234b21d22f86dbc19a62826a55c6c2612fd454dcc"
+        },
+        "downloads": 35,
+        "filename": "cwltool-1.0.20170119234115.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a5ad58fd81e4a7f894a10716332dc562",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 217227,
+        "upload_time": "2017-01-19T23:42:16",
+        "url": "https://files.pythonhosted.org/packages/3e/f2/1b6b11c15a89dc9610297b6d0156c26cec10c011d48f69269e0cdffe1e37/cwltool-1.0.20170119234115.tar.gz"
+      }
+    ],
+    "1.0.20170213175853": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "312ad126e10673d9ec4355e8cc32d2b9",
+          "sha256": "ee641708e87f54203a849bf24917c2eb14d37079976f9b7f45dde64ab252e9a6"
+        },
+        "downloads": 15,
+        "filename": "cwltool-1.0.20170213175853.tar.gz",
+        "has_sig": false,
+        "md5_digest": "312ad126e10673d9ec4355e8cc32d2b9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 217087,
+        "upload_time": "2017-02-13T17:59:41",
+        "url": "https://files.pythonhosted.org/packages/04/2d/a89fe9b7c711165d667359b50054316172e26b74a1ef6d075170904df0cb/cwltool-1.0.20170213175853.tar.gz"
+      }
+    ],
+    "1.0.20170217172322": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b230213b69f41c5e213b4fef8f5b9981",
+          "sha256": "99e5b928a40b1ef9d33a3a373e609ae04e91f96a705ba4806015dc4b99180e64"
+        },
+        "downloads": 103,
+        "filename": "cwltool-1.0.20170217172322-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "b230213b69f41c5e213b4fef8f5b9981",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 277669,
+        "upload_time": "2017-02-17T17:26:39",
+        "url": "https://files.pythonhosted.org/packages/43/e8/9516732160ce2912af1d539d9d575d350bb96e8d2e582bce9635f8f9bfd8/cwltool-1.0.20170217172322-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "899c22688bfcc5c361a6c192ab1872ef",
+          "sha256": "d06d67bbd630bfdbd284fbeea1fdd1a30ede7254629297904df1c29251907d12"
+        },
+        "downloads": 14,
+        "filename": "cwltool-1.0.20170217172322.tar.gz",
+        "has_sig": false,
+        "md5_digest": "899c22688bfcc5c361a6c192ab1872ef",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 222117,
+        "upload_time": "2017-02-17T17:26:36",
+        "url": "https://files.pythonhosted.org/packages/97/b6/b9d5be514f53e2ff170e8d58cdff1c61a32e08fa8a5f5c96d98614d1bacb/cwltool-1.0.20170217172322.tar.gz"
+      }
+    ],
+    "1.0.20170224141733": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "12fefdc90fdc1a9424493de45e082e24",
+          "sha256": "52b120a52bdb418dd86d2a94b099a1b4d0df7ebaf411de3d0f88c6b908813ef4"
+        },
+        "downloads": 257,
+        "filename": "cwltool-1.0.20170224141733.tar.gz",
+        "has_sig": false,
+        "md5_digest": "12fefdc90fdc1a9424493de45e082e24",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 224224,
+        "upload_time": "2017-02-24T14:19:58",
+        "url": "https://files.pythonhosted.org/packages/02/2f/e8b09f20e3f565d249e8691013aa4be6b29801a98766cb23c9d4c0e59ff9/cwltool-1.0.20170224141733.tar.gz"
+      }
+    ],
+    "1.0.20170308174714": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "42979454bc9c7bd99a1cc92079b2ab6f",
+          "sha256": "f8207961571f12b25dcc9ddb612a9706785a5df4aa8b8359e468b87724c2565e"
+        },
+        "downloads": 15,
+        "filename": "cwltool-1.0.20170308174714.tar.gz",
+        "has_sig": false,
+        "md5_digest": "42979454bc9c7bd99a1cc92079b2ab6f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 232441,
+        "upload_time": "2017-03-08T18:11:23",
+        "url": "https://files.pythonhosted.org/packages/b7/67/c60d3a75c1567e835668be0ece489d315cae7651b3b366dbe4d04ba7923b/cwltool-1.0.20170308174714.tar.gz"
+      }
+    ],
+    "1.0.20170309164828": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3b13d57ec740dc49a0cf90277397f5d8",
+          "sha256": "ca7b0a14a1d945e5e390b17e9c6d504a4a6c1fc736d7e097ab43456e2b272f1e"
+        },
+        "downloads": 28,
+        "filename": "cwltool-1.0.20170309164828.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3b13d57ec740dc49a0cf90277397f5d8",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 231115,
+        "upload_time": "2017-03-09T16:49:28",
+        "url": "https://files.pythonhosted.org/packages/9f/1e/eadd69113d64ae59215b704f8b6c1c8f41790cb40868a7d97c2dcbd6dd8e/cwltool-1.0.20170309164828.tar.gz"
+      }
+    ],
+    "1.0.20170327143622": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "690df70bfe3d15b9b1fd5e3d473de50c",
+          "sha256": "13d43876abd92f56edb9a4a2fd3145ef1cae210ebc321fe92579e40af9b2a74d"
+        },
+        "downloads": 14,
+        "filename": "cwltool-1.0.20170327143622.tar.gz",
+        "has_sig": false,
+        "md5_digest": "690df70bfe3d15b9b1fd5e3d473de50c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 232334,
+        "upload_time": "2017-03-27T18:18:34",
+        "url": "https://files.pythonhosted.org/packages/75/de/cefca39e23cda94b262a707040fa49d2468a8f72c2dd111aeef71851ee30/cwltool-1.0.20170327143622.tar.gz"
+      }
+    ],
+    "1.0.20170329142446": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ef8212bb44e5b1736cba3198374d4188",
+          "sha256": "18ae2391286b0fe3c258d455476e59967869d6a05a1d65e357e9c0997edbcc96"
+        },
+        "downloads": 56,
+        "filename": "cwltool-1.0.20170329142446.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ef8212bb44e5b1736cba3198374d4188",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 232735,
+        "upload_time": "2017-03-29T15:50:10",
+        "url": "https://files.pythonhosted.org/packages/97/4c/469529454365088003b3ce138ffc77df5f98ce2347507f1541f235afd584/cwltool-1.0.20170329142446.tar.gz"
+      }
+    ],
+    "1.0.20170413151007": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "455178cf6520ea92e3299c8813fb5637",
+          "sha256": "71f0ba3b074f505fcf02dd395de05be65123d01578bc4a6be921a59bce37bdd4"
+        },
+        "downloads": 0,
+        "filename": "cwltool-1.0.20170413151007.tar.gz",
+        "has_sig": false,
+        "md5_digest": "455178cf6520ea92e3299c8813fb5637",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 232636,
+        "upload_time": "2017-04-13T15:10:58",
+        "url": "https://files.pythonhosted.org/packages/0b/f0/191a44322fdcb09bc6af5fc312bc3f576dd223ea3d22a7235606ce5bfd1b/cwltool-1.0.20170413151007.tar.gz"
+      }
+    ],
+    "1.0.20170413194156": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8e06d1a6e93353d0e9ec4e1446037406",
+          "sha256": "978adabeeabc288a853d37dd2410def04ef288e15ae3702fb063841d4a0857ad"
+        },
+        "downloads": 0,
+        "filename": "cwltool-1.0.20170413194156.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8e06d1a6e93353d0e9ec4e1446037406",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 232664,
+        "upload_time": "2017-04-13T19:42:39",
+        "url": "https://files.pythonhosted.org/packages/24/b8/ac04f196e40319de0f309bace23f65a2708f430766169db5dfffcd1d28a6/cwltool-1.0.20170413194156.tar.gz"
+      }
+    ],
+    "1.0.20170510151339": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "507dff059b12157ee3c0e5c67ad910e1",
+          "sha256": "c3024c4aef5681748528c5121505aa2b9e9736c383bb1c3b6d18eaf283eb4330"
+        },
+        "downloads": 0,
+        "filename": "cwltool-1.0.20170510151339.tar.gz",
+        "has_sig": false,
+        "md5_digest": "507dff059b12157ee3c0e5c67ad910e1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 238564,
+        "upload_time": "2017-05-10T15:14:05",
+        "url": "https://files.pythonhosted.org/packages/5d/b2/9ecda39855c0498e576d1a9257f35b685f430d6749e3a51f8ebc0bb3b3c6/cwltool-1.0.20170510151339.tar.gz"
+      }
+    ],
+    "1.0.20170510165748": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b6b545080765a5831e4acf08d6f1239f",
+          "sha256": "f366bde6ce53c8c7e741e6c070075ac5af7feb83e21a2813ccdc6cc8083c4bfe"
+        },
+        "downloads": 0,
+        "filename": "cwltool-1.0.20170510165748.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b6b545080765a5831e4acf08d6f1239f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 238577,
+        "upload_time": "2017-05-10T16:58:18",
+        "url": "https://files.pythonhosted.org/packages/c0/4f/a30da6f7016a79f5be4ed9bfbc0095d1a10084bb6f1e9edefc60be887915/cwltool-1.0.20170510165748.tar.gz"
+      }
+    ],
+    "1.0.20170516234254": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ab7459a59a205aeb6fae83d97fb1c4a5",
+          "sha256": "9f1e885135a9c4521e84f1228fcc3cce8356de1c532acfff2f8aad7981ce7dba"
+        },
+        "downloads": 0,
+        "filename": "cwltool-1.0.20170516234254-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "ab7459a59a205aeb6fae83d97fb1c4a5",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 296374,
+        "upload_time": "2017-05-16T23:54:28",
+        "url": "https://files.pythonhosted.org/packages/de/12/690ab1cc074d15d236aa090a5af929139c264612e79e2aa3cdea7f7b1da0/cwltool-1.0.20170516234254-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ebdcabcca5a7f10a1f14a041b5a3607f",
+          "sha256": "1f6095a898bcfe0a12cdf79556fc9392339963a1457353b6b4a8b6186bcc7453"
+        },
+        "downloads": 0,
+        "filename": "cwltool-1.0.20170516234254.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ebdcabcca5a7f10a1f14a041b5a3607f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 234249,
+        "upload_time": "2017-05-16T23:54:30",
+        "url": "https://files.pythonhosted.org/packages/9d/f4/e2f96359b99d841b47cd3c2a204966daae5e92f551e194c112ca18d82809/cwltool-1.0.20170516234254.tar.gz"
+      }
+    ],
+    "1.0.20170525215327": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6acc9609ee045c567c5375e043e87b30",
+          "sha256": "1f156b4d20739cd04cb7b3da24540017092759095dc5d55eb29c23758afb4076"
+        },
+        "downloads": 0,
+        "filename": "cwltool-1.0.20170525215327.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6acc9609ee045c567c5375e043e87b30",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 240023,
+        "upload_time": "2017-05-26T15:39:34",
+        "url": "https://files.pythonhosted.org/packages/68/6a/88c2643fc5617965364a8d2c78c3f30f1d0f09c8b9f121fd10c24b7370ba/cwltool-1.0.20170525215327.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "6acc9609ee045c567c5375e043e87b30",
+        "sha256": "1f156b4d20739cd04cb7b3da24540017092759095dc5d55eb29c23758afb4076"
+      },
+      "downloads": 0,
+      "filename": "cwltool-1.0.20170525215327.tar.gz",
+      "has_sig": false,
+      "md5_digest": "6acc9609ee045c567c5375e043e87b30",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 240023,
+      "upload_time": "2017-05-26T15:39:34",
+      "url": "https://files.pythonhosted.org/packages/68/6a/88c2643fc5617965364a8d2c78c3f30f1d0f09c8b9f121fd10c24b7370ba/cwltool-1.0.20170525215327.tar.gz"
+    }
+  ]
+}

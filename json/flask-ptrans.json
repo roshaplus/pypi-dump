@@ -1,0 +1,234 @@
+{
+  "info": {
+    "author": "Peter Harris",
+    "author_email": "peter.harris@skyscanner.net",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 4 - Beta",
+      "Framework :: Flask",
+      "Intended Audience :: Developers",
+      "Programming Language :: Python :: 2.7",
+      "Programming Language :: Python :: 3"
+    ],
+    "description": "Flask Extension for Template Localisation\n=========================================\n\n# Motivation\n\nThe string translation tool, [Pootle](https://github.com/translate/pootle), accepts translatable strings in the form of a JSON\nfile mapping keys to values (with associated comments to aid translation).\n\n## Example\n\n    {\"flights_intro_welcome\": {\n        \"value\":\"Welcome!\",\n        \"comment\":\"appears as page heading\"},\n     ...}\n\nUnlike `gettext` and other tools that are based on it (such as the existing Flask extension Babel,\nand the built in `i18n` extension to `Jinja2` that comes with Flask), the string ID or key for \neach translatable string is an identifier, not the untranslated English text.\n\nTherefore, if you are using Pootle in that way (as Skyscanner are), you need some way of inserting\nlocalised strings into templates using the identifiers in the JSON files that Pootle produces, and\nfalling back to the untranslated string if no match is found.\n\n\n# Installation\n\nFrom the git repository, you can install directly using `pip install .` or build a .tar.gz or zip file\nwith `python setup.py sdist` (will appear in the `dist` directory) and install with `pip` from that.\n\nThe package depends on Flask, so pip will install the latest\nversions of Flask and its dependencies if you don't already have them.\n\nThe tests require `nose`, so you might want to `pip install nose` if you want to run the tests.\n\n\n# Activating the Extension\n\nWithin your Flask application, before you begin rendering pages, you need to import the `ptrans`\nmodule, and tell it where to find the JSON files containing translations, and add the extension\nto you app's `Jinja` environment:\n\n    from flask_ptrans import ptrans\n    \n    ptrans.init_localisation(path_to_directory_of_json_files)\n    app = Flask(...)\n    app.jinja_env.add_extension('flask_ptrans.ptrans.ptrans')\n\nThe JSON files should be named using the locale of the strings they contain, in lower-case. For example,\n`en-gb.json` or `pt-br.json`. They can be in the Pootle format as described above, or be a simple mapping from\nstring ID to translated string (since you don't need to include translator comments in a deployed application).\n\nBy default, empty translations are treated the same as missing translations (fall back to default string),\nbut you can override this if you are really sure by specifying ``init_localisation(path, allow_empty=True)``.\n\nYou can get fancy and provide your own way to find translations instead of looking for files in a directory:\n\n    def find_translation(locale: str) -> dict:\n        \"\"\"\n        accept a locale and return a dict {key: string} for that language\n        \"\"\"\n        ...\n        \n    ptrans.init_localisation(locale_hook=find_translation)\n\nThis allows you to (for example) pull translations from a web service. Once the function returns a nonempty dict,\nthat will be cached indefinitely (same as it is when translations are found in a file), and the function won't be\ncalled again for the same locale.\n\n# The `ptrans_get` Function\n\nOnce the extension has been added, a function `ptrans_get(locale, string_id, fallback, **kwargs)` is available\nin all templates, and can be used anywhere you could insert an expression inside {% %} or {{ }}.\n\nIf keyword arguments are given, then `str.format` is used to interpolate them into the resulting translated\nstring. For example:\n\n    {{ ptrans_get(locale, STRID, 'Your reference is {ref}.', ref=booking_reference) }}\n\nIf any are missing, the string is returned as-is, with no placeholders filled in.\n\n\n# Template Syntax\n\nThe extension adds one piece of template syntax.\n\n    {% ptrans STRID %}Fallback text{% endptrans %}\n\nThis simply replaces the enclosed text with the translated string for the given string ID STRID, or leaves\nit unchanged if no translation was found. It is roughly the same as inserting:\n\n    {{ ptrans_get(locale, STRID, 'Fallback text') }}\n\nIf you need to do anything fancy (such as inserting values into placeholders in the string) you will\nneed to use the function, because the template syntax is limited to plain substitution.\n\nYou may need to insert a subset of the translated strings into the page for a script to use. In that case,\nyou can use `ptrans_subset` to insert a JSON object containing key,value pairs in the specified locale, for\nall keys matching one or more prefixes.\n\n    <script>\n    strings = {{ ptrans_subset(locale, 'people-', 'dates-')|tojson|safe }};\n    </script>\n    \nAlways filter the result with `tojson|safe` unless you want Python dictionary syntax and HTML escaping. For most\nuses you want proper JSON without any escaped characters inside your script.\n\n\n# Choosing a Locale\n\nBecause `{% ptrans %}` expects `locale` to be in the environment, pass the variable `locale` into `render_template`\nwhen you are rendering a page that uses the template syntax.\n\n    render_template('index.html', locale=selected_locale)\n\nHow you decide what locale to use depends on your application. You could code it into the URLs and only provide\nlinks to a specific set of translated pages, for example. Or you could select it based on the `Accept-Language` header\nsent from the user's browser.\n\nFor doing that more conveniently, `ptrans` provides a function `best_locale()`. In a request context, this\nreturns the best match between the browser's language preference and the set of JSON files deployed with the\napplication. The set of supported locales is only created once and then cached, so there is no performance\nproblem if you want to call `best_locale()` for each request.\n\n\n# Localisation files\n\nThere are two formats of localisation file, both JSON. The simple or output format is a single dictionary containing\nstring IDs as keys and strings as values.\n\nThe full or input format is a dictionary whose keys are string IDs, but whose values are dictionaries with \"value\"\nand \"comment\" entries. The \"value\" is the string to be translated. The \"comment\" is for a human translator to read,\nand should help explain the context enough to make the translation unambiguous.\n\n\n# Utility Scripts\n\nThe following scripts will be installed by pip, to assist the localisation process:\n\n## `ptrans_check`\n\n    ptrans_check [options] directory\n\nLooks in the directory for subdirectories `templates` and `localisation`. Scans the template directory recursively to\nlook for uses of `ptrans_get` or the `{% ptrans %}` directive, and scans the localisation directory for\n`en-gb.json` files containing string IDs. Logs any new strings in the template that are not in the localisation file,\nand strings that are there but differ from the default text used in the template.\n\nWith the `--new-strings` option, writes any new strings used in the templates but not defined in the JSON files to\nstandard output in the full JSON format. These can be checked and copied into the translation files.\n\n## `ptrans_aggregate`\n\n    ptrans_aggregate dest [source ...]\n\nThis collects JSON localisation files (in either format) from the source directories (by default, any subdirectories of\nthe destination) and aggregates all the strings that belong in the same locale from all the files that are found.\n \nIt produces one file per locale in the destination direction. These are in the simple format without comments.\n\n## `ptrans_untranslated`\n\n    ptrans_untranslated [--locale locale] [directory ...]\n\nLooks in each specified directory for `en-gb.json` (the default is the current directory) and the translation file for\nthe specified locale (default is `it-IT`). Lists the IDs of strings that are nonempty in the en-GB locale but empty\nor missing in the other locale.\n\n\n## `ptrans_pseudolocalise`\n\n    ptrans_pseudolocalise file\n\nReads a translation file in the simple output format, and produces a pseudo-localised version on standard output by\nmangling the characters with unicode diacritics, so the text is kind of readable but recognisably altered.\n\nIt leaves alone any part of the translatable string that is in curly braces, because that is probably a named\nplaceholder for inserting values with Python's `format` syntax.\n\n\n## `ptrans_resolve`\n\n    ptrans_resolve [--update] [--interactive] filename\n\nThis is a utility for resolving git merge conflicts in a JSON file. It parses a file containing conflict markers,\nand constructs dictionaries for the two versions of the file. Then it attempts to resolve the conflict by combining\nthe dictionaries at an object level rather than textually.\n\nWith the `--interactive` option it prompts the user to choose which of two different objects should be chosen when\nan entry exists but is different in both versions.\n\nWith the `--update` option it will write the resolved file back in-place, provided that it is able to resolve the\nconflicts without any problems.\n",
+    "docs_url": null,
+    "download_url": "https://github.com/Skyscanner/flask-ptrans/tarball/1.4",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/Skyscanner/flask-ptrans",
+    "keywords": "localisation,jinja2,flask,pootle",
+    "license": "Apache License v2",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "flask-ptrans",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/flask-ptrans/",
+    "release_url": "https://pypi.org/project/flask-ptrans/1.4/",
+    "requires_python": null,
+    "summary": "Flask extension for localisation of templates from JSON files",
+    "version": "1.4"
+  },
+  "releases": {
+    "0.7.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "24eabfbba88b5395db54c2350739ab39",
+          "sha256": "d26de754a0085c9572e14007ddd1206af9138726deb8e4a06013ab92d4615b9d"
+        },
+        "downloads": 811,
+        "filename": "flask-ptrans-0.7.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "24eabfbba88b5395db54c2350739ab39",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 14126,
+        "upload_time": "2015-07-21T11:15:05",
+        "url": "https://files.pythonhosted.org/packages/f0/1c/1d4a7dab7cbe6fbf6cd8de2d515697321eb87b2fa575bc2a1db6614a93bf/flask-ptrans-0.7.2.tar.gz"
+      }
+    ],
+    "0.8": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "541a19c1dc1565c5c1fd243a93871be1",
+          "sha256": "9b24ffee487c77f50010b560ceaf95cf86569d7e76e1754f1e3e5b9bd8dbc6df"
+        },
+        "downloads": 810,
+        "filename": "flask-ptrans-0.8.tar.gz",
+        "has_sig": false,
+        "md5_digest": "541a19c1dc1565c5c1fd243a93871be1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 14532,
+        "upload_time": "2015-07-22T11:01:46",
+        "url": "https://files.pythonhosted.org/packages/a9/5f/03dd849e6499ef23b45cc4374156de90f119ce9c6d023d3abc317dc98804/flask-ptrans-0.8.tar.gz"
+      }
+    ],
+    "0.8.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a7d59189a6794d53ab2922b3a18317c1",
+          "sha256": "ab28b25aa14b4ccbc8f7b4b7dc9b1396a372cfd66f950192e5c079120c6d17bf"
+        },
+        "downloads": 3154,
+        "filename": "flask-ptrans-0.8.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a7d59189a6794d53ab2922b3a18317c1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 14540,
+        "upload_time": "2015-07-22T12:01:14",
+        "url": "https://files.pythonhosted.org/packages/65/21/1d5bff865fd8d8e0368b3846d8607197dc75936d60063e9a8a138ccb4b3f/flask-ptrans-0.8.1.tar.gz"
+      }
+    ],
+    "0.9": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "83430e9b61c810efd793a84f3e79b766",
+          "sha256": "7f6a10409e82696bc6d67e00ad42b25a017061271e0366f2d4cf75e5da2660a6"
+        },
+        "downloads": 2101,
+        "filename": "flask-ptrans-0.9.tar.gz",
+        "has_sig": false,
+        "md5_digest": "83430e9b61c810efd793a84f3e79b766",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 14629,
+        "upload_time": "2015-11-05T17:20:00",
+        "url": "https://files.pythonhosted.org/packages/c0/25/dafc167f665eb2886d1f0630c384c623ce8403610c52341ca4866c7348c1/flask-ptrans-0.9.tar.gz"
+      }
+    ],
+    "1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4dbd378ec6a4110310235f80110c1cf5",
+          "sha256": "beb105f33aa1459d90f654683f02b9795aa801ddadd656b334d89b1f3f15c929"
+        },
+        "downloads": 146,
+        "filename": "flask-ptrans-1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4dbd378ec6a4110310235f80110c1cf5",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 14647,
+        "upload_time": "2016-03-08T12:53:59",
+        "url": "https://files.pythonhosted.org/packages/17/53/8ccd72954686d24ba98fa3138d6299f796dc35f4f4ee46de928205c2bb0a/flask-ptrans-1.0.tar.gz"
+      }
+    ],
+    "1.0.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "02550f065cd75744d26eb7b975ff665b",
+          "sha256": "40f9d16268baa14c1bc1d2ef56f26510dc2b8f94bb279869477382751c7573e1"
+        },
+        "downloads": 130,
+        "filename": "flask-ptrans-1.0.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "02550f065cd75744d26eb7b975ff665b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 14647,
+        "upload_time": "2016-03-08T13:01:48",
+        "url": "https://files.pythonhosted.org/packages/7a/36/b9a0e35ce2f8a36e22fb6981038991459b996be629f5ab30e6cb161568bd/flask-ptrans-1.0.1.tar.gz"
+      }
+    ],
+    "1.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "37ad37a2ef6552b5783548f4464421fd",
+          "sha256": "0263d06d3acd225c5861662c2f7941e45fe9f6e4d2e3faa138b8d629cce01fd9"
+        },
+        "downloads": 143,
+        "filename": "flask-ptrans-1.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "37ad37a2ef6552b5783548f4464421fd",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 14614,
+        "upload_time": "2016-03-09T10:27:56",
+        "url": "https://files.pythonhosted.org/packages/65/80/3fbbcbeb7e094372dda411f38d6181ba5b7c39f5800fb98edf6db3e6c4c9/flask-ptrans-1.1.tar.gz"
+      }
+    ],
+    "1.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4d138f446ff3fb4a3fa6bff7840576c5",
+          "sha256": "ed2b9745e07e559f687b62e82ec3b2f92abe84d5682d71b2c4206545df454565"
+        },
+        "downloads": 155,
+        "filename": "flask-ptrans-1.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4d138f446ff3fb4a3fa6bff7840576c5",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 14760,
+        "upload_time": "2016-05-10T09:55:30",
+        "url": "https://files.pythonhosted.org/packages/e9/e8/8e425fbb5254196e75edca4627e5ad13547eb190a4c0f0e45d906c59c924/flask-ptrans-1.2.tar.gz"
+      }
+    ],
+    "1.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f1f529ced3ea52c7bd246a243f434873",
+          "sha256": "4799bf42f767779a948f65a436298830355a7a5b094c62ea35d3e08c6310fe48"
+        },
+        "downloads": 208,
+        "filename": "flask-ptrans-1.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f1f529ced3ea52c7bd246a243f434873",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 15094,
+        "upload_time": "2016-05-18T13:13:42",
+        "url": "https://files.pythonhosted.org/packages/19/c6/673f2296470108f5ceed63e3fc8d493773ac0048f2d6962db6ad106a870e/flask-ptrans-1.3.tar.gz"
+      }
+    ],
+    "1.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "20e8abdcfb25405d7d0b292718355e55",
+          "sha256": "a903bdea8e1d77efbba0ba1ab347179bdbc983194ae2af3cb0ca951e9d53cf51"
+        },
+        "downloads": 1353,
+        "filename": "flask-ptrans-1.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "20e8abdcfb25405d7d0b292718355e55",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 15177,
+        "upload_time": "2016-06-27T11:24:52",
+        "url": "https://files.pythonhosted.org/packages/9a/56/fada9201dc12d9890ad285d754a6f082029044f19fc4a7ba7f93f629c5c6/flask-ptrans-1.4.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "20e8abdcfb25405d7d0b292718355e55",
+        "sha256": "a903bdea8e1d77efbba0ba1ab347179bdbc983194ae2af3cb0ca951e9d53cf51"
+      },
+      "downloads": 1353,
+      "filename": "flask-ptrans-1.4.tar.gz",
+      "has_sig": false,
+      "md5_digest": "20e8abdcfb25405d7d0b292718355e55",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 15177,
+      "upload_time": "2016-06-27T11:24:52",
+      "url": "https://files.pythonhosted.org/packages/9a/56/fada9201dc12d9890ad285d754a6f082029044f19fc4a7ba7f93f629c5c6/flask-ptrans-1.4.tar.gz"
+    }
+  ]
+}

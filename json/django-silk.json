@@ -1,0 +1,523 @@
+{
+  "info": {
+    "author": "Michael Ford",
+    "author_email": "mtford@gmail.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Environment :: Web Environment",
+      "Framework :: Django",
+      "Intended Audience :: Developers",
+      "Operating System :: OS Independent",
+      "Programming Language :: Python",
+      "Programming Language :: Python :: 2.7",
+      "Programming Language :: Python :: 3.4",
+      "Programming Language :: Python :: 3.5",
+      "Topic :: Internet :: WWW/HTTP",
+      "Topic :: Internet :: WWW/HTTP :: Dynamic Content"
+    ],
+    "description": "#Silk\n\n*Silk has now moved to the django-silk organization and is looking for contributors - if you think you can help out, please get in touch!*\n\n[![Gitter](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/django-silk/silk?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)\n[![TravisCI Build](https://img.shields.io/travis/django-silk/silk/master.svg)](https://travis-ci.org/django-silk/silk)\n[![PyPI Download](https://img.shields.io/pypi/v/django-silk.svg)](https://pypi.python.org/pypi/django-silk)\n[![PyPI Python Versions](https://img.shields.io/pypi/pyversions/django-silk.svg)](https://pypi.python.org/pypi/django-silk)\n\nSilk is a live profiling and inspection tool for the Django framework. Silk intercepts and stores HTTP requests and database queries before presenting them in a user interface for further inspection:\n\n<img src=\"https://raw.githubusercontent.com/django-silk/silk/master/screenshots/1.png\" width=\"720px\"/>\n\n## Contents\n\n* [Requirements](#requirements)\n* [Installation](#installation)\n* [Features](#features)\n* [Configuration](#configuration)\n    * [Authentication/Authorisation](#authentication-authorisation)\n    * [Request/Response bodies](#request-response-bodies)\n    * [Meta-Profiling](#meta-profiling)\n    * [Recording a fraction of requests](#recording-a-fraction-of-requests)\n    * [Clearing logged data](#clearing-logged-data)\n* [Development](#development)\n\n## Requirements\n\nSilk has been tested with:\n\n* Django: 1.7, 1.8, 1.9, 1.10[dev]\n* Python: 2.7, 3.3, 3.4, 3.5\n\n\n## Installation\n\nVia pip into a virtualenv:\n\n```bash\npip install django-silk\n```\n\nIn `settings.py` add the following:\n\n```python\n# Django >= 1.10\nMIDDLEWARE = [\n    ...\n    'silk.middleware.SilkyMiddleware',\n    ...\n]\n\n# Django <= 1.9\nMIDDLEWARE_CLASSES = (\n    ...\n    'silk.middleware.SilkyMiddleware',\n    ...\n)\n\nINSTALLED_APPS = (\n    ...\n    'silk'\n)\n```\n\n**Note:** The middleware is placement sensitive. If the middleware before `silk.middleware.SilkyMiddleware` returns from `process_request` then `SilkyMiddleware` will never get the chance to execute. Therefore you must ensure that any middleware placed before never returns anything from `process_request`. See the [django docs](https://docs.djangoproject.com/en/dev/topics/http/middleware/#process-request) for more information on this.\n\n**Note:** If you're using `django.middleware.gzip.GZipMiddleware`, place that **before** `silk.middleware.SilkyMiddleware`, otherwise you'll get an encoding error.\n\nTo enable access to the user interface add the following to your `urls.py`:\n\n```python\nurlpatterns += [url(r'^silk/', include('silk.urls', namespace='silk'))]\n```\n\nbefore running migrate:\n\n```bash\npython manage.py makemigrations\n\npython manage.py migrate\n```\n\n\nSilk will automatically begin interception of requests and you can proceed to add profiling\nif required. The UI can be reached at `/silk/`\n\n### Alternative Installation\n\nVia [github tags](https://github.com/django-silk/silk/releases):\n\n```bash\npip install django-silk-<version>.tar.gz\n```\n\nYou can install from master using the following, but please be aware that the version in master\nmay not be working for all versions specified in [requirements](#requirements)\n\n```bash\npip install -e git+https://github.com/django-silk/silk.git#egg=silk\n```\n\n## Features\n\nSilk primarily consists of:\n\n* Middleware for intercepting Requests/Responses\n* A wrapper around SQL execution for profiling of database queries\n* A context manager/decorator for profiling blocks of code and functions either manually or dynamically.\n* A user interface for inspection and visualisation of the above.\n\n### Request Inspection\n\nThe Silk middleware intercepts and stores requests and responses and stores them in the configured database.\nThese requests can then be filtered and inspecting using Silk's UI through the request overview:\n\n<img src=\"https://raw.githubusercontent.com/django-silk/silk/master/screenshots/1.png\" width=\"720px\"/>\n\nIt records things like:\n\n* Time taken\n* Num. queries\n* Time spent on queries\n* Request/Response headers\n* Request/Response bodies\n\nand so on.\n\nFurther details on each request are also available by clicking the relevant request:\n\n<img src=\"https://raw.githubusercontent.com/django-silk/silk/master/screenshots/2.png\" width=\"720px\"/>\n\n### SQL Inspection\n\nSilk also intercepts SQL queries that are generated by each request. We can get a summary on things like\nthe tables involved, number of joins and execution time:\n\n<img src=\"https://raw.githubusercontent.com/django-silk/silk/master/screenshots/3.png\" width=\"720px\"/>\n\nBefore diving into the stack trace to figure out where this request is coming from:\n\n<img src=\"https://raw.githubusercontent.com/django-silk/silk/master/screenshots/5.png\" width=\"720px\"/>\n\n### Profiling\n\nTurn on the SILKY_PYTHON_PROFILER setting to use Python's built-in cProfile profiler. Each request will be separately profiled and the profiler's output will be available on the request's Profiling page in the Silk UI.\n\n```python\nSILKY_PYTHON_PROFILER = True\n```\n\nIf you'd like to also generate a binary `.prof` file that works with `snakeviz` or other cProfile tools set the following:\n\n```python\nSILKY_PYTHON_PROFILER_BINARY = True\n```\nYou can specify where to store the generated binary `.prof` files to a path of your choosing. You must ensure the specified directory exists.\n```python\n# If this is not set, MEDIA_ROOT will be used.\nSILKY_PYTHON_PROFILER_RESULT_PATH = '/path/to/profiles/'\n```\n\nA download button will become available with a binary `.prof` file for every request.\n\nSilk can also be used to profile specific blocks of code/functions. It provides a decorator and a context\nmanager for this purpose.\n\nFor example:\n\n```python\n@silk_profile(name='View Blog Post')\ndef post(request, post_id):\n    p = Post.objects.get(pk=post_id)\n    return render_to_response('post.html', {\n        'post': p\n    })\n```\n\nWhenever a blog post is viewed we get an entry within the Silk UI:\n\n<img src=\"https://raw.githubusercontent.com/django-silk/silk/master/screenshots/7.png\" width=\"720px\"/>\n\nSilk profiling not only provides execution time, but also collects SQL queries executed within the block in the same fashion as with requests:\n\n<img src=\"https://raw.githubusercontent.com/django-silk/silk/master/screenshots/8.png\" width=\"720px\"/>\n\n#### Decorator\n\nThe silk decorator can be applied to both functions and methods\n\n```python\n@silk_profile(name='View Blog Post')\ndef post(request, post_id):\n    p = Post.objects.get(pk=post_id)\n    return render_to_response('post.html', {\n        'post': p\n    })\n\nclass MyView(View):\n    @silk_profile(name='View Blog Post')\n    def get(self, request):\n        p = Post.objects.get(pk=post_id)\n        return render_to_response('post.html', {\n            'post': p\n        })\n```\n\n#### Context Manager\n\nUsing a context manager means we can add additional context to the name which can be useful for\nnarrowing down slowness to particular database records.\n\n```python\ndef post(request, post_id):\n    with silk_profile(name='View Blog Post #%d' % self.pk):\n        p = Post.objects.get(pk=post_id)\n        return render_to_response('post.html', {\n            'post': p\n        })\n```\n\n#### Dynamic Profiling\n\nOne of Silk's more interesting features is dynamic profiling. If for example we wanted to profile a function in a dependency to which we only have read-only access (e.g. system python libraries owned by root) we can add the following to `settings.py` to apply a decorator at runtime:\n\n```python\nSILKY_DYNAMIC_PROFILING = [{\n    'module': 'path.to.module',\n    'function': 'MyClass.bar'\n}]\n```\n\nwhich is roughly equivalent to:\n\n```python\nclass MyClass(object):\n    @silk_profile()\n    def bar(self):\n        pass\n```\n\nThe below summarizes the possibilities:\n\n```python\n\n\"\"\"\nDynamic function decorator\n\"\"\"\n\nSILKY_DYNAMIC_PROFILING = [{\n    'module': 'path.to.module',\n    'function': 'foo'\n}]\n\n# ... is roughly equivalent to\n@silk_profile()\ndef foo():\n    pass\n\n\"\"\"\nDynamic method decorator\n\"\"\"\n\nSILKY_DYNAMIC_PROFILING = [{\n    'module': 'path.to.module',\n    'function': 'MyClass.bar'\n}]\n\n# ... is roughly equivalent to\nclass MyClass(object):\n\n    @silk_profile()\n    def bar(self):\n        pass\n\n\"\"\"\nDynamic code block profiling\n\"\"\"\n\nSILKY_DYNAMIC_PROFILING = [{\n    'module': 'path.to.module',\n    'function': 'foo',\n    # Line numbers are relative to the function as opposed to the file in which it resides\n    'start_line': 1,\n    'end_line': 2,\n    'name': 'Slow Foo'\n}]\n\n# ... is roughly equivalent to\ndef foo():\n    with silk_profile(name='Slow Foo'):\n        print (1)\n        print (2)\n    print(3)\n    print(4)\n```\n\nNote that dynamic profiling behaves in a similar fashion to that of the python mock framework in that\nwe modify the function in-place e.g:\n\n```python\n\"\"\" my.module \"\"\"\nfrom another.module import foo\n\n# ...do some stuff\nfoo()\n# ...do some other stuff\n```\n\n,we would profile `foo` by dynamically decorating `my.module.foo` as opposed to `another.module.foo`:\n\n```python\nSILKY_DYNAMIC_PROFILING = [{\n    'module': 'my.module',\n    'function': 'foo'\n}]\n```\n\nIf we were to apply the dynamic profile to the functions source module `another.module.foo` **after**\nit has already been imported, no profiling would be triggered.\n\n\n### Code Generation\n\nSilk currently generates two bits of code per request:\n\n<img src=\"https://raw.githubusercontent.com/django-silk/silk/master/screenshots/9.png\" width=\"720px\"/>\n\nBoth are intended for use in replaying the request. The curl command can be used to replay via command-line and the python code can be used within a Django unit test or simply as a standalone script.\n\n## Configuration\n\n### Authentication/Authorisation\n\nBy default anybody can access the Silk user interface by heading to `/silk/`. To enable your Django\nauth backend place the following in `settings.py`:\n\n```python\nSILKY_AUTHENTICATION = True  # User must login\nSILKY_AUTHORISATION = True  # User must have permissions\n```\n\nIf `SILKY_AUTHORISATION` is `True`, by default Silk will only authorise users with `is_staff` attribute set to `True`.\n\nYou can customise this using the following in `settings.py`:\n\n```python\ndef my_custom_perms(user):\n    return user.is_allowed_to_use_silk\n\nSILKY_PERMISSIONS = my_custom_perms\n```\n\nYou can also use a `lambda`.\n\n```python\nSILKY_PERMISSIONS = lambda user: user.is_superuser\n```\n\n### Request/Response bodies\n\nBy default, Silk will save down the request and response bodies for each request for future viewing\nno matter how large. If Silk is used in production under heavy volume with large bodies this can have\na huge impact on space/time performance. This behaviour can be configured with following options:\n\n```python\nSILKY_MAX_REQUEST_BODY_SIZE = -1  # Silk takes anything <0 as no limit\nSILKY_MAX_RESPONSE_BODY_SIZE = 1024  # If response body>1024kb, ignore\n```\n\n### Meta-Profiling\n\nSometimes its useful to be able to see what effect Silk is having on the request/response time. To do this add\nthe following to your `settings.py`:\n\n```python\nSILKY_META = True\n```\n\nSilk will then record how long it takes to save everything down to the database at the end of each\nrequest:\n\n<img src=\"https://raw.githubusercontent.com/django-silk/silk/master/screenshots/meta.png\"/>\n\nNote that in the above screenshot, this means that the request took 29ms (22ms from Django and 7ms from Silk)\n\n### Recording a Fraction of Requests\n\nOn high-load sites it may be helpful to only record a fraction of the requests that are made.To do this add the following to your `settings.py`:\n\nNote: This setting is mutually exclusive with SILKY_INTERCEPT_FUNC.\n\n```python\nSILKY_INTERCEPT_PERCENT = 50 # log only 50% of requests\n```\n\n#### Custom Logic for Recording Requests\n\nOn high-load sites it may also be helpful to write your own logic for when to intercept requests.To do this add the following to your `settings.py`:\n\nNote: This setting is mutually exclusive with SILKY_INTERCEPT_PERCENT.\n\n```python\ndef my_custom_logic(request):\n    return 'record_requests' in request.session\n\nSILKY_INTERCEPT_FUNC = my_custom_logic # log only session has recording enabled.\n```\n\nYou can also use a `lambda`.\n\n```python\n# log only session has recording enabled.\nSILKY_INTERCEPT_FUNC = lambda request: 'record_requests' in request.session\n```\n\n### Clearing logged data\n\nA management command will wipe out all logged data:\n\n```bash\npython manage.py silk_clear_request_log\n```\n\n## Development\n\nSilk features a project named `project` that can be used for `silk` development. It has the `silk` code symlinked so \nyou can work on the sample `project` and on the `silk` package at the same time.\n\nIn order to setup local development you should first install all the dependencies for the test `project`. From the\nroot of the `project` directory:\n\n```bash\npip install -r test-requirements.txt\n```\n\nYou'll also need to install `silk`'s dependencies. From the root of the git repository:\n\n```bash\npip install -r requirements.txt\n```\n\nAt this point your virtual environment should have everything it needs to run both the sample `project` and \n`silk` successfully.\n\nNow from the root of the sample `project` directory start the django server\n\n```bash\npython manage.py runserver\n```\n\nHappy profiling!\n",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "http://www.mtford.co.uk/projects/silk/",
+    "keywords": "",
+    "license": "MIT License",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "django-silk",
+    "platform": "",
+    "project_url": "https://pypi.org/project/django-silk/",
+    "release_url": "https://pypi.org/project/django-silk/1.0.0/",
+    "requires_python": "",
+    "summary": "Silky smooth profiling for the Django Framework",
+    "version": "1.0.0"
+  },
+  "releases": {
+    "0.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "62dcef52d0c5f20da0a5a0f9e83ad9a7",
+          "sha256": "51eba0062b1a07e8de9e45d9e83969dda8f8d22c79365d463569b6ee4c2a8de5"
+        },
+        "downloads": 1935,
+        "filename": "django-silk-0.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "62dcef52d0c5f20da0a5a0f9e83ad9a7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1029067,
+        "upload_time": "2014-06-06T18:33:02",
+        "url": "https://files.pythonhosted.org/packages/5e/10/f05ba4cff153650af371ded3f54bdaf56691e75ad31005a94d90b4e7b574/django-silk-0.1.tar.gz"
+      }
+    ],
+    "0.1.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0f042e384390cf8e1439f2fab3458f99",
+          "sha256": "2ae6619382560552893ea37247899666e3ecd00385eab64189d4e1ca4e2e47c2"
+        },
+        "downloads": 1845,
+        "filename": "django-silk-0.1.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0f042e384390cf8e1439f2fab3458f99",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1032471,
+        "upload_time": "2014-06-08T18:18:27",
+        "url": "https://files.pythonhosted.org/packages/49/75/1d1f5b7be8f0727c53a6fec17f6b4a4ace0d55b4ae7b1cfa83237e95be75/django-silk-0.1.1.tar.gz"
+      }
+    ],
+    "0.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3cced4f275cfe6dc9a53357f9c2ca449",
+          "sha256": "b16854596b3ca18d08daed6eef6e40dfd66fe63c2cd22e68d295b058f8b612da"
+        },
+        "downloads": 1764,
+        "filename": "django-silk-0.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3cced4f275cfe6dc9a53357f9c2ca449",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1031035,
+        "upload_time": "2014-06-12T16:43:05",
+        "url": "https://files.pythonhosted.org/packages/32/d4/c833a6c0928eb86d10a560fd810266184cf2160f26e18949ade0505b5c39/django-silk-0.2.tar.gz"
+      }
+    ],
+    "0.2.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0a9543cc83dbc16448ccdfe9b152880a",
+          "sha256": "013c86a3c6f2f7c07ab966410a44888f222a2019083b7153cb71551e251b27b4"
+        },
+        "downloads": 1688,
+        "filename": "django-silk-0.2.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0a9543cc83dbc16448ccdfe9b152880a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1031057,
+        "upload_time": "2014-06-12T16:57:53",
+        "url": "https://files.pythonhosted.org/packages/03/ff/10d2c4620e73f8a8d71cc9a13506b2768ca2b685457fd57d61e321450fe7/django-silk-0.2.1.tar.gz"
+      }
+    ],
+    "0.2.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8ce9757efe5909d3819a585abd9e4a71",
+          "sha256": "3e2852ef4340e47d45dd42711ed5d17eef305d33158e8f07cf0d746007d4adc6"
+        },
+        "downloads": 1917,
+        "filename": "django-silk-0.2.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8ce9757efe5909d3819a585abd9e4a71",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1031095,
+        "upload_time": "2014-06-13T08:13:44",
+        "url": "https://files.pythonhosted.org/packages/68/9f/828aa4ddbaea27c4b3661b082a96052f6923a2ab7c355410ef158dfc1d7a/django-silk-0.2.2.tar.gz"
+      }
+    ],
+    "0.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "44f1d37a6f4498d0e597df2b269a325f",
+          "sha256": "481575f907f76ec278e06ef0bae631f595714cb5b2d3e5c4845ad5dde9fb4e4d"
+        },
+        "downloads": 1890,
+        "filename": "django-silk-0.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "44f1d37a6f4498d0e597df2b269a325f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1187471,
+        "upload_time": "2014-06-17T16:25:11",
+        "url": "https://files.pythonhosted.org/packages/1d/9c/14ae42f667d2c4c2dc4f32f1a24c2a8643eaa40d1076b4cf927c7303ac9b/django-silk-0.3.tar.gz"
+      }
+    ],
+    "0.3.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "50dff3035d38b8feb87e84f1072e19c6",
+          "sha256": "d871b847acc7186d3a0cf94676a37287fa663ded28fa959b114db76a27ddd3ea"
+        },
+        "downloads": 1876,
+        "filename": "django-silk-0.3.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "50dff3035d38b8feb87e84f1072e19c6",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1187350,
+        "upload_time": "2014-07-05T17:55:32",
+        "url": "https://files.pythonhosted.org/packages/73/1e/63515f0932c7eadb0ee23ee785524d46ed2adff567431d00bd6bef8d4b42/django-silk-0.3.1.tar.gz"
+      }
+    ],
+    "0.3.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "812ae77987385e51d31d3bf8201080ef",
+          "sha256": "5481a6ff99af2c0aa13af47708dd5fae44f42cbadabdc4146de2c1de6dca4bc0"
+        },
+        "downloads": 1673,
+        "filename": "django-silk-0.3.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "812ae77987385e51d31d3bf8201080ef",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1191538,
+        "upload_time": "2014-07-22T17:02:40",
+        "url": "https://files.pythonhosted.org/packages/c2/8d/ae2599c799badb6b2e9b88226f635233191344d98f0364b2ae623cd7c4fe/django-silk-0.3.2.tar.gz"
+      }
+    ],
+    "0.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b683bc998aad6cf7c66fc7ee3f7c4f33",
+          "sha256": "3af9151b5f2b1916a6a4accdde105b255c38ed1c23d501994cfebd534c8d7752"
+        },
+        "downloads": 5906,
+        "filename": "django-silk-0.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b683bc998aad6cf7c66fc7ee3f7c4f33",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1192702,
+        "upload_time": "2014-08-17T20:50:41",
+        "url": "https://files.pythonhosted.org/packages/5c/0a/fdae7983637088039f086dd4a4728747930ff2626c3ab1649c4726689545/django-silk-0.4.tar.gz"
+      }
+    ],
+    "0.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "77b584cdb49b9b2f81a6a2c77dd09979",
+          "sha256": "fa8063f37bd8ed4b2ca90fc1b34ca9e53877d0ca592c70961e55d79bbee7b1d0"
+        },
+        "downloads": 1831,
+        "filename": "django-silk-0.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "77b584cdb49b9b2f81a6a2c77dd09979",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1178862,
+        "upload_time": "2015-04-08T08:00:17",
+        "url": "https://files.pythonhosted.org/packages/d0/28/8a1c24bffc21bf034d2c5a8a94f615f326434ecdad3ab19fc3488ea5157e/django-silk-0.5.tar.gz"
+      }
+    ],
+    "0.5.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8466ca632f733426382b8bb969784748",
+          "sha256": "db647dcaa47281ccb64cfb9bac3bbfbc9f09fa21ee7a6b606fb68b1112db9227"
+        },
+        "downloads": 1115,
+        "filename": "django-silk-0.5.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8466ca632f733426382b8bb969784748",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1179319,
+        "upload_time": "2015-04-08T17:55:34",
+        "url": "https://files.pythonhosted.org/packages/d8/5a/6bf13ce9b7a73ba17ffcd481aee800e817bd81bfed4bbbef6f035e8f3ff8/django-silk-0.5.1.tar.gz"
+      }
+    ],
+    "0.5.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7c8951b4a428f601704ef7fe4602a908",
+          "sha256": "563d948a1ca457ab0bf2101c89d5d15e0e27a6f3994f2208ea6b5c8b6537a458"
+        },
+        "downloads": 10362,
+        "filename": "django-silk-0.5.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7c8951b4a428f601704ef7fe4602a908",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1180489,
+        "upload_time": "2015-04-15T09:00:09",
+        "url": "https://files.pythonhosted.org/packages/2a/c6/06ead42200a3469174de3456d0e070bca04ea83ece3fe3ec6439215b3adc/django-silk-0.5.2.tar.gz"
+      }
+    ],
+    "0.5.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6796c48dc2ef87275f001f5178ef00e7",
+          "sha256": "cea28aeb5a94e137ef84004d0b30b18b341585b421facc6be640cfebd961beae"
+        },
+        "downloads": 971,
+        "filename": "django-silk-0.5.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6796c48dc2ef87275f001f5178ef00e7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1180571,
+        "upload_time": "2015-06-04T13:54:59",
+        "url": "https://files.pythonhosted.org/packages/22/7a/f130a77c4baffd16c21fb92dc43d0ad70707c3e2a7c1537d2d9f29f3a21b/django-silk-0.5.3.tar.gz"
+      }
+    ],
+    "0.5.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b70889ade81f69f4516a115b93f6e18a",
+          "sha256": "510c60addd67a2f46810bd381d919ce04a2950a94de2135c1923281bc43e440f"
+        },
+        "downloads": 8289,
+        "filename": "django-silk-0.5.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b70889ade81f69f4516a115b93f6e18a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1311023,
+        "upload_time": "2015-06-04T14:31:30",
+        "url": "https://files.pythonhosted.org/packages/db/47/df6cede7de6a2431e1c5983d989d7d0e5acaf55fe30c6318e9ce610c3712/django-silk-0.5.5.tar.gz"
+      }
+    ],
+    "0.5.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c298ef62500214d33c950d4edeb0136d",
+          "sha256": "845abc688738858ce06e993c4b7dbbcfcecf33029e828f143463ff96f9a78947"
+        },
+        "downloads": 7859,
+        "filename": "django-silk-0.5.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c298ef62500214d33c950d4edeb0136d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1312573,
+        "upload_time": "2015-09-06T07:29:47",
+        "url": "https://files.pythonhosted.org/packages/98/14/3e06fc3ddbdb99fd9057a5387bde32a8c89250cb30c6ca0110f933262b51/django-silk-0.5.6.tar.gz"
+      }
+    ],
+    "0.5.7": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "75194b24dbd3235efbe3adbd6449af09",
+          "sha256": "fa0e3fd5b5458d4526500ce74817a686ce613a5deceb30ec0bdd667ea46c15dc"
+        },
+        "downloads": 1227,
+        "filename": "django-silk-0.5.7.tar.gz",
+        "has_sig": false,
+        "md5_digest": "75194b24dbd3235efbe3adbd6449af09",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1319247,
+        "upload_time": "2016-03-28T12:15:23",
+        "url": "https://files.pythonhosted.org/packages/0e/78/85971b5942ee9505b4a21dac8ff33c91c63b6e11710d889951d862141bcd/django-silk-0.5.7.tar.gz"
+      }
+    ],
+    "0.6.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3ef1c5320d6434a82d4c17649c403eed",
+          "sha256": "c0b7097d168422a96de94d8a0a6cbf920f34986c4c494c5b8c7b50011e023d8c"
+        },
+        "downloads": 373,
+        "filename": "django-silk-0.6.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3ef1c5320d6434a82d4c17649c403eed",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1313701,
+        "upload_time": "2016-07-12T20:32:19",
+        "url": "https://files.pythonhosted.org/packages/71/a7/5a11d85e99ab0f2a8334fee96f9d1f152c695557d2c9a495dde47b9f98f2/django-silk-0.6.0.tar.gz"
+      }
+    ],
+    "0.6.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "612833b48dd671e5c67ef0486bc7887c",
+          "sha256": "993696a13c0ab01fb906d5ea65638eaa1686c7bb3a18b05fe829bf3d3b6842cc"
+        },
+        "downloads": 372,
+        "filename": "django-silk-0.6.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "612833b48dd671e5c67ef0486bc7887c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1314950,
+        "upload_time": "2016-07-13T17:56:12",
+        "url": "https://files.pythonhosted.org/packages/a0/37/a26c7da91bf7a757cd78e0c66f8f7abe8b47597421d16afcfbd22ac7620b/django-silk-0.6.1.tar.gz"
+      }
+    ],
+    "0.6.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "52db48abd7d8276f8d126576c1f033f7",
+          "sha256": "c0f0dea48da1e599802c887556625d69ac59a69fc976cbf142e39aa274741a26"
+        },
+        "downloads": 3117,
+        "filename": "django-silk-0.6.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "52db48abd7d8276f8d126576c1f033f7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1315016,
+        "upload_time": "2016-07-28T22:27:19",
+        "url": "https://files.pythonhosted.org/packages/1e/3e/3c8f22d552855c92f7bbd0995f99fc70e9a2cbe666142f0eb1797f984eb7/django-silk-0.6.2.tar.gz"
+      }
+    ],
+    "0.7.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "bea818bc0aa06c22d491912550c49d34",
+          "sha256": "633f356f08c10f8220987a9636f0e6c48d6c9a0bf57c090b204f03a2d7e23e32"
+        },
+        "downloads": 677,
+        "filename": "django-silk-0.7.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "bea818bc0aa06c22d491912550c49d34",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1315327,
+        "upload_time": "2016-09-21T16:01:57",
+        "url": "https://files.pythonhosted.org/packages/d8/97/586a6f07b45be3a3a264efaaef08146d40263e489cf26bf34aa4effe53a3/django-silk-0.7.0.tar.gz"
+      }
+    ],
+    "0.7.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "cf8a143174f4c0145198ce02c48ffaac",
+          "sha256": "65dc5f401b9edc83cba0c9e8bbc89d38ed4cd3025951de83d117876ebf776875"
+        },
+        "downloads": 996,
+        "filename": "django-silk-0.7.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "cf8a143174f4c0145198ce02c48ffaac",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1315390,
+        "upload_time": "2016-10-01T14:33:44",
+        "url": "https://files.pythonhosted.org/packages/9e/b7/a1acbe44aa8699aeed110027fc3e704404f3d076c82f9604c67ac5b1c829/django-silk-0.7.1.tar.gz"
+      }
+    ],
+    "0.7.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "782f55376874bb3680e0acbf83c60d5f",
+          "sha256": "292cbb5c8b9d7fd98202a1e5e96e937d1839b275b7754bd5722a4252454b7ff2"
+        },
+        "downloads": 738,
+        "filename": "django-silk-0.7.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "782f55376874bb3680e0acbf83c60d5f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1315576,
+        "upload_time": "2016-12-03T00:14:39",
+        "url": "https://files.pythonhosted.org/packages/50/37/a074a63edcc9c8769e43a60a24d698cf40f166304443e512d5f3ad833c66/django-silk-0.7.2.tar.gz"
+      }
+    ],
+    "0.7.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "43396aeef77e57e2e0176092007ac4ac",
+          "sha256": "50a7be484d168b0e4ccc5491462cbd629861ce316158bd31aadea13c649f8745"
+        },
+        "downloads": 183,
+        "filename": "django-silk-0.7.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "43396aeef77e57e2e0176092007ac4ac",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1318682,
+        "upload_time": "2017-02-13T18:17:35",
+        "url": "https://files.pythonhosted.org/packages/41/52/9def11f70ccd198dfb802f79b905bd7ed78c1edd1d1779f446ccb4503a1d/django-silk-0.7.3.tar.gz"
+      }
+    ],
+    "1.0.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "28c6fd9887ceaf05f15a3e9ecc78e498",
+          "sha256": "d6b56895bf370ddf3ba9b31a5dcb287dd0942da045c614140ba27ad6735469ad"
+        },
+        "downloads": 127,
+        "filename": "django_silk-1.0.0-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "28c6fd9887ceaf05f15a3e9ecc78e498",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 1357373,
+        "upload_time": "2017-03-25T18:29:18",
+        "url": "https://files.pythonhosted.org/packages/74/e1/6c36b3defa0a6c49598e538d591308614ab2b5aeeeaf28c5ad6b22641862/django_silk-1.0.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a11e92d5bf030a0e5c0108918e29ab25",
+          "sha256": "b201c64dcab3b63ed6e0e6d2390751db43328af96bfe883d0f2c2869b19afb9c"
+        },
+        "downloads": 15,
+        "filename": "django-silk-1.0.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a11e92d5bf030a0e5c0108918e29ab25",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1318776,
+        "upload_time": "2017-03-25T18:29:12",
+        "url": "https://files.pythonhosted.org/packages/ed/16/f29c8d94fc5376b1344fdadf94c786445e18e7ad8be4cbe3e2bebcc5047c/django-silk-1.0.0.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "28c6fd9887ceaf05f15a3e9ecc78e498",
+        "sha256": "d6b56895bf370ddf3ba9b31a5dcb287dd0942da045c614140ba27ad6735469ad"
+      },
+      "downloads": 127,
+      "filename": "django_silk-1.0.0-py2.py3-none-any.whl",
+      "has_sig": false,
+      "md5_digest": "28c6fd9887ceaf05f15a3e9ecc78e498",
+      "packagetype": "bdist_wheel",
+      "python_version": "2.7",
+      "size": 1357373,
+      "upload_time": "2017-03-25T18:29:18",
+      "url": "https://files.pythonhosted.org/packages/74/e1/6c36b3defa0a6c49598e538d591308614ab2b5aeeeaf28c5ad6b22641862/django_silk-1.0.0-py2.py3-none-any.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "a11e92d5bf030a0e5c0108918e29ab25",
+        "sha256": "b201c64dcab3b63ed6e0e6d2390751db43328af96bfe883d0f2c2869b19afb9c"
+      },
+      "downloads": 15,
+      "filename": "django-silk-1.0.0.tar.gz",
+      "has_sig": false,
+      "md5_digest": "a11e92d5bf030a0e5c0108918e29ab25",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 1318776,
+      "upload_time": "2017-03-25T18:29:12",
+      "url": "https://files.pythonhosted.org/packages/ed/16/f29c8d94fc5376b1344fdadf94c786445e18e7ad8be4cbe3e2bebcc5047c/django-silk-1.0.0.tar.gz"
+    }
+  ]
+}

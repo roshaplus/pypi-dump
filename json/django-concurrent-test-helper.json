@@ -1,0 +1,235 @@
+{
+  "info": {
+    "author": "Anentropic",
+    "author_email": "ego@anentropic.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Environment :: Web Environment",
+      "Framework :: Django",
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: Apache Software License",
+      "Operating System :: OS Independent",
+      "Programming Language :: Python"
+    ],
+    "description": "=============================\ndjango-concurrent-test-helper\n=============================\n\n|Build Status| |PyPi Version|\n\n.. |Build Status| image:: https://travis-ci.org/depop/django-concurrent-test-helper.svg?branch=master\n    :alt: Build Status\n    :target: https://travis-ci.org/depop/django-concurrent-test-helper\n.. |PyPi Version| image:: https://badge.fury.io/py/django-concurrent-test-helper.svg\n    :alt: Latest PyPI version\n    :target: https://pypi.python.org/pypi/django-concurrent-test-helper/\n\nHelpers for executing Django app code concurrently within Django tests.\n\nTested against the same versions of Python that Django supports:\n\n=========== ======= ======= ======= ======= ======= =======\n     x       Py2.6   Py2.7   Py3.2   Py3.3   Py3.4   Py3.5 \n=========== ======= ======= ======= ======= ======= =======\nDjango 1.4   *       *                                     \nDjango 1.5   *       *       *       *                     \nDjango 1.6   *       *       *       *                     \nDjango 1.7           *       *       *       *             \nDjango 1.8           *       *       *       *       *     \nDjango 1.9           *                       *       *     \n=========== ======= ======= ======= ======= ======= =======\n\n\nGetting started\n===============\n\n.. code:: bash\n\n    pip install django-concurrent-test-helper\n\nGoes well with https://github.com/box/flaky (``pip install flaky``), as you may want to run a test several times while trying to trigger a rare race condition.\n\nYou need to add it to your Django project settings too:\n\n.. code:: python\n\n    INSTALLED_APPS = (\n        # ...\n        'django_concurrent_tests',\n    )\n\n\nTwo helpers are provided:\n\n.. code:: python\n\n    from django_concurrent_tests.helpers import call_concurrently\n\n    def is_success(result):\n        return result is True and not isinstance(result, Exception)\n\n    def test_concurrent_code():\n        results = call_concurrently(5, racey_function, first_arg=1)\n        # results contains the return value from each call\n        successes = list(filter(is_success, results))\n        assert len(successes) == 1\n\nand:\n\n.. code:: python\n\n    from django_concurrent_tests.helpers import make_concurrent_calls\n\n    def is_success(result):\n        return result is True and not isinstance(result, Exception)\n\n    def test_concurrent_code():\n        calls = [\n            (first_func, {'first_arg': 1}),\n            (second_func, {'other_arg': 'wtf'}),\n        ] * 3\n        results = make_concurrent_calls(*calls)\n        # results contains the return value from each call\n        successes = list(filter(is_success, results))\n        assert len(successes) == 1\n\nNote that if your called function raises an exception, the exception object will be returned by the concurrent test helper.\n\n.. code:: python\n\n    from django_concurrent_tests.helpers import make_concurrent_calls\n\n    def test_concurrent_code():\n        calls = [\n            (first_func, {'first_arg': 1}),\n            (raises_error, {'other_arg': 'wtf'}),\n        ] * 3\n        results = make_concurrent_calls(*calls)\n        # results contains the return value from each call\n        errors = list(filter(lambda r: isinstance(r, Exception), results))\n        assert len(errors) == 3\n\nAnother thing to remember is if you are using the ``override_settings`` decorator in your test. You need to also decorate your called functions (since the subprocesses won't see the overridden settings from your main test process):\n\n.. code:: python\n\n    from django_concurrent_tests.helpers import make_concurrent_calls\n\n    @override_settings(SPECIAL_SETTING=False)\n    def test_concurrent_code():\n        calls = [\n            (first_func, {'first_arg': 1}),\n            (raises_error, {'other_arg': 'wtf'}),\n        ] * 3\n        results = make_concurrent_calls(*calls)\n        \n    @override_settings(SPECIAL_SETTING=False)\n    def first_func(first_arg):\n        return first_arg * 2\n    \n    def raises_error(other_arg):\n        # can also be used as a context manager\n        with override_settings(SPECIAL_SETTING=False):\n            raise SomeError(other_arg)\n\n\nLastly, you can pass a string import path to a function rather than the function itself. The format is: ``'dotted module.path.to:function'`` (NOTE colon separates the name to import, after the dotted module path).\n\nThis can be nice when you don't want to import the function itself in your test to pass it. But more importantly it is *essential* in some cases, such as when ``f`` is a decorated function whose decorator returns a new object (and ``functools.wraps`` was not used). In that situation we will not be able to introspect the import path from the function object's ``__module__`` (which will point to the decorator's module instead), so for those cases calling by string is *mandatory*.\n\n.. code:: python\n\n    from django_concurrent_tests.helpers import call_concurrently\n\n    @bad_decorator\n    def myfunc():\n        return True\n\n    def test_concurrent_code():\n        results = call_concurrently('mymodule.module:myfunc', 3)\n        # results contains the return value from each call\n        results = list(filter(None, results))\n        assert len(results) == 3\n\n\n\n\nNOTES\n-----\n\nWhy subprocesses?\n~~~~~~~~~~~~~~~~~\n\nWe originally wanted to implement this purely using ``multiprocessing.Pool`` to call the function you want to test. If that had worked then this module would hardly be necessary.\n\nUnfortunately we hit a problem with this approach: multiprocessing works by forking the parent process. The forked processes inherit the parent's sockets, so in a Django project this will include things like the socket opened by psycopg2 to your Postgres database. However the inherited sockets are in a broken state. There's a bunch of questions about this on SO and no solutions presented, it seems basically you can't fork a Django process and do anything with the db afterwards.\n\n(Note in Python 3 you may be able to use the `'spawn' start method`_ of multiprocessing to avoid the fork problems - have not tried this)\n\n.. _'spawn' start method: https://docs.python.org/3/library/multiprocessing.html#contexts-and-start-methods\n\nSo in order to make this work we have to use ``subprocess.Popen`` to run with un-forked 'virgin' processes. To be able to test an arbitrary function in this way we do an ugly/clever hack and provide a ``manage.py concurrent_call_wrapper`` command (which is why you have to add this module to your ``INSTALLED_APPS``) which handles the serialization of kwargs and return values.\n\n    This does mean that your kwargs and return value *must be pickleable*.\n\nAnother potential gotcha is if you are using SQLite db when running your tests. By default Django will use ``:memory:`` for the test-db in this case. But that means the concurrent processes would each have their own in-memory db and wouldn't be able to see data created by the parent test run.\n\n    For these tests to work you need to be sure to set ``TEST_NAME`` for the SQLite db to a *real filename* in your ``DATABASES`` settings (in Django 1.9 this is a dict, i.e. ``{'TEST': {'NAME': 'test.db'}}``).\n\nFinally you need to be careful with Django's implicit transactions, otherwise data you create in the parent test has not yet been committed and is therefore not visible to the subprocesses.\n\n    Ensure that you use Django's ``TransactionTestCase`` or a derivative (to prevent all the code in your test from being inside an uncommitted transaction).",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/depop/django-concurrent-test-helper",
+    "keywords": "",
+    "license": "Apache 2.0",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "django-concurrent-test-helper",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/django-concurrent-test-helper/",
+    "release_url": "https://pypi.org/project/django-concurrent-test-helper/0.2.9/",
+    "requires_python": "",
+    "summary": "Helpers for executing Django app code concurrently within Django tests",
+    "version": "0.2.9"
+  },
+  "releases": {
+    "0.1.10": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "159dc2a5f123eab7323ad8daf3b6f4ba",
+          "sha256": "7c09426198a22009d23b3bd289e3e79e103803c4c13954cd70b8b7d11eb25929"
+        },
+        "downloads": 414,
+        "filename": "django-concurrent-test-helper-0.1.10.tar.gz",
+        "has_sig": false,
+        "md5_digest": "159dc2a5f123eab7323ad8daf3b6f4ba",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 4980,
+        "upload_time": "2016-02-15T16:13:20",
+        "url": "https://files.pythonhosted.org/packages/e0/b4/9a1e0e94b592f0ea11d6cd36d87088aae7cb45537b2efdd742b2de02dc59/django-concurrent-test-helper-0.1.10.tar.gz"
+      }
+    ],
+    "0.2.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e02aca0dd1c59c1786711af587bbb0e4",
+          "sha256": "677aa2089c4056ef7a1bdb894675868123b947dd99c1633dd8f8628ac8ff95bd"
+        },
+        "downloads": 139,
+        "filename": "django-concurrent-test-helper-0.2.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e02aca0dd1c59c1786711af587bbb0e4",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 7191,
+        "upload_time": "2016-02-18T11:03:45",
+        "url": "https://files.pythonhosted.org/packages/ea/49/310a4e265df6effb6773a7e64c049d21128a6c576f38bd56bd008500a0a9/django-concurrent-test-helper-0.2.0.tar.gz"
+      }
+    ],
+    "0.2.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d87ae02317b7de55b40bd54abfcbd9cd",
+          "sha256": "41d68667815a702b97a657b63b917db35ba463fe9c13d5b2a7e769ac66448dd3"
+        },
+        "downloads": 161,
+        "filename": "django-concurrent-test-helper-0.2.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d87ae02317b7de55b40bd54abfcbd9cd",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 7418,
+        "upload_time": "2016-02-22T16:36:39",
+        "url": "https://files.pythonhosted.org/packages/04/78/2db409a8bc86e1b83223aa765e4cdb8da437afa10b89ebd87eb0f3a7b98d/django-concurrent-test-helper-0.2.2.tar.gz"
+      }
+    ],
+    "0.2.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9288e1d0657ee2abdd106dbfd1947669",
+          "sha256": "4ac4f8ea4c5c44c7d42180581b8e77348ce35ed2af9becf7c0301cc5f3386b5a"
+        },
+        "downloads": 146,
+        "filename": "django-concurrent-test-helper-0.2.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "9288e1d0657ee2abdd106dbfd1947669",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 7417,
+        "upload_time": "2016-02-22T16:42:56",
+        "url": "https://files.pythonhosted.org/packages/43/fd/00541fbe06104fccf81c521033b628a9aba50e548be8fae9634a35ab16c7/django-concurrent-test-helper-0.2.3.tar.gz"
+      }
+    ],
+    "0.2.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "70a6f47e921d2ceddec18402c08f9303",
+          "sha256": "503a97b7a25f05f4c138befc54f9a0815de54d87db2b13e3776c9ddde41b2702"
+        },
+        "downloads": 142,
+        "filename": "django-concurrent-test-helper-0.2.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "70a6f47e921d2ceddec18402c08f9303",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 7421,
+        "upload_time": "2016-03-29T12:30:01",
+        "url": "https://files.pythonhosted.org/packages/c1/50/8adc262b157462fffc140e905c7c7b003a96122cc15ecfbc0ee970665254/django-concurrent-test-helper-0.2.4.tar.gz"
+      }
+    ],
+    "0.2.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9cd75c5a47cdef4db8160735ee2a0ab0",
+          "sha256": "4b52f7d014598162cb434baf1d3550e0b951893257d7622915074b992e28f37b"
+        },
+        "downloads": 141,
+        "filename": "django-concurrent-test-helper-0.2.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "9cd75c5a47cdef4db8160735ee2a0ab0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 7451,
+        "upload_time": "2016-03-29T12:44:38",
+        "url": "https://files.pythonhosted.org/packages/c5/98/90f96ec55777b6977a87cc66fbf39322993f6f6ad79e29bf9f6fc6ff7366/django-concurrent-test-helper-0.2.5.tar.gz"
+      }
+    ],
+    "0.2.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "da0990e9ea152eecd0d309da64a826f1",
+          "sha256": "008ec7675187e32ea1951380d8b394dc413e23985fdb26a30cfa3198356cfdcc"
+        },
+        "downloads": 168,
+        "filename": "django-concurrent-test-helper-0.2.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "da0990e9ea152eecd0d309da64a826f1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10202,
+        "upload_time": "2016-03-29T17:20:46",
+        "url": "https://files.pythonhosted.org/packages/cf/b0/1fe84b777ef9992396004c467713c49de770d6415b8ce28aff1739be214a/django-concurrent-test-helper-0.2.6.tar.gz"
+      }
+    ],
+    "0.2.7": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7869afafeb6cc2a4af1740fc0c102a54",
+          "sha256": "2359901b0d14dd8c9c2253b481a2ca5a6025c502d0e3f1d10981ccc2c25bf925"
+        },
+        "downloads": 115,
+        "filename": "django-concurrent-test-helper-0.2.7.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7869afafeb6cc2a4af1740fc0c102a54",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10623,
+        "upload_time": "2016-09-05T12:22:07",
+        "url": "https://files.pythonhosted.org/packages/83/d7/c167a36db742a17cb36c67a83309ebb27b39aac6e7ce416b047857ed22de/django-concurrent-test-helper-0.2.7.tar.gz"
+      }
+    ],
+    "0.2.8": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "83266a3d1b1c0ca2943da55e02fb1cd5",
+          "sha256": "d8068fed3c92ee9f17690b387592beee23320d3f713a15d7c2dafbb3e02476e3"
+        },
+        "downloads": 156,
+        "filename": "django-concurrent-test-helper-0.2.8.tar.gz",
+        "has_sig": false,
+        "md5_digest": "83266a3d1b1c0ca2943da55e02fb1cd5",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10799,
+        "upload_time": "2016-09-05T13:39:20",
+        "url": "https://files.pythonhosted.org/packages/69/95/d865d0ddc02db165e6f9441f6b7772c51675d94dcda570083c7a1095d2cf/django-concurrent-test-helper-0.2.8.tar.gz"
+      }
+    ],
+    "0.2.9": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8dd9c229597219e7b3bef22b209e92e2",
+          "sha256": "b08273c14e7449dd18de8b67529ee5324b0aa57ef0296bce60549db4c256cd11"
+        },
+        "downloads": 15,
+        "filename": "django-concurrent-test-helper-0.2.9.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8dd9c229597219e7b3bef22b209e92e2",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10884,
+        "upload_time": "2017-02-14T18:45:10",
+        "url": "https://files.pythonhosted.org/packages/2d/20/2ec7df62910ee92821e722b50705a87e10380b7f9b559494cde7755b17b5/django-concurrent-test-helper-0.2.9.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "8dd9c229597219e7b3bef22b209e92e2",
+        "sha256": "b08273c14e7449dd18de8b67529ee5324b0aa57ef0296bce60549db4c256cd11"
+      },
+      "downloads": 15,
+      "filename": "django-concurrent-test-helper-0.2.9.tar.gz",
+      "has_sig": false,
+      "md5_digest": "8dd9c229597219e7b3bef22b209e92e2",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 10884,
+      "upload_time": "2017-02-14T18:45:10",
+      "url": "https://files.pythonhosted.org/packages/2d/20/2ec7df62910ee92821e722b50705a87e10380b7f9b559494cde7755b17b5/django-concurrent-test-helper-0.2.9.tar.gz"
+    }
+  ]
+}

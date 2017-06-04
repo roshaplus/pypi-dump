@@ -1,0 +1,423 @@
+{
+  "info": {
+    "author": "Kazuki Ohta",
+    "author_email": "kazuki.ohta@gmail.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 4 - Beta",
+      "Intended Audience :: Developers",
+      "Programming Language :: Python :: 2",
+      "Programming Language :: Python :: 3"
+    ],
+    "description": "A Python structured logger for Fluentd\n======================================\n\n.. image:: https://travis-ci.org/fluent/fluent-logger-python.svg?branch=master\n   :target: https://travis-ci.org/fluent/fluent-logger-python\n   :alt: Build Status\n\n.. image:: https://coveralls.io/repos/fluent/fluent-logger-python/badge.svg\n   :target: https://coveralls.io/r/fluent/fluent-logger-python\n   :alt: Coverage Status\n\nMany web/mobile applications generate huge amount of event logs (c,f.\nlogin, logout, purchase, follow, etc). To analyze these event logs could\nbe really valuable for improving the service. However, the challenge is\ncollecting these logs easily and reliably.\n\n`Fluentd <https://github.com/fluent/fluentd>`__ solves that problem by\nhaving: easy installation, small footprint, plugins, reliable buffering,\nlog forwarding, etc.\n\n**fluent-logger-python** is a Python library, to record the events from\nPython application.\n\nRequirements\n------------\n\n-  Python 2.6 or greater including 3.x\n- ``msgpack-python``\n\nInstallation\n------------\n\nThis library is distributed as 'fluent-logger' python package. Please\nexecute the following command to install it.\n\n.. code:: sh\n\n    $ pip install fluent-logger\n\nConfiguration\n-------------\n\nFluentd daemon must be launched with a tcp source configuration:\n\n::\n\n    <source>\n      type forward\n      port 24224\n    </source>\n\nTo quickly test your setup, add a matcher that logs to the stdout:\n\n::\n\n    <match app.**>\n      type stdout\n    </match>\n\nUsage\n-----\n\nFluentSender Interface\n~~~~~~~~~~~~~~~~~~~~~~\n\n`sender.FluentSender` is a structured event logger for Fluentd.\n\nBy default, the logger assumes fluentd daemon is launched locally. You\ncan also specify remote logger by passing the options.\n\n.. code:: python\n\n    from fluent import sender\n\n    # for local fluent\n    logger = sender.FluentSender('app')\n\n    # for remote fluent\n    logger = sender.FluentSender('app', host='host', port=24224)\n\nFor sending event, call `emit` method with your event. Following example will send the event to\nfluentd, with tag 'app.follow' and the attributes 'from' and 'to'.\n\n.. code:: python\n\n    # Use current time\n    logger.emit('follow', {'from': 'userA', 'to': 'userB'})\n\n    # Specify optional time\n    cur_time = int(time.time())\n    logger.emit_with_time('follow', cur_time, {'from': 'userA', 'to':'userB'})\n\nTo send events with nanosecond-precision timestamps (Fluent 0.14 and up),\nspecify `nanosecond_precision` on `FluentSender`.\n\n.. code:: python\n\n    # Use nanosecond\n    logger = sender.FluentSender('app', nanosecond_precision=True)\n    logger.emit('follow', {'from': 'userA', 'to': 'userB'})\n    logger.emit_with_time('follow', time.time(), {'from': 'userA', 'to': 'userB'})\n\nYou can detect an error via return value of `emit`. If an error happens in `emit`, `emit` returns `False` and get an error object using `last_error` method.\n\n.. code:: python\n\n    if not logger.emit('follow', {'from': 'userA', 'to': 'userB'}):\n        print(logger.last_error)\n        logger.clear_last_error() # clear stored error after handled errors\n\nIf you want to shutdown the client, call `close()` method.\n\n.. code:: python\n\n    logger.close()\n\nEvent-Based Interface\n~~~~~~~~~~~~~~~~~~~~~\n\nThis API is a wrapper for `sender.FluentSender`.\n\nFirst, you need to call ``sender.setup()`` to create global `sender.FluentSender` logger\ninstance. This call needs to be called only once, at the beginning of\nthe application for example.\n\nInitialization code of Event-Based API is below:\n\n.. code:: python\n\n    from fluent import sender\n\n    # for local fluent\n    sender.setup('app')\n\n    # for remote fluent\n    sender.setup('app', host='host', port=24224)\n\nThen, please create the events like this. This will send the event to\nfluentd, with tag 'app.follow' and the attributes 'from' and 'to'.\n\n.. code:: python\n\n    from fluent import event\n\n    # send event to fluentd, with 'app.follow' tag\n    event.Event('follow', {\n      'from': 'userA',\n      'to':   'userB'\n    })\n\n`event.Event` has one limitation which can't return success/failure result.\n\nOther methods for Event-Based Interface.\n\n.. code:: python\n\n    sender.get_global_sender # get instance of global sender\n    sender.close # Call FluentSender#close\n\nHandler for buffer overflow\n~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nYou can inject your own custom proc to handle buffer overflow in the event of connection failure. This will mitigate the loss of data instead of simply throwing data away.\n\n.. code:: python\n\n    import msgpack\n    from io import BytesIO\n\n    def handler(pendings):\n        unpacker = msgpack.Unpacker(BytesIO(pendings))\n        for unpacked in unpacker:\n            print(unpacked)\n\n    logger = sender.FluentSender('app', host='host', port=24224, buffer_overflow_handler=handler)\n\nYou should handle any exception in handler. fluent-logger ignores exceptions from ``buffer_overflow_handler``.\n\nThis handler is also called when pending events exist during `close()`.\n\nPython logging.Handler interface\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nThis client-library also has ``FluentHandler`` class for Python logging\nmodule.\n\n.. code:: python\n\n    import logging\n    from fluent import handler\n\n    custom_format = {\n      'host': '%(hostname)s',\n      'where': '%(module)s.%(funcName)s',\n      'type': '%(levelname)s',\n      'stack_trace': '%(exc_text)s'\n    }\n\n    logging.basicConfig(level=logging.INFO)\n    l = logging.getLogger('fluent.test')\n    h = handler.FluentHandler('app.follow', host='host', port=24224, buffer_overflow_handler=handler)\n    formatter = handler.FluentRecordFormatter(custom_format)\n    h.setFormatter(formatter)\n    l.addHandler(h)\n    l.info({\n      'from': 'userA',\n      'to': 'userB'\n    })\n    l.info('{\"from\": \"userC\", \"to\": \"userD\"}')\n    l.info(\"This log entry will be logged with the additional key: 'message'.\")\n\nYou can also customize formatter via logging.config.dictConfig\n\n.. code:: python\n\n    import logging.config\n    import yaml\n\n    with open('logging.yaml') as fd:\n        conf = yaml.load(fd)\n\n    logging.config.dictConfig(conf['logging'])\n\nYou can inject your own custom proc to handle buffer overflow in the event of connection failure. This will mitigate the loss of data instead of simply throwing data away.\n\n.. code:: python\n\n    import msgpack\n    from io import BytesIO\n\n    def handler(pendings):\n        unpacker = msgpack.Unpacker(BytesIO(pendings))\n        for unpacked in unpacker:\n            print(unpacked)\n\nA sample configuration ``logging.yaml`` would be:\n\n.. code:: python\n\n    logging:\n        version: 1\n\n        formatters:\n          brief:\n            format: '%(message)s'\n          default:\n            format: '%(asctime)s %(levelname)-8s %(name)-15s %(message)s'\n            datefmt: '%Y-%m-%d %H:%M:%S'\n          fluent_fmt:\n            '()': fluent.handler.FluentRecordFormatter\n            format:\n              level: '%(levelname)s'\n              hostname: '%(hostname)s'\n              where: '%(module)s.%(funcName)s'\n\n        handlers:\n            console:\n                class : logging.StreamHandler\n                level: DEBUG\n                formatter: default\n                stream: ext://sys.stdout\n            fluent:\n                class: fluent.handler.FluentHandler\n                host: localhost\n                port: 24224\n                tag: test.logging\n                buffer_overflow_handler: handler\n                formatter: fluent_fmt\n                level: DEBUG\n            none:\n                class: logging.NullHandler\n\n        loggers:\n            amqp:\n                handlers: [none]\n                propagate: False\n            conf:\n                handlers: [none]\n                propagate: False\n            '': # root logger\n                handlers: [console, fluent]\n                level: DEBUG\n                propagate: False\n\nTesting\n-------\n\nTesting can be done using\n`nose <https://nose.readthedocs.org/en/latest/>`__.\n\nRelease\n-------\n\nNeed wheel package.\n\n.. code:: sh\n\n    $ pip install wheel\n\nAfter that, type following command:\n\n.. code:: sh\n\n    $ python setup.py clean sdist bdist_wheel upload\n\nContributors\n------------\n\nPatches contributed by `those\npeople <https://github.com/fluent/fluent-logger-python/contributors>`__.\n\nLicense\n-------\n\nApache License, Version 2.0",
+    "docs_url": null,
+    "download_url": "http://pypi.python.org/pypi/fluent-logger/",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/fluent/fluent-logger-python",
+    "keywords": null,
+    "license": "Apache License, Version 2.0",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "fluent-logger",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/fluent-logger/",
+    "release_url": "https://pypi.org/project/fluent-logger/0.5.0/",
+    "requires_python": null,
+    "summary": "A Python logging handler for Fluentd event collector",
+    "version": "0.5.0"
+  },
+  "releases": {
+    "0.1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5252003e27bf2f6d5435567840b1d7ce",
+          "sha256": "fa51403138785afddf52a99d92ebe42a8d86191638c9b4edd25bb82ad89143f6"
+        },
+        "downloads": 2774,
+        "filename": "fluent-logger-0.1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5252003e27bf2f6d5435567840b1d7ce",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 2778,
+        "upload_time": "2011-10-01T15:59:31",
+        "url": "https://files.pythonhosted.org/packages/d4/ce/a6298c09ec03a80f3ae1d1f4597e717a15aee9344c87ffec611fb09e3ebb/fluent-logger-0.1.0.tar.gz"
+      }
+    ],
+    "0.1.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c1b702c933705c458441748cd6b4b7b0",
+          "sha256": "52f86af9f2d4c9e96e34c2c21a53fbdb93ee5882532792ff76b325c3ef922a67"
+        },
+        "downloads": 2752,
+        "filename": "fluent-logger-0.1.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c1b702c933705c458441748cd6b4b7b0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 2778,
+        "upload_time": "2011-10-03T18:02:13",
+        "url": "https://files.pythonhosted.org/packages/f1/0c/1a7d743680297ae6dc762d4283491374724c2a6c97184dc5dcff7207eae1/fluent-logger-0.1.1.tar.gz"
+      }
+    ],
+    "0.2.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3edf1cd026db07ed0be0caea37324f1a",
+          "sha256": "105a018e9f19c173527c83a4817666a4ed2f98244c3001b11d8d232f1a5bbcdf"
+        },
+        "downloads": 2806,
+        "filename": "fluent-logger-0.2.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3edf1cd026db07ed0be0caea37324f1a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 3696,
+        "upload_time": "2011-10-15T19:24:34",
+        "url": "https://files.pythonhosted.org/packages/7b/1c/058c080ce2b1ca4c50b9f70f0c6b01668b0830d449f9ee17ca8cb3be94aa/fluent-logger-0.2.0.tar.gz"
+      }
+    ],
+    "0.3.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f6909bde441455e9277dab6f961e55dc",
+          "sha256": "1f5f25411b355d86cd1fe960c2c848410dae2af3674b8766424c69cd64d335f8"
+        },
+        "downloads": 2664,
+        "filename": "fluent-logger-0.3.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f6909bde441455e9277dab6f961e55dc",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 3849,
+        "upload_time": "2012-01-13T05:31:00",
+        "url": "https://files.pythonhosted.org/packages/1f/22/12d58f99f13c637b27cca8bd5aac0ed2536b9a63a711ef885dc5e27f64e8/fluent-logger-0.3.0.tar.gz"
+      }
+    ],
+    "0.3.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "cc00877f1569be577cc48042005b5985",
+          "sha256": "9f4cacb73eefc14b0000a183bd85c2d5fb7305dc593e42e025505cb6e58e6af7"
+        },
+        "downloads": 5066,
+        "filename": "fluent-logger-0.3.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "cc00877f1569be577cc48042005b5985",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 3841,
+        "upload_time": "2012-01-13T05:45:14",
+        "url": "https://files.pythonhosted.org/packages/89/8b/419ba4b79e8b10bcb4e8130538fd024e684b56fad2e74f65379d33391fad/fluent-logger-0.3.1.tar.gz"
+      }
+    ],
+    "0.3.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "65dc1cd6fa7a90985c86c7ea78386568",
+          "sha256": "399716abb02bb58013b628935608cb1e7a78aede3f40761fbb221985a9edfce6"
+        },
+        "downloads": 2903,
+        "filename": "fluent-logger-0.3.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "65dc1cd6fa7a90985c86c7ea78386568",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 3855,
+        "upload_time": "2012-08-17T14:00:39",
+        "url": "https://files.pythonhosted.org/packages/dd/31/e2178e771f40fdd506ef7041ca63ef5a6b7fff5f2827bb796140d9c7ea1d/fluent-logger-0.3.2.tar.gz"
+      }
+    ],
+    "0.3.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "fb50d6151b39852b827e2961dc447130",
+          "sha256": "752e283f590ebad720da4e1129b54072cdc30ada6128c147a6d97866d1875175"
+        },
+        "downloads": 29645,
+        "filename": "fluent-logger-0.3.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "fb50d6151b39852b827e2961dc447130",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 4329,
+        "upload_time": "2012-08-20T12:10:41",
+        "url": "https://files.pythonhosted.org/packages/90/32/137108136114fa1c5d791f2a6a2c443e9c1ababeb1dc97cc0761d645a839/fluent-logger-0.3.3.tar.gz"
+      }
+    ],
+    "0.3.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4546febec8958b952966d61e50211808",
+          "sha256": "4d6dcf6c1f11dcc185fd41855499b3304e69ab6a085dd71a87c26c57accbb2b5"
+        },
+        "downloads": 36226,
+        "filename": "fluent-logger-0.3.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4546febec8958b952966d61e50211808",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 4431,
+        "upload_time": "2014-06-13T01:36:07",
+        "url": "https://files.pythonhosted.org/packages/77/57/05229543d2c82cef5d72150a090ba4c211a9169a03d288f5d4b47a570870/fluent-logger-0.3.4.tar.gz"
+      }
+    ],
+    "0.3.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "bceb0efae0bce7d581f6c0705fe2690a",
+          "sha256": "1face64913327b72091b79eff3c69f91a681a09d7624b6ce982d662d284ebb35"
+        },
+        "downloads": 17861,
+        "filename": "fluent-logger-0.3.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "bceb0efae0bce7d581f6c0705fe2690a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 4668,
+        "upload_time": "2015-01-30T21:35:11",
+        "url": "https://files.pythonhosted.org/packages/48/b6/099b017f1b653931ced8daca3362af8f14d4ff3c91c2584370a198cd761d/fluent-logger-0.3.5.tar.gz"
+      }
+    ],
+    "0.4.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9d4c552c7b05db905a842024bac0b8b7",
+          "sha256": "2ac7d727744981cac1f1770074b81539a59655792efde1f57c84d0ca3c38b4e1"
+        },
+        "downloads": 33695,
+        "filename": "fluent-logger-0.4.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "9d4c552c7b05db905a842024bac0b8b7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 5179,
+        "upload_time": "2015-06-03T08:45:00",
+        "url": "https://files.pythonhosted.org/packages/12/57/6cf7dc19028d0b8b1f0d24ffaababff089bd1d1a4beb88a2f87303c331f1/fluent-logger-0.4.0.tar.gz"
+      }
+    ],
+    "0.4.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "42765756e4ef0784f5af9279d535886a",
+          "sha256": "aa3ed36bb850e414e21efcab8dcc1cee1710f0457854e89b8d5b2e9a6afe08e2"
+        },
+        "downloads": 4599,
+        "filename": "fluent-logger-0.4.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "42765756e4ef0784f5af9279d535886a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 6247,
+        "upload_time": "2016-04-14T23:28:53",
+        "url": "https://files.pythonhosted.org/packages/9d/13/234cf4f44cef18967d379c7e15be7ee1dcb3ad0a672b76668793fc6aa4a9/fluent-logger-0.4.1.tar.gz"
+      }
+    ],
+    "0.4.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6acf108630c2821148626ea6f12f7299",
+          "sha256": "b3d618bcb1b5ffdce6bb11911200d857dcb89e45f8e05114eaeb6b724e80feca"
+        },
+        "downloads": 367,
+        "filename": "fluent-logger-0.4.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6acf108630c2821148626ea6f12f7299",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 6719,
+        "upload_time": "2016-07-21T08:53:57",
+        "url": "https://files.pythonhosted.org/packages/14/0f/068463cfe5c76aeafdaa49b0a5a7c68f0c9271ae92a7659c2122a9b36ea1/fluent-logger-0.4.2.tar.gz"
+      }
+    ],
+    "0.4.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "89232611a695b472d3d9910537c38de6",
+          "sha256": "9c0e6d316f2af267236eedc62b51fa7edef0779a55159cdd29c4db9cf93425c5"
+        },
+        "downloads": 6491,
+        "filename": "fluent-logger-0.4.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "89232611a695b472d3d9910537c38de6",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 7370,
+        "upload_time": "2016-07-26T03:07:35",
+        "url": "https://files.pythonhosted.org/packages/3b/1d/3b00472eaffab44e3dd64ceb88b0be495008fe0f8b161a5a4651d419f6e7/fluent-logger-0.4.3.tar.gz"
+      }
+    ],
+    "0.4.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9be5e0087af251f662d529e17cd27b20",
+          "sha256": "780990a84369de6951e66f870870d4a2b3e84ef625a199d03afafdc61f879f39"
+        },
+        "downloads": 17172,
+        "filename": "fluent-logger-0.4.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "9be5e0087af251f662d529e17cd27b20",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 7394,
+        "upload_time": "2016-09-20T12:27:32",
+        "url": "https://files.pythonhosted.org/packages/cc/e5/aa8523a5506e75ec1af78e41672440c529a866f06bef597b8329fce60e4e/fluent-logger-0.4.4.tar.gz"
+      }
+    ],
+    "0.4.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0128dc8543bd7c174b18840dac0f6fb0",
+          "sha256": "eeab443bca4fd04a1cc1f204542723ef7e1dfb0843532e2d261785442a77d1fc"
+        },
+        "downloads": 11,
+        "filename": "fluent_logger-0.4.5-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "0128dc8543bd7c174b18840dac0f6fb0",
+        "packagetype": "bdist_wheel",
+        "python_version": "3.5",
+        "size": 10752,
+        "upload_time": "2017-01-24T06:41:21",
+        "url": "https://files.pythonhosted.org/packages/5b/37/14b59615df2a018462930cfb9124687878295f91284c1ae98f9a851fa2ea/fluent_logger-0.4.5-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "91b67239a728222c79ecfc2ed9a3d557",
+          "sha256": "a5222f99456893ae5f42dc24cef9efb258db61241bf2fe4310f80423df869de7"
+        },
+        "downloads": 12,
+        "filename": "fluent-logger-0.4.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "91b67239a728222c79ecfc2ed9a3d557",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 7584,
+        "upload_time": "2017-01-24T06:41:18",
+        "url": "https://files.pythonhosted.org/packages/e0/65/d5d968b47a9b43e86ab72bac1c3fbb930bc4bc2f70a4625d43714ee4ee18/fluent-logger-0.4.5.tar.gz"
+      }
+    ],
+    "0.4.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ccb232ac0b8b8ff49fd950d85368b855",
+          "sha256": "80baafce6c22622f587a0e8fd9d04458760a30a6fce8eb31d8d8c64e344f8014"
+        },
+        "downloads": 399,
+        "filename": "fluent_logger-0.4.6-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "ccb232ac0b8b8ff49fd950d85368b855",
+        "packagetype": "bdist_wheel",
+        "python_version": "3.5",
+        "size": 10935,
+        "upload_time": "2017-01-30T09:19:33",
+        "url": "https://files.pythonhosted.org/packages/80/ce/bf038db70e6c61bb2ae8146f0e0f59f1fb1ced99aad921aac900b3077e93/fluent_logger-0.4.6-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "087a63686b738db1ead9fae3e2c59adf",
+          "sha256": "ac1f1c96185f3180a9dcd3519369ac75fd074bf94e48af6e27f1302aff09a72e"
+        },
+        "downloads": 170,
+        "filename": "fluent-logger-0.4.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "087a63686b738db1ead9fae3e2c59adf",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 7684,
+        "upload_time": "2017-01-30T09:19:30",
+        "url": "https://files.pythonhosted.org/packages/05/97/720841bfeb6e20352a3209f17fffaecbacd84af73ac0775a2869abdeb4fa/fluent-logger-0.4.6.tar.gz"
+      }
+    ],
+    "0.5.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1c76dcb7e9b0fbb891648c05d6c63634",
+          "sha256": "a950c6a53989edbd6f88208569bea5a45adf95ddce820ce8cc88eafa3e56b2c0"
+        },
+        "downloads": 795,
+        "filename": "fluent_logger-0.5.0-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "1c76dcb7e9b0fbb891648c05d6c63634",
+        "packagetype": "bdist_wheel",
+        "python_version": "3.5",
+        "size": 11283,
+        "upload_time": "2017-04-04T05:08:18",
+        "url": "https://files.pythonhosted.org/packages/d2/9f/7658a61fc5b57d565b6784cfa81829f78927cc4dceda572780d4cc198361/fluent_logger-0.5.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "01ca969abb40b4c50c9f6a214310134e",
+          "sha256": "cca72133ac0d8b429062b10d7344b3b05fc93480fc45f8692a84c9d3b419323a"
+        },
+        "downloads": 192,
+        "filename": "fluent-logger-0.5.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "01ca969abb40b4c50c9f6a214310134e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 7955,
+        "upload_time": "2017-04-04T05:08:15",
+        "url": "https://files.pythonhosted.org/packages/0d/97/69e0486a5106c56b0f69be441f36254e5ee65cb2fc1a8ef6ade1fdca8232/fluent-logger-0.5.0.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "1c76dcb7e9b0fbb891648c05d6c63634",
+        "sha256": "a950c6a53989edbd6f88208569bea5a45adf95ddce820ce8cc88eafa3e56b2c0"
+      },
+      "downloads": 795,
+      "filename": "fluent_logger-0.5.0-py2.py3-none-any.whl",
+      "has_sig": false,
+      "md5_digest": "1c76dcb7e9b0fbb891648c05d6c63634",
+      "packagetype": "bdist_wheel",
+      "python_version": "3.5",
+      "size": 11283,
+      "upload_time": "2017-04-04T05:08:18",
+      "url": "https://files.pythonhosted.org/packages/d2/9f/7658a61fc5b57d565b6784cfa81829f78927cc4dceda572780d4cc198361/fluent_logger-0.5.0-py2.py3-none-any.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "01ca969abb40b4c50c9f6a214310134e",
+        "sha256": "cca72133ac0d8b429062b10d7344b3b05fc93480fc45f8692a84c9d3b419323a"
+      },
+      "downloads": 192,
+      "filename": "fluent-logger-0.5.0.tar.gz",
+      "has_sig": false,
+      "md5_digest": "01ca969abb40b4c50c9f6a214310134e",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 7955,
+      "upload_time": "2017-04-04T05:08:15",
+      "url": "https://files.pythonhosted.org/packages/0d/97/69e0486a5106c56b0f69be441f36254e5ee65cb2fc1a8ef6ade1fdca8232/fluent-logger-0.5.0.tar.gz"
+    }
+  ]
+}

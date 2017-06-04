@@ -1,0 +1,72 @@
+{
+  "info": {
+    "author": "Thomas Gl\u00e4\u00dfle",
+    "author_email": "t_glaessle@gmx.de",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 3 - Alpha",
+      "Intended Audience :: Developers",
+      "Operating System :: OS Independent",
+      "Programming Language :: Python",
+      "Topic :: Software Development"
+    ],
+    "description": "weak-and-lazy\n-------------\n\nProvides a decorator class for weak and lazy references.\n\nLicense\n~~~~~~~\n\nCopyright \u00a9 2013 Thomas Gl\u00e4\u00dfle t_glaessle@gmx.de\n\nThis work is free. You can redistribute it and/or modify it under the\nterms of the Do What The Fuck You Want To Public License, Version 2, as\npublished by Sam Hocevar. See the COPYING file for more details.\n\nThis program is free software. It comes without any warranty, to the\nextent permitted by applicable law.\n\nOverview\n~~~~~~~~\n\nList of objects:\n\n-  weak\\_and\\_lazy decorator class for weak and lazy reference\n   attributes\n-  ref data class used to bind instance and loader params\n\nRunning this module from the command line will execute the doctests. To\nenable verbose mode, run:\n\n::\n\n    python weak_and_lazy.py -v\n\nAPI\n~~~\n\nweak\\_and\\_lazy\n^^^^^^^^^^^^^^^\n\nDecorator class for weak and lazy references.\n\nDescription\n'''''''''''\n\nDecorator class for a property that looks like a reference to outsiders\nbut is in fact a dynamic object-loader. After loading it stores a weak\nreference to the object so it can be remembered until it gets destroyed.\n\nThis means that the referenced object\n\n-  will be loaded only **if** and **when** it is needed\n-  can be garbage collected when it is not in use anymore\n\nWhy use it?\n'''''''''''\n\nYou probably do not need it, if you are asking this.\n\nStill, for what in the world might that be useful?\n\nSuppose you program a video game with several levels. As the levels have\nvery intense memory requirements, you want to load only those into\nmemory which you actually need at the moment. If a level is not needed\nanymore (every player left the level), the garbage collector should be\nable to tear it into the abyss. And while fulfilling these requirements\nthe interface should still feel like you are using normal references.\n*That* is for what you can use *weak-and-lazy*.\n\nUsage example\n'''''''''''''\n\nDefine a ``Level`` class with VERY intense memory requirements:\n\n.. code:: python\n\n    class Level(object):\n        def __init__(self, id, prev=None, next=None):\n            print(\"Loaded level: %s\" % id)\n            self.id = id\n            self.prev_level = ref(prev, self.id - 1)\n            self.next_level = ref(next, self.id + 1)\n\n        @weak_and_lazy\n        def next_level(self, id):\n            '''The next level!'''\n            return Level(id, prev=self)\n\n        # alternative syntax:\n        prev_level = weak_and_lazy(lambda self,id: Level(id, next=self))\n\nBesides the tremendous memory requirements of any individual level it is\nimpossible to load 'all' levels, since these are fundamentally infinite\nin number.\n\nSo let's load some levels:\n\n.. code:: python\n\n    >>> first = Level(1)\n    Loaded level: 1\n    >>> second = first.next_level\n    Loaded level: 2\n    >>> third = second.next_level\n    Loaded level: 3\n    >>> assert third.prev_level is second\n\nHey, it works! Notice that the second level is loaded only once? Can it\nbe garbage collected even if the first and third stay alive?\n\n.. code:: python\n\n    second_weak = weakref.ref(second)\n    assert second_weak() is not None\n    second = None\n    import gc\n    c=gc.collect()\n    assert second_weak() is None\n\nReload it into memory. As you can see, as long as ``second`` is in use\nit will not be loaded again.\n\n.. code:: python\n\n    >>> c=gc.collect()\n    >>> second = first.next_level\n    Loaded level: 2\n    >>> assert first.next_level is second\n\nWhat about that sexy docstring of yours?\n\n.. code:: python\n\n    assert Level.next_level.__doc__ == '''The next level!'''\n\nGotcha\n''''''\n\nLet's go even further!\n\n.. code:: python\n\n    >>> third.prev_level is second\n    Loaded level: 2\n    False\n    >>> second.next_level is third\n    Loaded level: 3\n    False\n\nOups! One step too far... Be careful, this is something that your loader\nmust to take care of. You can customly assign the references in order to\nconnect your object graph:\n\n.. code:: python\n\n    third.prev_level = weakref.ref(second)\n    second.next_level = weakref.ref(third)\n    assert third.prev_level is second and second.next_level is third\n\nref\n^^^\n\nData class for a @weak\\_and\\_lazy reference instance.\n\nThis class is Used to bind a reference and loader parameters to your\nlazy reference. It is implemented as a class and not as a tuple or\ndictionary for mainly one reason:\n\n-  weakref.ref is not picklable and we do not want to pickle it!\n-  the syntax to access object attributes is nicer than tuple or\n   dictionary elements\n\nI know these were at least four reasons, but only the second one was\nreally important. (JK)\n\nThe following methods are overloaded:\n\n-  ``__init__`` initialize from optional hard-reference and argument\n   list\n-  ``__getstate__`` and ``__setstate__`` to define how pickling works\n\nDue to the use of ``__slots__`` instances of this class are very\nrestricted. See also:\n\nhttp://docs.python.org/3.3/reference/datamodel.html?highlight=\\ **slots**\\ #object.\\ **slots**\n\nDefined instance attributes:\n\n-  ``ref`` weak reference to loaded object\n-  ``args``, ``kwargs`` parameters for object loader\n\nThe class is defined in global scope because this seems to be a\nrequirement for picklable classes.\n\nNOTE: some builtins are not weak-refable and can therefore not be used\nwith this class:\n\n.. code:: python\n\n    >>> ref(dict()) # doctest: +IGNORE_EXCEPTION_DETAIL\n    Traceback (most recent call last):\n    TypeError: cannot create weak reference to 'dict' object\n\nFor such cases you could use trivial inheritances:\n\n.. code:: python\n\n    class Dict(dict):\n        pass\n\nNOTE: ``ref`` expects a hard reference in its constructor but stores\nonly a weak reference:\n\n.. code:: python\n\n    d = Dict(Foo=\"Bar\")\n    r = ref(d)\n    assert r.ref() is not None\n    del d\n    import gc\n    c=gc.collect()\n    assert r.ref() is None\n\nObjects of this class are picklable:\n\n.. code:: python\n\n    import pickle\n    r = ref(Dict(Foo=\"Bar\"), 1, 2, 3, Bar=\"Foo\")\n    p = pickle.loads(pickle.dumps(r))\n    assert p.args == r.args and p.kwargs == r.kwargs",
+    "docs_url": null,
+    "download_url": "UNKNOWN",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/coldfix/weak-and-lazy",
+    "keywords": null,
+    "license": "WTFPL",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "weak-and-lazy",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/weak-and-lazy/",
+    "release_url": "https://pypi.org/project/weak-and-lazy/0.0.1/",
+    "requires_python": null,
+    "summary": "Decorator for weak and lazy attributes",
+    "version": "0.0.1"
+  },
+  "releases": {
+    "0.0.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e130a013b8c8c75261b3897d1d9b693e",
+          "sha256": "fbe3a40b4e2621263311216f1f0a62f62bc7732bc6e2dd2b87f8921625f23575"
+        },
+        "downloads": 2591,
+        "filename": "weak-and-lazy-0.0.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e130a013b8c8c75261b3897d1d9b693e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 8141,
+        "upload_time": "2013-09-17T05:06:56",
+        "url": "https://files.pythonhosted.org/packages/37/41/50e5c49d11a7e52cd7803d071e4b0f4ebc008a2eac5fe56ff9712e9de2e2/weak-and-lazy-0.0.1.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "e130a013b8c8c75261b3897d1d9b693e",
+        "sha256": "fbe3a40b4e2621263311216f1f0a62f62bc7732bc6e2dd2b87f8921625f23575"
+      },
+      "downloads": 2591,
+      "filename": "weak-and-lazy-0.0.1.tar.gz",
+      "has_sig": false,
+      "md5_digest": "e130a013b8c8c75261b3897d1d9b693e",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 8141,
+      "upload_time": "2013-09-17T05:06:56",
+      "url": "https://files.pythonhosted.org/packages/37/41/50e5c49d11a7e52cd7803d071e4b0f4ebc008a2eac5fe56ff9712e9de2e2/weak-and-lazy-0.0.1.tar.gz"
+    }
+  ]
+}

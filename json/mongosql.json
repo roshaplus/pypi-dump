@@ -1,0 +1,513 @@
+{
+  "info": {
+    "author": "Mark Vartanyan",
+    "author_email": "kolypto@gmail.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 5 - Production/Stable",
+      "Intended Audience :: Developers",
+      "Natural Language :: English",
+      "Operating System :: OS Independent",
+      "Programming Language :: Python :: 2",
+      "Topic :: Software Development :: Libraries :: Python Modules"
+    ],
+    "description": "|Build Status|\n\nMongoSQL\n========\n\n`SqlAlchemy <http://www.sqlalchemy.org/>`__ queries with MongoDB-style.\n\nExtremely handy if you want to expose limited querying capabilities with\na JSON API while keeping it safe against SQL injections.\n\nTired of adding query parameters for pagination, filtering, sorting?\nHere is the ultimate solution.\n\nTable of Contents\n=================\n\n-  MongoSQL\n-  Table of Contents\n-  Querying\n\n   -  Query Object Syntax\n   -  Operations\n\n      -  Projection Operation\n      -  Sort Operation\n      -  Group Operation\n      -  Filter Operation\n      -  Join Operation\n      -  Aggregate Operation\n\n   -  JSON Column Support\n\n-  MongoQuery\n\n   -  Starting Up\n   -  Querying\n\n-  CRUD Helpers\n\n   -  CrudHelper\n   -  StrictCrudHelper\n   -  CrudViewMixin\n\nQuerying\n========\n\nMongoSQL follows `MongoDB query\noperators <http://docs.mongodb.org/manual/reference/operator/query/>`__\nsyntax with custom additions.\n\nSource for syntax handlers:\n`mongosql/statements.py <mongosql/statements.py>`__\n\nQuery Object Syntax\n-------------------\n\nQuerying is made with *Query Objects*: a dictionary which defines how to\nperform a query.\n\n-  ``project``: `Projection Operation <#projection-operation>`__\n-  ``sort``: `Sort Operation <#sort-operation>`__\n-  ``group``: `Group Operation <#group-operation>`__\n-  ``filter``: `Filter Operation <#filter-operation>`__\n-  ``join``: `Join Operation <#join-operation>`__\n-  ``aggregate``: `Aggregate Operation <#aggregate-operation>`__\n-  ``skip``, ``limit``: Rows slicing: skipping and limiting.\n   ``skip=10, limit=100`` will result in\n   ``SELECT .. LIMIT 100 OFFSET 10``.\n-  ``count``: Instead of producing results, just count the number of\n   rows. Specify ``1`` to enable counting, ``0`` to disable (the\n   default).\n\nAn example Query Object is:\n\n.. code:: python\n\n    {\n      'project': ['id', 'name'],  # Only fetch these columns\n      'sort': ['age+'],  # Sort by age, ascending\n      'filter': {\n        # Filter condition\n        'sex': 'female',  # Girls\n        'age': { '$gte': 18 },  # Age >= 18\n      },\n      'join': ['articles'],  # Load 'articles' relationship\n      'limit': 100,  # Display 100 per page\n      'skip': 10,  # Skip first 10\n    }\n\nDetailed syntax for every operation is given below.\n\nOperations\n----------\n\nProjection Operation\n~~~~~~~~~~~~~~~~~~~~\n\nProjection operation allows to specify which columns to include/exclude\nin the result set.\n\nProduces the following queries through SqlAlchemy:\n\n::\n\n    SELECT a, b           FROM ...;\n    SELECT      c, d, ... FROM ...;\n\n-  Dictionary syntax.\n\nSpecify field names mapped to boolean values: ``1`` for inclusion, ``0``\nfor exclusion.\n\n::\n\n    ```python\n    { 'a': 1, 'b': 1 }  # Include specific fields. All other fields are excluded\n    { 'a': 0, 'b': 0 }  # Exclude specific fields. All other fields are included\n    ```\n\n-  List syntax.\n\n   List field names to include.\n\n   .. code:: python\n\n       [ 'a', 'b' ]  # Include these fields only\n\nSort Operation\n~~~~~~~~~~~~~~\n\nSort rows.\n\nProduces the following queries through SqlAlchemy:\n\n::\n\n    SELECT ... FROM ... ORDER BY a ASC, b DESC, ...;\n\n-  Dictionary syntax.\n\n   Map column names to sort direction: ``-1`` for ``DESC``, ``+1`` for\n   ``ASC``:\n\n   .. code:: python\n\n       from collections import OrderedDict\n       OrderedDict({ 'a': +1, 'b': -1 })\n\n-  List syntax.\n\n   List column names, optionally suffixed by the sort direction: ``-``\n   for ``DESC``, ``+`` for ``ASC``:\n\n   .. code:: python\n\n       [ 'a+', 'b-', 'c' ]  # = { 'a': +1, 'b': -1, 'c': +1 }\n\nGroup Operation\n~~~~~~~~~~~~~~~\n\nGroup rows.\n\nProduces the following queries through SqlAlchemy:\n\n::\n\n    SELECT ... FROM ... GROUP BY a, b DESC, ...;\n\nSyntax: same as for `Sort Operation <#sort-operation>`__.\n\nFilter Operation\n~~~~~~~~~~~~~~~~\n\nSupports most of `MongoDB query\noperators <http://docs.mongodb.org/manual/reference/operator/query/>`__,\nincluding array behavior (for PostgreSQL).\n\nProduces the following queries through SqlAlchemy:\n\n::\n\n    SELECT ... FROM ... WHERE ...<filtering-conditions>...;\n\nSupports the following MongoDB operators:\n\n-  ``{ a: 1 }`` - equality check. For array: containment check.\n\n   For scalar column: ``col = value``.\n\n   For array column: contains value: ``ANY(array_col) = value``.\n\n   For array column and array value: array equality check:\n   ``array_col = value``.\n\n-  ``{ a: { $lt: 1 } }`` - <\n-  ``{ a: { $lte: 1 } }`` - <=\n-  ``{ a: { $ne: 1 } }`` - inequality check. For array: not-containment\n   check.\n\n   For scalar column: ``col != value``.\n\n   For array column: does not contain value:\n   ``ALL(array_col) != value``.\n\n   For array column and array value: array inequality check:\n   ``array_col != value``.\n\n-  ``{ a: { $gte: 1 } }`` - >=\n-  ``{ a: { $gt: 1 } }`` - >\n-  ``{ a: { $in: [...] } }`` - any of. For arrays: intersection check.\n\n   For scalar column: ``col IN(values)``\n\n   For array column: ``col && ARRAY[values]``\n\n-  ``{ a: { $nin: [...] } }`` - none of. For arrays: empty intersection\n   check.\n\n   For scalar column: ``col NOT IN(values)``\n\n   For array column: ``NOT( col && ARRAY[values] )``\n\n-  ``{ a: { $exists: true } }`` - ``IS [NOT] NULL`` check\n\n-  ``{ arr: { $all: [...] } }`` - For array columns: contains all values\n-  ``{ arr: { $size: 0 } }`` - For array columns: has a length of N\n\nSupports the following boolean operators:\n\n-  ``{ $or: [ {..criteria..}, .. ] }`` - any is true\n-  ``{ $and: [ {..criteria..}, .. ] }`` - all are true\n-  ``{ $nor: [ {..criteria..}, .. ] }`` - none is true\n-  ``{ $not: { ..criteria.. } }`` - negation\n\nJoin Operation\n~~~~~~~~~~~~~~\n\nAllows to eagerly load specific relations by name.\n\n-  List syntax.\n\n   Relation names list.\n\n   .. code:: python\n\n       [ 'posts', 'comments' ]\n\n-  Dict syntax, query on relations.\n\n   Further, you can apply operations to relations using `Query Object\n   Syntax <#query-object-syntax>`__!\n\n   Map relation name to a Query Object, and the specified operations\n   will be applied to related entities:\n\n   .. code:: python\n\n       {\n         'posts': {  # Load relation 'posts'\n           'filter': { 'id': { '$gt': 100 } },  # Only load posts with id > 100\n           'sort': ['id-'],\n           'skip': 0,\n           'limit': 100,\n           # ... see Query Object Syntax\n         },\n         'comments': None,  # No specific options, just load\n       }\n\n   Note that no relations are loaded implicitly: you need to specify\n   them in a ``'join'``.\n\nAggregate Operation\n~~~~~~~~~~~~~~~~~~~\n\nAllows to fetch aggregated values with the help of aggregation\nfunctions.\n\nDict syntax: custom name of the computed field mapped to an expression:\n\n::\n\n    { computed-field-name: expression }\n\nThe ** can be:\n\n-  Column name\n-  Aggregation operator:\n\n   -  ``{ $min: operand }`` -- smallest value\n   -  ``{ $max: operand }`` -- largest value\n   -  ``{ $avg: operand }`` -- average value\n   -  ``{ $sum: operand }`` -- sum of values\n\n   The ** can be:\n\n   -  Column name\n   -  Boolean expression: see `Filter Operation <#filter-operation>`__\n   -  Integer value (only supported by ``$sum`` operator)\n\nExamples:\n\n.. code:: python\n\n    # Count people by age\n    # NOTE: should be used together with grouping by 'age'\n    {\n      'age': 'age',  # Column value\n      'n': { '$sum': 1 },  # Count\n    }  # -> SELECT age, count(*) AS n ...\n\n    # Average salary by profession\n    # NOTE: should be used together with grouping by 'profession'\n    {\n      'prof': 'profession',\n      'salary': { '$avg': 'salary' }\n    }  # -> SELECT profession AS prof, avg(salary) AS salary ...\n\n    # Count people matching certain conditions\n    {\n      'adults':    { '$sum': { 'age': { '$gte': 18 } } },\n      'expensive': { '$sum': { 'salary': { '$gt': 10000 } } }\n    }  # -> SELECT SUM(age >= 18) AS adults, SUM(salary > 10000) AS expensive ...\n\nJSON Column Support\n-------------------\n\nPostgreSQL 9.3 supports `JSON & JSONB column\ntypes <http://www.postgresql.org/docs/9.3/static/functions-json.html>`__,\nand so does MongoSQL! :)\n\nTo access sub-properties of a JSON field, use dot-notation.\n\nGiven a model field:\n\n.. code:: python\n\n    model.data = { 'rating': 5.5, 'list': [1,2,3], 'obj': {'a': 1} }\n\nYou can reference JSON field properties:\n\n.. code:: python\n\n    'data.rating'\n    'data.list.0'\n    'data.obj.a'\n    'data.obj.z'  # gives NULL\n\nOperations that support it:\n\n-  `Sort <#sort-operation>`__ and `Group <#group-operation>`__\n   operations:\n\n   .. code:: python\n\n       ['data.rating-']\n\n-  `Filter <#filter-operation>`__ operation:\n\n   .. code:: python\n\n       { 'data.rating': { '$gte': 5.5 } }\n       { 'data.rating': None }  # Test for missing property\n\n-  `Aggregation <#aggregation>`__:\n\n   .. code:: python\n\n       { 'max_rating': { '$max': 'data.rating' } }\n\n*NOTE*: PostgreSQL is a bit capricious about data types, so MongoSql\ntries to guess it using the operand you provide. Hence, when filtering\nwith a property known to contain a ``float``-typed field, provide\n``float`` values to it.\n\nMongoQuery\n==========\n\nSource: `mongosql/query.py <mongosql/query.py>`__\n\nStarting Up\n-----------\n\n``MongoQuery`` is the interface to be used for querying with safe JSON\nobjects. It relies on ``MongoModel``: a wrapper for SqlAlchemy models\nthat holds cached data and build pieces for the query.\n\nTo enable MongoQuery in your application, you have two options:\n\n1. *(low-level)* Construct ``MongoQuery`` manually from your model:\n\n   .. code:: python\n\n       from mongosql import MongoQuery\n       from .models import User  # Your model\n\n       ssn = Session()\n\n       mq = MongoQuery.get_for(\n           User,  # Model\n           ssn.query(User)  # Initial query to start with\n       )\n\n   This will create and cache ``MongoModel`` for you.\n\n2. *(high-level)* Use convenience mixin for your Base:\n\n   .. code:: python\n\n       from sqlalchemy.ext.declarative import declarative_base\n       from mongosql import MongoSqlBase\n\n       Base = declarative_base(cls=(MongoSqlBase,))\n\n       class User(Base):\n           #...\n\n   Using this Base, your models will have a shortcut method which\n   returns ``MongoQuery``:\n\n   ::\n\n       User.mongoquery(session)\n       User.mongoquery(query)\n\n   With ``mongoquery()``, you can construct a query from a session:\n\n   .. code:: python\n\n       mq = User.mongoquery(session)\n\n   .. or from an\n   `sqlalchemy.orm.Query <http://docs.sqlalchemy.org/en/latest/orm/query.html>`__,\n   which allows you to apply some initial filtering:\n\n   .. code:: python\n\n       mq = User.mongoquery(\n           session.query(User).filter_by(active=True)  # Only query active users\n       )\n\nQuerying\n--------\n\nHaving a ``MongoQuery``, you need just two methods:\n\n-  ``query(**query_object)``: Make queries with a `Query\n   Object <#query-object-syntax>`__ provided as keyword arguments.\n-  ``end()``: Get the resulting\n   `Query <http://docs.sqlalchemy.org/en/latest/orm/query.html>`__,\n   ready for execution\n\n``AssertionError`` is raised for validation errors, e.g. an unknown\nfield is provided by the user. No SQL stuff is ever contained in this\nerror: it's safe to display it to the user.\n\nExample:\n\n.. code:: python\n\n    # QueryObject\n    query_object = {\n      'filter': {\n        'sex': 'f', \n        'age': { '$gte': 18, '$lte': 25 },  # 18..25 years\n      },\n      'order': ['weight+'],  #  slims first\n      'limit': 50,  # just enough :)\n    }\n\n    # MongoQuery\n    q = User.mongoquery(session) \\\n        .query(**query_object) \\\n        .end()\n\n    # Execute the query\n    girls = q.all()\n\nIn addition, ``MongoQuery`` has chainable methods for every Query Object\nOperation:\n\n.. code:: python\n\n    q = User.mongoquery(session) \\\n        .filter({'sex': 'f', 'age': { '$gte': 18, '$lte': 25 }}) \\\n        .order(['weight+']) \\\n        .limit(50) \\\n        .end()\n    girls = q.all()\n\nCRUD Helpers\n============\n\nMongoSql is designed to help with data selection for the APIs, and these\nusually offer CRUD operations.\n\nTo ease the pain of implementing CRUD for all of your models, MongoSQL\ncomes with a CRUD helper that exposes MongoSQL capabilities for\nquerying. Together with\n`RestfulView <https://github.com/kolypto/py-flask-jsontools#restfulview>`__\nfrom\n`flask-jsontools <https://github.com/kolypto/py-flask-jsontools>`__,\nCRUD controllers are extremely easy to build.\n\nCrudHelper\n----------\n\nSource: `mongosql/crud.py <mongosql/crud.py>`__\n\n``CrudHelper`` is a helper class that contains parts of CRUD logic that\ncan be used in CRUD views.\n\nYou just instantiate it over an SqlAlchemy model:\n\n.. code:: python\n\n    from .models import User\n    from mongosql import CrudHelper\n\n    user_crudhelper = CrudHelper(User)\n\nand now the following methods are available:\n\n-  ``mquery(query, query_obj=None)``: Construct\n   ```MongoQuery`` <#mongoquery>`__ for the model, using ``query`` as\n   the intial Query. ``query_obj`` is the optional `Query\n   Object <#query-object-syntax>`__.\n-  ``create_model(entity)``: Create an SqlAlchemy instance from\n   ``entity`` dictionary.\n-  ``update_model(entity, prev_instance)``: Update an existing\n   SqlAlchemy instance with some fields from the provided ``entity``\n   dictionary.\n\n   With PostgreSQL JSON fields, it has an additional feature:\n   dictionaries are shallowly merged together. This way,\n   ``update_model()`` allows you to add certain fields without loading\n   the entity.\n\n``AssertionError`` is raised for validation errors, e.g. an unknown\nfield is provided by the user.\n\nStrictCrudHelper\n----------------\n\nSource: `mongosql/crud.py <mongosql/crud.py>`__\n\nUsually it's not safe to allow changing all fields, loading all\nrelations, listing thousands of entities, etc.\n\n``StrictCrudHelper`` subclasses ```CrudHelper`` <#crudhelper>`__ and\nadds strict limitations to the things the user can do with your models.\n\nIts constructor accepts the following additional arguments:\n\n-  ``ro_fields=()``: List of read-only fields or field names. The user\n   is not allowed to change or define these.\n\n   Alternatively, this can be a callable which returns the list of\n   read-only fields at runtime (e.g. in case this depends on the current\n   user permissions).\n\n-  ``allow_relations=()``: List of relations of relation names the user\n   is allowed to `join <#join-operation>`__.\n\n   All `joins <#join-operation>`__ in `Query\n   Objects <#query-object-syntax>`__ are then checked against the list,\n   and the user can never request a relation that's not explicitly\n   allowed with this list.\n\n   It supports relations on the parent model, as well as relations on\n   sub-models using the dot-notation syntax (see the example below).\n\n-  ``query_defaults=None``: Provide default values for the `Query\n   Object <#query-object-syntax>`__ in case certain fields are not\n   provided by the user.\n\n   A good idea is to specify the default sorting fields and direction.\n   The user can override it with his custom `Query\n   Objects <#query-object-syntax>`__.\n\n-  ``maxitems=None``: Set a hard limit on the number of entities the\n   user can load.\n\n   This value cannot be overridden with a `Query\n   Object <#query-object-syntax>`__: the user will never load more than\n   ``maxitems`` entities with a single query.\n\n``AssertionError`` is raised for validation errors when the user tries\nto hit the limits.\n\nExample:\n\n.. code:: python\n\n    from .models import User\n    from mongosql import StrictCrudHelper\n\n    user_crudhelper = StrictCrudHelper(User,\n        # Don't allow to change the primary key, and some secured fields\n        ro_fields=('id', 'is_admin'),\n        # Only allow to load the specified relations\n        # In addition, allow some sub-relations\n        allow_relations=(\n            'articles',\n            'comments',\n            'articles.comments',  # sub-relation 'comments' on articles\n        ),\n        # Query Object defaults\n        query_defaults = {\n            'sort': ['id-'],  # id DESC\n        },\n        # Max 100 entities with a list query\n        maxitems=100\n    )\n\nHaving the limits specified, just use ```CrudHelper`` <#crudhelper>`__\nmethods and enjoy security.\n\nCrudViewMixin\n-------------\n\nSource: `mongosql/crud.py <mongosql/crud.py>`__\n\n```CrudHelper`` <#crudhelper>`__ itself if not the end-product: you\nstill need a view to manage your models.\n\n``CrudViewMixin`` is a mixin for class-based views that leverages\n```CrudHelper`` <#crudhelper>`__ and ```MongoQuery`` <#mongoquery>`__ to\ncreate a perfect, dynamic API endpoint.\n\nHave a look at\n`flask.ext.jsontools.RestfulView <https://github.com/kolypto/py-flask-jsontools#restfulview>`__:\nthey are designed to be a perfect couple, so our example will use both.\n\nWhen subclassing ``CrudViewMixin``, you need to do the following:\n\n1. Initialize the ``crudhelper`` attribute with a\n   ```CrudHelper`` <#crudhelper>`__ or\n   ```StrictCrudHelper`` <#strictcrudhelper>`__\n2. Override the ``_query()`` method, so ``CrudViewMixin`` knows how to\n   get the database session\n3. Implement CRUD methods using\n   ``_method_list|create|get|update|delete()`` helpers\n4. If required, implement\n   ``_save_hook(new_instance, prev_instance=None)`` to handle cases when\n   an entity is going to be saved (created or updated)\n\nA full-featured and tested example:\n`tests/crud\\_view.py <tests/crud_view.py>`__. It's still quite verbose,\nso make sure you create another base view for your application :)\n\n.. |Build Status| image:: https://api.travis-ci.org/kolypto/py-mongosql.png?branch=master\n   :target: https://travis-ci.org/kolypto/py-mongosql",
+    "docs_url": null,
+    "download_url": "UNKNOWN",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/kolypto/py-mongosql",
+    "keywords": "sqlalchemy",
+    "license": "BSD",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "mongosql",
+    "platform": "any",
+    "project_url": "https://pypi.org/project/mongosql/",
+    "release_url": "https://pypi.org/project/mongosql/1.2.1-0/",
+    "requires_python": null,
+    "summary": "SqlAlchemy queries with MongoDB-style",
+    "version": "1.2.1-0"
+  },
+  "releases": {
+    "1.0.0-0": [
+      {
+        "comment_text": "built for Linux-3.13.0-32-generic-x86_64-with-glibc2.4",
+        "digests": {
+          "md5": "a85821f78b3477f166978662530397a5",
+          "sha256": "9a43d16a996f65843185b96471649d5b8aff30f103ad2a4aebbdae738b2855de"
+        },
+        "downloads": 1527,
+        "filename": "mongosql-1.0.0-0.linux-x86_64.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a85821f78b3477f166978662530397a5",
+        "packagetype": "bdist_dumb",
+        "python_version": "any",
+        "size": 51831,
+        "upload_time": "2014-07-31T17:43:49",
+        "url": "https://files.pythonhosted.org/packages/17/2a/d1cfd16d83bd0ad391db1587901ef42f33d177bfe17bc8322fc89c2ece37/mongosql-1.0.0-0.linux-x86_64.tar.gz"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "205e3075736180f9882e8d8570e857ce",
+          "sha256": "f6046bcc26940b310bfafa765679d8a69ec16d4546e094af236a81b977ef4c06"
+        },
+        "downloads": 1520,
+        "filename": "mongosql-1.0.0-0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "205e3075736180f9882e8d8570e857ce",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 33076,
+        "upload_time": "2014-07-31T17:43:45",
+        "url": "https://files.pythonhosted.org/packages/92/ff/431e21362cd2e7e4fff0504c75b9fc93ed5d0ae0ca71d8dad9cbedcfb9db/mongosql-1.0.0-0.tar.gz"
+      }
+    ],
+    "1.0.1-0": [
+      {
+        "comment_text": "built for Linux-3.13.0-32-generic-x86_64-with-glibc2.4",
+        "digests": {
+          "md5": "5cd07cf7a43345fc5702fcd5eb378f0b",
+          "sha256": "86bfae49e08f3dce9e42dedb7bd3eb9d2ede50ada07f2306c52ff51848e55b9c"
+        },
+        "downloads": 1507,
+        "filename": "mongosql-1.0.1-0.linux-x86_64.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5cd07cf7a43345fc5702fcd5eb378f0b",
+        "packagetype": "bdist_dumb",
+        "python_version": "any",
+        "size": 51826,
+        "upload_time": "2014-08-08T09:40:53",
+        "url": "https://files.pythonhosted.org/packages/e9/29/6780c3a5b1291370ab443e1884bfa4355b1413824eec02238a447985e885/mongosql-1.0.1-0.linux-x86_64.tar.gz"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "60bb4cbd805303c81fb04a6a2283aad7",
+          "sha256": "628da10ba2066fbad816ac8fa0e50937b77d2db6f5e29a7693e9292daacefb44"
+        },
+        "downloads": 1507,
+        "filename": "mongosql-1.0.1-0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "60bb4cbd805303c81fb04a6a2283aad7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 33128,
+        "upload_time": "2014-08-08T09:40:49",
+        "url": "https://files.pythonhosted.org/packages/26/70/2bfe7e648d92482c9741e1b4d04fda8c69f58df94bb7ba268e930536fca5/mongosql-1.0.1-0.tar.gz"
+      }
+    ],
+    "1.0.1-1": [
+      {
+        "comment_text": "built for Linux-3.13.0-32-generic-x86_64-with-glibc2.4",
+        "digests": {
+          "md5": "9bae6662c596e5613709990c4d2fb07d",
+          "sha256": "4acd5e333503bfe0944f91cb3949ded348ef42aac43510d266e8c918c95e046d"
+        },
+        "downloads": 1494,
+        "filename": "mongosql-1.0.1-1.linux-x86_64.tar.gz",
+        "has_sig": false,
+        "md5_digest": "9bae6662c596e5613709990c4d2fb07d",
+        "packagetype": "bdist_dumb",
+        "python_version": "any",
+        "size": 52179,
+        "upload_time": "2014-08-08T18:16:42",
+        "url": "https://files.pythonhosted.org/packages/9d/f5/8f03c93e8688594979f5deb871546ba911cd4f80aa2dbdd58f62c0080d5b/mongosql-1.0.1-1.linux-x86_64.tar.gz"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "88798e1f19f10e0e3b26e4438746b7b6",
+          "sha256": "577facf2c0111b0753d7955b72695e79a6aee2a35e6398743f998c60f4de6ed7"
+        },
+        "downloads": 1511,
+        "filename": "mongosql-1.0.1-1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "88798e1f19f10e0e3b26e4438746b7b6",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 33266,
+        "upload_time": "2014-08-08T18:16:38",
+        "url": "https://files.pythonhosted.org/packages/35/1b/77ebae87faa79c6d9dcf1c5a8644de5df36e0f7f9129865828764eceef19/mongosql-1.0.1-1.tar.gz"
+      }
+    ],
+    "1.0.2-0": [
+      {
+        "comment_text": "built for Linux-3.13.0-32-generic-x86_64-with-glibc2.4",
+        "digests": {
+          "md5": "0ab527616a966a61ea550fe8122d063f",
+          "sha256": "69981519fae3fc7627cee581ee8039fa543df7889400d4d7331dda13f9b86cd7"
+        },
+        "downloads": 1467,
+        "filename": "mongosql-1.0.2-0.linux-x86_64.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0ab527616a966a61ea550fe8122d063f",
+        "packagetype": "bdist_dumb",
+        "python_version": "any",
+        "size": 52808,
+        "upload_time": "2014-08-08T23:59:52",
+        "url": "https://files.pythonhosted.org/packages/1b/3f/b8d62915ce2fa8e9908a312e8f0ecc645bc3c1e096970f82a603c5fb4050/mongosql-1.0.2-0.linux-x86_64.tar.gz"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "53f02bf38df8f6ffeb19692e3f875ca0",
+          "sha256": "5c929ee64d4ba19452c31789a470cee8465e64de520fd993963d9f0293f5097c"
+        },
+        "downloads": 1506,
+        "filename": "mongosql-1.0.2-0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "53f02bf38df8f6ffeb19692e3f875ca0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 33438,
+        "upload_time": "2014-08-08T23:59:48",
+        "url": "https://files.pythonhosted.org/packages/73/6e/151ec7f78a4d771b43753f0a4b8cf25d3636bfe42f056d17db7273dc23a1/mongosql-1.0.2-0.tar.gz"
+      }
+    ],
+    "1.0.2-1": [
+      {
+        "comment_text": "built for Linux-3.13.0-32-generic-x86_64-with-glibc2.4",
+        "digests": {
+          "md5": "6b00ffb0c5749f1457effcf08e1e7252",
+          "sha256": "c6078f621c2f927463a7d59a869c633c0403c9d8ecf6da01618722915c980ce6"
+        },
+        "downloads": 1491,
+        "filename": "mongosql-1.0.2-1.linux-x86_64.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6b00ffb0c5749f1457effcf08e1e7252",
+        "packagetype": "bdist_dumb",
+        "python_version": "any",
+        "size": 52892,
+        "upload_time": "2014-08-09T00:33:21",
+        "url": "https://files.pythonhosted.org/packages/63/f0/9532ecd274f9f9995ea2e47c8f42c1fc8d453f314b147d38efb2ae0bb6d4/mongosql-1.0.2-1.linux-x86_64.tar.gz"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a424392b5a18e78dd682994c171d0231",
+          "sha256": "1d4521e7ff7301f4fb4a20e408d840dcfdc2e74f41a3d0676942cc477be09e93"
+        },
+        "downloads": 1502,
+        "filename": "mongosql-1.0.2-1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a424392b5a18e78dd682994c171d0231",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 33467,
+        "upload_time": "2014-08-09T00:33:17",
+        "url": "https://files.pythonhosted.org/packages/77/1f/9ed1c7ce1bca4d756a5578076cf3cc776a86f8efac4a1a54ead2b31e74cd/mongosql-1.0.2-1.tar.gz"
+      }
+    ],
+    "1.0.3-0": [
+      {
+        "comment_text": "built for Linux-3.13.0-32-generic-x86_64-with-glibc2.4",
+        "digests": {
+          "md5": "8953cb054eec9ed530779970a2f09115",
+          "sha256": "ebcaf01cd2e1b3514852e4d1d3ee68cd2a150222055a88d82f4edd4d229776a2"
+        },
+        "downloads": 1503,
+        "filename": "mongosql-1.0.3-0.linux-x86_64.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8953cb054eec9ed530779970a2f09115",
+        "packagetype": "bdist_dumb",
+        "python_version": "any",
+        "size": 53245,
+        "upload_time": "2014-08-09T01:06:20",
+        "url": "https://files.pythonhosted.org/packages/23/d8/a5f6455a90442f7b7b95b7c8084086240937d8a3919069a23407326d6dd1/mongosql-1.0.3-0.linux-x86_64.tar.gz"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0126e23d235e03f48c7908a660830210",
+          "sha256": "3b8357b39c7c2ba13a96b72b352ca0d733657d022bf76f5a73ffeea4c59048c3"
+        },
+        "downloads": 1499,
+        "filename": "mongosql-1.0.3-0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0126e23d235e03f48c7908a660830210",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 33715,
+        "upload_time": "2014-08-09T01:06:16",
+        "url": "https://files.pythonhosted.org/packages/a8/81/0936d3021d2f11cafd94d458dbd1ee7fe6af8d38700a5998fb9f23bc8032/mongosql-1.0.3-0.tar.gz"
+      }
+    ],
+    "1.1.0-0": [
+      {
+        "comment_text": "built for Linux-3.13.0-32-generic-x86_64-with-glibc2.4",
+        "digests": {
+          "md5": "1ae4b5ef59aa1d4fb559bd58b9126dc0",
+          "sha256": "53a63c503db30983d859b02617635e1ab66b387627d3a62f2f094d3b2902d3d3"
+        },
+        "downloads": 1467,
+        "filename": "mongosql-1.1.0-0.linux-x86_64.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1ae4b5ef59aa1d4fb559bd58b9126dc0",
+        "packagetype": "bdist_dumb",
+        "python_version": "any",
+        "size": 52967,
+        "upload_time": "2014-08-09T17:45:29",
+        "url": "https://files.pythonhosted.org/packages/d6/ba/14932925a10db727122fda59f0ef784f5589d9ef258c8d183d1e5ca1e50e/mongosql-1.1.0-0.linux-x86_64.tar.gz"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "625b4ea548611c3676a63af5b901c745",
+          "sha256": "ab1d1857fb28617d52c5dc7054a7219a7149b85d85c9648bcfd172c6374f5445"
+        },
+        "downloads": 1494,
+        "filename": "mongosql-1.1.0-0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "625b4ea548611c3676a63af5b901c745",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 33588,
+        "upload_time": "2014-08-09T17:45:26",
+        "url": "https://files.pythonhosted.org/packages/d2/f6/9eaa93741e25641e1ff370242ad49d6a62f48690196203c14fc8ac0d6b7c/mongosql-1.1.0-0.tar.gz"
+      }
+    ],
+    "1.1.0-1": [
+      {
+        "comment_text": "built for Linux-3.13.0-32-generic-x86_64-with-glibc2.4",
+        "digests": {
+          "md5": "c81930e1b09f32845d7896eea77b7c65",
+          "sha256": "85c4adef782b7cc29b387c379fecbd6be491c028359b442a4c8c0edf7b491f36"
+        },
+        "downloads": 1497,
+        "filename": "mongosql-1.1.0-1.linux-x86_64.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c81930e1b09f32845d7896eea77b7c65",
+        "packagetype": "bdist_dumb",
+        "python_version": "any",
+        "size": 52937,
+        "upload_time": "2014-08-09T18:05:09",
+        "url": "https://files.pythonhosted.org/packages/03/62/916d0e10857f67214e6d667105e037ea722d9172becbc0761993a14a42f3/mongosql-1.1.0-1.linux-x86_64.tar.gz"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "41e2bca4ee93ee26c38dc63afedd6d47",
+          "sha256": "b4b22b806acc730f2088ed58e8820719313617b8f7d47aa5c82c95cac34b4968"
+        },
+        "downloads": 1494,
+        "filename": "mongosql-1.1.0-1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "41e2bca4ee93ee26c38dc63afedd6d47",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 33566,
+        "upload_time": "2014-08-09T18:05:05",
+        "url": "https://files.pythonhosted.org/packages/4e/ed/63c6952db9b97c66fd7acc43709b2af1d6c4ac7002dcb03f95f3031492b2/mongosql-1.1.0-1.tar.gz"
+      }
+    ],
+    "1.1.0-2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "42f9adf9ae4bde3c0dc8d0940c2d8918",
+          "sha256": "183c04a9a9fd2c017e2502e6c4d924e7791c4c45ee72ed30143093fce0de751f"
+        },
+        "downloads": 1390,
+        "filename": "mongosql-1.1.0_2-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "42f9adf9ae4bde3c0dc8d0940c2d8918",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 37352,
+        "upload_time": "2014-08-14T15:43:49",
+        "url": "https://files.pythonhosted.org/packages/f5/f7/0782b9e982c12f2c780e3bde892b66b2f6a495aaa2ef6d41dc3082b2772a/mongosql-1.1.0_2-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "601c9bd05bfaa9b3bbb5589f0a42136c",
+          "sha256": "a6a1de17bc1c027d70b62a43171589f981e3faf740b721610156dfcc6caaa88f"
+        },
+        "downloads": 1469,
+        "filename": "mongosql-1.1.0-2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "601c9bd05bfaa9b3bbb5589f0a42136c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 33588,
+        "upload_time": "2014-08-14T15:43:42",
+        "url": "https://files.pythonhosted.org/packages/07/87/e4c46c2a25457db0aa47f1836569eab250d8c7ecbfd3848adcf419767281/mongosql-1.1.0-2.tar.gz"
+      }
+    ],
+    "1.1.1-0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "db9edd11f265ae51eae4411d8766a3f7",
+          "sha256": "1861f6aadf2d4a08b760af47a0cf469739ab75c706faa2479d146e7e32f17f40"
+        },
+        "downloads": 1402,
+        "filename": "mongosql-1.1.1_0-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "db9edd11f265ae51eae4411d8766a3f7",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 37578,
+        "upload_time": "2014-08-17T19:15:39",
+        "url": "https://files.pythonhosted.org/packages/dd/6f/7e8b131f8f8ffa224d9115733069419530be20dda5bb41fa4f8515220e68/mongosql-1.1.1_0-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "182faa1fd3a7235a27db6c22ad46c488",
+          "sha256": "6790662d00c4388cd680ccbe1fb61acdfa3e08daa75797e98af4755bf2c4f422"
+        },
+        "downloads": 1504,
+        "filename": "mongosql-1.1.1-0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "182faa1fd3a7235a27db6c22ad46c488",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 34044,
+        "upload_time": "2014-08-17T19:15:36",
+        "url": "https://files.pythonhosted.org/packages/7d/ab/274564199f13d84976625ae426237c2feb935ba4f493d246d5892077f58d/mongosql-1.1.1-0.tar.gz"
+      }
+    ],
+    "1.1.1-1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1809554992169ef3e5f087233e0b94b9",
+          "sha256": "6005a89eb50653edfe227ff7ac808f7d0b1268ae15b9c2bb71333e4af368000f"
+        },
+        "downloads": 1366,
+        "filename": "mongosql-1.1.1_1-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "1809554992169ef3e5f087233e0b94b9",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 37627,
+        "upload_time": "2014-09-09T11:44:04",
+        "url": "https://files.pythonhosted.org/packages/f8/69/8a92c3b203491a4aa85cb18e33b54ed1cfafbce1b1b42a79e7a19d531d19/mongosql-1.1.1_1-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5d3e0d5fffde77cea97e641c015ae05f",
+          "sha256": "deaa4fb043abbf0a866d2d4d1b2e812435160fd5eb76edbe17919b96a1f1669d"
+        },
+        "downloads": 1796,
+        "filename": "mongosql-1.1.1-1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5d3e0d5fffde77cea97e641c015ae05f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 34089,
+        "upload_time": "2014-09-09T11:44:00",
+        "url": "https://files.pythonhosted.org/packages/fc/cc/09d3e240f05e9854cf3cdcc30df3230ae9ed455366b57033dbd57ff8a9da/mongosql-1.1.1-1.tar.gz"
+      }
+    ],
+    "1.2.0-0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9e5d11b75277957cc1f0b1e5d26a912e",
+          "sha256": "2f3549e8cb44c844cc5718cc7194514576c35ca57bf579fa28fb322c0d82b8f5"
+        },
+        "downloads": 1295,
+        "filename": "mongosql-1.2.0_0-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "9e5d11b75277957cc1f0b1e5d26a912e",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 37599,
+        "upload_time": "2014-09-10T18:16:16",
+        "url": "https://files.pythonhosted.org/packages/3a/31/791f4db528b7e953ef84771bead5d61a89ca2d18904e653afee068b8a83b/mongosql-1.2.0_0-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7b517ded5b6a195e31f285ef9c2e5598",
+          "sha256": "58ea5087ef3f43da430d83293654d50b2049e3df36118844ed8d1254eafc0df1"
+        },
+        "downloads": 1462,
+        "filename": "mongosql-1.2.0-0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7b517ded5b6a195e31f285ef9c2e5598",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 33841,
+        "upload_time": "2014-09-10T18:16:13",
+        "url": "https://files.pythonhosted.org/packages/f3/3d/e2e555a4c74ad2e3180e70b5801ed4c7ef0fb59a1d902eeb06842bb865bf/mongosql-1.2.0-0.tar.gz"
+      }
+    ],
+    "1.2.1-0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "960b9e121dc82898cfcf91b86c8510ee",
+          "sha256": "93eecf73262b1af4572af29b634a29b3394947e356354b9602b6814b8b77f9fc"
+        },
+        "downloads": 1528,
+        "filename": "mongosql-1.2.1_0-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "960b9e121dc82898cfcf91b86c8510ee",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 28857,
+        "upload_time": "2014-10-07T23:10:40",
+        "url": "https://files.pythonhosted.org/packages/be/71/d3d8b0ea1df01d5f0b637e2cd0f840d6b6b8171d100259bf061dd1820da6/mongosql-1.2.1_0-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "363bd9df388361a18ce05e281892d494",
+          "sha256": "400c8bce2cf834c6b4415e4866a4055db3f1388f891020fb4b7d0e24787e060c"
+        },
+        "downloads": 1604,
+        "filename": "mongosql-1.2.1-0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "363bd9df388361a18ce05e281892d494",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 26541,
+        "upload_time": "2014-10-07T23:10:38",
+        "url": "https://files.pythonhosted.org/packages/36/b0/86c8fcc88a4e4d4a3f5598e883565d5ae38534fcb155e8aaf93e1fcd34b1/mongosql-1.2.1-0.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "960b9e121dc82898cfcf91b86c8510ee",
+        "sha256": "93eecf73262b1af4572af29b634a29b3394947e356354b9602b6814b8b77f9fc"
+      },
+      "downloads": 1528,
+      "filename": "mongosql-1.2.1_0-py2-none-any.whl",
+      "has_sig": false,
+      "md5_digest": "960b9e121dc82898cfcf91b86c8510ee",
+      "packagetype": "bdist_wheel",
+      "python_version": "2.7",
+      "size": 28857,
+      "upload_time": "2014-10-07T23:10:40",
+      "url": "https://files.pythonhosted.org/packages/be/71/d3d8b0ea1df01d5f0b637e2cd0f840d6b6b8171d100259bf061dd1820da6/mongosql-1.2.1_0-py2-none-any.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "363bd9df388361a18ce05e281892d494",
+        "sha256": "400c8bce2cf834c6b4415e4866a4055db3f1388f891020fb4b7d0e24787e060c"
+      },
+      "downloads": 1604,
+      "filename": "mongosql-1.2.1-0.tar.gz",
+      "has_sig": false,
+      "md5_digest": "363bd9df388361a18ce05e281892d494",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 26541,
+      "upload_time": "2014-10-07T23:10:38",
+      "url": "https://files.pythonhosted.org/packages/36/b0/86c8fcc88a4e4d4a3f5598e883565d5ae38534fcb155e8aaf93e1fcd34b1/mongosql-1.2.1-0.tar.gz"
+    }
+  ]
+}

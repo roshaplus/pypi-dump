@@ -1,0 +1,112 @@
+{
+  "info": {
+    "author": "Jan Seifert (Seznam.cz, a.s.)",
+    "author_email": "jan.seifert@firma.seznam.cz",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 5 - Production/Stable",
+      "Environment :: Web Environment",
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: BSD License",
+      "Operating System :: OS Independent",
+      "Programming Language :: Python :: 2.7",
+      "Programming Language :: Python :: 3.4",
+      "Programming Language :: Python :: 3.5",
+      "Topic :: Software Development :: Libraries :: Python Modules"
+    ],
+    "description": "Shelter\n=======\n\nShelter is a *Python's Tornado* wrapper which provides classes and helpers\nfor creation new application skeleton, writing management commands (like a\n*Django*), service processes and request handlers. It was tested with\n*Python 2.7* and *Python 3.4* or higher and *Tornado 3.2* or higher.\n\nInstalation\n-----------\n\n::\n\n    cd shelter/\n    python setup.py install\n\nAfter instalation **shelter-admin** command is available. For help type:\n\n::\n\n    shelter-admin -h\n\nThe most important argument is ``-s/--settings``, which joins Shelter library\nand your application. Format is Python's module path, eg. `myapp.settings`.\nSecond option how to handle `settings` module is ``SHELTER_SETTINGS_MODULE``\nenvironment variable. If both are handled, command line argument has higher\npriority than environment variable.\n\n::\n\n    shelter-admin -s myapp.settings\n\nor\n\n::\n\n    SHELTER_SETTINGS_MODULE=myapp.settings shelter-admin\n\nUssage\n------\n\n::\n\n    shelter-admin startproject myproject\n\nSkeleton of the new application will be created in current working directory.\nProject name has the same rules as Python's module name. Entry point into new\napplication is a script **manage.py**.\n\n::\n\n    cd myproject/\n    ./manage.py -h\n    ./manage.py devserver\n\n`settings.py` is included in the new skeleton. See comments in file how to\ndefine interfaces, management commands, service processes, ...\n\nManagement commands which provides Shelter library:\n\n+ **devserver** runs development HTTP server, which autoreloads application\n  when source files are changes. Server is run only in one process, service\n  processes are run in the threads.\n+ **runserver** runs production HTTP, multi-process server. Number of the\n  processes are detected according to ``INTERFACES`` setting in the\n  ``settings`` module. Service processes are run in separated processes.\n  Parent process checks child processes and when child process crashes,\n  it is run again. Maximum amount of the crashes are 100, then application\n  will exit.\n+ **shell** runs interactive Python's shell. First it tries to run *IPython*,\n  then standard *Python* shell.\n+ **showconfig** shows effective configuration.\n+ **startproject** will generate new apllication skeleton.\n\nConfig class\n------------\n\nLibrary provides base configuration class ``shelter.core.config.Config``\nwhich holds all configuration. Public attributes are **settings** which\nis ``settings`` module of the application and **args_parser** which is\ninstance of the ``argparse.ArgumentParser`` from *Python's standard library*.\n\nYou can override this class in the `settings` module::\n\n    CONFIG_CLASS = 'myapp.core.config.AppConfig'\n\nYour own `AppConfig` class can contain additional *properties* with\napplication's settings, e.g. database connection arguments. Way how the value\nis found is only on you - either only in **settings** or **args_parser** or\nin both. You can define additional arguments of the command line.\n\n::\n\n    import time\n\n    from shelter.core.config import Config, argument\n\n    class AppConfig(Config):\n\n        arguments = (\n            argument(\n                '-k', '--secret-key',\n                dest='secret_key', action='store',\n                type=str, default='',\n                help='configuration file'\n            ),\n        )\n\n        Database = collections.namedtuple('Database', ['host', 'db'])\n\n        def initialize(self):\n            # initialize() is called after instance is created. If you want\n            # add some instance attributes, use this method instead of\n            # override __init__().\n            self._server_started_time = time.time()\n\n        def get_config_items(self):\n            # Override get_config_items() method if you want to add\n            # your options into showconfig management command.\n            base_items = super(AppConfig, self).get_config_items()\n            app_items = (\n                ('secret_key', self.secret_key),\n                ('database', self.database),\n            )\n            return base_items + app_items\n\n        @property\n        def secret_key(self):\n            # If command-line argument -k/--secret-key exists, it will\n            # override settings.SECRET_KEY value.\n            return self.args_parser.secret_key or self.settings.SECRET_KEY\n\n        @property\n        def database(self):\n            return self.Database(\n                db=self.settings.DATABASE_NAME,\n                host=self.settings.DATABASE_HOST,\n                passwd=getattr(self.settings, DATABASE_PASSWORD, '')\n            )\n\nContext class\n-------------\n\nIn all handlers, management commands and service processes is available\ninstance of the ``shelter.core.context.Context`` which holds data and\nclasses instance for your appllication. Bundled class ``Context`` contains\nonly one property **config** with ``Config`` instance (see previous\nchapter).\n\nYou can define own class in ``settings`` module::\n\n    CONTEXT_CLASS = 'myapp.core.context.Context'\n\nOverrided ``Context`` can contain additional *properties*, e.g. database\nconnection pool. \n\n**It is necesary to initialize shared sources (sockets, open files, ...)\nlazy!** The reason is that subprocesses (Tornado HTTP workers, service\nprocesses) have to get uninitialized ``Context``, because forked resources\ncan cause a lot of nights without dreams... **Also it is necessary to known\nthat Context is shared among coroutines!** So you are responsible for\nlocking shared resources (be carreful, it is blocking operation) or use\nanother mechanism, e.g. database connection pool.\n\n::\n\n    class Context(shelter.core.context.Context):\n\n        def initialize(self):\n            self._database = None\n\n        @property\n        def database(self):\n            if self._database is None:\n                self._database = ConnectionPool(\n                    self.config.database.host,\n                    self.config.database.db)\n            return self._database\n\nHooks\n-----\n\nYou can define several hooks in the ``settings`` module - when application\nis launched and on **SIGUSR1** and **SIGUSR2** signals.\n\n::\n\n    INIT_HANDLER = 'myapp.core.app.init_handler'\n    SIGUSR1_HANDLER = 'myapp.core.app.sigusr1_handler'\n    SIGUSR2_HANDLER = 'myapp.core.app.sigusr2_handler'\n\nHandler is common *Python's* function which takes only one argument\n*context* with ``Context`` instance (see previous chapter).\n\n::\n\n    def init_handler(context):\n        do_something(context.config)\n\n+ **INIT_HANDLER** is called during the application starts, before workers\n  or service processes are run.\n+ **SIGUSR1_HANDLER** is called on **SIGUSR1** signal. When signal receives\n  worker/child process, it is processed only in this process. When signal\n  receives main/parent process, signal is propagated into all workers.\n+ **SIGUSR2_HANDLER** is called on **SIGUSR2** signal. Signal is processed\n  only in process which received signal. It is not propagated anywhere.\n\nService processes\n-----------------\n\nService process are tasks which are repeatedly launched in adjusted interval,\ne.g. warms cache data before they expire. Library provides base class\n``shelter.core.process.BaseProcess``. For new service process\nyou must inherit ``BaseProcess``, adjust ``interval`` attribute and override\n``loop()`` method.\n\n::\n\n    from shelter.core.processes import BaseProcess\n\n    class WarmCache(BaseProcess)\n\n        interval = 30.0\n\n        def loop(self):\n            self.logger.info(\"Warn cached data\")\n            with self.context.db.get_connection_from_pool() as db:\n                self.context.set('key', db.get_data(), timeout=60)\n\n+ **interval** is a time in seconds. After this time ``loop()`` method is\n  repeatedly called.\n\nService process has to be registered in the ``settings`` module.\n\n::\n\n    SERVICE_PROCESSES = (\n        ('myapp.processes.WarmCache', True, 15.0),\n    )\n\nEach service process definition is list/tuple in format\n``('path.to.ClassName', wait_unless_ready, timeout)``. If *wait_unless_ready*\nis ``True``, wait maximum *timeout* seconds unless process is successfully\nstarted, otherwise raise ``shelter.core.exceptions.ProcessError`` exception.\n\nManagement commands\n-------------------\n\nClass ``shelter.core.commands.BaseCommand`` is an ancestor for user\ndefined managemend commands, e.g. export/import database data. For new\nmanagement command you must inherit ``BaseCommand`` and override ``command()``\nmethod and/or ``initialize()`` method.\n\n::\n\n    import sys\n\n    from gettext import gettext as _\n\n    from shelter.core.commands import BaseCommand, argument\n\n    class Export(BaseCommand)\n\n        name = 'export'\n        help = 'export data from database'\n        arguments = (\n            argument(\n                '-o', dest=output_file, type=str, default='-',\n                help=_('output filename')),\n        )\n\n        def initialize(self):\n            filename = self.conntext.config.args_parser.output_file\n            if filename == '-':\n                self.output_file = sys.stdout\n            else:\n                self.output_file = open(filename, 'wt')\n\n        def command(self):\n            self.logger.info(\"Exporting data\")\n            with self.context.db.get_connection_from_pool() as db:\n                data = db.get_data()\n            self.output_file.write(data)\n            self.output_file.flush()\n\n+ **name** is a name of the management command. This name you type into\n  command line, e.g. ``./manage.py export``.\n+ **help** is a short description of the management command. This help is\n  printed onto console when you type ``./manage.py command -h``.\n+ **arguments** are arguments of the command line parser. ``argument()``\n  function has the same meaning as ``ArgumentParser.add_argument()``\n  from *Python's standard library*.\n+ **service_processes_start** If it is ``True``, service processes will be\n  launched on background. Default is do not launch any service processes.\n  **It is not public API, do not use this attribute unless you really know\n  what you are doing**!\n+ **service_processes_in_thread** If it is ``True``, launch service\n  processes in threads, else as a separated processes. **It is not public\n  API, do not use this attribute unless you really know what you are doing**!\n+ **settings_required** If it is ``True``, `settings` module will not be\n  required. **It is not public API, do not use this attribute unless you\n  really know what you are doing**!\n\nManagement command has to be registered in the ``settings`` module.\n\n::\n\n    MANAGEMENT_COMMANDS = (\n        'myapp.commands.Export',\n    )\n\nInterfaces\n----------\n\n*Tornado's HTTP server* can be run in multiple instances. Interface are\ndefined in ``settings`` module.\n\n::\n\n    INTERFACES = {\n        'default': {\n            # IP/hostname (not required) and port where the interface\n            # listen to requests\n            'LISTEN': ':8000',\n\n            # Amount of the server processes if application is run\n            # using runserver command. Positive integer, 0 will\n            # detect amount of the CPUs\n            'PROCESSES': 0,\n\n            # Path in format 'path.to.module.variable_name' where\n            # urls patterns are defined\n            'URLS': 'myapp.urls.urls_default',\n        },\n    }\n\nURL path to HTTP handler routing\n--------------------------------\n\nIt is the same as in *Python's Tornado* application.\n\n::\n\n    from tornado.web import URLSpec\n\n    from myapp.handlers import HomepageHandler, AboutHandler\n\n    urls_default = (\n        URLSpec(r'/', HomepageHandler),\n        URLSpec(r'/about/', AboutHandler),\n    )\n\nTuple/list **urls_default** is handled into relevant interface in the\n``settings`` module, see previous chapter.\n\nHTTP handler is a subclass of the ``shelter.core.web.BaseRequestHandler``\nwhich enhances ``tornado.web.RequestHandler``. Provides additional instance\nattributes **logger**, **context** and **interface**.\n\n+ **logger** is an instance of the ``logging.Logger`` from *Python's standard\n  library*. Logger name is derived from handlers's name, e.g\n  ``myapp.handlers.HomepageHandler``.\n+ **context** is an instance of the ``Context``, see *Context* paragraph.\n+ **interface** is a namedtuple with informations about current interface.\n  Named attributes are **name**, **host**, **port**, **processes** and\n  **urls**.\n\n::\n\n    from shelter.core.web import BaseRequestHandler\n\n    class DummyHandler(BaseRequestHandler):\n\n        def get(self):\n            self.write(\n                \"Interface '%s' works!\\n\" % self.interface.name)\n            self.set_header(\n                \"Content-Type\", 'text/plain; charset=UTF-8')\n\nLogging\n-------\n\nStandard *Python's logging* is used. ``Config.configure_logging()`` method\nis responsible for setting the logging. Default ``Config`` class reads\nlogging's configuration from ``settings`` module::\n\n    LOGGING = {\n        'version': 1,\n        'disable_existing_loggers': False,\n        'handlers': {\n            'console': {\n                'class': 'logging.StreamHandler',\n                'level': 'INFO',\n                'formatter': 'default',\n            },\n        },\n        'root': {\n            'handlers': ['console'],\n            'level': 'INFO',\n        },\n    }\n\nContrib\n-------\n\nshelter.contrib.config.iniconfig.IniConfig\n``````````````````````````````````````````\n\nDescendant of the ``shelter.core.config.Config``, provides **INI** files\nconfiguration. Adds additional public attribute **config_parser** which is\ninstance of the ``RawConfigParser`` from *Python's standard library*.\nInterfaces and application's name can be overrided in configuration file,\n*Python's logging* must be defined.\n\nConfiguration file is specified either by ``SHELTER_CONFIG_FILENAME``\nenvironment variable or ``-f/--config-file`` command line argument. First,\nmain configuration file is read. Then all configuration files from\n``file.conf.d`` subdirectory are read in alphabetical order. E.g. if\n``-f conf/myapp.conf`` is handled, first ``conf/myapp.conf`` file is read\nand then all ``conf/myapp.conf.d/*.conf`` files. Value in later\nconfiguration file overrides previous defined value.\n\n::\n\n    [application]\n    name = MyApp\n\n    [interface_http]\n    Listen=:4444\n    Processes=8\n    Urls=tests.urls1.urls_http\n\n    [formatters]\n    keys=default\n\n    [formatter_default]\n    class=logging.Formatter\n    format=%(asctime)s %(name)s %(levelname)s: %(message)s\n\n    [handlers]\n    keys=console\n\n    [handler_console]\n    class=logging.StreamHandler\n    args=()\n    level=NOTSET\n\n    [loggers]\n    keys=root\n\n    [logger_root]\n    level=INFO\n    handlers=console\n\nLicense\n-------\n\n3-clause BSD",
+    "docs_url": null,
+    "download_url": "UNKNOWN",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/seznam/shelter",
+    "keywords": null,
+    "license": "BSD",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "shelter",
+    "platform": "any",
+    "project_url": "https://pypi.org/project/shelter/",
+    "release_url": "https://pypi.org/project/shelter/1.1.1/",
+    "requires_python": null,
+    "summary": "Simple Python's Tornado wrapper which provides helpers for creationa new project, writing management commands, service processes, ...",
+    "version": "1.1.1"
+  },
+  "releases": {
+    "1.0.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "aa11494013879d94e23d4cfc64a82d60",
+          "sha256": "88aed4fb5fb81a83770e751d2ad3d3ceaa10763e2f172c28766f2ce6f191e106"
+        },
+        "downloads": 254,
+        "filename": "shelter-1.0.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "aa11494013879d94e23d4cfc64a82d60",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 28718,
+        "upload_time": "2016-07-06T19:08:58",
+        "url": "https://files.pythonhosted.org/packages/80/fc/241295c0caa250c3f29e18be1c7fa087d1546b422498f213ff79cff4e0ce/shelter-1.0.0.tar.gz"
+      }
+    ],
+    "1.1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0336f274221513e06697ea3b9b3368a1",
+          "sha256": "c8c6abed3ead2d83986d224f42785971a2bdf697459bcc6d867603b09a051952"
+        },
+        "downloads": 95,
+        "filename": "shelter-1.1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0336f274221513e06697ea3b9b3368a1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 56928,
+        "upload_time": "2016-07-29T12:43:18",
+        "url": "https://files.pythonhosted.org/packages/84/c0/968cb6636124079ef6ae047eb6008d1f2345eddb139574ade06008f68314/shelter-1.1.0.tar.gz"
+      }
+    ],
+    "1.1.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6ecd8c4ee9168d372b0804623216e9aa",
+          "sha256": "099549277bb6e762e115855de448837f05a39667628e353505b42bd773eadb88"
+        },
+        "downloads": 392,
+        "filename": "shelter-1.1.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6ecd8c4ee9168d372b0804623216e9aa",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 57527,
+        "upload_time": "2016-08-01T14:39:23",
+        "url": "https://files.pythonhosted.org/packages/50/0d/d315d3abc1803e9da22eced0a589f2133d9e285c760c484860def3ea15f7/shelter-1.1.1.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "6ecd8c4ee9168d372b0804623216e9aa",
+        "sha256": "099549277bb6e762e115855de448837f05a39667628e353505b42bd773eadb88"
+      },
+      "downloads": 392,
+      "filename": "shelter-1.1.1.tar.gz",
+      "has_sig": false,
+      "md5_digest": "6ecd8c4ee9168d372b0804623216e9aa",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 57527,
+      "upload_time": "2016-08-01T14:39:23",
+      "url": "https://files.pythonhosted.org/packages/50/0d/d315d3abc1803e9da22eced0a589f2133d9e285c760c484860def3ea15f7/shelter-1.1.1.tar.gz"
+    }
+  ]
+}

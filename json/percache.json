@@ -1,0 +1,150 @@
+{
+  "info": {
+    "author": "Oben Sonne",
+    "author_email": "obensonne@googlemail.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 5 - Production/Stable",
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: MIT License",
+      "Operating System :: OS Independent",
+      "Programming Language :: Python",
+      "Programming Language :: Python :: 2",
+      "Programming Language :: Python :: 2.6",
+      "Programming Language :: Python :: 2.7",
+      "Programming Language :: Python :: 3",
+      "Programming Language :: Python :: 3.3",
+      "Topic :: Software Development"
+    ],
+    "description": "===============================================================================\npercache\n===============================================================================\n\n*percache* is a Python module to persistently cache results of functions (or\ncallables in general) using decorators.\n\nIt is somehow similar to the `Memoize Example`_ from the Python Decorator\nLibrary but with the advantage that results are stored *persistently* in a\ncache. *percache* provides memoization across multiple invocations of the\nPython interpreter.\n\nInstall with ``pip install percache``. *percache* works with Python 2.6, 2.7,\nand 3.3 and has no dependencies outside the standard library.\n\n.. _Memoize Example: http://wiki.python.org/moin/PythonDecoratorLibrary#Memoize\n\n\n\n\n-------------------------------------------------------------------------------\nExample\n-------------------------------------------------------------------------------\n\n::\n\n    >>> import percache\n    >>> cache = percache.Cache(\"/tmp/my-cache\")\n    >>>\n    >>> @cache\n    ... def longtask(a, b):\n    ...     print(\"running a long task\")\n    ...     return a + b\n    ...\n    >>> longtask(1, 2)\n    running a long task\n    3\n    >>>\n    >>> longtask(1, 2)\n    3\n    >>> cache.close() # writes new cached results to disk\n\nAs you can see at the missing output after the second invocation, ``longtask``\nhas been called once only. The second time the result is retrieved from the\ncache.  *The key feature of this module is that this works across multiple\ninvocations of the Python interpreter.*\n\nA requirement on the results to cache is that they are `pickable`_.\n\n.. _pickable: http://docs.python.org/library/pickle.html#what-can-be-pickled-and-unpickled\n\nEach cache file can be used for any number of differently named callables.\n\nAlternative back-ends and live synchronization\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nBy default *percache* uses a `shelve`_ as its cache back-end. Alternative\nback-ends may be used if they are given as dictionary-like objects with a\n``close()`` and ``sync()`` method::\n\n    >>> class FooCache(dict):\n    ...     def sync(self):\n    ...         ...\n    ...     def close(self):\n    ...         ...\n    >>> fc = FooCache()\n    >>> cache = percache.Cache(fc, livesync=True)\n\nIn this example a cache is created in live-sync mode, i.e. results\n*immediately* are stored permanently. Normally this happens not until a cache's\n``close()`` method has been called or until it gets `finalized`_. Note that the\nlive-sync mode may slow down your percache-decorated functions (though it\nreduces the risk of \"loosing\" results).\n\n.. _finalized: http://docs.python.org/reference/datamodel.html#object.__del__\n\n-------------------------------------------------------------------------------\nCaching details (you should know)\n-------------------------------------------------------------------------------\n\nWhen caching the result of a callable, a SHA1 hash based on the callable's name\nand arguments is used as a key to store the result in the cache file.\n\nThe hash calculation does not work directly with the arguments but with their\n*representations*, i.e. the string returned by applying ``repr()``. Argument\nrepresentations are supposed to differentiate values sufficiently for the\npurpose of the function but identically across multiple invocations of the\nPython interpreter. By default the built-in function ``repr()`` is used to get\nargument representations. This is just perfect for basic types, lists, tuples\nand combinations of them but it may fail on other types:\n\n::\n\n    >>> repr(42)\n    42                                  # good\n    >>> repr([\"a\", \"b\", (1, 2L)])\n    \"['a', 'b', (1, 2L)]\"               # good\n    >>> o = object()\n    >>> repr(o)\n    '<object object at 0xb769a4f8>'     # bad (address is dynamic)\n    >>> repr({\"a\":1,\"b\":2,\"d\":4,\"c\":3})\n    \"{'a': 1, 'c': 3, 'b': 2, 'd': 4}\"  # bad (order may change)\n    >>> class A(object):\n    ...     def __init__(self, a):\n    ...         self.a = a\n    ...\n    >>> repr(A(36))\n    '<__main__.A object at 0xb725bb6c>' # bad (A.a not considered)\n    >>> repr(A(35))\n    '<__main__.A object at 0xb725bb6c>' # bad (A.a not considered)\n\nA *bad* representation is one that is not identically across Python invocations\n(all *bad* examples) or one that does not differentiate values sufficiently\n(last 2 *bad* examples).\n\nTo use such types anyway you can either\n\n1. implement the type's ``__repr__()`` method accordingly or\n2. provide a custom representation function using the ``repr`` keyword of the\n   ``Cache`` constructor.\n\nImplement the ``__repr__()`` method\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nTo pass dictionaries to *percache* decorated functions, you could wrap them in\nan own dictionary type with a suitable ``__repr__()`` method:\n\n::\n\n    >>> class mydict(dict):\n    ...     def __repr__(self):\n    ...         items = [\"%r: %r\" % (k, self[k]) for k in sorted(self)]\n    ...         return \"{%s}\" % \", \".join(items)\n    ...\n    >>> repr(mydict({\"a\":1,\"b\":2,\"d\":4,\"c\":3}))\n    \"{'a': 1, 'b': 2, 'c': 3, 'd': 4}\"  # good (always same order)\n\nProvide a custom ``repr()`` function\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nThe following example shows how to use a custom representation function to get\na suitable argument representation of ``file`` objects:\n\n::\n\n    >>> def myrepr(arg):\n    ...     if isinstance(arg, file):\n    ...         # return a string with file name and modification time\n    ...         return \"%s:%s\" % (arg.name, os.fstat(arg.fileno())[8])\n    ...     else:\n    ...         return repr(arg)\n    ...\n    >>> cache = percache.Cache(\"/some/path\", repr=myrepr)\n\n-------------------------------------------------------------------------------\nHousekeeping\n-------------------------------------------------------------------------------\n\n\n- Make sure to delete the cache file whenever the behavior of a cached function\n  has changed!\n\n- To prevent the cache from getting larger and larger you can call the\n  ``clear()`` method of a ``Cache`` instance. By default it clears *all*\n  results from the cache. The keyword ``maxage`` my be used to specify a\n  maximum number of seconds passed since a cached result has been *used* the\n  last time. Any result not used (written or accessed) for ``maxage`` seconds\n  gets removed from the cache.\n\n-------------------------------------------------------------------------------\nChanges\n-------------------------------------------------------------------------------\n\nVersion 0.3.0\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n- Support Python 3.3 (next to 2.6 and 2.7)\n\nVersion 0.2.1\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n- Add missing README to PyPi package.\n\nVersion 0.2\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n- Automatically close (i.e. sync) the cache on finalization.\n- Optionally sync the cache on each change.\n- Support for alternative back-ends (others than `shelve`_).\n- Cache object are callable now, which makes the explicit ``check()`` method\n  obsolete (though the old interface is still supported).\n\n.. _shelve: http://docs.python.org/library/shelve.html\n\nVersion 0.1.1\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n- Fix wrong usage age output of command line interface.\n- Meet half way with pylint.\n\nVersion 0.1\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n- Initial release",
+    "docs_url": null,
+    "download_url": "UNKNOWN",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "http://bitbucket.org/obensonne/percache",
+    "keywords": null,
+    "license": "MIT License",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "percache",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/percache/",
+    "release_url": "https://pypi.org/project/percache/0.3.0/",
+    "requires_python": null,
+    "summary": "Persistently cache results of callables",
+    "version": "0.3.0"
+  },
+  "releases": {
+    "0.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "401355d709ec966cdd1ad508e7400b0f",
+          "sha256": "328f79a519c28955428d436f750df358de3378bc05ed30e533a7719ded0a83ab"
+        },
+        "downloads": 2799,
+        "filename": "percache-0.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "401355d709ec966cdd1ad508e7400b0f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 6240,
+        "upload_time": "2010-04-06T16:47:50",
+        "url": "https://files.pythonhosted.org/packages/ba/6b/de4bb54a8873c38f37951f4f0b7bd4c8dec73e58f9cb09cf105e9bb41288/percache-0.1.tar.gz"
+      }
+    ],
+    "0.1.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2d655a791c91dc277ec9618adbc2a8a0",
+          "sha256": "9825145c1bf6996b52b225481aa11feafe58438d9e40125eca6889ff146fcc34"
+        },
+        "downloads": 2517,
+        "filename": "percache-0.1.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2d655a791c91dc277ec9618adbc2a8a0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 6247,
+        "upload_time": "2010-04-06T22:47:12",
+        "url": "https://files.pythonhosted.org/packages/ef/8a/9ea97afad650f05017eff98128647acf9151c4a5c4d845f9fcdaf65e654a/percache-0.1.1.tar.gz"
+      }
+    ],
+    "0.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e764c6987d413ca74161fae7d8a6ff4b",
+          "sha256": "6b71bdd5a2b277e9cc0a5806d2482152a81e30c78c0faf7e0eb92b9a4bb58e12"
+        },
+        "downloads": 2353,
+        "filename": "percache-0.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e764c6987d413ca74161fae7d8a6ff4b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 6778,
+        "upload_time": "2011-09-25T21:08:22",
+        "url": "https://files.pythonhosted.org/packages/9b/b8/6d44954f05e72c918c6b10f8635c896d5887ee022a767bc706528f1145db/percache-0.2.tar.gz"
+      }
+    ],
+    "0.2.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "65989e5382cce73d0b7d41986bfd9e6e",
+          "sha256": "7dff8009288ba2d3275640801b8d1c585002a3d247a0bce3d5fa8fda4099e89d"
+        },
+        "downloads": 2471,
+        "filename": "percache-0.2.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "65989e5382cce73d0b7d41986bfd9e6e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 7569,
+        "upload_time": "2012-02-18T14:01:53",
+        "url": "https://files.pythonhosted.org/packages/b5/b2/479e00be63e279833a0bdabce3cdd860c65b035a98758e778a85beed0e34/percache-0.2.1.tar.gz"
+      }
+    ],
+    "0.3.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "84054a8082127d20c290145dc87b6346",
+          "sha256": "b60043937aece6d154ccd1fd7380fc01ea482335716c2bd41efb85b097bc88df"
+        },
+        "downloads": 2530,
+        "filename": "percache-0.3.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "84054a8082127d20c290145dc87b6346",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 7933,
+        "upload_time": "2014-03-15T19:55:18",
+        "url": "https://files.pythonhosted.org/packages/c6/18/d875e846f3b46bc029fad2b8266e58bc38f44436307727c72c5dd25649e0/percache-0.3.0.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "84054a8082127d20c290145dc87b6346",
+        "sha256": "b60043937aece6d154ccd1fd7380fc01ea482335716c2bd41efb85b097bc88df"
+      },
+      "downloads": 2530,
+      "filename": "percache-0.3.0.tar.gz",
+      "has_sig": false,
+      "md5_digest": "84054a8082127d20c290145dc87b6346",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 7933,
+      "upload_time": "2014-03-15T19:55:18",
+      "url": "https://files.pythonhosted.org/packages/c6/18/d875e846f3b46bc029fad2b8266e58bc38f44436307727c72c5dd25649e0/percache-0.3.0.tar.gz"
+    }
+  ]
+}

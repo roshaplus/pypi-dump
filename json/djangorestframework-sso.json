@@ -1,0 +1,210 @@
+{
+  "info": {
+    "author": "Lenno Nagel",
+    "author_email": "lenno@namespace.ee",
+    "bugtrack_url": "",
+    "classifiers": [
+      "Development Status :: 3 - Alpha",
+      "Environment :: Web Environment",
+      "Framework :: Django",
+      "Framework :: Django :: 1.9",
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: MIT License",
+      "Operating System :: OS Independent",
+      "Programming Language :: Python",
+      "Programming Language :: Python :: 2",
+      "Programming Language :: Python :: 2.7",
+      "Programming Language :: Python :: 3",
+      "Programming Language :: Python :: 3.4",
+      "Programming Language :: Python :: 3.5",
+      "Topic :: Internet :: WWW/HTTP",
+      "Topic :: Internet :: WWW/HTTP :: Session",
+      "Topic :: Software Development :: Libraries :: Python Modules"
+    ],
+    "description": "=========================\nDjango REST Framework SSO\n=========================\n\nDjango REST Framework SSO is an extension to Django REST Framework that enables\nSingle sign-on in a microservice-oriented environment using the JWT standard.\n\nThis library provides two types of JWT tokens:\n\n1. non-expiring session tokens for your primary login application (aka. \"refresh tokens\")\n\n2. short-lived authorization tokens for accessing your other apps (these contain permissions given by the primary app)\n\nThe client is expected to first login to your primary login application by POSTing an username and password. The client will receive a permanent session token that will allow subsequent requests to the same server be authenticated. These tokens do not contain any permissions/authorization information and cannot be used for SSO into other apps.\n\nAfterwards, the client is expected to obtain and keep updating authorization tokens using the session token. These secondary tokens are short-lived (15mins..1 hour) and contain the permissions that the user has at the time of issuance. These tokens are used to access other services, which then trust the permissions in the JWT payload for the lifetime of the token.\n\nQuick start\n-----------\n\n1. Add \"rest_framework_sso\" to your INSTALLED_APPS setting like this::\n\n    INSTALLED_APPS = [\n        ...\n        'rest_framework_sso',\n    ]\n\n2. Include the session and authorization token URLs::\n\n    from rest_framework_sso.views import obtain_session_token, obtain_authorization_token\n\n    urlpatterns = [\n        ...\n        url(r'^session/', obtain_session_token),\n        url(r'^authorize/', obtain_authorization_token),\n    ]\n\nAdditional data in authorization tokens\n---------------------------------------\nFor example, you may want to include an `account` field in your JWT authorization tokens,\nso that `otherapp` will know about the user's permissions. To do this, you may need to override\nthe ObtainAuthorizationTokenView and AuthorizationTokenSerializer::\n\n    class ObtainAuthorizationTokenView(rest_framework_sso.views.ObtainAuthorizationTokenView):\n        \"\"\"\n        Returns a JSON Web Token that can be used for authenticated requests.\n        \"\"\"\n        serializer_class = AuthorizationTokenSerializer\n\n\n    class AuthorizationTokenSerializer(QuerySetReadableMixin, serializers.Serializer):\n        account = serializers.HyperlinkedRelatedField(\n            queryset=Account.objects.all(),\n            required=True,\n            view_name='api:account-detail',\n        )\n\n        class Meta:\n            fields = ['account']\n\nReplace the authorization token view in your URL conf::\n\n    urlpatterns = [\n        url(r'^authorize/$', ObtainAuthorizationTokenView.as_view()),\n        ...\n    ]\n\nAdd the `account` keyword argument to the `create_authorization_payload` function::\n\n    from rest_framework_sso import claims\n\n    def create_authorization_payload(session_token, user, account, **kwargs):\n        return {\n            claims.TOKEN: claims.TOKEN_AUTHORIZATION,\n            claims.SESSION_ID: session_token.pk,\n            claims.USER_ID: user.pk,\n            claims.EMAIL: user.email,\n            'account': account.pk,\n        }\n\nYou will need to activete this function in the settings::\n\n    REST_FRAMEWORK_SSO = {\n        'CREATE_AUTHORIZATION_PAYLOAD': 'myapp.authentication.create_authorization_payload',\n        ...\n    }\n\nJWT Authentication\n------------------\nIn order to get-or-create User accounts automatically within your microservice apps,\nyou may need to write your custom JWT payload authentication function::\n\n    from django.contrib.auth import get_user_model\n    from rest_framework_sso import claims\n    \n    def authenticate_payload(payload):\n        user_model = get_user_model()\n        user, created = user_model.objects.get_or_create(\n            service=payload.get(claims.ISSUER),\n            external_id=payload.get(claims.USER_ID),\n        )\n        if not user.is_active:\n            raise exceptions.AuthenticationFailed(_('User inactive or deleted.'))\n        return user\n\n\nEnable authenticate_payload function in REST_FRAMEWORK_SSO settings::\n\n    REST_FRAMEWORK_SSO = {\n        'AUTHENTICATE_PAYLOAD': 'otherapp.authentication.authenticate_payload',\n        ...\n    }\n\nEnable JWT authentication in the REST_FRAMEWORK settings::\n\n    REST_FRAMEWORK = {\n        'DEFAULT_AUTHENTICATION_CLASSES': (\n            'rest_framework_sso.authentication.JWTAuthentication',\n            'rest_framework.authentication.SessionAuthentication',\n            ...\n        ),\n        ...\n    }\n\nRequests that have been successfully authenticated with JWTAuthentication contain\nthe JWT payload data in the `request.auth` variable. This data can be used in your\nAPI views/viewsets to handle permissions, for example::\n\n    from rest_framework_sso import claims\n    \n    class UserViewSet(viewsets.ReadOnlyModelViewSet):\n        serializer_class = UserSerializer\n        queryset = User.objects.none()\n\n        def get_queryset(self):\n            if not request.user.is_authenticated() or not request.auth:\n                return self.none()\n            return User.objects.filter(\n                service=request.auth.get(claims.ISSUER),\n                external_id=request.auth.get(claims.USER_ID),\n            )\n\nSettings\n--------\nExample settings for project that both issues and validates tokens for `myapp` and `otherapp`::\n\n    REST_FRAMEWORK_SSO = {\n        'CREATE_AUTHORIZATION_PAYLOAD': 'myapp.authentication.create_authorization_payload',\n        'IDENTITY': 'myapp',\n        'SESSION_AUDIENCE': ['myapp'],\n        'AUTHORIZATION_AUDIENCE': ['myapp', 'otherapp'],\n        'ACCEPTED_ISSUERS': ['myapp'],\n        'PUBLIC_KEYS': {\n            'myapp': 'keys/myapp_public_key.pem',\n        },\n        'PRIVATE_KEYS': {\n            'myapp': 'keys/myapp_private_key.pem',\n        },\n    }\n    \nExample settings for project that only accepts tokens signed by `myapp` for `otherapp`::\n\n    REST_FRAMEWORK_SSO = {\n        'AUTHENTICATE_PAYLOAD': 'otherapp.authentication.authenticate_payload',\n        'VERIFY_SESSION_TOKEN': False,\n        'IDENTITY': 'otherapp',\n        'ACCEPTED_ISSUERS': ['myapp'],\n        'PUBLIC_KEYS': {\n            'myapp': 'keys/myapp_public_key.pem',\n        },\n    }\n\nFull list of settings parameters with their defaults::\n\n    REST_FRAMEWORK_SSO = {\n        'CREATE_SESSION_PAYLOAD': 'rest_framework_sso.utils.create_session_payload',\n        'CREATE_AUTHORIZATION_PAYLOAD': 'rest_framework_sso.utils.create_authorization_payload',\n        'ENCODE_JWT_TOKEN': 'rest_framework_sso.utils.encode_jwt_token',\n        'DECODE_JWT_TOKEN': 'rest_framework_sso.utils.decode_jwt_token',\n        'AUTHENTICATE_PAYLOAD': 'rest_framework_sso.utils.authenticate_payload',\n\n        'ENCODE_ALGORITHM': 'RS256',\n        'DECODE_ALGORITHMS': None,\n        'VERIFY_SIGNATURE': True,\n        'VERIFY_EXPIRATION': True,\n        'VERIFY_SESSION_TOKEN': True,\n        'EXPIRATION_LEEWAY': 0,\n        'SESSION_EXPIRATION': None,\n        'AUTHORIZATION_EXPIRATION': datetime.timedelta(seconds=300),\n\n        'IDENTITY': None,\n        'SESSION_AUDIENCE': None,\n        'AUTHORIZATION_AUDIENCE': None,\n        'ACCEPTED_ISSUERS': None,\n        'KEY_STORE_ROOT': None,\n        'PUBLIC_KEYS': {},\n        'PRIVATE_KEYS': {},\n\n        'AUTHENTICATE_HEADER': 'JWT',\n    }\n\nGenerating RSA keys\n-------------------\nYou can use openssl to generate your public/private key pairs::\n\n    $ openssl genpkey -algorithm RSA -out private_key.pem -pkeyopt rsa_keygen_bits:2048\n    $ openssl rsa -pubout -in private_key.pem -out public_key.pem",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/namespace-ee/django-rest-framework-sso",
+    "keywords": "",
+    "license": "MIT License",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "djangorestframework-sso",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/djangorestframework-sso/",
+    "release_url": "https://pypi.org/project/djangorestframework-sso/0.0.9/",
+    "requires_python": "",
+    "summary": "Single sign-on extension to the Django REST Framework.",
+    "version": "0.0.9"
+  },
+  "releases": {
+    "0.0.1": [],
+    "0.0.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8b6e5c7b5c151b3231e42cf939a626cd",
+          "sha256": "7a1051e43ddd5a03e07c5abf4749a69547824677ce8376ff97b06ea6eb8d08e8"
+        },
+        "downloads": 269,
+        "filename": "djangorestframework-sso-0.0.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8b6e5c7b5c151b3231e42cf939a626cd",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 7475,
+        "upload_time": "2016-06-21T10:18:06",
+        "url": "https://files.pythonhosted.org/packages/08/c2/79f71915b94e1d3612b441e5a340e417be68cca532c24f36e56e1d1c6816/djangorestframework-sso-0.0.2.tar.gz"
+      }
+    ],
+    "0.0.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7358e0d2cbf5e9822f4f795a79748f6a",
+          "sha256": "153852bde3227d9a3ebc601c7c23acd10582dc8a83a0503a6b745411d6cf83ec"
+        },
+        "downloads": 136,
+        "filename": "djangorestframework-sso-0.0.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7358e0d2cbf5e9822f4f795a79748f6a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9750,
+        "upload_time": "2016-06-27T08:46:47",
+        "url": "https://files.pythonhosted.org/packages/bc/c7/76dc46fa61dd73f5f74d8a58009c9766904add8015b8311eedbbfe73d5d6/djangorestframework-sso-0.0.3.tar.gz"
+      }
+    ],
+    "0.0.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2ffd08cf051dfaed277d8a435753fa82",
+          "sha256": "5032b11f3e51d0a4efa708815f034bc33840745ef6e15631c6cf1e42808b26a9"
+        },
+        "downloads": 132,
+        "filename": "djangorestframework-sso-0.0.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2ffd08cf051dfaed277d8a435753fa82",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10878,
+        "upload_time": "2016-06-28T11:44:13",
+        "url": "https://files.pythonhosted.org/packages/c5/42/994b3398d610dfd6fb1e484770bfb1cf7d74b7c08a674c91879c70af5879/djangorestframework-sso-0.0.4.tar.gz"
+      }
+    ],
+    "0.0.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "28597d942f95ea3f16355e33f824ef44",
+          "sha256": "c552368605d95d47e8e5c0fa96a1f3765bb7b9aff13f01fa26f75ecb095ba9ff"
+        },
+        "downloads": 471,
+        "filename": "djangorestframework-sso-0.0.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "28597d942f95ea3f16355e33f824ef44",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10916,
+        "upload_time": "2016-06-28T11:51:01",
+        "url": "https://files.pythonhosted.org/packages/99/1a/29970f641852dd5fb5161e8f4bffd81ac3d2de3f5634bd1c1fbb85a83890/djangorestframework-sso-0.0.5.tar.gz"
+      }
+    ],
+    "0.0.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3fef66bff3f8ab29e893185a2e2b0be1",
+          "sha256": "fbfba2db300b734657bddcc09f0325e7bbd77c1b35e6be0fb915c480f4a5ad4c"
+        },
+        "downloads": 134,
+        "filename": "djangorestframework-sso-0.0.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3fef66bff3f8ab29e893185a2e2b0be1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10925,
+        "upload_time": "2016-06-28T12:35:42",
+        "url": "https://files.pythonhosted.org/packages/f1/5b/74f7a0f286a431e743831cdf0b88438a29bce2bcfc6d87f3e0efea65e3f7/djangorestframework-sso-0.0.6.tar.gz"
+      }
+    ],
+    "0.0.7": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "cc140d8d4326522bc1c6b7850a786684",
+          "sha256": "59e0d3d9919bcae04a97fb270680d9cf8e0be63423579ad77ae10c2ff15bfce9"
+        },
+        "downloads": 138,
+        "filename": "djangorestframework-sso-0.0.7.tar.gz",
+        "has_sig": false,
+        "md5_digest": "cc140d8d4326522bc1c6b7850a786684",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 11001,
+        "upload_time": "2016-06-28T14:10:38",
+        "url": "https://files.pythonhosted.org/packages/0d/a2/a5fa3f5ebdef8134a2ad6de4ac211f616083141bcdb415797d7dacfd3c8f/djangorestframework-sso-0.0.7.tar.gz"
+      }
+    ],
+    "0.0.8": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "af93cb08d7afe50adb0a7a4984e8f748",
+          "sha256": "f6a5f51cef37e5d76a5a48bd3e7286ad661a7f4ebb11e1f26e6f288218c35c82"
+        },
+        "downloads": 141,
+        "filename": "djangorestframework-sso-0.0.8.tar.gz",
+        "has_sig": false,
+        "md5_digest": "af93cb08d7afe50adb0a7a4984e8f748",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 11077,
+        "upload_time": "2016-06-28T15:22:25",
+        "url": "https://files.pythonhosted.org/packages/be/08/2c9ad6b87ecbaf30a6b69cd9143ff2b2125ba418ed841ea0d2205bb45c01/djangorestframework-sso-0.0.8.tar.gz"
+      }
+    ],
+    "0.0.9": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "539121bff7aea0481e51acda3fafbea2",
+          "sha256": "aa346a54f805e5af41384402c1e1ad775545d4f058104d0b776fdbb049bf263c"
+        },
+        "downloads": 182,
+        "filename": "djangorestframework-sso-0.0.9.tar.gz",
+        "has_sig": false,
+        "md5_digest": "539121bff7aea0481e51acda3fafbea2",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 11297,
+        "upload_time": "2016-06-30T07:54:13",
+        "url": "https://files.pythonhosted.org/packages/f7/c8/093cff204e6f7c2249a140a8ff2e92187eb59b034519b933e5b0f98d4744/djangorestframework-sso-0.0.9.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "539121bff7aea0481e51acda3fafbea2",
+        "sha256": "aa346a54f805e5af41384402c1e1ad775545d4f058104d0b776fdbb049bf263c"
+      },
+      "downloads": 182,
+      "filename": "djangorestframework-sso-0.0.9.tar.gz",
+      "has_sig": false,
+      "md5_digest": "539121bff7aea0481e51acda3fafbea2",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 11297,
+      "upload_time": "2016-06-30T07:54:13",
+      "url": "https://files.pythonhosted.org/packages/f7/c8/093cff204e6f7c2249a140a8ff2e92187eb59b034519b933e5b0f98d4744/djangorestframework-sso-0.0.9.tar.gz"
+    }
+  ]
+}

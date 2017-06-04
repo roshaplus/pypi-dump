@@ -1,0 +1,192 @@
+{
+  "info": {
+    "author": "Zope Foundation and Contributors",
+    "author_email": "zope-dev@zope.org",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 5 - Production/Stable",
+      "Environment :: Web Environment",
+      "Framework :: Zope3",
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: Zope Public License",
+      "Natural Language :: English",
+      "Operating System :: OS Independent",
+      "Programming Language :: Python",
+      "Programming Language :: Python :: 2",
+      "Programming Language :: Python :: 2.6",
+      "Programming Language :: Python :: 2.7",
+      "Programming Language :: Python :: 3",
+      "Programming Language :: Python :: 3.3",
+      "Programming Language :: Python :: 3.4",
+      "Programming Language :: Python :: Implementation :: CPython",
+      "Programming Language :: Python :: Implementation :: PyPy",
+      "Topic :: Internet :: WWW/HTTP"
+    ],
+    "description": "``zope.principalannotation``\n============================\n\n.. image:: https://travis-ci.org/zopefoundation/zope.principalannotation.png?branch=master\n        :target: https://travis-ci.org/zopefoundation/zope.principalannotation\n\nThis package implements annotations for zope.security principals. Common\nannotation techniques, like AttributeAnnotations cannot be applied to\nprincipals, since they are created on the fly for every request.\n\n\nPrincipal Annotations\n=====================\n\nThis package implements annotations for zope.security principals.\nTo make it clear, the `principal` here is the object that provides\n``zope.security.interfaces.IPrincipal`` interface and `annotations` is\nthe object providing ``zope.annotation.interfaces.IAnnotations``.\n\nThe problem is that principals is dynamic, non-persistent objects created\non the fly for every security participation (request or something), so\ncommon annotation techniques, like AttributeAnnotations cannot be applied\nto them.\n\nThis package provides a persistent storage of principal annotations,\nstoring annotations by principal ID as well as an adapter from IPrincipal\nto IAnnotations.\n\n\nPrincipalAnnotationUtility\n--------------------------\n\nThe core of this package is the ``PrincipalAnnotationUtility`` class\nthat stores annotations for principals and allows to get them easily.\n\nIt provides the IPrincipalAnnotationUtility interface::\n\n  >>> from zope.principalannotation.interfaces import IPrincipalAnnotationUtility\n  >>> from zope.principalannotation.utility import PrincipalAnnotationUtility\n  >>> from zope.interface.verify import verifyObject\n  >>> util = PrincipalAnnotationUtility()\n  >>> verifyObject(IPrincipalAnnotationUtility, util)\n  True\n\nIt provides three methods: ``getAnnotations``, ``getAnnotationsById``\nand ``hasAnnotations``. Let's create a testing principal and check out\nthese methods::\n\n  >>> from zope.security.testing import Principal\n  >>> nadako = Principal('nadako')\n  >>> nadako.id\n  'nadako'\n\nWe can check if our principal has any annotations. Of course, it\ncurrently doesn't have any::\n\n  >>> util.hasAnnotations(nadako)\n  False\n\nWe can get ``IAnnotations`` object using principal object itself::\n\n  >>> util.getAnnotations(nadako)\n  <zope.principalannotation.utility.Annotations object at 0x...>\n\nOr using principal id::\n\n  >>> util.getAnnotationsById(nadako.id)\n  <zope.principalannotation.utility.Annotations object at 0x...>\n\nLet's get the ``IAnnotations`` object for our principal and play with it::\n\n  >>> annots = util.getAnnotations(nadako)\n\n  >>> from zope.interface.verify import verifyObject\n  >>> from zope.annotation.interfaces import IAnnotations\n  >>> verifyObject(IAnnotations, annots)\n  True\n\nLet's check the ``IAnnotation`` contract::\n\n  >>> bool(annots)\n  False\n\n  >>> annots['not.here']\n  Traceback (most recent call last):\n  ...\n  KeyError: 'not.here'\n\n  >>> annots.get('not.here') is None\n  True\n\n  >>> annots.get('not.here', 42)\n  42\n\nNote, that the ``IAnnotations`` object gets stored in the utility only\nwhen we set a key for it. This is a simple optimization that allows\nus not to store any data when all we do is simply checking for presense\nof annotation. The ``hasAnnotations`` method will return ``True`` after\nstoring a key in the annotations::\n\n  >>> util.hasAnnotations(nadako)\n  False\n\n  >>> annots['its.here'] = 'some info'\n\n  >>> util.hasAnnotations(nadako)\n  True\n\nWe can also delete the existing key::\n\n  >>> del annots['its.here']\n\nBut we can't delete the key that is (no more) existant::\n\n  >>> del annots['its.here']\n  Traceback (most recent call last):\n  ...\n  KeyError: 'its.here'\n\n\nMultiple annotation utilities\n-----------------------------\n\nImagine that your application has a root ``site`` object with its\ncomponent registry (a.k.a. site manager) and that object has a sub-site\nobject with its own component registry, and that component registry\nhas the root's component registry as its base.\n\nIn that case, we want the ``IAnnotations`` object to be available to\nretrieve annotations from higher-level utilities.\n\nLet's register our utility in the root site and create a sub-site\nwith its own IPrincipalAnnotationUtility::\n\n  >>> root['util'] = util\n  >>> rootsm = root.getSiteManager()\n  >>> rootsm.registerUtility(util, IPrincipalAnnotationUtility)\n\n  >>> from zope.site.folder import Folder\n  >>> from zope.site.site import LocalSiteManager\n\n  >>> subsite = Folder()\n  >>> root['subsite'] = subsite\n  >>> subsm = LocalSiteManager(subsite)\n  >>> subsm.__bases__ = (rootsm,)\n  >>> subsite.setSiteManager(subsm)\n\n  >>> util2 = PrincipalAnnotationUtility()\n  >>> subsite['util2'] = util2\n  >>> subsm.registerUtility(util2, IPrincipalAnnotationUtility)\n\nNow, let's create a key in the IAnnotations, provided by root utility::\n\n  >>> annots = util.getAnnotations(nadako)\n  >>> annots['root.number'] = 42\n\nThe subsite utility should get the annotation successfully::\n\n  >>> annots2 = util2.getAnnotations(nadako)\n  >>> bool(annots2)\n  True\n\n  >>> annots2['root.number']\n  42\n\nIf we have the key both in higher-level annotations and lower-level ones,\nthe lower-level will have priority, but higher-level won't be deleted or\noverriden::\n\n  >>> annots['another.number'] = 1\n  >>> annots2['another.number'] = 42\n\n  >>> annots['another.number']\n  1\n  >>> annots2['another.number']\n  42\n\nIf we'll delete the key from lower-level, it will not be deleted from a\nhigher level utility::\n\n  >>> del annots2['another.number']\n\n  >>> annots['another.number']\n  1\n  >>> annots2['another.number']\n  1\n\n\nIPrincipal -> IAnnotations adapter\n----------------------------------\n\nOf course, the most nice feature is that we can simply adapt our\nprincipal object to IAnnotations and get those annotations using\nstandard way documented in ``zope.annotation`` package.\n\n  >>> annots = IAnnotations(nadako)\n  >>> annots\n  <zope.principalannotation.utility.Annotations object at 0x...>\n  >>> annots['root.number']\n  42\n\nBy default, the IAnnotation adapter uses the current site's utility::\n\n  >>> IAnnotations(nadako) is util.getAnnotations(nadako)\n  True\n\n  >>> from zope.site.hooks import setSite\n  >>> setSite(subsite)\n  \n  >>> IAnnotations(nadako) is util2.getAnnotations(nadako)\n  True\n\nHowerver, we can use a binary multi-adapter to IAnnotations to specify\nsome context object from which to get the annotations utility::\n\n  >>> from zope.component import getMultiAdapter\n  \n  >>> annots = getMultiAdapter((nadako, root), IAnnotations)\n  >>> annots is util.getAnnotations(nadako)\n  True\n\n  >>> annots = getMultiAdapter((nadako, subsite), IAnnotations)\n  >>> annots is util2.getAnnotations(nadako)\n  True\n\n\nChanges\n=======\n\n4.1.1 (2015-06-02)\n------------------\n\n- Replace use of long-deprecated ``zope.testing.doctest`` with stdlib's\n  ``doctest``.\n\n\n4.1.0 (2015-01-09)\n------------------\n\n- Accomodate new methods added to ``zope.annotation.interfaces.IAnnotations``\n  in upcoming zope.annotation 4.4.0 release.\n\n\n4.0.0 (2014-12-24)\n------------------\n\n- Add support for PyPy.\n\n- Add support for Python 3.4.\n\n- Add support for testing on Travis.\n\n\n4.0.0a2 (2013-02-25)\n--------------------\n\n- Correct Trove classifiers.\n\n\n4.0.0a1 (2013-02-24)\n--------------------\n\n- Add support for Python 3.3.\n\n- Replace deprecated ``zope.interface.implements`` usage with equivalent\n  ``zope.interface.implementer`` decorator.\n\n- Drop support for Python 2.4 and 2.5.\n\n3.6.1 (2010-05-05)\n------------------\n\n- Fix a test failure in nested local site manager setup.\n\n- Remove dependency on zope.container.\n\n3.6.0 (2009-03-09)\n------------------\n\nInitial release. This package was splitted off zope.app.principalannotation\nto remove its dependencies on \"zope 3 application server\" components.\n\nIn addition, the following changes were made after split off:\n\n - The IAnnotations implementation was fixed to look in the higher-level\n   utility not only on ``__getitem__``, but also on ``get`` and ``__nonzero``.\n\n - Tests was reworked into the README.txt doctest.\n\n - Added a buildout part that generates Sphinx documentation from the\n   README.txt",
+    "docs_url": null,
+    "download_url": "UNKNOWN",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "http://pypi.python.org/pypi/zope.principalannotation",
+    "keywords": "zope security principal annotation",
+    "license": "ZPL 2.1",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "zope.principalannotation",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/zope.principalannotation/",
+    "release_url": "https://pypi.org/project/zope.principalannotation/4.1.1/",
+    "requires_python": null,
+    "summary": "Annotations for Zope Principals",
+    "version": "4.1.1"
+  },
+  "releases": {
+    "3.6.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "86230f6756a6abcad5ccaffd4ba402ef",
+          "sha256": "a55be7e946023e0ec7c0abc16e945c756df1890ada71e695c8774a9bddfe0bd6"
+        },
+        "downloads": 9891,
+        "filename": "zope.principalannotation-3.6.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "86230f6756a6abcad5ccaffd4ba402ef",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 7805,
+        "upload_time": "2009-03-09T16:04:33",
+        "url": "https://files.pythonhosted.org/packages/51/61/07407030a1b57c29223ca59abceaebe9df9f09b2c6ab6023efb096e6525e/zope.principalannotation-3.6.0.tar.gz"
+      }
+    ],
+    "3.6.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "652685ca13cefaad78dbc5c6507fc9ab",
+          "sha256": "8d20f529fc442f52c69e7b38b3f1ac840e897c51f0661ec02cc252ed0c31a5d8"
+        },
+        "downloads": 50904,
+        "filename": "zope.principalannotation-3.6.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "652685ca13cefaad78dbc5c6507fc9ab",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 8468,
+        "upload_time": "2010-05-06T01:17:11",
+        "url": "https://files.pythonhosted.org/packages/aa/73/02c81eabd2b18f63ed6011383c37838701d0d6648e24525751f4622a4d44/zope.principalannotation-3.6.1.tar.gz"
+      }
+    ],
+    "4.0.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "00a27b928eadc613e457d00af57f3cbc",
+          "sha256": "bbb75f686030d9aafb56edc0cf97170bd81c9e09548ad7dfc50b90599f9e9c28"
+        },
+        "downloads": 1798,
+        "filename": "zope.principalannotation-4.0.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "00a27b928eadc613e457d00af57f3cbc",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10961,
+        "upload_time": "2014-12-24T22:39:16",
+        "url": "https://files.pythonhosted.org/packages/38/bb/2fa93f55e4be92f8b8365173ec2653741c0a9a9f82a6b4823bb4a220d8c3/zope.principalannotation-4.0.0.tar.gz"
+      }
+    ],
+    "4.0.0a1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ecc91dac8bc994901a7c12665c7b3a9d",
+          "sha256": "adee4dbd414dda0fa21d363fde2d7b84c62c466ea0527ed04ee10988d3a37b84"
+        },
+        "downloads": 1955,
+        "filename": "zope.principalannotation-4.0.0a1.zip",
+        "has_sig": false,
+        "md5_digest": "ecc91dac8bc994901a7c12665c7b3a9d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 21566,
+        "upload_time": "2013-02-25T01:50:12",
+        "url": "https://files.pythonhosted.org/packages/b9/fa/7c47568372cd363561dc14f8642616675998c0952f56db1be73095767e79/zope.principalannotation-4.0.0a1.zip"
+      }
+    ],
+    "4.0.0a2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "fde50ccd6a312bc2e2c2697e40a7417f",
+          "sha256": "8fb191ab43226ac9c3e818fba074f9457b80c1986842488ba0a29328294f5db4"
+        },
+        "downloads": 3024,
+        "filename": "zope.principalannotation-4.0.0a2.zip",
+        "has_sig": false,
+        "md5_digest": "fde50ccd6a312bc2e2c2697e40a7417f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 21693,
+        "upload_time": "2013-02-25T06:07:55",
+        "url": "https://files.pythonhosted.org/packages/5d/41/f2d2d21e373508ad8c954c5855c4ef79072bb8983da066288891166e4d44/zope.principalannotation-4.0.0a2.zip"
+      }
+    ],
+    "4.1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e3ec0ce562d4d6b27dec2ddf36c9d7cf",
+          "sha256": "e7543348f8b0129c569d990fce175412169df8d88a4311abdcb7f35ff837fdf4"
+        },
+        "downloads": 1621,
+        "filename": "zope.principalannotation-4.1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e3ec0ce562d4d6b27dec2ddf36c9d7cf",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 11172,
+        "upload_time": "2015-01-09T18:21:16",
+        "url": "https://files.pythonhosted.org/packages/32/55/b6b4155ef50de130a83cbfba6ab5483eae8cdcea4e729b65501b602e9972/zope.principalannotation-4.1.0.tar.gz"
+      }
+    ],
+    "4.1.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b28a1ca1a5f5fc51304a560adeec603e",
+          "sha256": "2a527b98d4c1bb9c69ae1bb3ecfba977bba60956790e02e993bcb3a6a2772a11"
+        },
+        "downloads": 3348,
+        "filename": "zope.principalannotation-4.1.1.tar.gz",
+        "has_sig": true,
+        "md5_digest": "b28a1ca1a5f5fc51304a560adeec603e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 11242,
+        "upload_time": "2015-06-02T16:09:51",
+        "url": "https://files.pythonhosted.org/packages/93/ec/738a49c913ae66a5f0ce6cd005e78646ac981bfd3fda7f1e4ae598a902b5/zope.principalannotation-4.1.1.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "b28a1ca1a5f5fc51304a560adeec603e",
+        "sha256": "2a527b98d4c1bb9c69ae1bb3ecfba977bba60956790e02e993bcb3a6a2772a11"
+      },
+      "downloads": 3348,
+      "filename": "zope.principalannotation-4.1.1.tar.gz",
+      "has_sig": true,
+      "md5_digest": "b28a1ca1a5f5fc51304a560adeec603e",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 11242,
+      "upload_time": "2015-06-02T16:09:51",
+      "url": "https://files.pythonhosted.org/packages/93/ec/738a49c913ae66a5f0ce6cd005e78646ac981bfd3fda7f1e4ae598a902b5/zope.principalannotation-4.1.1.tar.gz"
+    }
+  ]
+}

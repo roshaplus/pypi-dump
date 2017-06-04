@@ -1,0 +1,310 @@
+{
+  "info": {
+    "author": "Julian Hammer",
+    "author_email": "julian.hammer@fau.de",
+    "bugtrack_url": "",
+    "classifiers": [
+      "Development Status :: 3 - Alpha",
+      "Intended Audience :: Developers",
+      "Intended Audience :: Science/Research",
+      "License :: OSI Approved :: GNU Affero General Public License v3",
+      "Programming Language :: Python :: 2",
+      "Programming Language :: Python :: 2.7",
+      "Programming Language :: Python :: 3",
+      "Programming Language :: Python :: 3.4",
+      "Topic :: Scientific/Engineering",
+      "Topic :: Software Development",
+      "Topic :: Utilities"
+    ],
+    "description": "pycachesim\n==========\n\nA single-core cache hierarchy simulator written in python.\n\n.. image:: https://travis-ci.org/RRZE-HPC/pycachesim.svg?branch=master\n    :target: https://travis-ci.org/RRZE-HPC/pycachesim?branch=master\n\nThe goal is to accurately simulate the caching (allocation/hit/miss/replace/evict) behavior of all cache levels found in modern processors. It is developed as a backend to `kerncraft <https://github.com/RRZE-HPC/kerncraft>`_, but is also planned to introduce a command line interface to replay LOAD/STORE instructions.\n\nCurrently supported features:\n * Inclusive cache hierarchies\n * LRU, MRU, RR and FIFO policies \n * N-way cache associativity\n * Write-allocate with write-back caches\n * Non-write-allocate with write-through caches\n * Write-combining with sub-blocking\n * Speed (core is implemented in C)\n * Python 2.7+ and 3.4+ support, with no other dependencies\n\nPlanned features:\n * Report cachelines on all levels\n * Report timeline of cache events\n * Visualize events (html file?)\n * More detailed store/evict handling (e.g., using dirty bits)\n * (uncertain) instruction cache\n * Optional classification into compulsory/capacity and conflict misses (by simulating other cache configurations in parallel)\n * (uncertain) multi-core support\n * Remove cl_size growth requirement (NVIDIA Kepler's L1 has 128B cl_size and L2 with 32B)\n \nLicense\n-------\n\npycachesim is licensed under AGPLv3.\n\nUsage\n-----\n\n.. code-block:: python\n\n    from cachesim import CacheSimulator, Cache, MainMemory\n    \n    mem = MainMemory()\n    l3 = Cache(\"L3\", 20480, 16, 64, \"LRU\")  # 20MB: 20480 sets, 16-ways with cacheline size of 64 bytes\n    mem.load_to(l3)\n    mem.store_from(l3)\n    l2 = Cache(\"L2\", 512, 8, 64, \"LRU\", store_to=l3, load_from=l3)  # 256KB\n    l1 = Cache(\"L1\", 64, 8, 64, \"LRU\", store_to=l2, load_from=l2)  # 32KB\n    cs = CacheSimulator(l1, mem)\n    \n    cs.load(2342)  # Loads one byte from address 2342, should be a miss in all cache-levels\n    cs.store(512, length=8)  # Stores 8 bytes to addresses 512-519,\n                             # will also be a load miss (due to write-allocate)\n    cs.load(512, length=8)  # Loads from address 512 until (exclusive) 520 (eight bytes)\n    \n    cs.force_write_back()\n    cs.print_stats()\n    \nThis should return:\n\n.. code-block:: python\n\n    CACHE *******HIT******** *******MISS******* *******LOAD******* ******STORE*******\n       L1      1 (       8B)      2 (      65B)      3 (      73B)      1 (       8B)\n       L2      0 (       0B)      2 (     128B)      2 (     128B)      1 (      64B)\n       L3      0 (       0B)      2 (     128B)      2 (     128B)      1 (      64B)\n      MEM      2 (     128B)      0 (       0B)      2 (     128B)      1 (      64B)\n\nEach row refers to one memory-level, starting with L1 and ending with main memory. The 3 loads in L1 are the sum of all individual accesses to the cache-hierarchy. 1 (from first load) + 1 (from store with write-allocate) + 1 (from second load) = 3.\n\nThe 1 hit, is for bytes which were cached already. Internally the pycachesim operates on cache-lines, which all addresses get transformed to. Thus, the two misses throughout all cache-levels are actually two complete cache-lines and after the cache-line had been loaded the consecutive access to the same cache-line are handled as hits. That is also the reason why data sizes increase from L1 to L2. L1 is accessed byte-wise and L2 only with cache-line granularity.\n\nSo: hits, misses, stores and loads in L1 are byte-wise, just like stores throughout all cache-levels. Every other statistical information are based on cache-lines.\n\nComparison to other Cache Simulators\n====================================\n\nWhile searching for more versatile cache simulator for kerncraft, I stumbled across the following:\n\n * gem5_:\n   Very fully-featured full system simulator. Complex to extract only the memory subsystem\n * dineroIV_:\n   Nice and simple code, but does not support exclusive caches and not available under open source license.\n * cachegrind_:\n   Maintained and stable code of a well established open source project, but only supports inclusive first and last level caches.\n * callgrind_:\n   see cachegrind\n * SMPcache_:\n   Only supports one single cache and runs on Windows with GUI. Also not freely available.\n * CMPsim_:\n   Was only academically published and source code never made available.\n * CASPER_:\n   Was only academically published and source code never made available.\n\n=========== ================= =========== =============== ================= ======== ======== ========= ======= ======== ============== ============== =========== =============== ================= ===================================\nPackage     instructions [0]_ blocks [1]_ sub-blocks [2]_ associtivity [3]_ LRU [4]_ MRU [4]_ FIFO [4]_ RR [4]_ CCC [5]_ 3+ levels [6]_ exclusive [7]_ victim [8]_ multi-core [9]_ API [10]_         open source [11]_\n=========== ================= =========== =============== ================= ======== ======== ========= ======= ======== ============== ============== =========== =============== ================= ===================================\ngem5_              x              x             ?                x             x       x         x        ?       ?            x             ?             ?             ?         python, ruby, c++ yes, BSD-style    \ndineroIV_          x              x             x                x             x                 x        x       x            x                                                   c                 no, free for non-comercial use    \ncachegrind_        x              x                              x             x                                                                                                   cli               yes, GPLv2       \ncallgrind_         x              x                              x             x                                                                                                   cli               yes, GPLv2          \nSMPcache_                         x                              x             x                 x        x       ?                                                                Windows GUI       no, free for education und research        \nCMPsim_                           x                              x             x       x         x        x                    x             ?             ?             x         ?                 no, source not public         \nCASPER_            x              x             x                x             x       x         x        x       x            x                                         x         perl, c           no, source not public        \npycachesim                        x                              x             x       x         x        x                    x           planned         x                       python            yes, AGPLv3          \n=========== ================= =========== =============== ================= ======== ======== ========= ======= ======== ============== ============== =========== =============== ================= ===================================\n\n.. _gem5: http://gem5.org/Main_Page\n.. _dineroIV: http://pages.cs.wisc.edu/~markhill/DineroIV/\n.. _cachegrind: http://valgrind.org/docs/manual/cg-manual.html\n.. _callgrind: http://valgrind.org/docs/manual/cl-manual.html\n.. _SMPcache: http://arco.unex.es/smpcache/\n.. _CMPsim: http://eng.umd.edu/~blj/papers/mobs2008.pdf\n.. _CASPER: http://ieeexplore.ieee.org/stamp/stamp.jsp?arnumber=1240655\n\n.. [0] Instruction cache support (typically L1I)\n.. [1] Cacheline/block granular caching\n.. [2] Sub-blocking/sectoring for in cache-storage\n.. [3] Support for n-way associativity\n.. [4] Support least-recently-used (LRU), most-recently-used (MRU), first-in-last-out (FIFO), random (RR) replacement policy\n.. [5] Classification of misses into: compulsory (first time access), capacity (access after replacement), conflict (would have been a hit with full-associativity)\n.. [6] Combining of at least three cache levels\n.. [7] Exclusive cache relations (two levels may not share the same cacheline)\n.. [8] Victim caches, where only evicted lines endup(e.g., AMD Bulldozer L3)\n.. [9] Multi-core cache hierarchies with private and shared caches and cache coherency protocol\n.. [10] Supported interfaces (cli = command-line-interface)\n.. [11] Published under an Open Source Initiative approved license?",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/cod3monk/pycachesim",
+    "keywords": "hpc performance benchmark analysis",
+    "license": "AGPLv3",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "pycachesim",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/pycachesim/",
+    "release_url": "https://pypi.org/project/pycachesim/0.1.4/",
+    "requires_python": "",
+    "summary": "Python Cache Hierarchy Simulator",
+    "version": "0.1.4"
+  },
+  "releases": {
+    "0": [],
+    "0.0.1": [
+      {
+        "comment_text": "built for Darwin-15.2.0",
+        "digests": {
+          "md5": "f2699be9682daf4923626132688b13d0",
+          "sha256": "190a2e69efab07a5cadc1f835904e4ef2d214fe634afec3ec40fc4a0e2c326d0"
+        },
+        "downloads": 603,
+        "filename": "pycachesim-0.0.1.macosx-10.11-x86_64.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f2699be9682daf4923626132688b13d0",
+        "packagetype": "bdist_dumb",
+        "python_version": "any",
+        "size": 7144,
+        "upload_time": "2015-12-09T13:57:47",
+        "url": "https://files.pythonhosted.org/packages/ec/4e/33c28d43a7aece25eecf0dfb5040c90abbf5006ceca45bbb4748871012c9/pycachesim-0.0.1.macosx-10.11-x86_64.tar.gz"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3485f88ad207a56dd6f82850f18fadc6",
+          "sha256": "6962cd26a21add37752cf31a58e74f71a873b57f5a944922c873c4de1d14d6a7"
+        },
+        "downloads": 365,
+        "filename": "pycachesim-0.0.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3485f88ad207a56dd6f82850f18fadc6",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 18820,
+        "upload_time": "2015-12-09T13:57:51",
+        "url": "https://files.pythonhosted.org/packages/95/50/1d3e4f62554c21674a3777ad4743b3973bea2d3d0565e760b8c113f1c9a7/pycachesim-0.0.1.tar.gz"
+      }
+    ],
+    "0.0.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f293f6576fb1924a766b1d7bf3ee02a9",
+          "sha256": "960ae9b2077aed9bfdeb1b50bf54f54d111400e9e5ae4e67ecc84aae1b93cf51"
+        },
+        "downloads": 387,
+        "filename": "pycachesim-0.0.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f293f6576fb1924a766b1d7bf3ee02a9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 7568,
+        "upload_time": "2015-12-16T08:30:09",
+        "url": "https://files.pythonhosted.org/packages/f7/f1/c4ffa2aac129f9842e4af99cd5c5c5040551552c4394d4a4f734e6b8d946/pycachesim-0.0.3.tar.gz"
+      }
+    ],
+    "0.1.1": [],
+    "0.1.1.1": [],
+    "0.1.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "21b348e05fe1f0df6b75a23934360ba8",
+          "sha256": "98878fc4bb904b282ba7f45018acbd8ee8270f87df7d571be1de173cfecc9a8c"
+        },
+        "downloads": 307,
+        "filename": "pycachesim-0.1.2-cp27-none-macosx_10_11_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "21b348e05fe1f0df6b75a23934360ba8",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 18314,
+        "upload_time": "2016-01-11T12:20:57",
+        "url": "https://files.pythonhosted.org/packages/32/30/99b18847fcc8b5fc4cfb2e89f47aa4b2bd0349f42f3ab7ef603ae545c35c/pycachesim-0.1.2-cp27-none-macosx_10_11_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "793aeac8c4790d2b76256ffd97df8049",
+          "sha256": "4b07089f5caaad93a6cb803a6aeb32b5884764b2e8cc6a10b13debe63a42c894"
+        },
+        "downloads": 341,
+        "filename": "pycachesim-0.1.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "793aeac8c4790d2b76256ffd97df8049",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 24339,
+        "upload_time": "2016-01-11T12:20:39",
+        "url": "https://files.pythonhosted.org/packages/02/1c/a639e1157c40863cbeb57557d684228396e807d125e12e063ffd7ffe3a41/pycachesim-0.1.2.tar.gz"
+      }
+    ],
+    "0.1.2.1": [],
+    "0.1.2.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "189a87c829aa6449b415051aefd9e529",
+          "sha256": "cb9404fe6a5e9a600be366d7ede7c9575cccbb12f2d03975de349ea16defcfa3"
+        },
+        "downloads": 290,
+        "filename": "pycachesim-0.1.2.2-cp27-none-macosx_10_11_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "189a87c829aa6449b415051aefd9e529",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 18834,
+        "upload_time": "2016-01-14T14:43:16",
+        "url": "https://files.pythonhosted.org/packages/89/d6/5fa257cb3ba7bc548a8dc281b97d5e8eba5b651bf0972ffac54432d7ba84/pycachesim-0.1.2.2-cp27-none-macosx_10_11_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ecc65e7b67c2bf40672b093c49f53779",
+          "sha256": "e6c6686492b438f4ba4c6da79e4a071daece82a1536e368af26acae422f08027"
+        },
+        "downloads": 315,
+        "filename": "pycachesim-0.1.2.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ecc65e7b67c2bf40672b093c49f53779",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 24816,
+        "upload_time": "2016-01-14T14:42:49",
+        "url": "https://files.pythonhosted.org/packages/8f/24/64effeb746a7d8cc6349af6f466e7e4bc64722d3e19af659a46f15cbb640/pycachesim-0.1.2.2.tar.gz"
+      }
+    ],
+    "0.1.2.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2d8f1c18b5e0e103e6f49fbc30379a74",
+          "sha256": "de56c31884d3f32a98b08097caff835979de666a1f4700d304451bc5614d33c9"
+        },
+        "downloads": 309,
+        "filename": "pycachesim-0.1.2.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2d8f1c18b5e0e103e6f49fbc30379a74",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 24799,
+        "upload_time": "2016-01-15T09:09:41",
+        "url": "https://files.pythonhosted.org/packages/4b/cf/44c19f28f78adc4a3c6ede146398b2b600c9ce45fb955142d59e4d16cd37/pycachesim-0.1.2.3.tar.gz"
+      }
+    ],
+    "0.1.2.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "51a70b3253b487ad079aa1c2cfe283cd",
+          "sha256": "f0a17c91600dea0481a388d97674e53e6277747ffe64e419818605f3cb2de983"
+        },
+        "downloads": 313,
+        "filename": "pycachesim-0.1.2.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "51a70b3253b487ad079aa1c2cfe283cd",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10162,
+        "upload_time": "2016-01-15T11:32:33",
+        "url": "https://files.pythonhosted.org/packages/0c/1e/f9b748af47521bee0a7efa7b1cc82aa443c31b86cad5ce1cdddbe8432a94/pycachesim-0.1.2.4.tar.gz"
+      }
+    ],
+    "0.1.2.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3cbd7fa4b5124b983d8e58735762650d",
+          "sha256": "342cab2c2a080f1d29768105160f58e3b0df2b25defc08914aae8f91c49aea08"
+        },
+        "downloads": 330,
+        "filename": "pycachesim-0.1.2.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3cbd7fa4b5124b983d8e58735762650d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10163,
+        "upload_time": "2016-01-15T12:09:52",
+        "url": "https://files.pythonhosted.org/packages/27/e2/aace4ef3a34d62ccf429aa8c93b75d99ef920fbfb6c02a90288b9e7ef3fd/pycachesim-0.1.2.5.tar.gz"
+      }
+    ],
+    "0.1.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1a983e4195545f44cbc101ef935fe50e",
+          "sha256": "bb32e0eeb54e1a736c027edee8831ff164cdec0832a3e44994ed73a0d4f1bf77"
+        },
+        "downloads": 263,
+        "filename": "pycachesim-0.1.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1a983e4195545f44cbc101ef935fe50e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10456,
+        "upload_time": "2016-01-27T08:55:07",
+        "url": "https://files.pythonhosted.org/packages/9e/99/7257f7c206b6b42ef6e72ef242223f08faa37837d3081a478b0857cb2f40/pycachesim-0.1.3.tar.gz"
+      }
+    ],
+    "0.1.3.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "656a56dd01b2132c16437f75b5f22797",
+          "sha256": "b3afc652a3be9d4498bb2d61eff3a99fd72455967d50e3fd41519499e85beab6"
+        },
+        "downloads": 242,
+        "filename": "pycachesim-0.1.3.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "656a56dd01b2132c16437f75b5f22797",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10498,
+        "upload_time": "2016-01-29T10:01:24",
+        "url": "https://files.pythonhosted.org/packages/8d/ac/b6bfdf8d52f9e9d82680426525c58cc19345649260d0c0c908c63657a618/pycachesim-0.1.3.1.tar.gz"
+      }
+    ],
+    "0.1.3.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "77dfe5b8a3d3546d8cd48c99a38a8855",
+          "sha256": "ebc00b15f7ad85a8c0f9c5e702a3024621069fe2ff8510c478b5de477d684ccd"
+        },
+        "downloads": 231,
+        "filename": "pycachesim-0.1.3.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "77dfe5b8a3d3546d8cd48c99a38a8855",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10498,
+        "upload_time": "2016-02-02T11:36:56",
+        "url": "https://files.pythonhosted.org/packages/ba/c8/7b2cdc7b6410359f02a9820a6f63a4420777244e98f8c7f4cbfe2ac3a010/pycachesim-0.1.3.2.tar.gz"
+      }
+    ],
+    "0.1.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2ce10f5695919d8c8fd079ec55e6c2d3",
+          "sha256": "e461130ebe9e59b2557720fd645fe3cf1c7536bc4ef0c2f7046ed21a0dcc1800"
+        },
+        "downloads": 167,
+        "filename": "pycachesim-0.1.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2ce10f5695919d8c8fd079ec55e6c2d3",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 17682,
+        "upload_time": "2016-03-31T08:31:44",
+        "url": "https://files.pythonhosted.org/packages/8d/31/a570ec0eb3794c24521b41b14a8f7d453b5ac624f7a5dfe2a52d58a283b7/pycachesim-0.1.4.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "2ce10f5695919d8c8fd079ec55e6c2d3",
+        "sha256": "e461130ebe9e59b2557720fd645fe3cf1c7536bc4ef0c2f7046ed21a0dcc1800"
+      },
+      "downloads": 167,
+      "filename": "pycachesim-0.1.4.tar.gz",
+      "has_sig": false,
+      "md5_digest": "2ce10f5695919d8c8fd079ec55e6c2d3",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 17682,
+      "upload_time": "2016-03-31T08:31:44",
+      "url": "https://files.pythonhosted.org/packages/8d/31/a570ec0eb3794c24521b41b14a8f7d453b5ac624f7a5dfe2a52d58a283b7/pycachesim-0.1.4.tar.gz"
+    }
+  ]
+}

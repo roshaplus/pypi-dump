@@ -1,0 +1,430 @@
+{
+  "info": {
+    "author": "Michael Selik",
+    "author_email": "michael.selik@gmail.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 4 - Beta",
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: MIT License",
+      "Operating System :: OS Independent",
+      "Programming Language :: Python",
+      "Topic :: Text Processing",
+      "Topic :: Utilities"
+    ],
+    "description": "========\nXport\n========\n\nPython reader for SAS XPORT data transport files (``*.xpt``).\n\n\n\nWhat's it for?\n==============\n\nXPORT is the binary file format used by a bunch of `United States\ngovernment agencies`_ for publishing data sets. It made a lot of sense\nif you were trying to read data files on your IBM mainframe back in\n1988.\n\nThe official `SAS specification for XPORT`_ is relatively\nstraightforward. The hardest part is converting IBM-format floating\npoint to IEEE-format, which the specification explains in detail.\n\nThere was an `update to the XPT specification`_ for SAS v8 and above.\nThis module *has not yet been updated* to work with the new version.\nHowever, if you're using SAS v8+, you're probably not using XPT\nformat. The changes to the format appear to be trivial changes to the\nmetadata, but this module's current error-checking will raise a\n``ParseError``. If you'd like an update for v8, please let me know by\n`submitting an issue`_.\n\n.. _United States government agencies: https://www.google.com/search?q=site:.gov+xpt+file\n\n.. _SAS specification for XPORT: http://support.sas.com/techsup/technote/ts140.pdf\n\n.. _update to the XPT specification: https://support.sas.com/techsup/technote/ts140_2.pdf\n\n.. _submitting an issue: https://github.com/selik/xport/issues/new\n\n\n\nReading XPT\n===========\n\nThis module mimics the ``csv`` module of the standard library,\nproviding ``Reader`` and ``DictReader`` classes. Note that\n``xport.Reader`` is capitalized, unlike ``csv.reader``.\n\n.. code:: python\n\n    with open('example.xpt', 'rb') as f:\n        for row in xport.Reader(f):\n            print row\n\n\n\nValues in the row will be either a unicode string or a float, as\nspecified by the XPT file metadata. Note that since XPT files are in\nan unusual binary format, you should open them using mode ``'rb'``.\nFor convenience, you can also use the ``NamedTupleReader`` to get each\nrow as a namedtuple, with an attribute for each field in the dataset.\n\n\n\nThe ``Reader`` object has a handful of metadata attributes:\n\n* ``Reader.fields`` -- Names of the fields in each observation.\n\n* ``Reader.version`` -- SAS version number used to create the XPT file.\n\n* ``Reader.os`` -- Operating system used to create the XPT file.\n\n* ``Reader.created`` -- Date and time that the XPT file was created.\n\n* ``Reader.modified`` -- Date and time that the XPT file was last modified.\n\n\n\nThe module also provides a handful of utility functions for reading\nthe whole XPT file and loading the rows into a Python data structure.\nThe ``to_rows`` function will simply return a list of rows. The\n``to_columns`` function will return the data as columns rather than\nrows. The columns will be an ``OrderedDict`` mapping the column labels\nas strings to the column values as lists of either strings or floats.\nFor convenient conversion to a `NumPy`_ array or `Pandas`_ dataframe,\nyou can use ``to_numpy`` and ``to_dataframe``.\n\n.. code:: python\n\n    with open('example.xpt', 'rb') as f:\n        columns = xport.to_columns(f)\n\n    with open('example.xpt', 'rb') as f:\n        a = xport.to_numpy(f)\n\n    with open('example.xpt', 'rb') as f:\n        df = xport.to_dataframe(f)\n\n.. _NumPy: http://www.numpy.org/\n\n.. _Pandas: http://pandas.pydata.org/\n\n\n\nYou can also use the ``xport`` module as a command-line tool to convert an XPT\nfile to CSV (comma-separated values) file.::\n\n    $ python -m xport example.xpt > example.csv\n\n\n\nIf you want to access specific records, you should gather the rows in\na list or use one of ``itertools`` recipes_ for quickly consuming and\nthrowing away unncessary elements.\n\n.. code:: python\n\n    # Collect all the records in a list for random access\n    rows = list(xport.Reader(f))\n\n    # Select only record 42\n    from itertools import islice\n    row = next(islice(xport.Reader(f), 42, None))\n\n    # Select only the last 42 records\n    from collections import deque\n    rows = deque(xport.Reader(f), maxlen=42)\n\n.. _recipes: https://docs.python.org/2/library/itertools.html#recipes\n\n\n\nWriting XPT\n===========\n\nThe ``from_columns`` function will write an XPT file from a mapping of\nlabels (as string) to columns (as iterable) or an iterable of (label,\ncolumn) pairs.\n\n.. code:: python\n\n    # a mapping of labels to columns\n    mapping = {'numbers': [1, 3.14, 42],\n               'text': ['life', 'universe', 'everything']}\n\n    with open('answers.xpt', 'wb') as f:\n        xport.from_columns(mapping, f)\n\n\n\nColumn labels are restricted to 40 characters. Column names are\nrestricted to 8 characters and will be automatically created based on\nthe column label -- the first 8 characters, non-alphabet characters\nreplaced with underscores, padded to 8 characters if necessary. All\ntext strings, including column labels, will be converted to bytes\nusing the ISO-8859-1 encoding.\n\nUnfortunately, writing XPT files cannot cleanly mimic the ``csv``\nmodule, because we must examine all rows before writing any rows to\ncorrectly write the XPT file headers.\n\n\n\nThe ``from_rows`` function expects an iterable of iterables, like a\nlist of tuples. In this case, the column labels have not been\nspecified and will automatically be assigned as 'x0', 'x1', 'x2', ...,\n'xM'.\n\n.. code:: python\n\n    rows = [('a', 1), ('b', 2)]\n\n    with open('example.xpt', 'wb') as f:\n        xport.from_rows(rows, f)\n\n\n\nTo specify the column labels for ``from_rows``, each row can be a\nmapping (such as a ``dict``) of the column labels to that row's\nvalues. Each row should have the same keys. Passing in rows as\nnamedtuples, or any instance of a ``tuple`` that has a ``._fields``\nattribute, will set the column labels to the attribute names of the\nfirst row.\n\n.. code:: python\n\n    rows = [{'letters': 'a', 'numbers': 1},\n            {'letters': 'b', 'numbers': 2}]\n\n    with open('example.xpt', 'wb') as f:\n        xport.from_rows(rows, f)\n\n\n\nFeature requests\n================\n\nI'm happy to fix bugs, improve the interface, or make the module\nfaster. Just `submit an issue`_ and I'll take a look.\n\n.. _submit an issue: https://github.com/selik/xport/issues/new\n\n\n\nRecent changes\n==============\n\n* Switched from ``load``/``dump`` with mode flags to ``to_rows``,\n  ``to_columns``, ``from_rows`` and ``from_columns``.\n\n* ``Reader`` yields regular tuples, not namedtuples.\n\n\nAuthors\n=======\n\nOriginal version by `Jack Cushman`_, 2012.\nMajor revision by Michael Selik, 2016.\n\n.. _Jack Cushman: https://github.com/jcushman\n\n\n",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/selik/xport",
+    "keywords": "sas xport xpt",
+    "license": "MIT",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "xport",
+    "platform": "",
+    "project_url": "https://pypi.org/project/xport/",
+    "release_url": "https://pypi.org/project/xport/2.0.2/",
+    "requires_python": "",
+    "summary": "SAS XPORT file reader",
+    "version": "2.0.2"
+  },
+  "releases": {
+    "0.1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "427b7b444e750671d5b29af73ed32090",
+          "sha256": "773d75e5b6b8abe1a2bc53ebc991ac70069ffe90d11940702cd30d579171d335"
+        },
+        "downloads": 3049,
+        "filename": "xport-0.1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "427b7b444e750671d5b29af73ed32090",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 7240,
+        "upload_time": "2012-05-02T20:35:18",
+        "url": "https://files.pythonhosted.org/packages/a7/58/d9d282c9caa6fb8a6e353815851d82a2b4b98af6ed634d4751380f940e6c/xport-0.1.0.tar.gz"
+      }
+    ],
+    "0.2.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "849b119b739ac331e48537f15c89f280",
+          "sha256": "616370a699c983d8459e5ddd45fe3627c8dc3f3ce4f1fcd8407bf791dd2f1d1d"
+        },
+        "downloads": 134,
+        "filename": "xport-0.2.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "849b119b739ac331e48537f15c89f280",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 15834,
+        "upload_time": "2016-03-23T05:22:05",
+        "url": "https://files.pythonhosted.org/packages/df/66/d78550ee6711146e1e65187a4d38acceb2af65d41cdd343cffd03876e9a5/xport-0.2.0.tar.gz"
+      }
+    ],
+    "0.3.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2c4692660ae259ade76676423c2777c9",
+          "sha256": "81b97cacd5512516b013fba034c3afe3e94dc8cab15b5307e973d488de894461"
+        },
+        "downloads": 137,
+        "filename": "xport-0.3.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2c4692660ae259ade76676423c2777c9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16038,
+        "upload_time": "2016-03-23T06:26:28",
+        "url": "https://files.pythonhosted.org/packages/a8/fe/315a14618a962e941281e2b60d9588f92eeb525ab7d68cf89af5beeba9cc/xport-0.3.0.tar.gz"
+      }
+    ],
+    "0.3.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "06c0883811b91ce07981f878d3bc6213",
+          "sha256": "362fd1a7119422d0c326a8378de4e2c0765fb94420f95b87003ae23ca64b38d5"
+        },
+        "downloads": 143,
+        "filename": "xport-0.3.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "06c0883811b91ce07981f878d3bc6213",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16045,
+        "upload_time": "2016-03-23T06:34:08",
+        "url": "https://files.pythonhosted.org/packages/9d/d1/1ab113bca2d74766eab10f338fe6b9a36046eeed394e61b8ede642bee00d/xport-0.3.1.tar.gz"
+      }
+    ],
+    "0.3.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7d856a258b29fe7c7200f3bbedc3ee48",
+          "sha256": "f02eb9b461e06792f5ac08971f6c77a5a2d22e312fcf4d74653a863234af35bf"
+        },
+        "downloads": 252,
+        "filename": "xport-0.3.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7d856a258b29fe7c7200f3bbedc3ee48",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 15911,
+        "upload_time": "2016-03-23T07:17:22",
+        "url": "https://files.pythonhosted.org/packages/f5/4e/2231db283828d1d2b4b7ed49adb3283babc59dea8c5607375287da061df3/xport-0.3.2.tar.gz"
+      }
+    ],
+    "0.3.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "460311a20a620543b1bae4d9118cfd56",
+          "sha256": "b5be8e07a37813625e4233ea38d46512a95f2ff0c8e599cb10a748ea76fd4c46"
+        },
+        "downloads": 363,
+        "filename": "xport-0.3.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "460311a20a620543b1bae4d9118cfd56",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16358,
+        "upload_time": "2016-07-05T13:52:34",
+        "url": "https://files.pythonhosted.org/packages/68/c2/adf68fdf9e012c97edb5062e8c4e63126b910d226de0ac6eabcffaff0cda/xport-0.3.3.tar.gz"
+      }
+    ],
+    "0.3.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "feccf94dea4f58f021e71fba570fdbad",
+          "sha256": "f9bfe13d0ccd618834553e4d27d986175a7dcdd12927354f94b5562cf7e4f577"
+        },
+        "downloads": 163,
+        "filename": "xport-0.3.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "feccf94dea4f58f021e71fba570fdbad",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16613,
+        "upload_time": "2016-07-05T14:23:39",
+        "url": "https://files.pythonhosted.org/packages/9e/5b/ade91a5e6b66ea23e899579cc60606e2aee6d60bf67b558ed2b8704030df/xport-0.3.4.tar.gz"
+      }
+    ],
+    "0.6.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "521adeee6cbbb37d225ab54c5101e6b7",
+          "sha256": "7ff91102cdc531f0f4d5dee4c01bc51ba701c6c7989ebd0f7ef81482c8d56b0f"
+        },
+        "downloads": 371,
+        "filename": "xport-0.6.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "521adeee6cbbb37d225ab54c5101e6b7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 23303,
+        "upload_time": "2016-08-25T06:10:07",
+        "url": "https://files.pythonhosted.org/packages/ec/fd/0b50705707adc882265e36bf867a70c07a7c9e75df340c606580d453482a/xport-0.6.1.tar.gz"
+      }
+    ],
+    "0.6.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ed135ee60b04fc23374c4773f74c657e",
+          "sha256": "ddfc1490d1f70dfb8a8f24b9e080707ca0f27adaf8014bca851ae36b1778f884"
+        },
+        "downloads": 351,
+        "filename": "xport-0.6.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ed135ee60b04fc23374c4773f74c657e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 23315,
+        "upload_time": "2016-08-25T14:15:06",
+        "url": "https://files.pythonhosted.org/packages/88/cf/2ba506ea43fde4b2c96b92674d8e7982660c9eb71bdf8dae2323bdf29041/xport-0.6.2.tar.gz"
+      }
+    ],
+    "0.6.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "39ff286ef1dc5224010ba7e437d701ed",
+          "sha256": "0b1be0c69d4bd2d94500f1faf1369a6615b6124c975e74aab649a28afbe07711"
+        },
+        "downloads": 358,
+        "filename": "xport-0.6.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "39ff286ef1dc5224010ba7e437d701ed",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 23557,
+        "upload_time": "2016-08-25T15:03:18",
+        "url": "https://files.pythonhosted.org/packages/1a/55/b8b8c804944c34355c0cebfb14ac1f8a96bd94672159441a32f92214827b/xport-0.6.3.tar.gz"
+      }
+    ],
+    "0.6.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2e1752338c821653c3ec97111a955ffc",
+          "sha256": "bac02789ebc752a370febf39ddb48133b040af1100351cadc92d7d62d91cd09a"
+        },
+        "downloads": 425,
+        "filename": "xport-0.6.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2e1752338c821653c3ec97111a955ffc",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 23924,
+        "upload_time": "2016-08-25T15:25:21",
+        "url": "https://files.pythonhosted.org/packages/6e/ba/d95f6d192d693a93d948c8d96a0fe45ee268e461fcce5ab0cae1740de4b0/xport-0.6.4.tar.gz"
+      }
+    ],
+    "1.0.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6ab356ddb1b20d2d53c5caea8dae8652",
+          "sha256": "a6cad1e46b4d597e0a3a958041288ec1bfbbf1e6d49b1d38a601d197e75f9915"
+        },
+        "downloads": 308,
+        "filename": "xport-1.0.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6ab356ddb1b20d2d53c5caea8dae8652",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 23186,
+        "upload_time": "2016-10-22T03:35:45",
+        "url": "https://files.pythonhosted.org/packages/f0/a1/6bfe71bbaaa2f45e6002e3ce449d4769172e3d9967503f1aaa3f688c3fb5/xport-1.0.0.tar.gz"
+      }
+    ],
+    "1.1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a91dff83dc07e1a512874ffba8e559ef",
+          "sha256": "369c5b71eab2a77b29ce32e4eac35aca8dc43707fd30ad30888dc98d26e57164"
+        },
+        "downloads": 310,
+        "filename": "xport-1.1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a91dff83dc07e1a512874ffba8e559ef",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 23259,
+        "upload_time": "2016-10-22T03:55:36",
+        "url": "https://files.pythonhosted.org/packages/2e/a6/fafb172e7e5d2c1af637834744bd7d3f45a77944c9ab6f42b99a9feedd8c/xport-1.1.0.tar.gz"
+      }
+    ],
+    "1.1.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "cb24b8e37446dd69dac6da672a85ceae",
+          "sha256": "a148269a07658967a62cbc537a6310674e77fa72aab6b14be2a41fc64d2f89e9"
+        },
+        "downloads": 337,
+        "filename": "xport-1.1.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "cb24b8e37446dd69dac6da672a85ceae",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 23472,
+        "upload_time": "2016-10-22T10:20:51",
+        "url": "https://files.pythonhosted.org/packages/0a/28/777b59388b0953b548838623bb338e70ef92711eb7e5783251c863c8326d/xport-1.1.1.tar.gz"
+      }
+    ],
+    "1.1.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e812d58199dd8f4adb8d0ac141c7ce71",
+          "sha256": "9450a11a708a1be568f2f727d46a514a09c05c491b8b6ea0f7f68c9c91691ba5"
+        },
+        "downloads": 305,
+        "filename": "xport-1.1.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e812d58199dd8f4adb8d0ac141c7ce71",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 23612,
+        "upload_time": "2016-10-22T11:13:27",
+        "url": "https://files.pythonhosted.org/packages/3d/7d/4e79c05d84dad74edf60609c4b3ecca20c001314ba924ac3cca3fe9057a6/xport-1.1.2.tar.gz"
+      }
+    ],
+    "1.1.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ebff762722e42c93a47395a13d01a61f",
+          "sha256": "38b171e171656898bdfc4bf0c1645f88af9b05bb12141e545040d53f94aa92e4"
+        },
+        "downloads": 321,
+        "filename": "xport-1.1.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ebff762722e42c93a47395a13d01a61f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 23680,
+        "upload_time": "2016-10-22T11:49:02",
+        "url": "https://files.pythonhosted.org/packages/77/82/cbdd8f51ff218f4ac08886ab910b44cd7580b6d993ef2a88d9b68e75ebc7/xport-1.1.3.tar.gz"
+      }
+    ],
+    "2.0.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "70965b97f91f014fd7c680c4b7cc6449",
+          "sha256": "5a6ecb5dcca9d9fa35d1888dfe3abb1054c80d03093bdd77868c6f710ba247d1"
+        },
+        "downloads": 213,
+        "filename": "xport-2.0.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "70965b97f91f014fd7c680c4b7cc6449",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 23709,
+        "upload_time": "2016-10-26T01:42:14",
+        "url": "https://files.pythonhosted.org/packages/a2/1d/cf1f75bccc775db99d466cbb32eae0825f96192ed1831f8a94a08651f8cb/xport-2.0.0.tar.gz"
+      }
+    ],
+    "2.0.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c6f7df53489a3cd2d925ab159d4d578c",
+          "sha256": "f6a0212f7aa3ceb8746ba2afe068628e5c1f8d81af4cdd7e2a944c8baa47f4a9"
+        },
+        "downloads": 222,
+        "filename": "xport-2.0.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c6f7df53489a3cd2d925ab159d4d578c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 23948,
+        "upload_time": "2016-10-26T04:45:26",
+        "url": "https://files.pythonhosted.org/packages/49/d4/fbf2b0010d944ed54108278787f53a5e16ddf5a9b37e669bcbf930b9451f/xport-2.0.1.tar.gz"
+      }
+    ],
+    "2.0.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a5ad580a92be7158bf2ed9d35b70f4d6",
+          "sha256": "fccaba947214d6b0036ffbfcc444015963f731019ab664307bc98a440e04c7a0"
+        },
+        "downloads": 80,
+        "filename": "xport-2.0.2-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "a5ad580a92be7158bf2ed9d35b70f4d6",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 14343,
+        "upload_time": "2017-01-06T14:05:53",
+        "url": "https://files.pythonhosted.org/packages/6a/a0/ade37253fe2c7a457a9a8703e93e4b1517dd53315e3941416ee4f7463f08/xport-2.0.2-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0505fac4785fd71e70bd205f1864709c",
+          "sha256": "0afe035727d4464d748334dbc57c760a82d1493b8c117493738d8b4c2f4ddc65"
+        },
+        "downloads": 85,
+        "filename": "xport-2.0.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0505fac4785fd71e70bd205f1864709c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 12494,
+        "upload_time": "2017-01-06T14:05:55",
+        "url": "https://files.pythonhosted.org/packages/8c/70/e5d865841041de846a48b9609630852aa1b4e59a7681f3d9c27e198622b0/xport-2.0.2.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "a5ad580a92be7158bf2ed9d35b70f4d6",
+        "sha256": "fccaba947214d6b0036ffbfcc444015963f731019ab664307bc98a440e04c7a0"
+      },
+      "downloads": 80,
+      "filename": "xport-2.0.2-py2.py3-none-any.whl",
+      "has_sig": false,
+      "md5_digest": "a5ad580a92be7158bf2ed9d35b70f4d6",
+      "packagetype": "bdist_wheel",
+      "python_version": "py2.py3",
+      "size": 14343,
+      "upload_time": "2017-01-06T14:05:53",
+      "url": "https://files.pythonhosted.org/packages/6a/a0/ade37253fe2c7a457a9a8703e93e4b1517dd53315e3941416ee4f7463f08/xport-2.0.2-py2.py3-none-any.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "0505fac4785fd71e70bd205f1864709c",
+        "sha256": "0afe035727d4464d748334dbc57c760a82d1493b8c117493738d8b4c2f4ddc65"
+      },
+      "downloads": 85,
+      "filename": "xport-2.0.2.tar.gz",
+      "has_sig": false,
+      "md5_digest": "0505fac4785fd71e70bd205f1864709c",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 12494,
+      "upload_time": "2017-01-06T14:05:55",
+      "url": "https://files.pythonhosted.org/packages/8c/70/e5d865841041de846a48b9609630852aa1b4e59a7681f3d9c27e198622b0/xport-2.0.2.tar.gz"
+    }
+  ]
+}

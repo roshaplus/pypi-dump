@@ -1,0 +1,940 @@
+{
+  "info": {
+    "author": "Jared Stafford",
+    "author_email": "jspenguin@gmail.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 3 - Alpha",
+      "Environment :: Other Environment",
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: MIT License",
+      "Operating System :: Microsoft :: Windows",
+      "Operating System :: Unix",
+      "Programming Language :: Python",
+      "Programming Language :: Python :: 3",
+      "Topic :: Software Development :: Libraries :: Python Modules",
+      "Topic :: System :: Clustering",
+      "Topic :: System :: Distributed Computing"
+    ],
+    "description": "EasyCluster\r\n===========\r\n\r\nEasyCluster is a remote execution / clustering module for Python.\r\n\r\nPossible uses include:\r\n\r\n* computation (e.g. NumPy, PyOpenCL)\r\n* coordinated automation for testing networks / SANs\r\n* access to specific hardware in multiple systems (e.g. GPUs, video capture/encoding boards)\r\n\r\nLinks\r\n-----\r\n* [Releases](https://pypi.python.org/pypi/EasyCluster)\r\n* [Development](https://github.com/jspenguin/easycluster)\r\n* [Documentation](http://pythonhosted.org/EasyCluster/)\r\n\r\nRequirements\r\n------------\r\n* CPython 2.6+ or 3.2+\r\n* SSH support requires an 'ssh' binary on the client, and 'sshd' on the server\r\n\r\nFeatures\r\n--------\r\n* Transparent calling of functions and methods\r\n* Transparent handling of exceptions\r\n* Convenience functions for calling one function in parallel on\r\n  multiple remote systems\r\n* Automatic support for threading\r\n* Requests and responses protected with shared HMAC key\r\n* Connecting via SSH without installing anything on the server (Linux/Unix only)\r\n* Cross-platform compatible; Master scripts running on Linux/OSX can connect\r\n  to servers running on Windows and vice/versa.\r\n\r\n\r\nInstalling\r\n----------\r\n\r\nEasyCluster uses setuptools for installation. To install, run:\r\n\r\n    python setup.py build\r\n    sudo python setup.py install\r\n\r\nIf you do not have setuptools installed, it will be downloaded for you.\r\n\r\n\r\nHow it works\r\n------------\r\n\r\nEasyCluster works by having a single master script connect to one or more\r\nservers running SSH or the cluster service. The master can then call Python\r\nfunctions on the remote service or send code to execute.\r\n\r\nSee `easycluster_demo.py` for an example of how to use most of the features.\r\n\r\nSince version 0.22.1, SSH is the preferred method of connecting to servers on\r\nall platforms except Windows. When using SSH, the server does not need to have\r\neasycluster installed - it only needs to have SSH and either Python 2.6, 2.7, or\r\n3.2+. When using SSH, you should use SSH private keys and an SSH agent,\r\notherwise SSH will prompt for a password whenever it connects.\r\n\r\nIf you don't want to use SSH, e.g. you need to run the server on Windows and\r\ndon't want to run Cygwin, you will need to generate a secret key that is shared\r\nbetween the client and server. This key is used to authenticate requests, but\r\ndoes not encrypt data, therefore it should only be used on a trusted, firewalled\r\nnetwork, not openly on the Internet. If you want to use EasyCluster to\r\ncoordinate systems in remote geographic areas, consider using a VPN or SSH\r\ntunnel. The EasyCluster service operates over a single TCP port, so most\r\ntunneling solutions will work.\r\n\r\n\r\nConnecting to a server\r\n----------------------\r\n\r\nThe easiest way to use EasyCluster is to use Client.from_spec:\r\n\r\n    >>> rmt = Client.from_spec('user@example.com')\r\n    >>> rmt = ThreadedClient.from_spec('user@example.com:rpython=python2.7')\r\n\r\nThe connection spec looks like this::\r\n\r\n    [user@]host[:port][:opt=val]...\r\n\r\n\r\nThe 'host' can be a hostname, IPv4 address, or bracketed IPv6 address.\r\n\r\nFor compatibility reasons, SSH is only used if the 'user' field is present. If\r\nyou want to use SSH without specifying a user name, pass ':ssh=yes' as an option.\r\n\r\nFor standalone servers, the key is determined by specifying either the 'kf' or 'key' options.\r\n\r\nIf ':compress=1' is specified, then compression is enabled for the connection.\r\n\r\nExample connection specifications::\r\n\r\n    'user@example.com'                   # Using SSH\r\n    'example.com:ssh=yes'                # Using SSH without a user name (let SSH choose)\r\n    'example.com:ssh=/usr/local/bin/ssh' # Using a custom SSH path\r\n    'user@192.0.2.1:9999'                # IPv4 address on non-standard port\r\n    'user@[2001:db8::2]'                 # IPv6 addresses must be in brackets\r\n    'example.com:kf=secret.key'          # Connecting to a standalone server using a key from a file\r\n    'example.com:9999:key=s3cret'        # Using a key directly, with non-standard port\r\n\r\nThe recommended way of allowing the user of your script to specify remote\r\noptions is to use `optparse`:\r\n\r\n    # File: connect_example.py\r\n\r\n    import sys\r\n    import optparse\r\n    import easycluster\r\n\r\n    options = optparse.OptionParser(description='Do some stuff')\r\n    easycluster.add_key_options(options)\r\n    opts, args = options.parse_args()\r\n    default_key = easycluster.key_from_options(opts)\r\n    remotes = []\r\n    for spec in args:\r\n        params = easycluster.parse_connection_spec(spec, default_key=default_key)\r\n        rmt = easycluster.Client(**params)\r\n        remotes.append(rmt)\r\n\r\nThis example allows a user to specify a default key using `-k` (if multiple\r\nservers use the same key), but allows the user to specify individual keys if\r\nnecessary:\r\n\r\n    python do_stuff.py -k common.key host1 host2 oddhost:kf=key_for_oddhost.key\r\n\r\nYou can also specify a different TCP port to connect to. This is useful if you\r\nwant to use SSH tunnels:\r\n\r\n    ssh host1 -N -f -L 11001:localhost:11999\r\n    ssh host2 -N -f -L 11002:localhost:11999\r\n    python do_stuff.py -k common.key localhost:11001 localhost:11002\r\n\r\nThe master script can connect to the same server multiple times. Each connection\r\ncreates a separate process with a clean environment. The master can also create\r\na \"local\" instance using `easycluster.server.spawn_local()`, which starts a new\r\nserver process without having to run a separate server.\r\n\r\n\r\nExecuting code remotely\r\n-----------------------\r\n\r\nThe most straightforward way to execute code remotely is to define functions in\r\na string, and call `define_common()`:\r\n\r\n    >>> from easycluster import *\r\n    >>> define_common('''\r\n    ... def addvals(a, b):\r\n    ...     return a + b\r\n    ... def subvals(a, b):\r\n    ...     return a - b\r\n    ... ''')\r\n    >>> key = read_key_file('secret.key')\r\n    >>> rmt = Client(key, 'localhost')\r\n    >>> rmt.addvals(3, 4)\r\n    7\r\n    >>> rmt.subvals(15, 4)\r\n    11\r\n\r\nAny functions or classes you define in in the block of code passed to\r\n`define_common` can be called on the remote side. You can also call functions in\r\nclasses defined in standard library modules:\r\n\r\n    >>> rmt.subprocess.call(['/bin/echo', 'hello'])\r\n    >>>\r\n\r\nThis example won't actually echo anything to your terminal - `echo` is executed\r\non the server, so if you have the server open in a terminal, you will see it\r\nechoed there.\r\n\r\nThe block of code you pass to define_common is also evaluated on the client, so\r\nfunctions, classes, and class instances can be pickled by reference and passed\r\nback and forth between client and server. By default, a virtual module called\r\n`easycluster.remote_code` is created to store the definitions. You can import\r\nthis module on the client if you want to run a function on both client and\r\nserver, or create a instance of a class that will be passed to the server by\r\nvalue:\r\n\r\n    >>> from easycluster.remote_code import addvals, subvals\r\n    >>> addvals(1, 2)\r\n    3\r\n    >>>\r\n\r\nYou can change the name of the module by specifying a different second parameter\r\nto `define_common`. Remember that since this code is executed in the context of\r\na different module, you won't have access to global variables and imported\r\nmodules from your master script:\r\n\r\n    >>> import os\r\n    >>> define_common('''\r\n    ... def hello():\r\n    ...     os.system('echo hello')\r\n    ... ''')\r\n    ...\r\n    >>> rmt.hello()\r\n    Traceback (most recent call last):\r\n      ...\r\n    NameError: global name 'os' is not defined\r\n    >>>\r\n\r\nYou must remember to import whatever modules you need to use inside of your\r\ndefine_common block. Of course, the libraries you import must be available on\r\nthe remote system too - EasyCluster will not copy them over.\r\n\r\nExceptions\r\n----------\r\n\r\nIf the remote code raises an exception, the exception will be pickled up and\r\nre-raised on the client, along with a stack trace. By default, the stack trace\r\nwill be printed to STDERR, because otherwise it would be lost - the stack trace\r\ngenerated by raising the exception on the client only goes as far as the proxy\r\nwrapper. If you don't want exceptions to be printed, you can subclass `Client`\r\nand override `report_exception`. For a single request, you can also set\r\n`origexc` to `False` or `'quiet'` (see the section on Parallel Execution below).\r\n\r\nManipulating objects on the server\r\n----------------------------------\r\n\r\nBy default, if you call a function on the server, and it returns a value, that\r\nvalue will be pickled, and a new copy of the object will be created on the\r\nclient. This is fine for simple values such as strings, integers, tuples,\r\ndictionaries, etc., but a lot of objects can't or shouldn't be pickled; instead,\r\nEasyCluster allows you to mark classes as \"server objects\" that are not pickled,\r\nbut remain on the server and are referenced by the client.\r\n\r\nWhen the returned data structure is reconstructed on the client, any \"server\r\nobjects\" are converted into \"proxy\" objects. Calling a method on this proxy\r\ncalls the corresponding method on the server. These proxy objects can also be\r\npassed as arguments to other functions on the same connection, and will be\r\nunserialized as the original object on the server.\r\n\r\n    >>> define_common('''\r\n    ... class TestObject1(ServerObject):\r\n    ...    def __init__(self, val):\r\n    ...        self.val = val\r\n    ...    def getval(self):\r\n    ...        return self.val\r\n    ...    def newobj(self):\r\n    ...        return TestObject1(self.val + 1)\r\n    ...\r\n    ... def get_object_vals(lst):\r\n    ...     return [obj.val for obj in lst]\r\n    ... ''')\r\n    >>>\r\n    >>> # Call this on every connection after calling define_common.\r\n    >>> rmt.update_definitions()\r\n    >>>\r\n    >>> obj1 = rmt.TestObject1(100)\r\n    >>> obj1\r\n    <RemoteProxy for oid 1 on localhost:11999>\r\n    >>> obj1.getval()\r\n    100\r\n    >>> obj2 = obj1.newobj()\r\n    >>> obj2\r\n    <RemoteProxy for oid 2 on localhost:11999>\r\n    >>> obj2.getval()\r\n    101\r\n    >>> rmt.get_object_vals[obj1, obj2]\r\n    [100, 101]\r\n    >>>\r\n\r\nClasses can indicate that they should be proxied rather than copied by\r\ninheriting from `ServerObject`. Existing classes which are unaware of EasyCluster\r\ncan be registered on the server by calling `make_server_class`.\r\n\r\nThere are two ways classes can specify which methods and attributes to export:\r\n\r\n* Specifying `export_methods`, `export_attrs`, or `export_attrs_cache`.  Classes\r\n  which inherit from `ServerObject` but do not specify a proxy class will have\r\n  one dynamically created when they are first referenced. The server will\r\n  examime the class to determine which methods and attributes should be\r\n  exported.\r\n\r\n    * If the class has a class attribute called `export_methods`, then the proxy\r\n      class will only have wrappers for those methods.\r\n\r\n    * If `export_methods` is not defined (default), or the special value `'@auto'`\r\n      is in the list of exported method names, then the class will be examined,\r\n      and all defined methods will be automatically added to the list.\r\n\r\n    * The `export_attrs` class attribute works the same way: if it is defined,\r\n      wrapper properties will be created on the proxy object for each\r\n      attribute. If `export_attrs` is not defined, or `'@auto'` is included in\r\n      export_attrs, then a special `__getattr__` is defined on the proxy which\r\n      will forward attribute accesses to the server.\r\n\r\n   * If you know that an attribute contains data which will not change over the\r\n     lifetime of the object, you can put it in `export_attrs_cache`. The client\r\n     will cache the value of the attribute the first time it is accessed, and\r\n     won't access it again.\r\n\r\n* Defining a proxy class directly. This is the most flexible way of exporting\r\n  methods and attributes. This allows you to not only define proxy methods and\r\n  attributes, but allows you to:\r\n\r\n    * Implement simple methods on the client. For example, most iterators simply\r\n      return `self` from `__iter__`. In fact, easycluster provides a proxy class\r\n      you can inherit from called SelfIterProxy which does this.\r\n\r\n    * Make your proxy object inherit from some other class so that\r\n      `isinstance(prox, clas)` returns `True`.\r\n\r\nExample of both methods:\r\n\r\n    >>> define_common('''\r\n    ... class TestObject2(TestObject1):\r\n    ...     export_methods = ('getval',)\r\n    ...     export_attrs = ('val',)\r\n    ...\r\n    ... class TestObject3Proxy(RemoteProxy):\r\n    ...     proxy_methods = ('getval',)\r\n    ...     proxy_attrs = ('val',)\r\n    ...\r\n    ... class TestObject3(TestObject1):\r\n    ...     proxy_class = TestObject3Proxy\r\n    ... ''')\r\n    >>>\r\n    >>> rmt.update_definitions()\r\n    >>> obj2 = rmt.TestObject2(200)\r\n    >>> obj2.val\r\n    200\r\n    >>> obj2.getval()\r\n    200\r\n    >>> obj2.non_existant_method()\r\n    Traceback (most recent call last):\r\n      File \"<stdin>\", line 1, in <module>\r\n    AttributeError: 'dynamic_proxy_getval_val' object has no attribute 'non_existant_method'\r\n    >>>\r\n\r\n    >>> define_common('''\r\n    ... ''')\r\n    >>> rmt.update_definitions()\r\n    >>> obj3 = rmt.TestObject3(300)\r\n    >>> type(obj3)\r\n    <class 'easycluster_code.TestObject3Proxy'>\r\n    >>> obj3.val\r\n    300\r\n\r\nIf you have a built-in class or a class from a library module that you want to\r\ntreat as a \"server object\", you can call `easycluster.make_server_class()` in your\r\ndefine_common block:\r\n\r\n    >>> define_common('''\r\n    ... import array\r\n    ... make_server_class(array.array)\r\n    ... ''')\r\n    >>> rmt.update_definitions()\r\n    >>> rmt_array = rmt.array.array('B', 1234)\r\n\r\nYou can pass `export_methods`, `export_attrs`, `export_attrs_cache`, and\r\n`proxy_class` to `make_server_class`; they have the same meaning as defined for\r\nServerObject.\r\n\r\nThere is also a function called `make_singleton`, which behaves like\r\n`make_server_class`, except it operates on a single instance of a class; if that\r\ninstance is returned, it will be proxied, but other instances of the same class\r\nwill be pickled.\r\n\r\nParallel Execution\r\n------------------\r\n\r\nUsually, clustering implies you want to execute code in parallel on multiple\r\nsystems. By default, calling remote code suspends execution of the master script\r\nwhile the remote code is executing. However, there are several ways to execute\r\nremote code in parallel.\r\n\r\nThe simplest way to do this is to use a non-blocking response:\r\n\r\n    >>> rmt2 = Client(key, 'otherhost')\r\n    >>> r1 = rmt.addvals(5, 8, nonblocking=True)\r\n    >>> r2 = rmt2.addvals(14, 18, nonblocking=True)\r\n    >>> r1.wait()\r\n    13\r\n    >>> r2.wait()\r\n    32\r\n    >>>\r\n\r\nPassing `nonblocking=True` to any proxy method causes it to immediately return a\r\nspecial \"non-blocking response\" object which has a `wait()` method. The `wait()`\r\nmethod waits until the code has finished executing on the remote server and\r\nreturns the response value. If the remote side raised an exception, `wait()`\r\nwill raise the same exception (unless you pass `origexc` -- see below).\r\n\r\nYou can also use the convenience functions `eval_multi`, `call_multi`, and\r\n`call_method_multi` to call the same function in parallel on multiple systems:\r\n\r\n    >>> call_multi([rmt, rmt2], 'addvals', 2, 3)\r\n    [5, 5]\r\n    >>>\r\n\r\nThis function calls a specific function on multiple systems, waits for all of\r\nthe responses, then returns a list of their responses.\r\n\r\nBesides `nonblocking`, there are other common keyword arguments that can be\r\npassed to remote calls:\r\n\r\n* `oncomplete` - If this is specified, then the remote call will return\r\n  immediately, and will call this function when the remote call completes. This\r\n  can be either a function which will be called as `func(response)`, or a tuple\r\n  of `(func, arg1, arg2, ...)` which will be called as `func(response, arg1,\r\n  arg2, ...)`. If you're using the standard `Client` class, completion functions\r\n  will not be called until something calls `read_response()` on the client\r\n  object, or calls `wait()` on a non-blocking response associated with the\r\n  client. If you're using `ThreadedClient`, completion functions are called from\r\n  the thread which reads responses from the server.\r\n\r\n* `onerror` - Identical to oncomplete, but called with a `RemoteException`\r\n  instance instead of a return value when the remote call raises an\r\n  exception. If `oncomplete` is specified, but `onerror` is not, the\r\n  `oncomplete` function is called in both cases.\r\n\r\n* `threadid` - An arbitrary integer specifying the thread on the server to run\r\n  the request in. If not specified, the current default will be used. The\r\n  default can be changed by calling `set_default_thread()` on the client\r\n  object. If the specified thread does not exist on the server, it is\r\n  created. If the threadid is the special constant `easycluster.SINGLE`, a new\r\n  thread is created on the server for this request, then exits.\r\n\r\n* `origexc` - If `True` (default), and the request raises an exception, it will\r\n  print the remote stack trace to the screen and raise the original\r\n  exception. If it is `False`, a `RemoteException` is raised instead. If it is\r\n  the value `'quiet'`, then the original exception is raised without a stack\r\n  trace being printed. `RemoteException` instances have the two attributes:\r\n  `orig`, the original exception; and `text`, the stack trace on the server.\r\n\r\nYou can start multiple threads on the same server by using non-blocking\r\nresponses with `threadid`:\r\n\r\n    >>> r1 = rmt.addvals(101, 102, nonblocking=True, threadid=1)\r\n    >>> r2 = rmt.addvals(222, 333, nonblocking=True, threadid=2)\r\n    >>> r3 = rmt.addvals(555, 888, nonblocking=True, threadid=3)\r\n    >>> [r1.wait(), r2.wait(), r3.wait()]\r\n    [203, 555, 1443]\r\n\r\n\r\nUsing ThreadedClient\r\n--------------------\r\n\r\nIf your master script is already multi-threaded, you can use `ThreadedClient`\r\nto automatically manage server threads for you.\r\n\r\nThe `ThreadedClient` class starts a separate thread to read responses from the\r\nserver. Because of this, completion functions are called as soon as the remote\r\ncall returns, and the thread actively monitors the server to ensure that it\r\nhasn't gone down or locked up.\r\n\r\n`ThreadedClient` will detect if you call remote functions from a separate thread\r\nin your master script, and will start a corresponding thread on the server to\r\nhandle your request:\r\n\r\n    >>> import threading\r\n    >>> tc1 = ThreadedClient(key, 'host1')\r\n    >>> tc2 = ThreadedClient(key, 'host2')\r\n    >>>\r\n    >>> def client_thread(id, a, b):\r\n    ...     print 'Thread %d: starting' % id\r\n    ...     val1 = tc1.addvals(a, b)\r\n    ...     print 'Thread %d: tc1 returned %r' % (id, val1)\r\n    ...     val2 = tc2.addvals(a, b)\r\n    ...     print 'Thread %d: tc2 returned %r' % (id, val2)\r\n    ...     print 'Thread %d: finished' % id\r\n    ...\r\n    >>> def run_threads():\r\n    ...     t1 = threading.Thread(target=client_thread, args=(1, 200, 500))\r\n    ...     t2 = threading.Thread(target=client_thread, args=(2, 300, 600))\r\n    ...     t1.start(); t2.start()\r\n    ...     t1.join(); t2.join()\r\n    ...\r\n    >>> run_threads()\r\n    Thread 1: starting\r\n    Thread 2: starting\r\n    Thread 1: tc1 returned 700\r\n    Thread 2: tc1 returned 900\r\n    Thread 1: tc2 returned 700\r\n    Thread 2: tc2 returned 900\r\n    Thread 1: finished\r\n    Thread 2: finished\r\n    >>>\r\n\r\nOnce threads in your master script exit, `ThreadedClient` will detect it and\r\nstop the corresponding thread on the server.\r\n\r\n\r\nStarting the standalone server\r\n------------------------------\r\n\r\nOn POSIX systems (Linux, BSD, Solaris), a command called `easycluster` should be\r\ninstalled in `/usr/local/bin`. On Windows, the main entry point is installed\r\nunder `%PYTHON%\\scripts\\easycluster.exe`. With Python 2.7 and 3.2, you can also\r\nrun `python -m easycluster`.\r\n\r\nBefore you run the server, you should create a secret HMAC keyfile. Both the\r\nserver and the client need this keyfile to be able to communicate:\r\n\r\n    easycluster -g secret.key\r\n\r\nThis will create a new file, called 'secret.key' which is readable only by the\r\nuser that created it. You can then run the server with:\r\n\r\n    easycluster -S -k secret.key\r\n\r\nIf you don't want to see every remote call logged, run:\r\n\r\n    easycluster -S -k secret.key -c QuietServer\r\n\r\n\r\nRunning EasyCluster standalone server as a service on boot\r\n----------------------------------------------------------\r\n\r\nYou can have the easycluster service start automatically on boot on Windows,\r\nSolaris, and Linux (Redhat, Debian, Ubuntu, and SuSE have been tested):\r\n\r\n    easycluster --install\r\n\r\nThis will register a service with the system which will start on the next\r\nboot. You can unregister it with `easycluster --uninstall`. Once the service is\r\nregistered, you can start and stop it with `easycluster --start` and\r\n`easycluster --stop`\r\n",
+    "docs_url": "https://pythonhosted.org/EasyCluster/",
+    "download_url": "UNKNOWN",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "http://pypi.python.org/pypi/EasyCluster",
+    "keywords": null,
+    "license": "MIT License",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "EasyCluster",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/EasyCluster/",
+    "release_url": "https://pypi.org/project/EasyCluster/0.22.1/",
+    "requires_python": null,
+    "summary": "EasyCluster: a remote execution/clustering module for Python",
+    "version": "0.22.1"
+  },
+  "releases": {
+    "0.01": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1f8ff5d477e53022a6da7196d14ff4d8",
+          "sha256": "1c6b52b024df1770c5d3e1bc8e8371b063495c957625da63bc97b4930251ac89"
+        },
+        "downloads": 3112,
+        "filename": "EasyCluster-0.01-py2.7.egg",
+        "has_sig": false,
+        "md5_digest": "1f8ff5d477e53022a6da7196d14ff4d8",
+        "packagetype": "bdist_egg",
+        "python_version": "2.7",
+        "size": 43895,
+        "upload_time": "2013-02-07T22:10:23",
+        "url": "https://files.pythonhosted.org/packages/79/b7/cf91b17d086594f154b7c437061498f8769a46a11c09cbf3764ffba39064/EasyCluster-0.01-py2.7.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0b260f9066ba0a5480bd2bf719485330",
+          "sha256": "4b086368fa4d755f1ff01aa0dae9bd37519d1ed8c7070bcf86c37751887089ba"
+        },
+        "downloads": 3129,
+        "filename": "EasyCluster-0.01.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0b260f9066ba0a5480bd2bf719485330",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 27190,
+        "upload_time": "2013-02-07T22:10:17",
+        "url": "https://files.pythonhosted.org/packages/95/2f/59810ac61a1aecf1c2a080918a58f094e01a0dac9af1f3b7e529d89efc4f/EasyCluster-0.01.tar.gz"
+      }
+    ],
+    "0.02": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8ffcd622d18a97a424c4dfa16536f7a9",
+          "sha256": "de83365b6a8af6ba0068306bb711978ea796ae5e879536463fb3bf084051e697"
+        },
+        "downloads": 3055,
+        "filename": "EasyCluster-0.02-py2.7.egg",
+        "has_sig": false,
+        "md5_digest": "8ffcd622d18a97a424c4dfa16536f7a9",
+        "packagetype": "bdist_egg",
+        "python_version": "2.7",
+        "size": 44004,
+        "upload_time": "2013-02-08T15:03:04",
+        "url": "https://files.pythonhosted.org/packages/92/16/8b219784c8b001056b120166ff2f49bf753c229b5e39acf370e1498f0b67/EasyCluster-0.02-py2.7.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "39840fbdc4416f0512272822b3efcf4a",
+          "sha256": "0b0b89a499291cb2c53adb753e8bf0962bf4e30d827a74fffbf00a82a2f016a2"
+        },
+        "downloads": 3057,
+        "filename": "EasyCluster-0.02.tar.gz",
+        "has_sig": false,
+        "md5_digest": "39840fbdc4416f0512272822b3efcf4a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 27242,
+        "upload_time": "2013-02-08T15:02:59",
+        "url": "https://files.pythonhosted.org/packages/99/15/05116f33e8e89d6e10b37bc3c3b2354de05ecb187ec3d3afcacfb5017bbb/EasyCluster-0.02.tar.gz"
+      }
+    ],
+    "0.03": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "82d1b09861fdc6d52d9c553d3764a27d",
+          "sha256": "3d07e3b679917095c2115327ca92b2691ea5e70e78ebc438d7cee38bf075a60a"
+        },
+        "downloads": 2967,
+        "filename": "EasyCluster-0.03-py2.7.egg",
+        "has_sig": false,
+        "md5_digest": "82d1b09861fdc6d52d9c553d3764a27d",
+        "packagetype": "bdist_egg",
+        "python_version": "2.7",
+        "size": 46437,
+        "upload_time": "2013-02-15T18:01:38",
+        "url": "https://files.pythonhosted.org/packages/58/10/67233c2368627f306b56e3033daa152fecc751804364bb4ab3c912776509/EasyCluster-0.03-py2.7.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b3c85e0153ff4740ce1da8b22d04bad7",
+          "sha256": "77f61c8787889cf518fcda944ee63c47d12a24abea84a2a36efa8743464eda1b"
+        },
+        "downloads": 2956,
+        "filename": "EasyCluster-0.03.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b3c85e0153ff4740ce1da8b22d04bad7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 28207,
+        "upload_time": "2013-02-15T18:01:35",
+        "url": "https://files.pythonhosted.org/packages/b4/69/66aa86b285155af0c37e7bc1aa1cc8829bdff38275be933e5e06564cd773/EasyCluster-0.03.tar.gz"
+      }
+    ],
+    "0.04": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1cda1c28a13501f66e797a004472a9ec",
+          "sha256": "7080de541e383076acf5e82ab8a8631c2cb032efce41d9ebe7faed90e2b37949"
+        },
+        "downloads": 3001,
+        "filename": "EasyCluster-0.04-py2.7.egg",
+        "has_sig": false,
+        "md5_digest": "1cda1c28a13501f66e797a004472a9ec",
+        "packagetype": "bdist_egg",
+        "python_version": "2.7",
+        "size": 48089,
+        "upload_time": "2013-02-15T21:33:35",
+        "url": "https://files.pythonhosted.org/packages/04/ac/c67e356a148d61da417d5b08293f0e0260c780b1620cf13a2df22c7e91c1/EasyCluster-0.04-py2.7.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "529707c15cb640d91fcaaa7db36cff3e",
+          "sha256": "68fa6fa889550365cbf90b559b06838be0855927a3ab34ace5aa43bb4425b6a4"
+        },
+        "downloads": 2962,
+        "filename": "EasyCluster-0.04.tar.gz",
+        "has_sig": false,
+        "md5_digest": "529707c15cb640d91fcaaa7db36cff3e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 28962,
+        "upload_time": "2013-02-15T21:33:31",
+        "url": "https://files.pythonhosted.org/packages/1b/ba/ade6e4ed3e1b256b3890240ccaf55016be72800dcd212ae58ba6daa902d9/EasyCluster-0.04.tar.gz"
+      }
+    ],
+    "0.05": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f7e2eed376917f21f98a5544542b4e11",
+          "sha256": "2748545ed6088557cfa1c1b382db8a739934ab97cf233f48e4bb17ae7052d8da"
+        },
+        "downloads": 2905,
+        "filename": "EasyCluster-0.05-py2.7.egg",
+        "has_sig": false,
+        "md5_digest": "f7e2eed376917f21f98a5544542b4e11",
+        "packagetype": "bdist_egg",
+        "python_version": "2.7",
+        "size": 48154,
+        "upload_time": "2013-02-19T06:43:45",
+        "url": "https://files.pythonhosted.org/packages/96/94/fd60035ca7b72015c45ff608c545de38d6a1387d41501e1dc8e040c95c0a/EasyCluster-0.05-py2.7.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4977719e44c6212a348a8caf2eafc84b",
+          "sha256": "96c117be84b66d7a41ae3cdd6a18ea58a530e044c4d39531f6b0003deb5afa16"
+        },
+        "downloads": 2917,
+        "filename": "EasyCluster-0.05.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4977719e44c6212a348a8caf2eafc84b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 29019,
+        "upload_time": "2013-02-19T06:43:43",
+        "url": "https://files.pythonhosted.org/packages/41/30/1a133f9c09d16b3ad1fae42eda18a316df88d6e6332465ccc7628d94be5c/EasyCluster-0.05.tar.gz"
+      }
+    ],
+    "0.06": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "85d0b56397073fd072652cbedde0a459",
+          "sha256": "7072fc88c38666b5b9648f9d1a3ffa00e2f2669897c52937c38e55edd01b9f6f"
+        },
+        "downloads": 2846,
+        "filename": "EasyCluster-0.06-py2.7.egg",
+        "has_sig": false,
+        "md5_digest": "85d0b56397073fd072652cbedde0a459",
+        "packagetype": "bdist_egg",
+        "python_version": "2.7",
+        "size": 48775,
+        "upload_time": "2013-02-27T19:40:11",
+        "url": "https://files.pythonhosted.org/packages/91/1f/bd158c7a100f3b3e6150a7da933ff0b6d280b6a9a188abbe1be4157e60b2/EasyCluster-0.06-py2.7.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "db1422a3862d779532994c2847ddd2bd",
+          "sha256": "0a1e59a4cf3e0da6428046ee9e2c700145c43697d81d723e8ee257df15c03e50"
+        },
+        "downloads": 2888,
+        "filename": "EasyCluster-0.06.tar.gz",
+        "has_sig": false,
+        "md5_digest": "db1422a3862d779532994c2847ddd2bd",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 29275,
+        "upload_time": "2013-02-27T19:40:08",
+        "url": "https://files.pythonhosted.org/packages/d3/1f/daa01f30a3c6fd0a215c0b815f29fdc716133106c6e0aee69a2eaf0d30ec/EasyCluster-0.06.tar.gz"
+      }
+    ],
+    "0.07": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "84eaa32c11838abf90cf56ba9ccfa2fb",
+          "sha256": "3dbd7ca8c3d6f5201ccfca542fe57cfba926922308e3ab84aab0d977746f02fc"
+        },
+        "downloads": 2765,
+        "filename": "EasyCluster-0.07-py2.7.egg",
+        "has_sig": false,
+        "md5_digest": "84eaa32c11838abf90cf56ba9ccfa2fb",
+        "packagetype": "bdist_egg",
+        "python_version": "2.7",
+        "size": 102751,
+        "upload_time": "2013-03-11T06:01:27",
+        "url": "https://files.pythonhosted.org/packages/7f/21/b5de6c407b4befa56717173f60d7c19bb628478e13bd2ae0303e7bf878fd/EasyCluster-0.07-py2.7.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "44d61d0addb33896a873ab5f0f4b36d5",
+          "sha256": "eb9606379512d613ee4f8c1b2f5635fd305f60fa7b7ec4f525eaa12d3219cf6e"
+        },
+        "downloads": 2789,
+        "filename": "EasyCluster-0.07.tar.gz",
+        "has_sig": false,
+        "md5_digest": "44d61d0addb33896a873ab5f0f4b36d5",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 31025,
+        "upload_time": "2013-03-11T06:01:20",
+        "url": "https://files.pythonhosted.org/packages/fa/ec/008cb30694652dd19bdb83682412a961abe5812c6718046502bb2dee92d6/EasyCluster-0.07.tar.gz"
+      }
+    ],
+    "0.08": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "338168955c339d5cf3a9f8d50f2586d9",
+          "sha256": "e9aa9d80ca16f314bcaa016feb60bf87661fb4b48623b7adfae46547795fc482"
+        },
+        "downloads": 2460,
+        "filename": "EasyCluster-0.08-py2.7.egg",
+        "has_sig": false,
+        "md5_digest": "338168955c339d5cf3a9f8d50f2586d9",
+        "packagetype": "bdist_egg",
+        "python_version": "2.7",
+        "size": 110580,
+        "upload_time": "2013-05-20T19:59:39",
+        "url": "https://files.pythonhosted.org/packages/14/10/8599170e2bdb47a839d48039b7e759e6d94cff0d924e1fb8869e6eb32e5a/EasyCluster-0.08-py2.7.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a94aaabc4346af897babe36768957c94",
+          "sha256": "9b754d6e8bd4e14460ef5375864b6e55510af8bca72fadcfa2011fe83e80aecf"
+        },
+        "downloads": 2481,
+        "filename": "EasyCluster-0.08.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a94aaabc4346af897babe36768957c94",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 32957,
+        "upload_time": "2013-05-20T19:59:36",
+        "url": "https://files.pythonhosted.org/packages/0c/44/cf799948cefd2b82f621a82c14b6ff28f79957de861464cd4ada3f71f169/EasyCluster-0.08.tar.gz"
+      }
+    ],
+    "0.09": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "44159af1e2790d42bc86babb1e471000",
+          "sha256": "0a2de5d22870d9afab966d9e8f0aaa89b449a20442ec4ede94191bb94993e593"
+        },
+        "downloads": 2483,
+        "filename": "EasyCluster-0.09-py2.7.egg",
+        "has_sig": false,
+        "md5_digest": "44159af1e2790d42bc86babb1e471000",
+        "packagetype": "bdist_egg",
+        "python_version": "2.7",
+        "size": 112771,
+        "upload_time": "2013-05-20T20:50:27",
+        "url": "https://files.pythonhosted.org/packages/0f/00/f17504459fa795b0deb336541ea252147fa1b89082780cc0c12ecfea726f/EasyCluster-0.09-py2.7.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "02e66c1e1cc18d1de15a1d0b33eca4f2",
+          "sha256": "951173f75b23ac5ca74576af4367990f4ce6cd14912a9b23eb8cfad7c76c855d"
+        },
+        "downloads": 2484,
+        "filename": "EasyCluster-0.09.tar.gz",
+        "has_sig": false,
+        "md5_digest": "02e66c1e1cc18d1de15a1d0b33eca4f2",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 33251,
+        "upload_time": "2013-05-20T20:50:25",
+        "url": "https://files.pythonhosted.org/packages/4d/d2/28e584a4a93502ad4e53c0f967febcc51193cd5e22ecdcaf24a335ac05aa/EasyCluster-0.09.tar.gz"
+      }
+    ],
+    "0.10": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ede3ee85b7da9b2cf53646907213df53",
+          "sha256": "88375e6656fb34425a8bdbbff25641ceb9ac689ddfb494805723b7e8c9b8ed85"
+        },
+        "downloads": 2491,
+        "filename": "EasyCluster-0.10-py2.7.egg",
+        "has_sig": false,
+        "md5_digest": "ede3ee85b7da9b2cf53646907213df53",
+        "packagetype": "bdist_egg",
+        "python_version": "2.7",
+        "size": 112992,
+        "upload_time": "2013-06-11T16:01:40",
+        "url": "https://files.pythonhosted.org/packages/e3/09/250581f55a1f1d84ab6238fa96f2211f3d2970fb7ddb46475cae05efe1ad/EasyCluster-0.10-py2.7.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "95eebc010bc6468e7192741c78766c93",
+          "sha256": "ed2c3c678721ddc9bf3317c04a2ac151717d4a0c1a381be40689cf0d05317c05"
+        },
+        "downloads": 2494,
+        "filename": "EasyCluster-0.10.tar.gz",
+        "has_sig": false,
+        "md5_digest": "95eebc010bc6468e7192741c78766c93",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 33402,
+        "upload_time": "2013-06-11T16:01:38",
+        "url": "https://files.pythonhosted.org/packages/94/60/ed1f668c81cfe549d746b5a79d44f59ef3cf3099a7e88acd8d277d9918cf/EasyCluster-0.10.tar.gz"
+      }
+    ],
+    "0.11": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e04365f3be2e4f30f21033c5d84d3b5c",
+          "sha256": "1566d9414f5d378513db2a26d3d5b9427edb7a81356b2563387e15bfac0bde2e"
+        },
+        "downloads": 2507,
+        "filename": "EasyCluster-0.11-py2.7.egg",
+        "has_sig": false,
+        "md5_digest": "e04365f3be2e4f30f21033c5d84d3b5c",
+        "packagetype": "bdist_egg",
+        "python_version": "2.7",
+        "size": 113605,
+        "upload_time": "2013-06-18T14:07:37",
+        "url": "https://files.pythonhosted.org/packages/3b/12/7f50d3ce5664f9370aeb91a6c61aa9f123f4e02b25e28a9100116637cf8b/EasyCluster-0.11-py2.7.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "85b99f07bc1f0a839815bfd916ff87f3",
+          "sha256": "50ccea89f284fbe7ea2f9160507fd9a59931c8e462a365eabd8d2a539eab0a05"
+        },
+        "downloads": 2497,
+        "filename": "EasyCluster-0.11.tar.gz",
+        "has_sig": false,
+        "md5_digest": "85b99f07bc1f0a839815bfd916ff87f3",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 33646,
+        "upload_time": "2013-06-18T14:07:34",
+        "url": "https://files.pythonhosted.org/packages/c6/a0/ddd70f44a4006c6ee194cd5edd3eb9e36fee4f746a3900188312e6959b2f/EasyCluster-0.11.tar.gz"
+      }
+    ],
+    "0.13": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3290d4a15de31ba4a86686d44421f794",
+          "sha256": "fb1bb0d3f3a734aaf1f171eb272d69c36e7a7fd9fb26cd83536f51c5c9063361"
+        },
+        "downloads": 2484,
+        "filename": "EasyCluster-0.13-py2.7.egg",
+        "has_sig": false,
+        "md5_digest": "3290d4a15de31ba4a86686d44421f794",
+        "packagetype": "bdist_egg",
+        "python_version": "2.7",
+        "size": 113756,
+        "upload_time": "2013-07-25T17:28:30",
+        "url": "https://files.pythonhosted.org/packages/9c/f0/d3d1694fbe02b661458f6b926ddbbea86e347414f4827d77fb6814afa414/EasyCluster-0.13-py2.7.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d3b4baeecb55938db2be97d851b339d8",
+          "sha256": "3166d4b057412fdafc1fbdddb6878e1b0019794e6625b09b2f482f1fc457d95d"
+        },
+        "downloads": 2504,
+        "filename": "EasyCluster-0.13.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d3b4baeecb55938db2be97d851b339d8",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 33712,
+        "upload_time": "2013-07-25T17:28:29",
+        "url": "https://files.pythonhosted.org/packages/c0/f5/9f432df2431c6c0693945ffc1edd1b0649c99c354dc875ac932fc94e6243/EasyCluster-0.13.tar.gz"
+      }
+    ],
+    "0.14": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f9baafff4ddaa8c5ded53bc3cc5cdb76",
+          "sha256": "dc84ae2c0bee8b55c8f265e772483108c786dde5bed6e10681f7386765e77572"
+        },
+        "downloads": 2505,
+        "filename": "EasyCluster-0.14-py2.7.egg",
+        "has_sig": false,
+        "md5_digest": "f9baafff4ddaa8c5ded53bc3cc5cdb76",
+        "packagetype": "bdist_egg",
+        "python_version": "2.7",
+        "size": 118314,
+        "upload_time": "2013-07-25T19:39:49",
+        "url": "https://files.pythonhosted.org/packages/36/7a/7052778a815180b7d65144ed8948304beb8c58a9d43d1297d2668c3e1326/EasyCluster-0.14-py2.7.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "35026c3bf624a71085f70d0a871f78ca",
+          "sha256": "4873a75b0a766e78cdb8b70dca574f19388b01f0d74f13b907a8a34e103b0ec5"
+        },
+        "downloads": 2503,
+        "filename": "EasyCluster-0.14.tar.gz",
+        "has_sig": false,
+        "md5_digest": "35026c3bf624a71085f70d0a871f78ca",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 35003,
+        "upload_time": "2013-07-25T19:39:46",
+        "url": "https://files.pythonhosted.org/packages/ce/1d/99e176359d9b19ff3dbcab89ec71336b2a8f3c0e86b07bb8c4e145d9e984/EasyCluster-0.14.tar.gz"
+      }
+    ],
+    "0.15": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "392f614f4a955694adbafc6ea5a5f16a",
+          "sha256": "7cadf44576aaa8616432c78a8bca048847a6e6270e3fe6f25ab0305eda79544f"
+        },
+        "downloads": 2482,
+        "filename": "EasyCluster-0.15-py2.7.egg",
+        "has_sig": false,
+        "md5_digest": "392f614f4a955694adbafc6ea5a5f16a",
+        "packagetype": "bdist_egg",
+        "python_version": "2.7",
+        "size": 121889,
+        "upload_time": "2013-08-22T19:49:20",
+        "url": "https://files.pythonhosted.org/packages/0b/fd/f76696e1ef940b6f18b18e552a610ea4b5a11f105f764a3520d29a1a5984/EasyCluster-0.15-py2.7.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5a20e7ae3387a5e46d326aa7106f41fc",
+          "sha256": "8be5c04470e84636592b5f1066bd97750c5cc332b2d5083016f35a01a044b4d7"
+        },
+        "downloads": 2497,
+        "filename": "EasyCluster-0.15.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5a20e7ae3387a5e46d326aa7106f41fc",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 36520,
+        "upload_time": "2013-08-22T19:49:15",
+        "url": "https://files.pythonhosted.org/packages/d5/99/8f76c8d139b033f1bd22cffd9385212a4a11727c81826e04d8166cca67c9/EasyCluster-0.15.tar.gz"
+      }
+    ],
+    "0.16": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "34b321295dbd1e44613895f503643ba2",
+          "sha256": "2d7d4b8fc806649d28b3a9fb699544266b91c2041a49b8ee8ef6aa34747b1d89"
+        },
+        "downloads": 2477,
+        "filename": "EasyCluster-0.16-py2.7.egg",
+        "has_sig": false,
+        "md5_digest": "34b321295dbd1e44613895f503643ba2",
+        "packagetype": "bdist_egg",
+        "python_version": "2.7",
+        "size": 125498,
+        "upload_time": "2013-08-23T06:57:07",
+        "url": "https://files.pythonhosted.org/packages/a9/3f/514a6047922e353fe7df7b92f6c69ffbfc15b4317ba7d4a87afc3c07370a/EasyCluster-0.16-py2.7.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "64b773c92abdd007bd0d0b78201f925c",
+          "sha256": "5f449b5786d721a2f776cceb8f5b84a2385a2198a09ebbb2a1e911488cd9b7bc"
+        },
+        "downloads": 2477,
+        "filename": "EasyCluster-0.16.tar.gz",
+        "has_sig": false,
+        "md5_digest": "64b773c92abdd007bd0d0b78201f925c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 50322,
+        "upload_time": "2013-08-23T06:57:05",
+        "url": "https://files.pythonhosted.org/packages/e0/79/263d3709e297a54c3970253fffd020e68f72884b43733a5fd04a93c16371/EasyCluster-0.16.tar.gz"
+      }
+    ],
+    "0.17": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "56bb614f1bf7dc01bebd74b27bae3332",
+          "sha256": "4d59f6e2605ad439b55612e35461688698a714cf9222f308baefe166c8b29c5d"
+        },
+        "downloads": 2482,
+        "filename": "EasyCluster-0.17-py2.7.egg",
+        "has_sig": false,
+        "md5_digest": "56bb614f1bf7dc01bebd74b27bae3332",
+        "packagetype": "bdist_egg",
+        "python_version": "2.7",
+        "size": 128740,
+        "upload_time": "2013-08-23T22:00:41",
+        "url": "https://files.pythonhosted.org/packages/9d/ad/b37da408026d275e30c5cbda951c7befb5320e5b8844828752f920c6672f/EasyCluster-0.17-py2.7.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3ba8219e27682d33d97328bec0842537",
+          "sha256": "e854c30c6dffe7808ddd03299657b502a88620c342068fbac962fd88fd4c5aa9"
+        },
+        "downloads": 2472,
+        "filename": "EasyCluster-0.17.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3ba8219e27682d33d97328bec0842537",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 51920,
+        "upload_time": "2013-08-23T22:00:39",
+        "url": "https://files.pythonhosted.org/packages/74/8b/a45042a6739ba77aca36e92e37f5cc52946ea3763c6ba91a93e338f594aa/EasyCluster-0.17.tar.gz"
+      }
+    ],
+    "0.18": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0c384522cd7721871ef7dc8e214aae4e",
+          "sha256": "e742b6e238534385953de6dc6d202dcce761fb9f1e128b73bd6140b270d05ff4"
+        },
+        "downloads": 2436,
+        "filename": "EasyCluster-0.18-py2.7.egg",
+        "has_sig": false,
+        "md5_digest": "0c384522cd7721871ef7dc8e214aae4e",
+        "packagetype": "bdist_egg",
+        "python_version": "2.7",
+        "size": 134361,
+        "upload_time": "2013-08-27T00:27:25",
+        "url": "https://files.pythonhosted.org/packages/7c/09/f125bd4f82ec595075993c9917560fa3d8fccc1b7428e68cc6b67457681b/EasyCluster-0.18-py2.7.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a61fdb288f2af8feeac7d56891a463d1",
+          "sha256": "07f1da2e9bb93a30c6dd04ed95bd62476a8cd3d9c8526a9dd2c83d66d7efc9ea"
+        },
+        "downloads": 2457,
+        "filename": "EasyCluster-0.18.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a61fdb288f2af8feeac7d56891a463d1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 55003,
+        "upload_time": "2013-08-27T00:27:23",
+        "url": "https://files.pythonhosted.org/packages/a1/ae/f441dfafd5d4d426ca8a56a26d32bffd7247677495402281a8ea4ab9f85a/EasyCluster-0.18.tar.gz"
+      }
+    ],
+    "0.18.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "01c57453179d60262cead7652db389f2",
+          "sha256": "0a6e345b2d8aa25ce42f9f19ccf5bf0b38a267d9d4e7e787212a178056a05ec5"
+        },
+        "downloads": 2433,
+        "filename": "EasyCluster-0.18.1-py2.7.egg",
+        "has_sig": false,
+        "md5_digest": "01c57453179d60262cead7652db389f2",
+        "packagetype": "bdist_egg",
+        "python_version": "2.7",
+        "size": 134350,
+        "upload_time": "2013-08-29T19:24:31",
+        "url": "https://files.pythonhosted.org/packages/3c/a6/38ee657c006e892c2e91a83ddc9db1189b979224cff736dac91b285057eb/EasyCluster-0.18.1-py2.7.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c6e116610038047e195c0a5133ce0933",
+          "sha256": "2e1c7207496b01bbf49e95355c0ecc88a60f86921d392bb5c84b2121ebe1013d"
+        },
+        "downloads": 2399,
+        "filename": "EasyCluster-0.18.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c6e116610038047e195c0a5133ce0933",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 54988,
+        "upload_time": "2013-08-29T19:24:29",
+        "url": "https://files.pythonhosted.org/packages/eb/53/cb432bba4d1e39a2e3dce6034569cc53c05909af2b11020459fab931d51f/EasyCluster-0.18.1.tar.gz"
+      }
+    ],
+    "0.19": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3fccbc69e7f5008c2874ee99a2494044",
+          "sha256": "b769d4ee2b704fa064923bf806b2f59369a92df855619f183e299d45e94ea836"
+        },
+        "downloads": 2420,
+        "filename": "EasyCluster-0.19-py2.7.egg",
+        "has_sig": false,
+        "md5_digest": "3fccbc69e7f5008c2874ee99a2494044",
+        "packagetype": "bdist_egg",
+        "python_version": "2.7",
+        "size": 138243,
+        "upload_time": "2013-08-30T01:44:06",
+        "url": "https://files.pythonhosted.org/packages/9e/f1/9b2956dd3f367760a6e187f1d521a736e2240640339825864f5be02f6673/EasyCluster-0.19-py2.7.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2656cf14f12f9986a9747f5a114df9be",
+          "sha256": "dfe11c6aedbf55d619aededafc08dd1ee623db4271442d9c59c50386a7768e11"
+        },
+        "downloads": 2447,
+        "filename": "EasyCluster-0.19.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2656cf14f12f9986a9747f5a114df9be",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 57443,
+        "upload_time": "2013-08-30T01:44:03",
+        "url": "https://files.pythonhosted.org/packages/e8/67/582deeae1b5aef4a2220f2e6860a642d1d241dc27dd6a09580a1a884b703/EasyCluster-0.19.tar.gz"
+      }
+    ],
+    "0.19.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5fc93376dc19f46eae711b23b79f72f3",
+          "sha256": "f0c1ddfeb20562f467981474bebabe0ed28af36192f387f1e8085cbbc3833042"
+        },
+        "downloads": 2365,
+        "filename": "EasyCluster-0.19.1-py2.7.egg",
+        "has_sig": false,
+        "md5_digest": "5fc93376dc19f46eae711b23b79f72f3",
+        "packagetype": "bdist_egg",
+        "python_version": "2.7",
+        "size": 138341,
+        "upload_time": "2013-10-16T05:20:41",
+        "url": "https://files.pythonhosted.org/packages/d6/17/0b397eb91180503e6563f289707e159ceb33869fefa4503022bea009031b/EasyCluster-0.19.1-py2.7.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4beb833936b71b76b1cae7ffa7a56643",
+          "sha256": "d6d6c1a34d322cbbc70e859811bf528a3a4fe11dceab1e3253308acec62021ca"
+        },
+        "downloads": 2341,
+        "filename": "EasyCluster-0.19.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4beb833936b71b76b1cae7ffa7a56643",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 57567,
+        "upload_time": "2013-10-16T05:20:38",
+        "url": "https://files.pythonhosted.org/packages/49/b9/0f59e186148fded949f8078d73c5caafb8fe7df703cb35f70961538219de/EasyCluster-0.19.1.tar.gz"
+      }
+    ],
+    "0.20": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d078171aee2773f7766f3472d20853c5",
+          "sha256": "91746975d1ba0874ac22598126340baef02facb91c3118ffcf224c46b550cb45"
+        },
+        "downloads": 2531,
+        "filename": "EasyCluster-0.20-py2.7.egg",
+        "has_sig": false,
+        "md5_digest": "d078171aee2773f7766f3472d20853c5",
+        "packagetype": "bdist_egg",
+        "python_version": "2.7",
+        "size": 139053,
+        "upload_time": "2014-01-20T19:54:17",
+        "url": "https://files.pythonhosted.org/packages/3f/05/115f669f855b6194d96a74d032c294a14d9e0b71a2edc1ce7122fccef1d8/EasyCluster-0.20-py2.7.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "aa09c098f0209a42aecec2b96295fbbc",
+          "sha256": "e591954112abe98c8e0a1ca40fa2e80eb15b7259456b48c9eeb0ed70a77e54f3"
+        },
+        "downloads": 2218,
+        "filename": "EasyCluster-0.20.tar.gz",
+        "has_sig": false,
+        "md5_digest": "aa09c098f0209a42aecec2b96295fbbc",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 57271,
+        "upload_time": "2014-01-20T19:54:13",
+        "url": "https://files.pythonhosted.org/packages/72/2b/1b1e3a2199f3090cfb4885c6d04bed08817715b581eac39ba87f7dd80187/EasyCluster-0.20.tar.gz"
+      }
+    ],
+    "0.21": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "80784b065969b220218989c188b7694d",
+          "sha256": "5d925066de142ab03b9defa5f0a2208119712740219c57c0611a173b07f5d0a6"
+        },
+        "downloads": 2280,
+        "filename": "EasyCluster-0.21-py2.7.egg",
+        "has_sig": false,
+        "md5_digest": "80784b065969b220218989c188b7694d",
+        "packagetype": "bdist_egg",
+        "python_version": "2.7",
+        "size": 139282,
+        "upload_time": "2014-01-23T23:09:20",
+        "url": "https://files.pythonhosted.org/packages/56/15/01af85ea275f12c90d78259dcc6456dc3182f86518a513f39d55e1b9d2f5/EasyCluster-0.21-py2.7.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1d5398ea72064577065e56ffa042c50e",
+          "sha256": "6721fed3f9859ce55743c0f77de748bf34bce148837c98dd5cabbbce94c7dadb"
+        },
+        "downloads": 2329,
+        "filename": "EasyCluster-0.21.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1d5398ea72064577065e56ffa042c50e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 57383,
+        "upload_time": "2014-01-23T23:09:17",
+        "url": "https://files.pythonhosted.org/packages/cd/3b/5fbd845fc516ebda7e3ad95fd518da05f626bde1ff38189ef57b45b7a195/EasyCluster-0.21.tar.gz"
+      }
+    ],
+    "0.22": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f22daefa9d487f29e1f08145b0df24b5",
+          "sha256": "5d40a8dc78355b35e23ef745411a7d455420dc639a4113b9635562f2a9f4ea4f"
+        },
+        "downloads": 1436,
+        "filename": "EasyCluster-0.22-py2.7.egg",
+        "has_sig": false,
+        "md5_digest": "f22daefa9d487f29e1f08145b0df24b5",
+        "packagetype": "bdist_egg",
+        "python_version": "2.7",
+        "size": 148083,
+        "upload_time": "2015-02-28T07:37:28",
+        "url": "https://files.pythonhosted.org/packages/8e/20/26cd10d95e0c2fc999ce424b8518989ee2e09db58064f0b8e24bc0fcc569/EasyCluster-0.22-py2.7.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "369a1a465d39d1514073c4bc29cd958d",
+          "sha256": "fdc3c08c84fd08ac626458c1fa08cb941728bec722590e49bcfb97dbaa387a26"
+        },
+        "downloads": 1329,
+        "filename": "EasyCluster-0.22-py3.4.egg",
+        "has_sig": false,
+        "md5_digest": "369a1a465d39d1514073c4bc29cd958d",
+        "packagetype": "bdist_egg",
+        "python_version": "3.4",
+        "size": 99966,
+        "upload_time": "2015-02-28T07:36:10",
+        "url": "https://files.pythonhosted.org/packages/a6/08/a78d145675a19b9b6ebc188a49c13d5400c266402189e0b5e8ef0f650795/EasyCluster-0.22-py3.4.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5b15a0031cc8bb2a77a8ef3d8fcef370",
+          "sha256": "39948ea44c8e7cc18dcc91e7ba7ee2b0a8ee53f7351496d542bdbc5d611dba88"
+        },
+        "downloads": 1338,
+        "filename": "EasyCluster-0.22.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5b15a0031cc8bb2a77a8ef3d8fcef370",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 59690,
+        "upload_time": "2015-02-28T07:36:55",
+        "url": "https://files.pythonhosted.org/packages/5c/d8/7ebac426d1152e26db547e196cfd2dd78cea9ae49e9b4be8420f13aa7212/EasyCluster-0.22.tar.gz"
+      }
+    ],
+    "0.22.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "26e59a49f3a6b3174920c8a36baa19de",
+          "sha256": "35b61281e9b017def3fa2ef4b73d934ce7ffa4c8824bb7fef0fa36636a2568fb"
+        },
+        "downloads": 1422,
+        "filename": "EasyCluster-0.22.1-py2.7.egg",
+        "has_sig": false,
+        "md5_digest": "26e59a49f3a6b3174920c8a36baa19de",
+        "packagetype": "bdist_egg",
+        "python_version": "2.7",
+        "size": 149344,
+        "upload_time": "2015-02-28T19:11:40",
+        "url": "https://files.pythonhosted.org/packages/37/8c/0daf6a41f09d201b39f3115af035676edfc8fcb986ec9fbce04548d931d3/EasyCluster-0.22.1-py2.7.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "31bc3ac38d1754175b0d82c9395ec678",
+          "sha256": "ba6ae7851b5f80587b3cbf81e1b7a7e2a156ce38df4372c89888f86283bc7ca7"
+        },
+        "downloads": 1369,
+        "filename": "EasyCluster-0.22.1-py3.4.egg",
+        "has_sig": false,
+        "md5_digest": "31bc3ac38d1754175b0d82c9395ec678",
+        "packagetype": "bdist_egg",
+        "python_version": "3.4",
+        "size": 101236,
+        "upload_time": "2015-02-28T19:11:29",
+        "url": "https://files.pythonhosted.org/packages/85/ae/88f52b379a073e60f27ed7bb1618880c87da95ae902a134f1b05bc87003b/EasyCluster-0.22.1-py3.4.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3434b7ea5827fa0fa5d09cdeabbd9808",
+          "sha256": "ecfbb5158e82568d0b42827d199471c304b038d0f233f7e0f1a09690cb43d7b2"
+        },
+        "downloads": 1514,
+        "filename": "EasyCluster-0.22.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3434b7ea5827fa0fa5d09cdeabbd9808",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 60738,
+        "upload_time": "2015-02-28T19:11:26",
+        "url": "https://files.pythonhosted.org/packages/8e/35/61a4d8ece41837e3ea4b51dbc63180974f62a8931a4d4f00d066ed08c977/EasyCluster-0.22.1.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "26e59a49f3a6b3174920c8a36baa19de",
+        "sha256": "35b61281e9b017def3fa2ef4b73d934ce7ffa4c8824bb7fef0fa36636a2568fb"
+      },
+      "downloads": 1422,
+      "filename": "EasyCluster-0.22.1-py2.7.egg",
+      "has_sig": false,
+      "md5_digest": "26e59a49f3a6b3174920c8a36baa19de",
+      "packagetype": "bdist_egg",
+      "python_version": "2.7",
+      "size": 149344,
+      "upload_time": "2015-02-28T19:11:40",
+      "url": "https://files.pythonhosted.org/packages/37/8c/0daf6a41f09d201b39f3115af035676edfc8fcb986ec9fbce04548d931d3/EasyCluster-0.22.1-py2.7.egg"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "31bc3ac38d1754175b0d82c9395ec678",
+        "sha256": "ba6ae7851b5f80587b3cbf81e1b7a7e2a156ce38df4372c89888f86283bc7ca7"
+      },
+      "downloads": 1369,
+      "filename": "EasyCluster-0.22.1-py3.4.egg",
+      "has_sig": false,
+      "md5_digest": "31bc3ac38d1754175b0d82c9395ec678",
+      "packagetype": "bdist_egg",
+      "python_version": "3.4",
+      "size": 101236,
+      "upload_time": "2015-02-28T19:11:29",
+      "url": "https://files.pythonhosted.org/packages/85/ae/88f52b379a073e60f27ed7bb1618880c87da95ae902a134f1b05bc87003b/EasyCluster-0.22.1-py3.4.egg"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "3434b7ea5827fa0fa5d09cdeabbd9808",
+        "sha256": "ecfbb5158e82568d0b42827d199471c304b038d0f233f7e0f1a09690cb43d7b2"
+      },
+      "downloads": 1514,
+      "filename": "EasyCluster-0.22.1.tar.gz",
+      "has_sig": false,
+      "md5_digest": "3434b7ea5827fa0fa5d09cdeabbd9808",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 60738,
+      "upload_time": "2015-02-28T19:11:26",
+      "url": "https://files.pythonhosted.org/packages/8e/35/61a4d8ece41837e3ea4b51dbc63180974f62a8931a4d4f00d066ed08c977/EasyCluster-0.22.1.tar.gz"
+    }
+  ]
+}

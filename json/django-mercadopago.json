@@ -1,0 +1,114 @@
+{
+  "info": {
+    "author": "Horacio Guillermo de Oro",
+    "author_email": "hgdeoro@gmail.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 2 - Pre-Alpha",
+      "Environment :: Web Environment",
+      "Framework :: Django",
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: BSD License",
+      "Operating System :: OS Independent",
+      "Programming Language :: Python",
+      "Programming Language :: Python :: 2",
+      "Programming Language :: Python :: 2.7",
+      "Topic :: Internet :: WWW/HTTP",
+      "Topic :: Internet :: WWW/HTTP :: Dynamic Content"
+    ],
+    "description": "=============\ndjmercadopago\n=============\n\ndjmercadopago is a simple Django app to use MercadoPago\n\nTHIS IS WIP. THIS DOESN'T WORK YET.\n\nPLEASE, THINK TWICE BEFORE USING THIS ON A PRODUCTION ENVIRONMENT.\n\nMost important things to do to get a 'beta' version:\n\n* document security issues\n* implement views to receive MP requests\n* implement exception handling\n* more functional tests / Selenium tests\n* separate sample app from unittests\n* create a more complete sample app\n* use autocommit-style transactions for the djmercadopago:checkout view\n\nOther ideas:\n\n* implement support for 'customized checkout'\n* support Django 1.8\n* support Python 3\n* setup travis-ci\n\nQuick start\n-----------\n\n1. Add \"djmercadopago\" to your INSTALLED_APPS setting like this::\n\n    INSTALLED_APPS = (\n        ...\n        'djmercadopago',\n    )\n\n2. Include the djmercadopago URLconf in your project urls.py like this::\n\n    url(r'^mp/', include('djmercadopago.urls', namespace=\"djmercadopago\")),\n\n3. Connect to the 'checkout_preferences_created' signal, to update the **checkout preferences**::\n\n    from django import dispatch\n    from djmercadopago import services\n    from djmercadopago import signals\n\n    @dispatch.receiver(signals.checkout_preferences_created,\n                       sender=services.MercadoPagoService,\n                       dispatch_uid='some-id-for-this-signal-handler')\n    def my_checkout_preferences_updater(sender, **kwargs):\n        checkout_preferences = kwargs['checkout_preferences']\n        user_checkout_identifier = kwargs['user_checkout_identifier']\n        request = kwargs['request']\n\n        # Here you can add items, set back-urls, etc.\n\n4. Configure your settings::\n\n    DJMERCADOPAGO = {\n        'CLIENT_ID': 'YOUR-MERCADOPAGO-CLIENT-ID',\n        'CLIENT_SECRET': 'YOUR-MERCADOPAGO-SECRET',\n        'SANDBOX_MODE': True,\n    }\n\n5. Run **python manage.py migrate** to create the djmercadopago models.\n\n6. In your template, add a link to the checkout view::\n\n    <a href=\"{% url 'djmercadopago:checkout' 'USER_CHECKOUT_IDENTIFIER' %}\">Checkout</a>\n\n\nThe ``USER_CHECKOUT_IDENTIFIER`` is some identifier of the shopping cart, or purchase order, or whatever you\nuse to hold the items the user wants to pay. This identifier is passed to the function that populates\nthe ``checkout preferences`` dict, so you can query the database using that identifier.\n\nIf you have the shopping cart contents in session, you won't need an identifier.\n\nSecurity considerations: since this identifier is used in an URL, anyone can try to guess it. If the identifier\nis the ID of some database model, the function that handles the ``checkout_preferences_created``\nsignal should check the logged in user has permission to see that shopping cart / purchase order / etc.\n\nSignal: checkout_preferences_created\n------------------------------------\n\nThis signal is dispatched after the `checkout_preferences` dict is created, and before calling\nthe MP api. This allow the user of django-mercadopago to:\n\n* add items and prices\n* set `external reference`\n* add back-urls\n\nOther tasks to do in this signal handler:\n\n* update any other `checkout_preferences` parameter\n* validate user permissions\n* create / update any of your models\n* etc\n\n\nThe recommended way to use it is to connect to the signals in the ``models.py`` module::\n\n    from django import dispatch\n    from djmercadopago import services\n    from djmercadopago import signals\n\n    @dispatch.receiver(signals.checkout_preferences_created,\n                       sender=services.MercadoPagoService,\n                       dispatch_uid='some-id-for-this-signal-handler')\n    def my_checkout_preferences_updater(sender, **kwargs):\n        checkout_preferences = kwargs['checkout_preferences']\n        user_checkout_identifier = kwargs['user_checkout_identifier']\n        request = kwargs['request']\n\n        # Here you can add items, set back-urls, etc.\n\nFor example, to set the successful url::\n\n    back_urls = checkout_preferences.get('back_urls', {})\n    checkout_preferences['back_urls'] = back_urls\n    back_urls['success'] = request.build_absolute_uri(reverse('successful_checkout'))\n\nFor example, to set the ``items`` to purchase, and the ``external_reference``::\n\n    checkout_preferences.update({\n        \"items\": [\n            {\n                \"title\": product_info['NAME'],\n                \"quantity\": 1,\n                \"currency_id\": \"ARS\",\n                \"unit_price\": product_info['PRICE'],\n            }\n        ],\n        \"external_reference\": external_reference,\n    })\n\n\nParameters\n==========\n\n* checkout_preferences\n* user_checkout_identifier\n* request\n\nParameter: checkout_preference\n******************************\n\nDictionary with the checkout preferences to call the MP api.\nYou need to populate this object with the required information,\nincluding items, back urls, etc.\n\nParameter: user_checkout_identifier\n***********************************\n\nThe same string used when created the link to the ``djmercadopago:checkout`` view.\n\nExample: if the URL was generated with::\n\n   {% url 'djmercadopago:checkout' purchase_order.id %}\n\nthe value of ``user_checkout_identifier`` would be the value of ``purchase_order.id``\n\nParameter: request\n******************\n\nThis allows you:\n\n* to create absolute URLs\n* get any data from session (in case you use a session-based shopping cart)\n* get the User (for example, to validate that the current user is the owner of the\n  items identified by ``user_checkout_identifier``)\n\n\nPayment model\n-------------\n\nBefore calling MP API, an instance of ``Payment`` is created. The same instances is\nupdated with the response received from MP. In the instance, the ``external_reference``\nis saved (if you added it to the ``checkout preferences``) to allow you to track payments.\n\nIf you need to save a reference to the ``Payment`` instance, you can register\nto the ``pre_mp_create_preference`` and/or ``post_mp_create_preference`` signals.\n\n\nSignal: pre_mp_create_preference\n--------------------------------\n\nParameters\n==========\n\n* payment\n* user_checkout_identifier\n* request\n\nParameter: payment\n******************\n\nBefore calling ``mercadopago.MP().create_preference()``, an instance of ``models.Payment`` is created and saved\nto the database, and this instance is received in the signal handler of ``pre_mp_create_preference``.\n\nThis is to allow the user associate the payment with one of the user's models.\n\n\nSignal: post_mp_create_preference\n---------------------------------\n\nParameters\n==========\n\n* payment\n* create_preference_result\n* user_checkout_identifier\n* request\n\nParameter: create_preference_result\n***********************************\n\nThe dict returned by ``mercadopago.MP().create_preference()``.",
+    "docs_url": null,
+    "download_url": "UNKNOWN",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/data-tsunami/django-mercadopago",
+    "keywords": null,
+    "license": "BSD License",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "django-mercadopago",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/django-mercadopago/",
+    "release_url": "https://pypi.org/project/django-mercadopago/0.0.4/",
+    "requires_python": null,
+    "summary": "A simple Django app to use MercadoPago.",
+    "version": "0.0.4"
+  },
+  "releases": {
+    "0.0.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "99653bd2fbe55ebd1a9b107c73876f4a",
+          "sha256": "2a6e9a023cce7a3b9b17968ce632155c8ab6328e0c705098faa50fdb4b5c0eb9"
+        },
+        "downloads": 1323,
+        "filename": "django-mercadopago-0.0.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "99653bd2fbe55ebd1a9b107c73876f4a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 6582,
+        "upload_time": "2015-07-20T14:56:39",
+        "url": "https://files.pythonhosted.org/packages/7f/ef/bd2ab0e740e51706c06ca652494f6bd9a4acad220a8b92b53721ed9cc7d1/django-mercadopago-0.0.2.tar.gz"
+      }
+    ],
+    "0.0.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "01394ad4d4a62a4a6886759ee71cb3e6",
+          "sha256": "08fbf854354554c630bebc3953b045342d43fc252951d550bcbf27abb0ab8d00"
+        },
+        "downloads": 861,
+        "filename": "django-mercadopago-0.0.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "01394ad4d4a62a4a6886759ee71cb3e6",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9328,
+        "upload_time": "2015-08-11T19:08:21",
+        "url": "https://files.pythonhosted.org/packages/82/69/927a94af84ea60a431e198cdd68ce21b0130222bd4211b595b846b2f5079/django-mercadopago-0.0.3.tar.gz"
+      }
+    ],
+    "0.0.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f47405562f4417cb15ef566fcfea5f15",
+          "sha256": "136392c2d0d37d6fe8930b7af8e9e2d8e60561403a7b6f76f3048365673b2db5"
+        },
+        "downloads": 1271,
+        "filename": "django-mercadopago-0.0.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f47405562f4417cb15ef566fcfea5f15",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10535,
+        "upload_time": "2015-08-22T19:38:27",
+        "url": "https://files.pythonhosted.org/packages/83/3a/32cf8f180d6aaa9c392234ed525b4542e09e6cf7db905d882e37051b9496/django-mercadopago-0.0.4.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "f47405562f4417cb15ef566fcfea5f15",
+        "sha256": "136392c2d0d37d6fe8930b7af8e9e2d8e60561403a7b6f76f3048365673b2db5"
+      },
+      "downloads": 1271,
+      "filename": "django-mercadopago-0.0.4.tar.gz",
+      "has_sig": false,
+      "md5_digest": "f47405562f4417cb15ef566fcfea5f15",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 10535,
+      "upload_time": "2015-08-22T19:38:27",
+      "url": "https://files.pythonhosted.org/packages/83/3a/32cf8f180d6aaa9c392234ed525b4542e09e6cf7db905d882e37051b9496/django-mercadopago-0.0.4.tar.gz"
+    }
+  ]
+}

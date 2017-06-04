@@ -1,0 +1,318 @@
+{
+  "info": {
+    "author": "Zope Foundation and Contributors",
+    "author_email": "zope-dev@zope.org",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 5 - Production/Stable",
+      "Environment :: Web Environment",
+      "Framework :: Zope3",
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: Zope Public License",
+      "Natural Language :: English",
+      "Operating System :: OS Independent",
+      "Programming Language :: Python",
+      "Programming Language :: Python :: 2",
+      "Programming Language :: Python :: 2.6",
+      "Programming Language :: Python :: 2.7",
+      "Programming Language :: Python :: 3",
+      "Programming Language :: Python :: 3.3",
+      "Programming Language :: Python :: 3.4",
+      "Programming Language :: Python :: Implementation :: CPython",
+      "Programming Language :: Python :: Implementation :: PyPy",
+      "Topic :: Internet :: WWW/HTTP"
+    ],
+    "description": "=====================================\nZope 3's Local Component Architecture\n=====================================\n\nThis package provides a local and persistent site manager\nimplementation, so that one can register local utilities and\nadapters. It uses local adapter registries for its adapter and utility\nregistry. The module also provides some facilities to organize the\nlocal software and ensures the correct behavior inside the ZODB.\n\n\n.. contents::\n\n=============================\nSites and Local Site Managers\n=============================\n\nThis is an introduction of location-based component architecture.\n\nCreating and Accessing Sites\n----------------------------\n\n*Sites* are used to provide custom component setups for parts of your\napplication or web site. Every folder:\n\n  >>> from zope.site import folder\n  >>> myfolder = folder.rootFolder()\n\nhas the potential to become a site:\n\n  >>> from zope.component.interfaces import ISite, IPossibleSite\n  >>> IPossibleSite.providedBy(myfolder)\n  True\n\nbut is not yet one:\n\n  >>> ISite.providedBy(myfolder)\n  False\n\nIf you would like your custom content component to be able to become a site,\nyou can use the `SiteManagerContainer` mix-in class:\n\n  >>> from zope import site\n  >>> class MyContentComponent(site.SiteManagerContainer):\n  ...     pass\n\n  >>> myContent = MyContentComponent()\n  >>> IPossibleSite.providedBy(myContent)\n  True\n  >>> ISite.providedBy(myContent)\n  False\n\nTo convert a possible site to a real site, we have to provide a site manager:\n\n  >>> sm = site.LocalSiteManager(myfolder)\n  >>> myfolder.setSiteManager(sm)\n  >>> ISite.providedBy(myfolder)\n  True\n  >>> myfolder.getSiteManager() is sm\n  True\n\nNote that an event is generated when a local site manager is created:\n\n  >>> from zope.component.eventtesting import getEvents\n  >>> from zope.site.interfaces import INewLocalSite\n  >>> [event] = getEvents(INewLocalSite)\n  >>> event.manager is sm\n  True\n\nIf one tries to set a bogus site manager, a `ValueError` will be raised:\n\n   >>> myfolder2 = folder.Folder()\n   >>> myfolder2.setSiteManager(object)\n   Traceback (most recent call last):\n   ...\n   ValueError: setSiteManager requires an IComponentLookup\n\nIf the possible site has been changed to a site already, a `TypeError`\nis raised when one attempts to add a new site manager:\n\n  >>> myfolder.setSiteManager(site.LocalSiteManager(myfolder))\n  Traceback (most recent call last):\n  ...\n  TypeError: Already a site\n\nThere is also an adapter you can use to get the next site manager from any\nlocation:\n\n  >>> myfolder['mysubfolder'] = folder.Folder()\n  >>> import zope.component\n  >>> zope.component.interfaces.IComponentLookup(myfolder['mysubfolder']) is sm\n  True\n\nIf the location passed is a site, the site manager of that site is returned:\n\n  >>> zope.component.interfaces.IComponentLookup(myfolder) is sm\n  True\n\n\nUsing the Site Manager\n----------------------\n\nA site manager contains several *site management folders*, which are used to\nlogically organize the software. When a site manager is initialized, a default\nsite management folder is created:\n\n  >>> sm = myfolder.getSiteManager()\n  >>> default = sm['default']\n  >>> default.__class__\n  <class 'zope.site.site.SiteManagementFolder'>\n\nHowever, you can tell not to create the default site manager folder on\nLocalSiteManager creation:\n\n  >>> nodefault = site.LocalSiteManager(myfolder, default_folder=False)\n  >>> 'default' in nodefault\n  False\n\nAlso, note that when creating LocalSiteManager, its __parent__ is set to\nsite that was passed to constructor and the __name__ is set to ++etc++site.\n\n  >>> nodefault.__parent__ is myfolder\n  True\n  >>> nodefault.__name__ == '++etc++site'\n  True\n\nYou can easily create a new site management folder:\n\n  >>> sm['mySMF'] = site.SiteManagementFolder()\n  >>> sm['mySMF'].__class__\n  <class 'zope.site.site.SiteManagementFolder'>\n\nOnce you have your site management folder -- let's use the default one -- we\ncan register some components. Let's start with a utility:\n\n  >>> import zope.interface\n  >>> class IMyUtility(zope.interface.Interface):\n  ...     pass\n\n  >>> import persistent\n  >>> from zope.container.contained import Contained\n  >>> @zope.interface.implementer(IMyUtility)\n  ... class MyUtility(persistent.Persistent, Contained):\n  ...     def __init__(self, title):\n  ...         self.title = title\n  ...     def __repr__(self):\n  ...         return \"%s('%s')\" %(self.__class__.__name__, self.title)\n\nNow we can create an instance of our utility and put it in the site\nmanagement folder and register it:\n\n  >>> myutil = MyUtility('My custom utility')\n  >>> default['myutil'] = myutil\n  >>> sm.registerUtility(myutil, IMyUtility, 'u1')\n\nNow we can ask the site manager for the utility:\n\n  >>> sm.queryUtility(IMyUtility, 'u1')\n  MyUtility('My custom utility')\n\nOf course, the local site manager has also access to the global component\nregistrations:\n\n  >>> gutil = MyUtility('Global Utility')\n  >>> from zope.component import getGlobalSiteManager\n  >>> gsm = getGlobalSiteManager()\n  >>> gsm.registerUtility(gutil, IMyUtility, 'gutil')\n\n  >>> sm.queryUtility(IMyUtility, 'gutil')\n  MyUtility('Global Utility')\n\nNext let's see whether we can also successfully register an adapter as\nwell. Here the adapter will provide the size of a file:\n\n  >>> class IFile(zope.interface.Interface):\n  ...     pass\n\n  >>> class ISized(zope.interface.Interface):\n  ...     pass\n\n  >>> @zope.interface.implementer(IFile)\n  ... class File(object):\n  ...     pass\n\n  >>> @zope.interface.implementer(ISized)\n  ... class FileSize(object):\n  ...     def __init__(self, context):\n  ...         self.context = context\n\nNow that we have the adapter we need to register it:\n\n  >>> sm.registerAdapter(FileSize, [IFile])\n\nFinally, we can get the adapter for a file:\n\n  >>> file = File()\n  >>> size = sm.queryAdapter(file, ISized, name='')\n  >>> size.__class__\n  <class 'FileSize'>\n  >>> size.context is file\n  True\n\nBy the way, once you set a site\n\n  >>> from zope.component import hooks\n  >>> hooks.setSite(myfolder)\n\nyou can simply use the zope.component's `getSiteManager()` method to get\nthe nearest site manager:\n\n  >>> from zope.component import getSiteManager\n  >>> getSiteManager() is sm\n  True\n\nThis also means that you can simply use zope.component to look up your utility\n\n  >>> from zope.component import getUtility\n  >>> getUtility(IMyUtility, 'gutil')\n  MyUtility('Global Utility')\n\nor the adapter via the interface's `__call__` method:\n\n  >>> size = ISized(file)\n  >>> size.__class__\n  <class 'FileSize'>\n  >>> size.context is file\n  True\n\n\nMultiple Sites\n--------------\n\nUntil now we have only dealt with one local and the global site. But things\nreally become interesting, once we have multiple sites. We can override other\nlocal configuration.\n\nThis behaviour uses the notion of location, therefore we need to configure the\nzope.location package first:\n\n  >>> import zope.configuration.xmlconfig\n  >>> _  = zope.configuration.xmlconfig.string(\"\"\"\n  ... <configure xmlns=\"http://namespaces.zope.org/zope\">\n  ...   <include package=\"zope.component\" file=\"meta.zcml\"/>\n  ...   <include package=\"zope.location\" />\n  ... </configure>\n  ... \"\"\")\n\nLet's now create a new folder called `folder11`, add it to `myfolder` and make\nit a site:\n\n  >>> myfolder11 = folder.Folder()\n  >>> myfolder['myfolder11'] = myfolder11\n  >>> myfolder11.setSiteManager(site.LocalSiteManager(myfolder11))\n  >>> sm11 = myfolder11.getSiteManager()\n\nIf we ask the second site manager for its next, we get\n\n  >>> sm11.__bases__ == (sm, )\n  True\n\nand the first site manager should have the folling sub manager:\n\n  >>> sm.subs == (sm11,)\n  True\n\nIf we now register a second utility with the same name and interface with the\nnew site manager folder,\n\n  >>> default11 = sm11['default']\n  >>> myutil11 = MyUtility('Utility, uno & uno')\n  >>> default11['myutil'] = myutil11\n\n  >>> sm11.registerUtility(myutil11, IMyUtility, 'u1')\n\nthen it will will be available in the second site manager\n\n  >>> sm11.queryUtility(IMyUtility, 'u1')\n  MyUtility('Utility, uno & uno')\n\nbut not in the first one:\n\n  >>> sm.queryUtility(IMyUtility, 'u1')\n  MyUtility('My custom utility')\n\nIt is also interesting to look at the use cases of moving and copying a\nsite. To do that we create a second root folder and make it a site, so that\nsite hierarchy is as follows:\n\n::\n\n           _____ global site _____\n          /                       \\\n      myfolder1                myfolder2\n          |\n      myfolder11\n\n\n  >>> myfolder2 = folder.rootFolder()\n  >>> myfolder2.setSiteManager(site.LocalSiteManager(myfolder2))\n\nBefore we can move or copy sites, we need to register two event subscribers\nthat manage the wiring of site managers after moving or copying:\n\n  >>> from zope import container\n  >>> gsm.registerHandler(\n  ...    site.changeSiteConfigurationAfterMove,\n  ...    (ISite, container.interfaces.IObjectMovedEvent),\n  ...    )\n\nWe only have to register one event listener, since the copy action causes an\n`IObjectAddedEvent` to be created, which is just a special type of\n`IObjectMovedEvent`.\n\nFirst, make sure that everything is setup correctly in the first place:\n\n  >>> myfolder11.getSiteManager().__bases__ == (myfolder.getSiteManager(), )\n  True\n  >>> myfolder.getSiteManager().subs[0] is myfolder11.getSiteManager()\n  True\n  >>> myfolder2.getSiteManager().subs\n  ()\n\nLet's now move `myfolder11` from `myfolder` to `myfolder2`:\n\n  >>> myfolder2['myfolder21'] = myfolder11\n  >>> del myfolder['myfolder11']\n\nNow the next site manager for `myfolder11`'s site manager should have changed:\n\n  >>> myfolder21 = myfolder11\n  >>> myfolder21.getSiteManager().__bases__ == (myfolder2.getSiteManager(), )\n  True\n  >>> myfolder2.getSiteManager().subs[0] is myfolder21.getSiteManager()\n  True\n  >>> myfolder.getSiteManager().subs\n  ()\n\nMake sure that our interfaces and classes are picklable:\n\n  >>> import sys\n  >>> sys.modules['zope.site.tests'].IMyUtility = IMyUtility\n  >>> IMyUtility.__module__ = 'zope.site.tests'\n  >>> sys.modules['zope.site.tests'].MyUtility = MyUtility\n  >>> MyUtility.__module__ = 'zope.site.tests'\n\n  >>> from pickle import dumps, loads\n  >>> data = dumps(myfolder2['myfolder21'])\n  >>> myfolder['myfolder11'] = loads(data)\n\n  >>> myfolder11 = myfolder['myfolder11']\n  >>> myfolder11.getSiteManager().__bases__ == (myfolder.getSiteManager(), )\n  True\n  >>> myfolder.getSiteManager().subs[0] is myfolder11.getSiteManager()\n  True\n  >>> myfolder2.getSiteManager().subs[0] is myfolder21.getSiteManager()\n  True\n\nFinally, let's check that everything works fine when our folder is moved\nto the folder that doesn't contain any site manager. Our folder's\nsitemanager's bases should be set to global site manager.\n\n  >>> myfolder11.getSiteManager().__bases__ == (myfolder.getSiteManager(), )\n  True\n\n  >>> nosm = folder.Folder()\n  >>> nosm['root'] = myfolder11\n  >>> myfolder11.getSiteManager().__bases__ == (gsm, )\n  True\n\n\n=======\nCHANGES\n=======\n\n4.0.0 (2014-12-24)\n------------------\n\n- Add support for PyPy.\n\n- Add support for Python 3.4.\n\n- Add support for testing on Travis.\n\n\n4.0.0a1 (2013-02-20)\n--------------------\n\n- Added support for Python 3.3.\n\n- Replaced deprecated ``zope.interface.implements`` usage with equivalent\n  ``zope.interface.implementer`` decorator.\n\n- Dropped support for Python 2.4 and 2.5.\n\n- Include zcml dependencies in configure.zcml, added tests for zcml.\n\n\n3.9.2 (2010-09-25)\n------------------\n\n- Added not declared, but needed test dependency on `zope.testing`.\n\n3.9.1 (2010-04-30)\n------------------\n\n- Removed use of 'zope.testing.doctest' in favor of stdlib's 'doctest.\n\n- Removed use of 'zope.testing.doctestunit' in favor of stdlib's 'doctest.\n\n3.9.0 (2009-12-29)\n------------------\n\n- Avoid a test dependency on zope.copypastemove by testing the correct\n  persistent behavior of a site manager using the normal pickle module.\n\n3.8.0 (2009-12-15)\n------------------\n\n- Removed functional testing setup and dependency on zope.app.testing.\n\n3.7.1 (2009-11-18)\n------------------\n\n- Moved the zope.site.hooks functionality to zope.component.hooks as it isn't\n  actually dealing with zope.site's concept of a site.\n\n- Import ISite and IPossibleSite from zope.component after they were moved\n  there from zope.location.\n\n3.7.0 (2009-09-29)\n------------------\n\n- Cleaned up the undeclared dependency on zope.app.publication by moving the\n  two relevant subscriber registrations and their tests to that package.\n\n- Dropped the dependency on zope.traversing which was only used to access\n  zope.location functionality. Configure zope.location for some tests.\n\n- Demoted zope.configuration to a testing dependency.\n\n3.6.4 (2009-09-01)\n------------------\n\n- Set __parent__ and __name__ in the LocalSiteManager's constructor\n  after calling constructor of its superclasses, so __name__ doesn't\n  get overwritten with empty string by the Components constructor.\n\n- Don't set __parent__ and __name__ attributes of site manager in\n  SiteManagerContainer's ``setSiteManager`` method, as they're\n  already set for LocalSiteManager. Other site manager implementations\n  are not required to have those attributes at all, so we're not\n  adding them anymore.\n\n3.6.3 (2009-07-27)\n------------------\n\n- Propagate an ObjectRemovedEvent to the SiteManager upon removal of a\n  SiteManagerContainer.\n\n3.6.2 (2009-07-24)\n------------------\n\n- Fixed tests to pass with latest packages.\n\n- Removed failing test of persistent interfaces, since it did not test\n  anything in this package and used the deprecated ``zodbcode`` module.\n\n- Fix NameError when calling ``zope.site.testing.siteSetUp(site=True)``.\n\n- The ``getNextUtility`` and ``queryNextUtility`` functions was moved to\n  ``zope.component``.  While backward-compatibility imports are provided, it's\n  strongly recommended to update your imports.\n\n3.6.1 (2009-02-28)\n------------------\n\n- Import symbols moved from zope.traversing to zope.location from the new\n  location.\n\n- Don't fail when changing component registry bases while moving ISite\n  object to non-ISite object.\n\n- Allow specify whether to create 'default' SiteManagementFolder on\n  initializing LocalSiteManager. Use the ``default_folder`` argument.\n\n- Add a containment constraint to the SiteManagementFolder that makes\n  it only available to be contained in ILocalSiteManagers and other\n  ISiteManagementFolders.\n\n- Change package's mailing list address to zope-dev at zope.org, as\n  zope3-dev at zope.org is now retired.\n\n- Remove old unused code. Update package description.\n\n3.6.0 (2009-01-31)\n------------------\n\n- Use zope.container instead of zope.app.container.\n\n3.5.1 (2009-01-27)\n------------------\n\n- Extracted from zope.app.component (trunk, 3.5.1 under development)\n  as part of an effort to clean up dependencies between Zope packages.",
+    "docs_url": null,
+    "download_url": "UNKNOWN",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "http://pypi.python.org/pypi/zope.site",
+    "keywords": "zope component architecture local",
+    "license": "ZPL 2.1",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "zope.site",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/zope.site/",
+    "release_url": "https://pypi.org/project/zope.site/4.0.0/",
+    "requires_python": null,
+    "summary": "Local registries for zope component architecture",
+    "version": "4.0.0"
+  },
+  "releases": {
+    "3.5.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0f7ef3f5c3e853672b9118e19cff9634",
+          "sha256": "e75e0859fd3dfd174215a4e7bd2d696533c6c4d74b0204251f548dd3e6bc633c"
+        },
+        "downloads": 5164,
+        "filename": "zope.site-3.5.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0f7ef3f5c3e853672b9118e19cff9634",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 18326,
+        "upload_time": "2009-01-27T17:45:22",
+        "url": "https://files.pythonhosted.org/packages/8f/14/09dc360f58df1f6c6e7f2a8f6739ebc46f5adca7414fb04e3904b83f0def/zope.site-3.5.1.tar.gz"
+      }
+    ],
+    "3.6.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5d10260dc4c7936f7e5284287a3fb29f",
+          "sha256": "de3ad4989fcdfe9e67ab54a8242c7973c3f6d16f9f8c1dac463ae86fd1f6e42b"
+        },
+        "downloads": 4143,
+        "filename": "zope.site-3.6.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5d10260dc4c7936f7e5284287a3fb29f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 19610,
+        "upload_time": "2009-01-31T13:57:22",
+        "url": "https://files.pythonhosted.org/packages/3d/86/8094a38a9c296996cdef8aac656fda26766b8b4cf5ed57b1065acb52d26b/zope.site-3.6.0.tar.gz"
+      }
+    ],
+    "3.6.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c0b6a200bcd435271be8f680ac550a46",
+          "sha256": "2a6d076f61db394a9ee0bff0199e6a8ff2e25bc3559607fcc4f44571f1e656aa"
+        },
+        "downloads": 38930,
+        "filename": "zope.site-3.6.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c0b6a200bcd435271be8f680ac550a46",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 19489,
+        "upload_time": "2009-02-28T10:58:57",
+        "url": "https://files.pythonhosted.org/packages/b8/68/3a4b0b36b119ce8738590eeea61bb9686b9bf702a3a9797f0ab1f4928a69/zope.site-3.6.1.tar.gz"
+      }
+    ],
+    "3.6.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b5f73fbf2325259485d71b898d9e2e01",
+          "sha256": "2d60ba8d0e3613fa4a0b8a3b61b8a6a6a499b9f27a0fba04715f8c7253d19438"
+        },
+        "downloads": 3495,
+        "filename": "zope.site-3.6.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b5f73fbf2325259485d71b898d9e2e01",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 19421,
+        "upload_time": "2009-07-24T07:01:37",
+        "url": "https://files.pythonhosted.org/packages/5c/6c/51bf5abd73f9763f4d6a332c8b6dc4ddb3db37cfd09ac5ab6b5b896ce3de/zope.site-3.6.2.tar.gz"
+      }
+    ],
+    "3.6.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1eae1d628d6d6f72b2807dba7fc3be72",
+          "sha256": "86f322eccf51b9769213c3ed6c4f8ccd460619a0e7fcaf593c6edcfae646b372"
+        },
+        "downloads": 3343,
+        "filename": "zope.site-3.6.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1eae1d628d6d6f72b2807dba7fc3be72",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 18190,
+        "upload_time": "2009-07-27T15:12:36",
+        "url": "https://files.pythonhosted.org/packages/58/9d/476ff78a3dbd652fb38fe54bb9f49b62dca0346e3277d2d67b0a9964afc3/zope.site-3.6.3.tar.gz"
+      }
+    ],
+    "3.6.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9e1da9166aba1e82cf224ac8b83bf2d0",
+          "sha256": "8cfe9b57b7e4e0162090ae13d2224d07b9012f0f98b5db365b4f555f9c950b94"
+        },
+        "downloads": 3126,
+        "filename": "zope.site-3.6.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "9e1da9166aba1e82cf224ac8b83bf2d0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 18884,
+        "upload_time": "2009-09-01T22:15:38",
+        "url": "https://files.pythonhosted.org/packages/2e/19/14e1456b8475ebbdb0bf15d73af7dd5d4e6158d5ac9d4228d47e338ccdd1/zope.site-3.6.4.tar.gz"
+      }
+    ],
+    "3.7.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e4c486fbf95398d1673f9cba560ab04f",
+          "sha256": "22a983d5e2e42712cb61825ce9a5c97b0cc754e340a454c61f668279a5265dea"
+        },
+        "downloads": 4512,
+        "filename": "zope.site-3.7.0.tar.gz",
+        "has_sig": true,
+        "md5_digest": "e4c486fbf95398d1673f9cba560ab04f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 21235,
+        "upload_time": "2009-09-29T17:34:50",
+        "url": "https://files.pythonhosted.org/packages/71/8b/93e54730f9594315b560ec11aa048f781d61d65510c9ac60e3067eb20a72/zope.site-3.7.0.tar.gz"
+      }
+    ],
+    "3.7.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0b2232d45af219fadcb302f5a746e936",
+          "sha256": "49ae797be83408832acb7a333da382da671b171366757ee62e51e11b39379c0f"
+        },
+        "downloads": 3668,
+        "filename": "zope.site-3.7.1.tar.gz",
+        "has_sig": true,
+        "md5_digest": "0b2232d45af219fadcb302f5a746e936",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 20750,
+        "upload_time": "2009-11-18T10:42:12",
+        "url": "https://files.pythonhosted.org/packages/4f/5a/3e231ca86008948c4f9180cceb3c375d5a61af5b5fa2e357c9ee29f2f709/zope.site-3.7.1.tar.gz"
+      }
+    ],
+    "3.8.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ae2edd7f8358edb22a2d9d7adc9e2b03",
+          "sha256": "f8b1c14b9d4269e472bd0c9ea377eb7e231d7610e0a1121b1f03d53e5bb86114"
+        },
+        "downloads": 3145,
+        "filename": "zope.site-3.8.0.zip",
+        "has_sig": false,
+        "md5_digest": "ae2edd7f8358edb22a2d9d7adc9e2b03",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 35237,
+        "upload_time": "2009-12-15T19:24:33",
+        "url": "https://files.pythonhosted.org/packages/bf/e1/ac832cbc1463270f8cc81243d6ea9b630b79d1eeab38e82e925f579f8474/zope.site-3.8.0.zip"
+      }
+    ],
+    "3.9.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7db4fa8b54d8de59270484eec90799d3",
+          "sha256": "eb1c1e66675550214f346974355e9c729816e539b6ce55a400963b78e03f63e6"
+        },
+        "downloads": 12476,
+        "filename": "zope.site-3.9.0.zip",
+        "has_sig": false,
+        "md5_digest": "7db4fa8b54d8de59270484eec90799d3",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 35336,
+        "upload_time": "2009-12-30T00:18:43",
+        "url": "https://files.pythonhosted.org/packages/1b/e3/c633a91325e4d7bb4b63b12a14436e50b554ca8d1808a7294265fa7a8d01/zope.site-3.9.0.zip"
+      }
+    ],
+    "3.9.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "29cd0aef78308ec2046bc36d8a48d3ed",
+          "sha256": "f168599a383c2361b8d11350f2cce27c25d20311d90d01d9e3affafa2fcc700c"
+        },
+        "downloads": 9823,
+        "filename": "zope.site-3.9.1.zip",
+        "has_sig": false,
+        "md5_digest": "29cd0aef78308ec2046bc36d8a48d3ed",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 36185,
+        "upload_time": "2010-05-01T00:10:59",
+        "url": "https://files.pythonhosted.org/packages/5f/2c/d3fcc05b6a3c1a862f3cf2ceb7201cf66a92b97aee138e8ff06a65b55e91/zope.site-3.9.1.zip"
+      }
+    ],
+    "3.9.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "36a0b8dfbd713ed452ce6973ab0a3ddb",
+          "sha256": "95f6c23d1c19511308ebc841a4dda37ef6f1eb5c4d2624db4216d4640013e647"
+        },
+        "downloads": 144588,
+        "filename": "zope.site-3.9.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "36a0b8dfbd713ed452ce6973ab0a3ddb",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 19928,
+        "upload_time": "2010-09-25T13:13:59",
+        "url": "https://files.pythonhosted.org/packages/80/49/e56a008ab36a518e4f89812a3f83aa192cb22d24b005f10a32ed1cc8faa0/zope.site-3.9.2.tar.gz"
+      }
+    ],
+    "4.0.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a1a95669fcf40cc31d3b035f0f420320",
+          "sha256": "fa80a954082af63e056693c639867886eabcb971e07d82966119bf80e43d328f"
+        },
+        "downloads": 9536,
+        "filename": "zope.site-4.0.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a1a95669fcf40cc31d3b035f0f420320",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 26194,
+        "upload_time": "2014-12-24T22:25:34",
+        "url": "https://files.pythonhosted.org/packages/7e/ed/ca8136eedb36f0752ac73ccb6dd9d79678f5d622d1bdb7fac04fa6afa067/zope.site-4.0.0.tar.gz"
+      }
+    ],
+    "4.0.0a1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ae08aa92f8397f156c55610271eaf190",
+          "sha256": "eca7a011a2149ae70b2ab897fdf9c2b5150704208401f0ededb8308bab7f8247"
+        },
+        "downloads": 15617,
+        "filename": "zope.site-4.0.0a1.zip",
+        "has_sig": false,
+        "md5_digest": "ae08aa92f8397f156c55610271eaf190",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 40550,
+        "upload_time": "2013-02-20T21:42:38",
+        "url": "https://files.pythonhosted.org/packages/31/10/fe499eeee9369d98a1dddf5d85cda7e61008e16306c7d631aa7cfd9345ce/zope.site-4.0.0a1.zip"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "a1a95669fcf40cc31d3b035f0f420320",
+        "sha256": "fa80a954082af63e056693c639867886eabcb971e07d82966119bf80e43d328f"
+      },
+      "downloads": 9536,
+      "filename": "zope.site-4.0.0.tar.gz",
+      "has_sig": false,
+      "md5_digest": "a1a95669fcf40cc31d3b035f0f420320",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 26194,
+      "upload_time": "2014-12-24T22:25:34",
+      "url": "https://files.pythonhosted.org/packages/7e/ed/ca8136eedb36f0752ac73ccb6dd9d79678f5d622d1bdb7fac04fa6afa067/zope.site-4.0.0.tar.gz"
+    }
+  ]
+}

@@ -1,0 +1,165 @@
+{
+  "info": {
+    "author": "Manuel Reithuber",
+    "author_email": "rocker@coding.zone",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 3 - Alpha",
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: Apache Software License",
+      "Programming Language :: Python :: 3",
+      "Programming Language :: Python :: 3.2",
+      "Programming Language :: Python :: 3.3",
+      "Programming Language :: Python :: 3.4",
+      "Topic :: Software Development :: Build Tools"
+    ],
+    "description": "rocker - Docker build tool\n==========================\n\nrocker aims to ease the creation and deployment of Docker images/containers.\n\nIt uses so called ``.rocker`` files, rather simple JSON files which serve as a counterpart to Dockerfiles but for containers.\n\n``rocker`` is meant to be a useful extension to Docker, not a replacement.\n\nThere are three main commands:\n\n- ``rocker build <dir>`` builds the specified image (and sets its name to the value of ``<dir>``).\n\n  But before it does so, it also parses the Dockerfile's ``FROM`` line and (if the parent image is part of the project - i.e. ``parentImage/Dockerfile`` exists) try to build that one as well.\n\n  It will only build images if things have changed though (it maintains a file called ``.dockerBuild`` to do so).\n- ``rocker create <containerName>`` creates a container using the ``.rocker`` file specified by ``<containerName>``. It's up to you whether or not you want to omit the file extension.\n\n  Before it creates the container in question, it tries to (re)create containers this one depends on (those specified in ``links``, ``volumes`` or ``volumesFrom``) and (re)build the underlying image.\n\n  The container will only be recreated if necessary (i.e. it doesn't exist yet or the underlying image was updated since the container was last created)\n- ``rocker run <containerName>`` runs the specified container (after issuing ``create``) if it wasn't started already.\n- ``rocker help`` shows a short usage message.\n\nRight now rocker will fail if you attempt to overwrite containers. This is intentional. If you want to recreate containers, make sure you stop and delete them first (``docker stop``/``docker kill`` and ``docker rm``).\n\nThere are however plans to implement either a ``--force``, a ``cleanup`` command or something like that.\n\nInstallation\n------------\n\nrocker can be installed via pypi_ simply by issuing\n\n.. code::\n\n    pip install rocker\n\nIf you want to contribute, clone the GitHub_ repository.\n\n``.rocker`` files\n-----------------\n\nThe ``examples/`` directory of the GitHub_ repository contains a few example projects you might want to take a look at.\n\nrocker files are simple JSON files. Let's start with a minimal rocker file (let's call it ``myApp.rocker``):\n\n.. code:: json\n\n    {\n        \"image\": \"acme/app\"\n    }\n\nRunning ``rocker create myApp`` rebuilds the image (if necessary - and if it's part of the project) and then creates the container (and names it ``myApp`` using the file name as reference).\n\nThe following is a complete example of all supported configuration options:\n\n.. code:: json\n\n    {\n        \"image\": \"acme/app\",\n\t\t\"caps\": [\n\t\t\t\"ALL\",\n\t\t\t\"-MKNOD\"\n\t\t]\n        \"env\": {\n            \"ADMIN_PASSWORD\": \"hackme\"\n        },\n        \"hosts\": {\n            \"dnsserver\": \"8.8.8.8\"\n        },\n        \"links\": [\n            \"postgres:db\", \"mail\"\n        ],\n        \"ports\": [\n            1234,\n            { \"int\": \"80\", \"ext\": \"8000\" },\n            ...\n        ],\n        \"volumes\": [\n            { \"tgt\": \"/data\" },\n            { \"src\": \"psql\", \"tgt\": \"/var/lib/postgresql/data/\" },\n            { \"src\": \"/home/user/app\", \"tgt\": \"/app\", \"ro\": true },\n            ...\n        ],\n        \"cmd\": [\"echo\", \"hello world\"],\n        \"entrypoint\": [\"echo\", \"foo\"],\n        \"netMode\": \"bridge\",\n        \"privileged\": false,\n        \"restart\": true,\n        \"volumesFrom\": [\"app-data\"],\n        \"raw\": {...}\n    }\n\nDescription:\n\n- ``\"image\": \"acme/app\"``\n\n  Specifies the underlying image of the container. If the image exists in the project directory\n  (i.e. ``acme/app/Dockerfile`` exists), a ``rocker build`` will be issued for the image.\n\n  It is up to you if you want to use qualified image names (in the format ``user/image``).\n  If you do, make sure you have a your directory structure set up accordingly.\n  \n  Note: Docker expects image names to follow the following format: ``[a-z0-9-_.]+``\n\n- ``\"caps\": [\"ALL\", \"-MKNOD\"]``\n\n  Adds/drops container capabilities. If you want to drop caps, prepend the string with a dash (``-``).\n\n  There's the special value ``ALL`` that will add all capabilities to the container.\n  So the above example allows the container to do pretty much anything but invoke ``mknod`` calls.\n  Keep in mind though that there are good reasons for being restrictive about capabilities\n  (processes running in a container with ``ALL`` caps can easily break out of them and therefore compromise\n  other containers as well as the host itself).\n\n  For a list of supported capabilities have a look at `docker run docs`_' or `capabilities manpage`_\n\n- ``\"env\": {...}``\n\n  Sets environment variables inside the container.\n\n  ``env`` expects a JSON string map with variable names and their values\n\n- ``\"hosts\": {\"hostname\": \"ip\", ...}``\n\n  Allows you to specify host/ip tuples to be added to the container's ``/etc/hosts`` file.\n  Docker takes control of that file so any changes you make to it directly will most likely be lost at some point.\n  To be able to add your own entries anyway you can use this setting (which is equivalent to ``docker run``'s ``--add-host`` option).\n\n- ``\"links\": [\"otherContainer\", \"thirdContainer:alias\", ...]``\n\n  Adds a link to another container (i.e. an entry in the container's ``/etc/hosts`` file (and some environment variables - for details see the Docker docs).\n\n  This will also add the linked containers to this container's dependencies (and therefore attempt to recreate them if necessary).\n- ``\"ports\": [1234, 567, ...]``\n\n  Sets up port forwarding for the specified ports.\n  You can specify each port in one of the following formats:\n\n  - ``123`` (numeric)\n\n    Tells Docker to listen at port 123 and forward requests to the container's port 123\n    (equivalent to Docker's ``-p 123:123`` flag)\n\n    Shorthand for ``{\"int\": 123, \"ext\": 123}``\n\n  - ``{'int': 123, 'ext': 1234, 'extIp': \"127.0.0.1\", \"proto\": \"tcp\"}``\n\n    Forwards the host's port 1234 to the container's port 123 (but only listen at the ``lo`` interface - and only forwards TCP connections)\n\n    The parameters ``int`` and ``ext`` are mandatory. ``proto`` default to ``tcp`` and ``ip`` to ``null`` (i.e. all interfaces)\n\n    ``proto`` can be ``tcp`` or ``udp``.\n- ``\"volumes\": [{\"src\": \"host/path/\", \"tgt\": \"/container/path\", \"ro\": true}, ...]``\n\n  Specifies a volume for the container.\n\n  - ``tgt`` is mandatory and specifies the *absolute* path of the volume inside the container.\n  - ``src`` is optional. If you specify it, Docker will mount a host directory as container volume.\n\n    If the path is relative (i.e. doesn't start with a ``/``), rocker will rewrite it to\n    ``/docker/{containerName}/{relPath}`` and create that directory if necessary.\n    It defaults to ``null``.\n\n  - ``ro`` can be specified for host based volumes (in conjunction with ``src``) and allows you\n    to mount host directories in read only mode. It defaults to ``false``.\n- ``\"volumesFrom\": [\"otherContainer\", ...]``\n\n  Mount volumes from another container (see the Docker docs about `data volume container`_).\n\n  Can be specified as simple string or as list (i.e. ``\"foo\"`` is equivalent to ``[\"foo\"]``.\n  You can't use that shorthand if you want to use more than one container's volumes).\n\n  rocker will add each of these containers to the container's dependency list\n  (and will therefore attempt to (re)create those before creating this one).\n- ``\"cmd\": [\"/path/to/command\", \"arg1\", \"arg2\", ...]``\n\n  Specify the command to run when starting the container.\n\n  Expects a list of strings, one argument per item. The first item is the command's name/path\n  (will use the container's ``$PATH`` to find commands)\n\n- ``\"entrypoint\": [\"/path/to/command\", \"arg1\", \"arg2\", ...]``\n\n  Similar to ``\"cmd\": [...]``.\n\n- ``\"netMode\": \"bridge\"``\n\n  Set the container's network mode. The string value you set here will be sent to Docker unmodified.\n\n  Supported values (at the time of writing):\n\n  - ``bridge`` (default): The container will get its own internal IP on Docker's virtual network interface (default: ``docker0``)\n  - ``host``: The container shares the host's network interfaces (and therefore can dynamically bind any unused port on the host).\n  - ``container:<name|id>``: Share another container's interface(s).\n\n- ``\"privileged\": false``\n\n  When set to true, the docker container will run in the so called *privileged* mode.\n\n  Containers running in the privileged mode may pose a serious security risk, so you should only use it if you know what you're doing (In most cases it's better to use ``\"caps\"`` instead).\n\n  Have a look at the `docker run docs`_' for details.\n\n- ``\"restart\": true``\n\n  Set the restart policy of the container.\n\n  Supported values:\n\n  - ``true``/``\"always\"`` (default): Tell docker to always restart the container if it exited/crashed as well as when the system boots\n  - ``on-failure``: Only restart the container if it exited with a nonzero exit code.\n  - ``false``: Don't restart the container\n\n- ``\"raw\": {...}``\n\n  Special configuration value to use Docker features that haven't yet been implemented in rocker.\n\n  The configuration specified inside ``raw`` will be sent to Docker without modification.\n  Read Docker's `Remote API`_ for information on what to put in here.\n\n  Keep in mind that any other values set directly (all the above) will overwrite values you specify inside ``raw``.\n\nExample projects\n----------------\n\nThe following list of example projects is (roughly) sorted by complexity, so if you're looking for a quick way to \n\nEach example contains a README.md describing the details on what's going on.\n\n- postgres_: Simple Database container project. There's one container for the database process and one as `data volume container`_. No custom images.\n- wordpress_: This project creates a MySQL and a WordPress container. Uses bind mounts for data persistence. No custom images.\n- php_: Simple PHP app, custom Docker image, no persistence.\n- *TODO: add more examples...* \n\nBackground\n----------\n\nTo be honest, I started this project after looking for something similar but somehow failing to find fig_ or `docker compose`_.\n\nWhen I found out about those two projects, I had written enough code for it to be useable.\n\nI decided to keep on going as while there are a lot of similarities, some aspects are different. My hope is that it turns out to be useful to at least some people ;)\n\n\nFAQ\n---\n\n- **My Docker daemon is running on another host (boot2docker and the like). How can I use rocker in that case?**\n\n  rocker's been designed to support the ``DOCKER_HOST`` variable. However, so far I've only tested UNIX socket connections (and disabled TCP connections by raising an exception), but it shouldn't be too hard to get the TCP version to work.\n- **Why JSON and not [insert format here]?**\n\n  JSON was chosen as common denominator. It can be parsed and/or generated by pretty much any language/toolset out there. Plus it's used by Docker's `Remote API`_\n\n  But if you really want an alternative (not a replacement!) and have good arguments, open a GitHub_ issue and make your case.\n- **Are there any alternatives**\n\n  While I wasn't aware of that when I originally started this project, there are similar projects. As far as I know fig_ was the first one but has since been replaced by `docker compose`_.\n\n\n\n.. _fig: http://www.fig.sh/\n.. _docker compose: http://docs.docker.com/compose/\n.. _github: https://github.com/mreithub/rocker\n.. _pypi: https://pypi.python.org/pypi/rocker\n.. _remote api: http://docs.docker.com/reference/api/docker_remote_api_v1.18/\n.. _data volume container: https://docs.docker.com/userguide/dockervolumes/#creating-and-mounting-a-data-volume-container\n\n.. _postgres: https://github.com/mreithub/rocker/tree/master/examples/postgres\n.. _wordpress: https://github.com/mreithub/rocker/tree/master/examples/wordpress\n.. _php: https://github.com/mreithub/rocker/tree/master/examples/phpApp\n\n.. _docker run docs: https://docs.docker.com/reference/run/#runtime-privilege-linux-capabilities-and-lxc-configuration\n.. _capabilities manpage: http://man7.org/linux/man-pages/man7/capabilities.7.html",
+    "docs_url": null,
+    "download_url": "UNKNOWN",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/mreithub/rocker",
+    "keywords": "development docker",
+    "license": "Apache",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "rocker",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/rocker/",
+    "release_url": "https://pypi.org/project/rocker/0.1.0.dev7/",
+    "requires_python": null,
+    "summary": "Docker management tool",
+    "version": "0.1.0.dev7"
+  },
+  "releases": {
+    "0.1.0.dev2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b7eabcb12639d49dde6d0b4e68d7d241",
+          "sha256": "0132abe7662382952357ebc3d8cc471f0b1e13cca25edc60efe323bd621fc943"
+        },
+        "downloads": 2243,
+        "filename": "rocker-0.1.0.dev2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b7eabcb12639d49dde6d0b4e68d7d241",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 13658,
+        "upload_time": "2015-06-17T19:08:24",
+        "url": "https://files.pythonhosted.org/packages/c2/09/545a8e2cf4814acc45200a97e6d3a37a70c3ea6d7a9f859924e1e1a18a5f/rocker-0.1.0.dev2.tar.gz"
+      }
+    ],
+    "0.1.0.dev3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4945005d819290ecfdb623b6fa0a80d1",
+          "sha256": "3afdb4d984a8aff233bea1e48bbd64c12b1cc5c316ac35910dd294ff1f2c6ef0"
+        },
+        "downloads": 786,
+        "filename": "rocker-0.1.0.dev3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4945005d819290ecfdb623b6fa0a80d1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 18856,
+        "upload_time": "2015-06-30T10:08:12",
+        "url": "https://files.pythonhosted.org/packages/e0/dd/2a6e888f5c2396e57dbeb5d97e4de72ea03fd944b333c40aeb684450389f/rocker-0.1.0.dev3.tar.gz"
+      }
+    ],
+    "0.1.0.dev4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "024049d4e719253c20535ce4786286e1",
+          "sha256": "a699f3eca21b9fb6bf7e22f56dd244d00678ae973ef059c4c49c61eb1a69cd35"
+        },
+        "downloads": 758,
+        "filename": "rocker-0.1.0.dev4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "024049d4e719253c20535ce4786286e1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 20348,
+        "upload_time": "2015-07-20T10:19:41",
+        "url": "https://files.pythonhosted.org/packages/11/df/94e8e3afa2a01aba7d551aa0b1b96b7c6f750dca26e14bbb2982d5789e25/rocker-0.1.0.dev4.tar.gz"
+      }
+    ],
+    "0.1.0.dev5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "287ec007a8b5713921c6960e52c955a9",
+          "sha256": "a934de80983b85d6318d0be40c78125992b695f1ea021eb62c8905c388aac25f"
+        },
+        "downloads": 694,
+        "filename": "rocker-0.1.0.dev5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "287ec007a8b5713921c6960e52c955a9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 22656,
+        "upload_time": "2015-08-10T21:59:33",
+        "url": "https://files.pythonhosted.org/packages/42/94/ce2cd671964cfc3e7a56d3a4176573f52473f1c6517ac8f5f11a21499c00/rocker-0.1.0.dev5.tar.gz"
+      }
+    ],
+    "0.1.0.dev6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "121d5f51327280edf2c36b7d5251bc58",
+          "sha256": "96275d4e053e37f839d6d4414517d7b1523a4378542a7de44f6c67cf29440d2c"
+        },
+        "downloads": 580,
+        "filename": "rocker-0.1.0.dev6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "121d5f51327280edf2c36b7d5251bc58",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 24919,
+        "upload_time": "2015-08-17T15:56:30",
+        "url": "https://files.pythonhosted.org/packages/9c/cc/2d0baff5af64f1549e2f02df128cf3b3106540e7183acefa68f4316deff9/rocker-0.1.0.dev6.tar.gz"
+      }
+    ],
+    "0.1.0.dev7": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8d6121e676a6b6b7ecf1f333ee152336",
+          "sha256": "4ad9cdb7558c97c218e10d8e1fecd205eb5a4d6f829a0dfdcaf5da280a39b008"
+        },
+        "downloads": 550,
+        "filename": "rocker-0.1.0.dev7.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8d6121e676a6b6b7ecf1f333ee152336",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 25194,
+        "upload_time": "2015-10-21T13:13:58",
+        "url": "https://files.pythonhosted.org/packages/c9/8d/0250c289c0e335e5975ded31d49f219e43b1fd6697690d7687346e7b627a/rocker-0.1.0.dev7.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "8d6121e676a6b6b7ecf1f333ee152336",
+        "sha256": "4ad9cdb7558c97c218e10d8e1fecd205eb5a4d6f829a0dfdcaf5da280a39b008"
+      },
+      "downloads": 550,
+      "filename": "rocker-0.1.0.dev7.tar.gz",
+      "has_sig": false,
+      "md5_digest": "8d6121e676a6b6b7ecf1f333ee152336",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 25194,
+      "upload_time": "2015-10-21T13:13:58",
+      "url": "https://files.pythonhosted.org/packages/c9/8d/0250c289c0e335e5975ded31d49f219e43b1fd6697690d7687346e7b627a/rocker-0.1.0.dev7.tar.gz"
+    }
+  ]
+}

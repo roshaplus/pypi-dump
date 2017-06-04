@@ -1,0 +1,113 @@
+{
+  "info": {
+    "author": "Oliver Cope",
+    "author_email": "oliver@redgecko.org",
+    "bugtrack_url": "",
+    "classifiers": [
+      "Development Status :: 4 - Beta",
+      "Environment :: Web Environment",
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: Apache Software License",
+      "Operating System :: OS Independent",
+      "Programming Language :: Python :: 2.7",
+      "Programming Language :: Python :: 3.3",
+      "Programming Language :: Python :: 3.4",
+      "Topic :: Internet :: WWW/HTTP :: WSGI"
+    ],
+    "description": "Knave: a library for authorization in WSGI apps\n===============================================\n\n\nKnave is similar in design and scope to repoze.what.\n\nKnave does not depend on any particular authentication package (it works well\nwith `repoze.who`_, but should work equally well with any authentication\nmechanism)\n\n\nConfiguration\n-------------\n\nTo start using knave, you need to define roles and permissions::\n\n    from knave.acl import Role, Permission, ACL\n    from knave.roles import StaticRoleProvider\n\n    class Permissions:\n\n        #: Can manage user accounts\n        USER_MANAGE = Permission('user_manage')\n\n        #: Can author articles\n        ARTICLE_CREATE = Permission('article_create')\n\n        #: Can publish articles\n        ARTICLE_PUBLISH = Permission('article_publish')\n\n    class Roles:\n\n        ADMINS = Role('admins')\n        EDITORS = Role('editors')\n\nThen you can map permissions to the roles that should be authorized for them::\n\n    role_permssions = {\n        Permissions.USER_MANAGE: {Roles.ADMINS},\n        Permissions.ARTICLE_CREATE: {Roles.ADMINS, Roles.EDITORS},\n        Permissions.ARTICLE_PUBLISH: {Roles.ADMINS, Roles.EDITORS},\n    }\n\n\nFinally, you need to tell knave which users belong to which roles. The\ndemonstration purposes we've used a static mapping of user names to roles::\n\n    role_provider = StaticRoleProvider({\n        'spike': {Roles.ADMINS},\n        'harry': {Roles.EDITORS}\n    })\n\nYou can subclass ``knave.roles.RoleProvider`` to look up role membership from\na dynamic source such as a database.\n\nWith everything defined, you can link all this together in an ACL::\n\n    acl = ACL([role_provider], role_permssions)\n\nOnce you have created an acl,\nyou can use its ``role_provider`` method to add\nmore RoleProviders using a class decorator syntax::\n\n    @acl.role_provider\n    class MyRoleProvider(RoleProvider):\n\n        def member_subset(self, roles, identity, context=None):\n            ...\n\nIf your role provider acts on a single role,\nyou can also supply this as role\nas an argument to ``ACL.role_provider``\nand use it to decorate a function returning a boolean value::\n\n    owner_role = Role('owner')\n\n    @acl.role_provider(owner_role)\n    def is_owner(identity, context):\n        return context and context.author == identity\n\n\nWSGI Middleware\n---------------\n\nYou should use ``knave.middleware.KnaveMiddleware``\nto link the ACL into your WSGI application::\n\n    from knave import KnaveMiddleware\n\n    app = KnaveMiddleware(app, acl)\n\nThis middleware makes it possible\nfor your app to access the ACL\nfrom within a WSGI request, eg::\n\n    def wsgi_app(environ, start_response):\n        ...\n\n        if ACL.of(environ).test(Permissions.USER_MANAGE):\n            ...\n\n\nThe middleware also takes care of\ncatching any ``knave.predicates.Unauthorized`` exceptions\nand returning an HTTP 401 response instead.\n\nIntegrating with an authentication system\n-----------------------------------------\n\nBy default knave looks at the WSGI environ ``REMOTE_USER`` key to retrieve the\nidentity of the current user.\n\nYou can change this behaviour\nby supplying a different ``identity_adapter``\nwhen configuring your ACL.\n\nIf you are using `repoze.who`_,\nthere is a built in adapter for this::\n\n    import knave.identity\n    acl = ACL(..., identity_adapter=knave.identity.RepozeWhoIdentityAdapter())\n\nIf you have a custom authentication layer,\nyou may need to write your own IdentityAdapter.\nHere's an example for an authentication system\nwhere the user id is saved in the session (using beaker_ sessions)::\n\n    from knave.identity import IdentityAdapter\n\n    class SessionIdentityAdapter(IdentityAdapter):\n        \"\"\"\n        Extract the user identity from the current session\n        \"\"\"\n        def __call__(self, environ):\n            return environ['beaker.session'].get('current_user')\n\n    ...\n\n    acl = ACL(..., identity_adapter=SessionIdentityAdapter())\n\nChecking permissions\n--------------------\n\nFrom your WSGI application you can call ``ACL.of(environ).test(...)``\nto test a permission::\n\n    if not ACL.of(environ).test(Permissions.USER_MANAGE):\n        start_response('401 Unauthorized', [('Content-Type', 'text/html')]\n        return ['<h1>Sorry, you're not authorized to view this page</h1>']\n\nOr you can call ``ACL.of(environ).require(...)`` to test the permission and\nraise an unauthorized exception if it isn't met:\n\n    ACL.of(environ).require(Permissions.USER_MANAGE)\n\n``knave.middleware.KnaveMiddleware`` will trap this exception and\nreturn an appropriate WSGI response.\n\nContextual roles and fancy permissions checks\n`````````````````````````````````````````````\n\nAll checks support an optional ``context`` argument. You can use this to add\nroles dynamically.\n\nFor example, suppose you have a blogging application that creates ``BlogEntry``\nobjects, which have an ``author`` attribute.\n\nYou can define a owner role and have it set dynamically so that only the\nBlogEntry author has the role::\n\n    class Permissions:\n        ARTICLE_EDIT = Permission('article_edit')\n\n    class Roles:\n        OWNER = Role('owner')\n        ADMIN = Role('admin')\n\n    role_permssions = {\n        Permissions.ARTICLE_EDIT: {Roles.ADMIN, Roles.OWNER},\n    }\n    role_provider = StaticRoleProvider({\n        'spike': {Roles.ADMIN}\n    })\n\n    class OwnerRoleProvider(RoleProvider):\n        \"A role provider to tell the ACL when the user has the owner role\"\n\n        contextual = True\n        determines = {Roles.OWNER}\n\n        def member_subset(self, roles, identity, context=None):\n\n            if context is None or Roles.OWNER not in roles:\n                return set()\n\n            if getattr(context, 'author', None) == identity:\n                return set(Roles.OWNER)\n\n            return set()\n\n    acl = ACL([StaticRoleProvider, OwnerRoleProvider], role_permssions)\n\nYour application code would then need to pass the article object to the\npermissions check::\n\n    blogentry = store.get(BlogEntry, id=request.get('id'))\n    ACL.of(environ).test(Permissions.ARTICLE_EDIT, context=blogentry)\n\nNote also the ``contextual = True`` and ``determines = {...}``\nlines in the OwnerRoleProvider class.\nThese are optimization hints,\ntelling the system not to bother querying the RoleProvider\nunless a context object is provided and one of the listed roles\nis present in the query.\nYou can safely omit these lines,\nin which case your RoleProvider will be called for every lookup.\nNote RoleProviders can be called directly,\nin which case these hints are ignored.\nYour ``member_subset`` logic should still account for cases\nwhere ``context`` is None, or where it is queried for other roles.\n\nIf you want to check for a single role,\nthe ``@role_decider`` decorator\nis a convenient shortcut.\nThe ``OwnerRoleProvider`` might have been more concisely written as::\n\n    from knave.roles import role_decider\n\n    @role_decider(Roles.OWNER, contextual=True)\n    def is_owner(identity, context=None):\n        return context and getattr(context, 'author', None) == identity\n\n\nPermissions can also implement custom checking logic, for example::\n\n    class DaytimePermission(Permission):\n        \"\"\"\n        Only allow access during daytime working hours\n        \"\"\"\n\n        def __call__(self, acl, identity, context=None):\n            from datetime import datetime\n            return (9 <= datetime.now().hour < 5)\n\n\n\nCustom unauthorized responses\n-----------------------------\n\nBy default ``KnaveMiddleware`` returns a minimal HTTP\n``401 Not Authorized`` response when encountering an Unauthorized exception.\n\nYou can change what action to take\nwhen an by supplying an ``unauthorized_response`` argument\nto ``KnaveMiddleware``. This must be a WSGI app,\nand as such can return any suitable response\n(for example, redirecting to a login page)::\n\n    def redirect_on_unauthorized(environ, start_response):\n\n        start_response('302 Found',\n                       [('Location', '/login'), ('Content-Type', 'text/html')])\n        return ['<html><body><a href=\"/login\">Login</a></body></html>']\n\n\n    app = KnaveMiddleware(app,\n                          acl,\n                          unauthorized_response=redirect_on_unauthorized)\n\nUpgrading\n=========\n\nUpgrading to v0.3\n-----------------\n\nYou will need to make the following changes in order to upgrade from previous\nversions:\n\nPredicate classes have changed their signature.\nIn v0.2 you would have written::\n\n    class MyPredicate(Predicate):\n        def __call__(self, environ, context=None):\n            ...\n\n    @make_predicate\n    def my_custom_predicate(environ, context=None):\n        ...\n\nIn v0.3 you should to change this to::\n\n    class MyPredicate(Predicate):\n        def __call__(self, acl, identity, context=None):\n            ...\n\n    @make_predicate\n    def my_custom_predicate(acl, identity, context=None):\n        ...\n\nRoleProviders also have a different signature. Change from this::\n\n    CustomRoleProvider(RoleProvider):\n        def member_subset(self, roles, identity, environ, context):\n            ...\n\nTo this::\n\n    CustomRoleProvider(RoleProvider):\n        def member_subset(self, roles, identity, context):\n            ...\n\nIf your RoleProvider or Predicate depends on information from the WSGI environ,\nthis is no longer directly supported. Your application must now explicitly pass\nany context information required to evaluate roles or predicates in the\n``context`` argument.\n\nTesting permissions now always requires an ACL object. Where in 0.2 you would\nhave written this::\n\n    some_permission.check(environ)\n    if some_other_permission.is_met(environ):\n        do_something()\n\nYou should now change this to::\n\n    from knave import ACL\n    acl = ACL.of(environ)\n\n    acl.require(some_permission)\n    if acl.test(some_other_permission):\n        do_something()\n\n\n\n.. _repoze.who: http://docs.repoze.org/who/\n.. _beaker: http://beaker.readthedocs.org/\n\n\nChangelog\n=========\n\n0.3.1\n-----\n\n- Bugfix for issue where roles were incorrectly cached, causing checks\n  for roles to fail where they should have passed\n\n0.3\n---\n\n- Optimized role membership lookups\n- Permission subclasses may now implement custom checking logic\n- Added @ACL.role_provider and @role_decider decorators\n\n0.2\n---\n\n- Initial release",
+    "docs_url": null,
+    "download_url": "UNKNOWN",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://bitbucket.org/ollyc/knave",
+    "keywords": "authorization,authorisation,authentication,security,wsgi",
+    "license": "Apache",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "knave",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/knave/",
+    "release_url": "https://pypi.org/project/knave/0.3.1/",
+    "requires_python": null,
+    "summary": "Authorization library for WSGI applications",
+    "version": "0.3.1"
+  },
+  "releases": {
+    "0": [],
+    "0.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5e597cf7b8f2b75ab05b51c441002171",
+          "sha256": "7b954529238d06a5775f9762799bc51635bb913f500354716733840a1fe4f57c"
+        },
+        "downloads": 1919,
+        "filename": "knave-0.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5e597cf7b8f2b75ab05b51c441002171",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 12667,
+        "upload_time": "2014-04-02T12:53:32",
+        "url": "https://files.pythonhosted.org/packages/d5/cd/71e08e5228f32580c44a75e2a105409f6fbe2b2ef8f10bce0d7cfd03c535/knave-0.2.tar.gz"
+      }
+    ],
+    "0.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "60d9a19ad0c5148c4dbe13e433fe8186",
+          "sha256": "e4c63c9484e4bcef531b4c31efe3746e862cba85838e46897eafee6072366fd4"
+        },
+        "downloads": 2068,
+        "filename": "knave-0.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "60d9a19ad0c5148c4dbe13e433fe8186",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 15606,
+        "upload_time": "2014-05-31T14:07:49",
+        "url": "https://files.pythonhosted.org/packages/94/cc/062c61d4ae3795f4c226b275c8f166ffcde5bb66224c6d5cda0cf200a6a5/knave-0.3.tar.gz"
+      }
+    ],
+    "0.3.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ee292679b5436c7b0069af48093c4711",
+          "sha256": "a34bceeff25b137c7b17195bd2b7e20efaa2e8ef8377c61717615d0e1467d995"
+        },
+        "downloads": 1313,
+        "filename": "knave-0.3.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ee292679b5436c7b0069af48093c4711",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16259,
+        "upload_time": "2014-12-29T16:26:44",
+        "url": "https://files.pythonhosted.org/packages/99/ee/7ccd8572cfd404a4e123424a2cb9eaa9dd6434872373dc6ea19e37008213/knave-0.3.1.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "ee292679b5436c7b0069af48093c4711",
+        "sha256": "a34bceeff25b137c7b17195bd2b7e20efaa2e8ef8377c61717615d0e1467d995"
+      },
+      "downloads": 1313,
+      "filename": "knave-0.3.1.tar.gz",
+      "has_sig": false,
+      "md5_digest": "ee292679b5436c7b0069af48093c4711",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 16259,
+      "upload_time": "2014-12-29T16:26:44",
+      "url": "https://files.pythonhosted.org/packages/99/ee/7ccd8572cfd404a4e123424a2cb9eaa9dd6434872373dc6ea19e37008213/knave-0.3.1.tar.gz"
+    }
+  ]
+}

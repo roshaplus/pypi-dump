@@ -1,0 +1,588 @@
+{
+  "info": {
+    "author": "Wu Zhen Zhou",
+    "author_email": "hyciswu@gmail.com",
+    "bugtrack_url": null,
+    "classifiers": [],
+    "description": "# TensorGraph\nTensorGraph is a framework for building any imaginable models based on TensorFlow.\n\nAs deep learning becomes more and more common and the architectures becoming more\nand more complicated, it seems that we need some easy to use framework to quickly\nbuild these models and that's why TensorGraph is born. It's a very simple and easy\nto use framework, but it allows you to build all kinds of imaginable models.\n\n-----\n### Install\n\nFirst you need to install [tensorflow](https://www.tensorflow.org/versions/r0.9/get_started/os_setup.html)\n\nTo install tensorgraph simply do via pip\n```bash\nsudo pip install tensorgraph\n```\nor for bleeding edge version do\n```bash\nsudo pip install --upgrade git+https://github.com/hycis/TensorGraph.git@master\n```\nor simply clone and add to `PYTHONPATH`.\n```bash\ngit clone https://github.com/hycis/TensorGraph.git\nexport PYTHONPATH=/path/to/TensorGraph:$PYTHONPATH\n```\nin order for the install to persist via export `PYTHONPATH`. Add `PYTHONPATH=/path/to/TensorGraph:$PYTHONPATH` to your `.bashrc` for linux or\n`.bash_profile` for mac. While this method works, you will have to ensure that\nall the dependencies in [setup.py](setup.py) are installed.\n\n-----\n### How TensorGraph Works?\nIn TensorGraph, we defined three types of nodes\n\n1. StartNode : for inputs to the graph\n2. HiddenNode : for putting sequential layers inside\n3. EndNode : for getting outputs from the model\n\nWe put all the sequential layers into a `HiddenNode`, and connect the hidden nodes\ntogether to build all kinds of architectures without worrying about how to design\nthe forward propagation. We let the graph engine sort out all the forward propagations\nfor you, so that you just focus on designing the architecture. The graph always\nstarts with `StartNode` and ends with `EndNode`. Below shows an\n[example](examples/example.py) of building a tensor graph.\n\n-----\n### Graph Example\n\n<img src=\"draw/graph.png\" height=\"250\">\n\nFirst define the `StartNode` for putting the input placeholder\n```python\ny1_dim = 50\ny2_dim = 100\nbatchsize = 32\nlearning_rate = 0.01\n\ny1 = tf.placeholder('float32', [None, y1_dim])\ny2 = tf.placeholder('float32', [None, y2_dim])\ns1 = StartNode(input_vars=[y1])\ns2 = StartNode(input_vars=[y2])\n```\nThen define the `HiddenNode` for putting the sequential layers in each `HiddenNode`\n```python\nh1 = HiddenNode(prev=[s1, s2],\n                input_merge_mode=Concat(),\n                layers=[Linear(y1_dim+y2_dim, y2_dim), RELU()])\nh2 = HiddenNode(prev=[start2],\n                layers=[Linear(y2_dim, y2_dim), RELU()])\nh3 = HiddenNode(prev=[h1, h2],\n                input_merge_mode=Sum(),\n                layers=[Linear(y2_dim, y1_dim), RELU()])\n```\nThen define the `EndNode`. `EndNode` is used to back-trace the graph to connect\nthe nodes together.\n```python\ne1 = EndNode(prev=[h3])\ne2 = EndNode(prev=[h2])\n```\nFinally build the graph by putting `StartNodes` and `EndNodes` into `Graph`\n```python\ngraph = Graph(start=[s1, s2], end=[e1, e2])\n```\nRun train forward propagation to get symbolic output from train mode. The number\nof outputs from `graph.train_fprop` is the same as the number of `EndNodes` put\ninto `Graph`\n```python\no1, o2 = graph.train_fprop()\n```\nFinally build an optimizer to optimize the objective function\n```python\no1_mse = tf.reduce_mean((y1 - o1)**2)\no2_mse = tf.reduce_mean((y2 - o2)**2)\nmse = o1_mse + o2_mse\noptimizer = tf.train.AdamOptimizer(learning_rate).minimize(mse)\n```\n-----\n### Hierachical Softmax Example\nBelow is another example for building a more powerful [hierachical softmax](examples/hierachical_softmax.py)\nwhereby the lower hierachical softmax layer can be conditioned on all the upper\nhierachical softmax layers.\n\n<img src=\"draw/hsoftmax.png\" height=\"250\">\n\n```python\n## params\nx_dim = 50\ncomponent_dim = 100\nbatchsize = 32\nlearning_rate = 0.01\n\n\nx_ph = tf.placeholder('float32', [None, x_dim])\n# the three hierachical level\ny1_ph = tf.placeholder('float32', [None, component_dim])\ny2_ph = tf.placeholder('float32', [None, component_dim])\ny3_ph = tf.placeholder('float32', [None, component_dim])\n\n# define the graph model structure\nstart = StartNode(input_vars=[x_ph])\n\nh1 = HiddenNode(prev=[start], layers=[Linear(x_dim, component_dim), Softmax()])\nh2 = HiddenNode(prev=[h1], layers=[Linear(component_dim, component_dim), Softmax()])\nh3 = HiddenNode(prev=[h2], layers=[Linear(component_dim, component_dim), Softmax()])\n\n\ne1 = EndNode(prev=[h1], input_merge_mode=Sum())\ne2 = EndNode(prev=[h1, h2], input_merge_mode=Sum())\ne3 = EndNode(prev=[h1, h2, h3], input_merge_mode=Sum())\n\ngraph = Graph(start=[start], end=[e1, e2, e3])\n\no1, o2, o3 = graph.train_fprop()\n\no1_mse = tf.reduce_mean((y1_ph - o1)**2)\no2_mse = tf.reduce_mean((y2_ph - o2)**2)\no3_mse = tf.reduce_mean((y3_ph - o3)**2)\nmse = o1_mse + o2_mse + o3_mse\noptimizer = tf.train.AdamOptimizer(learning_rate).minimize(mse)\n```\n\n-----\n### Transfer Learning Example\nBelow is an example on transfer learning with bi-modality inputs and merge at\nthe middle layer with shared representation, in fact, TensorGraph can be used\nto build any number of modalities for transfer learning.\n\n<img src=\"draw/transferlearn.png\" height=\"250\">\n\n```python\n## params\nx1_dim = 50\nx2_dim = 100\nshared_dim = 200\ny_dim = 100\nbatchsize = 32\nlearning_rate = 0.01\n\n\nx1_ph = tf.placeholder('float32', [None, x1_dim])\nx2_ph = tf.placeholder('float32', [None, x2_dim])\ny_ph = tf.placeholder('float32', [None, y_dim])\n\n# define the graph model structure\ns1 = StartNode(input_vars=[x1_ph])\ns2 = StartNode(input_vars=[x2_ph])\n\nh1 = HiddenNode(prev=[s1], layers=[Linear(x1_dim, shared_dim), RELU()])\nh2 = HiddenNode(prev=[s2], layers=[Linear(x2_dim, shared_dim), RELU()])\nh3 = HiddenNode(prev=[h1,h2], input_merge_mode=Sum(),\n                layers=[Linear(shared_dim, y_dim), Softmax()])\n\ne1 = EndNode(prev=[h3])\n\ngraph = Graph(start=[s1, s2], end=[e1])\no1, = graph.train_fprop()\n\nmse = tf.reduce_mean((y_ph - o1)**2)\noptimizer = tf.train.AdamOptimizer(learning_rate).minimize(mse)\n```",
+    "docs_url": null,
+    "download_url": "https://github.com/hycis/TensorGraph/tarball/3.2.5",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/hycis/TensorGraph",
+    "keywords": null,
+    "license": "Apache 2.0, see LICENCE",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "tensorgraph",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/tensorgraph/",
+    "release_url": "https://pypi.org/project/tensorgraph/3.2.5/",
+    "requires_python": null,
+    "summary": "A high level tensorflow library for building deep learning models",
+    "version": "3.2.5"
+  },
+  "releases": {
+    "1.4.10": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1c4dafae7f264c92c2b8c17ef63c084a",
+          "sha256": "103472cdbff7a949bd10ee69797319931671de9151aa8f9ed8133cdad4a6d991"
+        },
+        "downloads": 85,
+        "filename": "tensorgraph-1.4.10.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1c4dafae7f264c92c2b8c17ef63c084a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16605,
+        "upload_time": "2016-09-29T06:31:31",
+        "url": "https://files.pythonhosted.org/packages/fc/28/e89d04a3bb6c8e0e83f3ff461ba989d8c256c8673bd62da6ef2277a850e0/tensorgraph-1.4.10.tar.gz"
+      }
+    ],
+    "1.4.11": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "59add117d647fe9f7139ee0ec9897a94",
+          "sha256": "aaaa63c55672fb3b79491d63f2f5bb5f3c6db45b051a78acd5a4431daabcb6d9"
+        },
+        "downloads": 107,
+        "filename": "tensorgraph-1.4.11.tar.gz",
+        "has_sig": false,
+        "md5_digest": "59add117d647fe9f7139ee0ec9897a94",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16916,
+        "upload_time": "2016-10-17T16:16:42",
+        "url": "https://files.pythonhosted.org/packages/dc/22/475c7618ca7136db314ade8f1cbebe43f55c0f67e7a9040734f8a21b07fb/tensorgraph-1.4.11.tar.gz"
+      }
+    ],
+    "1.4.12": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "264e3c087a1ed02b5e415b2cd1e0191b",
+          "sha256": "5080bf2078111f50c1264aa2f0d8de4cf4d369f928c5ab10367db2a1df1d7134"
+        },
+        "downloads": 45,
+        "filename": "tensorgraph-1.4.12.tar.gz",
+        "has_sig": false,
+        "md5_digest": "264e3c087a1ed02b5e415b2cd1e0191b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 17942,
+        "upload_time": "2016-10-31T13:35:36",
+        "url": "https://files.pythonhosted.org/packages/7b/a0/7626d98bb00f66e76128a5719ddc935b30678e0bad0238c5aaa14782c265/tensorgraph-1.4.12.tar.gz"
+      }
+    ],
+    "1.4.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9128c0603c9b0db771004f3cac83545d",
+          "sha256": "facda448abf1d0a810316f6d9a5cb7fa39330a28f6726dcb5b34d802de616b29"
+        },
+        "downloads": 322,
+        "filename": "tensorgraph-1.4.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "9128c0603c9b0db771004f3cac83545d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16246,
+        "upload_time": "2016-09-01T05:52:07",
+        "url": "https://files.pythonhosted.org/packages/61/00/8d73f22c171b9108e653f1ef877e94a385dfc601dad06ca72e318ab2904f/tensorgraph-1.4.2.tar.gz"
+      }
+    ],
+    "1.4.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f2a6742aa925365edd6bce3584489491",
+          "sha256": "f110089ca03193ea25e7f24426393ed43c98205abd3a010b05aef6c511cfe1e6"
+        },
+        "downloads": 162,
+        "filename": "tensorgraph-1.4.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f2a6742aa925365edd6bce3584489491",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16246,
+        "upload_time": "2016-09-01T05:55:31",
+        "url": "https://files.pythonhosted.org/packages/e7/e2/68b43da59da5f265fe1a097e25989ad67076999f562607225d2281060430/tensorgraph-1.4.3.tar.gz"
+      }
+    ],
+    "1.4.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3d4d3a98602ce3fa61442a129ed5bf5f",
+          "sha256": "b16c1fc0585da8f748000551431c6b424cc117563dd807369939d7d1859e04d3"
+        },
+        "downloads": 161,
+        "filename": "tensorgraph-1.4.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3d4d3a98602ce3fa61442a129ed5bf5f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16245,
+        "upload_time": "2016-09-01T05:59:20",
+        "url": "https://files.pythonhosted.org/packages/c1/bf/29a1f26c1c37f315674f41c8cb0a6381c5acacc36caf0c1105e86421c805/tensorgraph-1.4.4.tar.gz"
+      }
+    ],
+    "1.4.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a34e8dff21a5a11061f85dac90c1a016",
+          "sha256": "be4f03c856b6ad3d70c09afb14015628d0ca69fb99b09b676cca0a9505135b7e"
+        },
+        "downloads": 169,
+        "filename": "tensorgraph-1.4.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a34e8dff21a5a11061f85dac90c1a016",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16249,
+        "upload_time": "2016-09-01T06:03:19",
+        "url": "https://files.pythonhosted.org/packages/c7/ef/5befdc0ae7a3a1b87509b0ff3099734fb77addb5198b17b25f42002bbf35/tensorgraph-1.4.5.tar.gz"
+      }
+    ],
+    "1.4.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d7bd6916b9bad20a3b49274d9df9c415",
+          "sha256": "dae3eb78eae67e223451e649f8b08e6aa2a0e71f36c55e70b9e96601196541ed"
+        },
+        "downloads": 85,
+        "filename": "tensorgraph-1.4.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d7bd6916b9bad20a3b49274d9df9c415",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 17144,
+        "upload_time": "2016-09-19T17:48:15",
+        "url": "https://files.pythonhosted.org/packages/c3/a7/a49225d0bb8a3370651b1890ad494afa49b91d3c271de92136568e3a62d4/tensorgraph-1.4.6.tar.gz"
+      }
+    ],
+    "1.4.7": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d9483b407f62faa89a1a4d2fe713c0b9",
+          "sha256": "bef2d6e84f18ed04094e6d048598884bbbf627eb5834d21050f7be0203b4cb63"
+        },
+        "downloads": 86,
+        "filename": "tensorgraph-1.4.7.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d9483b407f62faa89a1a4d2fe713c0b9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 17153,
+        "upload_time": "2016-09-19T17:54:05",
+        "url": "https://files.pythonhosted.org/packages/3d/f1/78fa5088d9454deb8442bf3ecc1b577b0d8b1c4ee12d981b87aaf43a6da5/tensorgraph-1.4.7.tar.gz"
+      }
+    ],
+    "1.4.8": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "59f955937c4fd6a643a4eef955e889a3",
+          "sha256": "12f2f24da19735e989da5a444d7c5bcd50ccf5473df9ef6807a370946a33b911"
+        },
+        "downloads": 86,
+        "filename": "tensorgraph-1.4.8.tar.gz",
+        "has_sig": false,
+        "md5_digest": "59f955937c4fd6a643a4eef955e889a3",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16635,
+        "upload_time": "2016-09-29T05:56:10",
+        "url": "https://files.pythonhosted.org/packages/ad/bf/f01d02159fbe8e18af676076f49346c6f5e6c8a5fae97c111d47bd35646a/tensorgraph-1.4.8.tar.gz"
+      }
+    ],
+    "1.4.9": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d33b18712b73cdb8c12d7dadb7282b03",
+          "sha256": "734b9123ab500a4de6e71cdfe0fec0d361747c2334c7496ecac206a463c973a0"
+        },
+        "downloads": 81,
+        "filename": "tensorgraph-1.4.9.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d33b18712b73cdb8c12d7dadb7282b03",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16605,
+        "upload_time": "2016-09-29T05:58:01",
+        "url": "https://files.pythonhosted.org/packages/38/36/9bbfa44ed39229bc75afcd5ca6b3a0f6aec03f46c29c8cc96afa625107d5/tensorgraph-1.4.9.tar.gz"
+      }
+    ],
+    "2.0.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "417dc344f3451d3aa473794300f0c63d",
+          "sha256": "7db39abef98c20f1925fddc6958cd8cb52c578227d64193eefb295e48c99616b"
+        },
+        "downloads": 57,
+        "filename": "tensorgraph-2.0.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "417dc344f3451d3aa473794300f0c63d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 17891,
+        "upload_time": "2016-11-08T09:21:27",
+        "url": "https://files.pythonhosted.org/packages/12/b9/07d303b488fb4392fb750add118d657155038c3a96bd857d3eb951c11d02/tensorgraph-2.0.0.tar.gz"
+      }
+    ],
+    "2.1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7a9e5f1a47adea1934e229bde199966e",
+          "sha256": "93e56770cd57d6bd4b97066c09eea74704bca148e1937bc977455cc86b145df0"
+        },
+        "downloads": 56,
+        "filename": "tensorgraph-2.1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7a9e5f1a47adea1934e229bde199966e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 18785,
+        "upload_time": "2016-12-12T16:45:53",
+        "url": "https://files.pythonhosted.org/packages/28/69/b59f6700c4898b59dea4ec40a5db542f17bc38adeef3027225b793f55e96/tensorgraph-2.1.0.tar.gz"
+      }
+    ],
+    "2.1.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "72f51a7dd152376b35d53f22bceae483",
+          "sha256": "5b62f1f857fdf08b28670f4e25b64ca72f50c4a3d4ff67649b8f6fdb6a8595d9"
+        },
+        "downloads": 86,
+        "filename": "tensorgraph-2.1.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "72f51a7dd152376b35d53f22bceae483",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 18873,
+        "upload_time": "2016-12-21T09:55:53",
+        "url": "https://files.pythonhosted.org/packages/a2/34/ca1f0e35f796deb93124bd7fe7ed101f41b3084d1c56dd28565bb6a55376/tensorgraph-2.1.1.tar.gz"
+      }
+    ],
+    "2.2.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b3e8104df6dc4fda8af357e8ba43086c",
+          "sha256": "6d4767b7e962039d2f0033bb69790a97f12655b19b10a77a0744f5cac0755208"
+        },
+        "downloads": 229,
+        "filename": "tensorgraph-2.2.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b3e8104df6dc4fda8af357e8ba43086c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 20174,
+        "upload_time": "2017-01-05T14:20:30",
+        "url": "https://files.pythonhosted.org/packages/60/79/b4d0b05916ed9e35b8eada054424140966a56b34471e8d81485cbe95fb6a/tensorgraph-2.2.1.tar.gz"
+      }
+    ],
+    "2.2.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5daa19031e80f42cf2723bfaadeb5a5c",
+          "sha256": "307f5eec9f01a3a3adc987eb3c46f4cd1ffdbe3883ec400162782948b88c3fd8"
+        },
+        "downloads": 236,
+        "filename": "tensorgraph-2.2.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5daa19031e80f42cf2723bfaadeb5a5c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 20170,
+        "upload_time": "2017-01-05T14:26:32",
+        "url": "https://files.pythonhosted.org/packages/60/5a/da76b607e9eb5b29c4a6e4f00d70e77edaed06ec6fa03cabb25a9f112dc1/tensorgraph-2.2.2.tar.gz"
+      }
+    ],
+    "2.2.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "15f3eb35583666c4f86b1d381f2cbbcd",
+          "sha256": "1ec365a46cef0fe164cffb9868d4a900e899ea8809839a6b1aa350f1b5558a1d"
+        },
+        "downloads": 17,
+        "filename": "tensorgraph-2.2.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "15f3eb35583666c4f86b1d381f2cbbcd",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 22018,
+        "upload_time": "2017-01-09T06:20:50",
+        "url": "https://files.pythonhosted.org/packages/44/b0/a9fe700a79f59bf32d3ed31ce70133fd0fca5715bf7aa44d9120138be725/tensorgraph-2.2.3.tar.gz"
+      }
+    ],
+    "2.3.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d182cc9e869e55e000d2f23dbb521ec7",
+          "sha256": "036be87a6c8536fed36ad42afc11350786a0f10e8fdac320406f2bd5d8ba97be"
+        },
+        "downloads": 16,
+        "filename": "tensorgraph-2.3.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d182cc9e869e55e000d2f23dbb521ec7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 22453,
+        "upload_time": "2017-01-16T10:46:13",
+        "url": "https://files.pythonhosted.org/packages/b0/03/932fdca6c890fcc79d97224700d1572b4c8d97e95099bb941025a9f2ff0d/tensorgraph-2.3.0.tar.gz"
+      }
+    ],
+    "2.4.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0aee481fecbb4ab846c51e73dfc7365b",
+          "sha256": "f3dc76dfc3d2ef81167b0109698fd13eafd1bd8700d503e241ba294725b57752"
+        },
+        "downloads": 16,
+        "filename": "tensorgraph-2.4.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0aee481fecbb4ab846c51e73dfc7365b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 22579,
+        "upload_time": "2017-01-20T01:48:09",
+        "url": "https://files.pythonhosted.org/packages/f5/3b/dadb47e29340578ae54a8fd7d2042f77c74bad62062d5587a7cb13c38a23/tensorgraph-2.4.0.tar.gz"
+      }
+    ],
+    "2.5.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "10821a638e7d14b6bb4f15e1c18ddaa0",
+          "sha256": "719a544c63ad7681c00217a92ac41b6101bf20275aef3679b0e052aef525c9b0"
+        },
+        "downloads": 16,
+        "filename": "tensorgraph-2.5.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "10821a638e7d14b6bb4f15e1c18ddaa0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 23037,
+        "upload_time": "2017-02-14T02:23:28",
+        "url": "https://files.pythonhosted.org/packages/9e/d4/4ae5453dd2acb02f93b5b99ade5737f308fafc2107bc9c4c1270ec518a86/tensorgraph-2.5.0.tar.gz"
+      }
+    ],
+    "2.5.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4e73429c42e442d74114f4033e5644f3",
+          "sha256": "930e4154f6113d0991862a56a472ef7257f29e16dc3c40e3a3d4e84fb4815313"
+        },
+        "downloads": 19,
+        "filename": "tensorgraph-2.5.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4e73429c42e442d74114f4033e5644f3",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 23100,
+        "upload_time": "2017-02-14T03:40:44",
+        "url": "https://files.pythonhosted.org/packages/e5/59/e3fa4e11ac6d9f8619d6e3a888e0ab9fe5d2f03cc57a8d4e4fa929f23a48/tensorgraph-2.5.1.tar.gz"
+      }
+    ],
+    "2.5.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "15794d12665e40d07e8497813bc30bcc",
+          "sha256": "1180c22e53261515f0430c0605d2744e96bf64513976550aa253ba0bed6575d5"
+        },
+        "downloads": 18,
+        "filename": "tensorgraph-2.5.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "15794d12665e40d07e8497813bc30bcc",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 23909,
+        "upload_time": "2017-02-23T04:08:12",
+        "url": "https://files.pythonhosted.org/packages/1e/99/fd45de3437d263414e2ab15c0d085561e45219dc8ee961517f5bbae14ec0/tensorgraph-2.5.3.tar.gz"
+      }
+    ],
+    "3.0.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7f1afd3d3037d03dc290a54ec9a598cb",
+          "sha256": "714299c25cf68202db663e2a3ed40814818fbc0fe78d688a70d505969911c391"
+        },
+        "downloads": 17,
+        "filename": "tensorgraph-3.0.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7f1afd3d3037d03dc290a54ec9a598cb",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 22943,
+        "upload_time": "2017-02-23T04:20:20",
+        "url": "https://files.pythonhosted.org/packages/68/e2/a705a9b2f612844e93c8727a40c7e04eba7ecf07f03d92e809b861243dc6/tensorgraph-3.0.0.tar.gz"
+      }
+    ],
+    "3.0.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c89fb01fed7b22069b88b3e051b3a9e7",
+          "sha256": "84b9e8e3f57c1531d19b95e77b9d10db38b89ac48d96e8ed0cee5975854e90cc"
+        },
+        "downloads": 19,
+        "filename": "tensorgraph-3.0.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c89fb01fed7b22069b88b3e051b3a9e7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 22959,
+        "upload_time": "2017-02-23T07:49:58",
+        "url": "https://files.pythonhosted.org/packages/cd/5e/0708990eacd4a6c6af0c27ec93eca8c31ee389be6f61189fdb39870b76a9/tensorgraph-3.0.1.tar.gz"
+      }
+    ],
+    "3.0.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3d155ae85363fcc7bfb3f3c7a2925a50",
+          "sha256": "3fb860404b921337ea2309e7c0770d03700ef7e8170ec480e966aece1db7fa1a"
+        },
+        "downloads": 20,
+        "filename": "tensorgraph-3.0.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3d155ae85363fcc7bfb3f3c7a2925a50",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 22944,
+        "upload_time": "2017-03-06T00:46:14",
+        "url": "https://files.pythonhosted.org/packages/50/e2/64e19b7d23dc8734bc4eac64ba0c327a09a748974ce6e27a5233cf88c74d/tensorgraph-3.0.2.tar.gz"
+      }
+    ],
+    "3.0.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a706d7beb8c3f6813d8f5ee69141aca1",
+          "sha256": "861bbe6a96d59b9f2355a2deb388af4684f947ee2c319e9686612c54961b9593"
+        },
+        "downloads": 120,
+        "filename": "tensorgraph-3.0.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a706d7beb8c3f6813d8f5ee69141aca1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 24084,
+        "upload_time": "2017-03-19T15:34:47",
+        "url": "https://files.pythonhosted.org/packages/59/45/561d62dabc457633f2a53daa331c49b955a1a5b25205aa5f5f9baef038b4/tensorgraph-3.0.3.tar.gz"
+      }
+    ],
+    "3.0.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "539fdd01aa8f83cdb7df9aa2cdf8750f",
+          "sha256": "b61e9f44a800e17dd905453e9790592fcb3e2839ea34bca01ec2605a0c3f09bc"
+        },
+        "downloads": 122,
+        "filename": "tensorgraph-3.0.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "539fdd01aa8f83cdb7df9aa2cdf8750f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 24093,
+        "upload_time": "2017-03-19T15:47:34",
+        "url": "https://files.pythonhosted.org/packages/1f/de/f018274dee88821d6cd3678ed9d51452daa43edc4c7917be149e58f21db7/tensorgraph-3.0.4.tar.gz"
+      }
+    ],
+    "3.0.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "77087d484d2a7ddb11116e7e43c1f6a1",
+          "sha256": "20943142c830613c6157daee9c23e00b11ef639958d61eb62733e8accf1bb91b"
+        },
+        "downloads": 113,
+        "filename": "tensorgraph-3.0.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "77087d484d2a7ddb11116e7e43c1f6a1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 24089,
+        "upload_time": "2017-03-19T16:54:20",
+        "url": "https://files.pythonhosted.org/packages/83/51/49ddad6d2f26439a470839f8dbefa7601c8f6c69cc7494726cbd740ceee3/tensorgraph-3.0.5.tar.gz"
+      }
+    ],
+    "3.1.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "aed55a9f8647f188b11a8a1da78d7ad0",
+          "sha256": "ff9975fd6033ec0d12851e901714e1d9eaefdc2d8fa236c2c043256d7065c9a8"
+        },
+        "downloads": 0,
+        "filename": "tensorgraph-3.1.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "aed55a9f8647f188b11a8a1da78d7ad0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 26405,
+        "upload_time": "2017-04-13T06:24:18",
+        "url": "https://files.pythonhosted.org/packages/20/ac/9f87b0988c42b284917e83467334d8eff483ba4d880b274f9c0b765e5e49/tensorgraph-3.1.5.tar.gz"
+      }
+    ],
+    "3.2.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "fd33169fbd96a44c227f63fc9f91015d",
+          "sha256": "78d287346d240b8a609f6d2ffa8d7b3c6b4efddae88995bfaeaa0ff106d37e2b"
+        },
+        "downloads": 0,
+        "filename": "tensorgraph-3.2.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "fd33169fbd96a44c227f63fc9f91015d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 28496,
+        "upload_time": "2017-05-03T09:13:44",
+        "url": "https://files.pythonhosted.org/packages/08/9e/25f84c55744f0c1b1b586975babc8e1db4aad957c45cdf485f50b7268588/tensorgraph-3.2.5.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "fd33169fbd96a44c227f63fc9f91015d",
+        "sha256": "78d287346d240b8a609f6d2ffa8d7b3c6b4efddae88995bfaeaa0ff106d37e2b"
+      },
+      "downloads": 0,
+      "filename": "tensorgraph-3.2.5.tar.gz",
+      "has_sig": false,
+      "md5_digest": "fd33169fbd96a44c227f63fc9f91015d",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 28496,
+      "upload_time": "2017-05-03T09:13:44",
+      "url": "https://files.pythonhosted.org/packages/08/9e/25f84c55744f0c1b1b586975babc8e1db4aad957c45cdf485f50b7268588/tensorgraph-3.2.5.tar.gz"
+    }
+  ]
+}

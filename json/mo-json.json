@@ -1,0 +1,275 @@
+{
+  "info": {
+    "author": "Kyle Lahnakoski",
+    "author_email": "kyle@lahnakoski.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 4 - Beta",
+      "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
+      "Topic :: Software Development :: Libraries",
+      "Topic :: Software Development :: Libraries :: Python Modules"
+    ],
+    "description": "More JSON Tools!\n================\n\nThis set of modules solves three problems:\n\n-  We want to iterate over massive JSON easily (``mo_json.stream``)\n-  A bi-jection between strictly typed JSON, and dynamic typed JSON.\n-  Flexible JSON parser to handle comments, and other forms\n-  JSON encoding is slow (``mo_json.encode``)\n\nModule ``mo_json.stream``\n-------------------------\n\nA module supporting the implementation of queries over very large JSON\nstrings. The overall objective is to make a large JSON document appear\nlike a hierarchical database, where arrays of any depth, can be queried\nlike tables.\n\nLimitations\n~~~~~~~~~~~\n\nThis is not a generic streaming JSON parser. This module has two main\nrestrictions:\n\n1. **Objects are not streamed** - All objects will reside in memory.\n   Large objects, with a multitude of properties, may cause problems.\n   Property names should be known at query time. If you must serialize\n   large objects; instead of ``{<name>: <value>}`` format, try a list of\n   name/value pairs instead: ``[{\"name\": <name>, \"value\": <value>}]``\n   This format is easier to query, and gentler on the various document\n   stores that you may put this data into.\n2. **Array values must be the last object property** - If you query into\n   a nested array, all sibling properties found after that array must be\n   ignored (must not be in the ``expected_vars``). If not, then those\n   arrays will not benefit from streaming, and will reside in memory.\n\nFunction ``mo_json.stream.parse()``\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nWill return an iterator over all objects found in the JSON stream.\n\n**Parameters:**\n\n-  **json** - a parameter-less function, when called returns some number\n   of bytes from the JSON stream. It can also be a string.\n-  **path** - a list of strings specifying the nested JSON paths. Use\n   ``\".\"`` if your JSON starts with ``[``, and is a list.\n-  **expected\\_vars** - a list of strings specifying the full property\n   names required (all other properties are ignored)\n\nExamples\n^^^^^^^^\n\n**Simple Iteration**\n\n::\n\n    json = {\"b\": \"done\", \"a\": [1, 2, 3]}\n    parse(json, path=\"a\", required_vars=[\"a\", \"b\"]}\n\nWe will iterate through the array found on property ``a``, and return\nboth ``a`` and ``b`` variables. It will return the following values:\n\n::\n\n    {\"b\": \"done\", \"a\": 1}\n    {\"b\": \"done\", \"a\": 2}\n    {\"b\": \"done\", \"a\": 3}\n\n**Bad - Property follows array**\n\nThe same query, but different JSON with ``b`` following ``a``:\n\n::\n\n    json = {\"a\": [1, 2, 3], \"b\": \"done\"}\n    parse(json, path=\"a\", required_vars=[\"a\", \"b\"]}\n\nSince property ``b`` follows the array we're iterating over, this will\nraise an error.\n\n**Good - No need for following properties**\n\nThe same JSON, but different query, which does not require ``b``:\n\n::\n\n    json = {\"a\": [1, 2, 3], \"b\": \"done\"}\n    parse(json, path=\"a\", required_vars=[\"a\"]}\n\nIf we do not require ``b``, then streaming will proceed just fine:\n\n::\n\n    {\"a\": 1}\n    {\"a\": 2}\n    {\"a\": 3}\n\n**Complex Objects**\n\nThis streamer was meant for very long lists of complex objects. Use\ndot-delimited naming to refer to full name of the property\n\n::\n\n    json = [{\"a\": {\"b\": 1, \"c\": 2}}, {\"a\": {\"b\": 3, \"c\": 4}}, ...\n    parse(json, path=\".\", required_vars=[\"a.c\"])\n\nThe dot (``.``) can be used to refer to the top-most array. Notice the\nstructure is maintained, but only includes the required variables.\n\n::\n\n    {\"a\": {\"c\": 2}}\n    {\"a\": {\"c\": 4}}\n    ...\n\n**Nested Arrays**\n\nNested array iteration is meant to mimic a left-join from parent to\nchild table; as such, it includes every record in the parent.\n\n::\n\n    json = [\n        {\"o\": 1: \"a\": [{\"b\": 1}: {\"b\": 2}: {\"b\": 3}: {\"b\": 4}]},\n        {\"o\": 2: \"a\": {\"b\": 5}},\n        {\"o\": 3}\n    ]\n    parse(json, path=[\".\", \"a\"], required_vars=[\"o\", \"a.b\"])\n\nThe ``path`` parameter can be a list, which is used to indicate which\nproperties are expected to have an array, and to iterate over them.\nPlease notice if no array is found, it is treated like a singleton\narray, and missing arrays still produce a result.\n\n::\n\n    {\"o\": 1, \"a\": {\"b\": 1}}\n    {\"o\": 1, \"a\": {\"b\": 2}}\n    {\"o\": 1, \"a\": {\"b\": 3}}\n    {\"o\": 1, \"a\": {\"b\": 4}}\n    {\"o\": 2, \"a\": {\"b\": 5}}\n    {\"o\": 3}\n\nModule ``typed_encoder``\n------------------------\n\nOne reason NoSQL documents stores are wonderful is the fact their schema\ncan automatically expand to accept new properties. Unfortunately, this\nflexibility is not limitless; A string assigned to property prevents an\nobject being assigned to the same, or visa-versa. This flexibility is\nunder attack by the strict-typing zealots, who, in their self righteous\ndelusion believe explicit types are better, actually make the lives of\nhumans worse; with endless schema modifications.\n\nThis module translates JSON documents into \"typed\" form; which allows\ndocument containers to store both objects and primitives in the same\nproperty value. This allows storage of values with no containing object!\n\nHow it works\n~~~~~~~~~~~~\n\nTyped JSON uses ``$value`` and ``$object`` properties to markup the\noriginal JSON:\n\n-  All JSON objects are annotated with ``\"$object\":\".\"``, which makes\n   querying object existence (especially the empty object) easier.\n-  All primitive values are replaced with an object with a single\n   ``$value`` property: So ``\"value\"`` gets mapped to\n   ``{\"$value\": \"value\"}``.\n\nOf course, the typed JSON has a different form than the original, and\nqueries into the documents store must take this into account.\nFortunately, the use of typed JSON is intended to be hidden behind a\nquery abstraction layer.\n\nFunction ``typed_encode()``\n~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nAccepts a ``dict``, ``list``, or primitive value, and generates the\ntyped JSON that can be inserted into a document store.\n\nFunction ``json2typed()``\n~~~~~~~~~~~~~~~~~~~~~~~~~\n\nConverts an existing JSON unicode string and returns the typed JSON\nunicode string for the same.\n\n--------------\n\nalso see http://tools.ietf.org/id/draft-pbryan-zyp-json-ref-03.html\n\nModule ``mo_json.encode``\n-------------------------\n\nFunction: ``mo_json.encode.json_encoder()``\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n**Update Mar2016** - *PyPy version 5.x appears to have improved C\nintegration to the point that the C library callbacks are no longer a\nsignificant overhead: This pure Python JSON encoder is no longer faster\nthan a compound C/Python solution.*\n\nFast JSON encoder used in ``convert.value2json()`` when running in Pypy.\nRun the\n`speedtest <https://github.com/klahnakoski/pyLibrary/blob/dev/tests/speedtest_json.py>`__\nto compare with default implementation and ujson",
+    "docs_url": null,
+    "download_url": "UNKNOWN",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/klahnakoski/mo-json",
+    "keywords": null,
+    "license": "MPL 2.0",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "mo-json",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/mo-json/",
+    "release_url": "https://pypi.org/project/mo-json/1.0.17131/",
+    "requires_python": null,
+    "summary": "More JSON Tools!",
+    "version": "1.0.17131"
+  },
+  "releases": {
+    "1.0.17035": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a0fa38caf149f9135d83a368b39f7def",
+          "sha256": "49f2810ee4eb54773ae01cb3282f84c9f42b2277f8768e29b62c932a80d01858"
+        },
+        "downloads": 15,
+        "filename": "mo_json-1.0.17035-py2.7.egg",
+        "has_sig": false,
+        "md5_digest": "a0fa38caf149f9135d83a368b39f7def",
+        "packagetype": "bdist_egg",
+        "python_version": "2.7",
+        "size": 43319,
+        "upload_time": "2017-02-03T20:57:52",
+        "url": "https://files.pythonhosted.org/packages/38/fe/9d587f9ae4d25f11bb5ccf4702b5837f97c4cba5da3df264b0514b14d850/mo_json-1.0.17035-py2.7.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c4f1e714e03e636a2ec6737274debbfa",
+          "sha256": "5dae2825bc6a36eabeae047dbbcee2f51f531ad209fb09728fe4a1690ce35812"
+        },
+        "downloads": 11,
+        "filename": "mo-json-1.0.17035.zip",
+        "has_sig": false,
+        "md5_digest": "c4f1e714e03e636a2ec6737274debbfa",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 27655,
+        "upload_time": "2017-02-03T20:57:57",
+        "url": "https://files.pythonhosted.org/packages/91/53/799785f7bbf5dba82700d128c614b78425e2c8f3ea3d8d271fb64c4e3b1d/mo-json-1.0.17035.zip"
+      }
+    ],
+    "1.0.17039": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f8a99f3118150d8fa1225ee939cbb720",
+          "sha256": "bc80e1d3e857eadbb82bc49040a3da2f56c4af5c495806ac3b0e0f4c7d3f2aaa"
+        },
+        "downloads": 11,
+        "filename": "mo_json-1.0.17039-py2.7.egg",
+        "has_sig": false,
+        "md5_digest": "f8a99f3118150d8fa1225ee939cbb720",
+        "packagetype": "bdist_egg",
+        "python_version": "2.7",
+        "size": 43610,
+        "upload_time": "2017-02-07T14:46:00",
+        "url": "https://files.pythonhosted.org/packages/e7/78/624f0b9b9e11f5014bd72805c972f265df9f637e7db9177b9d398e75bda1/mo_json-1.0.17039-py2.7.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c6bf2907b1a93faabee3e40c72b93430",
+          "sha256": "377932550a4abbc01849d069be4fb71cacfbc776926c5bbb566c7aa84820ec4a"
+        },
+        "downloads": 11,
+        "filename": "mo-json-1.0.17039.zip",
+        "has_sig": false,
+        "md5_digest": "c6bf2907b1a93faabee3e40c72b93430",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 28013,
+        "upload_time": "2017-02-07T14:46:05",
+        "url": "https://files.pythonhosted.org/packages/e1/24/7fdd64280c280c8ea61868785132fd1e6a76eeb0161a884aa2750baa5bf0/mo-json-1.0.17039.zip"
+      }
+    ],
+    "1.0.17041": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "eef660c1844ac70f5e346bfe446caa52",
+          "sha256": "d6abe8e21d39b32dfab768957ca38c320d8c71e2b3bf3316a99a791a3cf3a13d"
+        },
+        "downloads": 13,
+        "filename": "mo_json-1.0.17041-py2.7.egg",
+        "has_sig": false,
+        "md5_digest": "eef660c1844ac70f5e346bfe446caa52",
+        "packagetype": "bdist_egg",
+        "python_version": "2.7",
+        "size": 19971,
+        "upload_time": "2017-02-09T16:40:05",
+        "url": "https://files.pythonhosted.org/packages/e1/7a/375761bfc4af022e411b7efe8404a4ce96cccd742e10414c6faf0889ae3f/mo_json-1.0.17041-py2.7.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "05c142a974c83b146c3784729098a5ac",
+          "sha256": "69cbf85be7f03e738db00b6ce078744798bff1e826df9412b7d2050b1df2494c"
+        },
+        "downloads": 12,
+        "filename": "mo-json-1.0.17041.zip",
+        "has_sig": false,
+        "md5_digest": "05c142a974c83b146c3784729098a5ac",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 28000,
+        "upload_time": "2017-02-09T16:40:10",
+        "url": "https://files.pythonhosted.org/packages/cf/dd/06ef2ae61eb6176dcc9e46987a819c8d70248c70422f74e15877817d8acb/mo-json-1.0.17041.zip"
+      }
+    ],
+    "1.0.17049": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "64efcbc363e164b770a4e67a82d3f9ae",
+          "sha256": "8196188bff493a0081a205e2b7aa8359dfcbfeeb4e70d62519dcc1087c5aab78"
+        },
+        "downloads": 14,
+        "filename": "mo_json-1.0.17049-py2.7.egg",
+        "has_sig": false,
+        "md5_digest": "64efcbc363e164b770a4e67a82d3f9ae",
+        "packagetype": "bdist_egg",
+        "python_version": "2.7",
+        "size": 19973,
+        "upload_time": "2017-02-18T02:10:12",
+        "url": "https://files.pythonhosted.org/packages/24/9f/196bfdc87563da5284fd906b9f99b67202d4a1ab2124d17bcb9711b56eee/mo_json-1.0.17049-py2.7.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ff72e75f5978820ae1454abc082e0c38",
+          "sha256": "ece17a3c23fa4c6746b2044a8039a90eccaff259b38acc7452925496744d21b2"
+        },
+        "downloads": 11,
+        "filename": "mo-json-1.0.17049.zip",
+        "has_sig": false,
+        "md5_digest": "ff72e75f5978820ae1454abc082e0c38",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 28004,
+        "upload_time": "2017-02-18T02:10:16",
+        "url": "https://files.pythonhosted.org/packages/2a/2b/1c6f900008c41d2f325ee5e6e890928994fe9bd6f9abf676f3b091f89117/mo-json-1.0.17049.zip"
+      }
+    ],
+    "1.0.17056": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ee6a1471ea4877d048913ef3799ed996",
+          "sha256": "a9cbed1eaa5c49804f7da98cdc63b4e51d217c9145c4420b97d6d916f9d5b41a"
+        },
+        "downloads": 13,
+        "filename": "mo_json-1.0.17056-py2.7.egg",
+        "has_sig": false,
+        "md5_digest": "ee6a1471ea4877d048913ef3799ed996",
+        "packagetype": "bdist_egg",
+        "python_version": "2.7",
+        "size": 19973,
+        "upload_time": "2017-02-25T20:29:11",
+        "url": "https://files.pythonhosted.org/packages/0d/cf/5a924f6e339877a8303f4a89aa93ef95bff1373be152d1d11c737a0fa783/mo_json-1.0.17056-py2.7.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "cc60fabf0dc518a37e686206286f362c",
+          "sha256": "1e9d8c01adcce78e99ec1d970a2a800f512c1156cb808b7350436b7e63972997"
+        },
+        "downloads": 14,
+        "filename": "mo-json-1.0.17056.zip",
+        "has_sig": false,
+        "md5_digest": "cc60fabf0dc518a37e686206286f362c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 28005,
+        "upload_time": "2017-02-25T20:29:15",
+        "url": "https://files.pythonhosted.org/packages/da/57/bf1f03fe295d1ba3cc50d259fa3d16b5fbc2563f1e9038e81b2642fea63d/mo-json-1.0.17056.zip"
+      }
+    ],
+    "1.0.17085": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7af910d3a0b363b73532244b329fbb79",
+          "sha256": "a02a588bdc531433acdc6fb45c11cbd5dd09375e818318c5cf70be9a7e16656a"
+        },
+        "downloads": 14,
+        "filename": "mo_json-1.0.17085-py2.7.egg",
+        "has_sig": false,
+        "md5_digest": "7af910d3a0b363b73532244b329fbb79",
+        "packagetype": "bdist_egg",
+        "python_version": "2.7",
+        "size": 19988,
+        "upload_time": "2017-03-26T12:37:21",
+        "url": "https://files.pythonhosted.org/packages/72/37/bdca72bb09b23b2cc8cb0b69fcc5556c84cdf273b822315c3673a76c9ba9/mo_json-1.0.17085-py2.7.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8ecc1439c82fbd994a870b0c938d2e4d",
+          "sha256": "187f72ae28370f232f1e78a9dca81361512924b8927b451fd90f6634ef3683ec"
+        },
+        "downloads": 20,
+        "filename": "mo-json-1.0.17085.zip",
+        "has_sig": false,
+        "md5_digest": "8ecc1439c82fbd994a870b0c938d2e4d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 28020,
+        "upload_time": "2017-03-26T12:37:24",
+        "url": "https://files.pythonhosted.org/packages/72/05/aef88cb2e92b65a45dd2bd2130fc598ebf68806102fef2ea3fd5f91f272a/mo-json-1.0.17085.zip"
+      }
+    ],
+    "1.0.17131": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "167eff3106fc28f0a5deff6c49f01377",
+          "sha256": "da06b62171e976093ee7806803f2cd220a37d9b2f019a174e3dc0b15f0c07448"
+        },
+        "downloads": 0,
+        "filename": "mo-json-1.0.17131.zip",
+        "has_sig": false,
+        "md5_digest": "167eff3106fc28f0a5deff6c49f01377",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 35807,
+        "upload_time": "2017-05-11T13:43:09",
+        "url": "https://files.pythonhosted.org/packages/84/d5/a561cbb42b6b91d7406938702e8ac282a43beeb5b154afd7cb93b2fec770/mo-json-1.0.17131.zip"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "167eff3106fc28f0a5deff6c49f01377",
+        "sha256": "da06b62171e976093ee7806803f2cd220a37d9b2f019a174e3dc0b15f0c07448"
+      },
+      "downloads": 0,
+      "filename": "mo-json-1.0.17131.zip",
+      "has_sig": false,
+      "md5_digest": "167eff3106fc28f0a5deff6c49f01377",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 35807,
+      "upload_time": "2017-05-11T13:43:09",
+      "url": "https://files.pythonhosted.org/packages/84/d5/a561cbb42b6b91d7406938702e8ac282a43beeb5b154afd7cb93b2fec770/mo-json-1.0.17131.zip"
+    }
+  ]
+}

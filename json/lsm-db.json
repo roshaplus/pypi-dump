@@ -1,0 +1,300 @@
+{
+  "info": {
+    "author": "Charles Leifer",
+    "author_email": "UNKNOWN",
+    "bugtrack_url": null,
+    "classifiers": [],
+    "description": "![Python LSM-DB](http://media.charlesleifer.com/blog/photos/lsm.png)\n\nFast Python bindings for [SQLite4's LSM key/value store](http://www.sqlite.org/src4/doc/trunk/www/lsmusr.wiki>).\n\nFeatures:\n\n* Embedded zero-conf database.\n* Keys support in-order traversal using cursors.\n* Transactional (including nested transactions).\n* Single writer/multiple reader MVCC based transactional concurrency model.\n* On-disk database stored in a single file.\n* Data is durable in the face of application or power failure.\n* Thread-safe.\n* Python 2.x and 3.x\n\nLimitations:\n\n* Not tested on Windoze.\n\nThe source for Python lsm-db is [hosted on GitHub](https://github.com/coleifer/python-lsm-db).\n\nIf you encounter any bugs in the library, please [open an issue](https://github.com/coleifer/python-lsm-db/issues/new), including a description of the bug and any related traceback.\n\n## Quick-start\n\nBelow is a sample interactive console session designed to show some of the basic features and functionality of the ``lsm-db`` Python library. Also check out the [API documentation](https://lsm-db.readthedocs.io/en/latest/api.html).\n\nTo begin, instantiate a `LSM` object, specifying a path to a database file.\n\n```python\n\n>>> from lsm import LSM\n>>> db = LSM('test.ldb')\n```\n\n### Key/Value Features\n\n`lsm-db` is a key/value store, and has a dictionary-like API:\n\n```python\n\n>>> db['foo'] = 'bar'\n>>> print db['foo']\nbar\n\n>>> for i in range(4):\n...     db['k%s' % i] = str(i)\n...\n\n>>> 'k3' in db\nTrue\n>>> 'k4' in db\nFalse\n\n>>> del db['k3']\n>>> db['k3']\nTraceback (most recent call last):\n  File \"<stdin>\", line 1, in <module>\n  File \"lsm.pyx\", line 973, in lsm.LSM.__getitem__ (lsm.c:7142)\n  File \"lsm.pyx\", line 777, in lsm.LSM.fetch (lsm.c:5756)\n  File \"lsm.pyx\", line 778, in lsm.LSM.fetch (lsm.c:5679)\n  File \"lsm.pyx\", line 1289, in lsm.Cursor.seek (lsm.c:12122)\n  File \"lsm.pyx\", line 1311, in lsm.Cursor.seek (lsm.c:12008)\nKeyError: 'k3'\n```\n\nBy default when you attempt to look up a key, ``lsm-db`` will search for an exact match. You can also search for the closest key, if the specific key you are searching for does not exist:\n\n```python\n\n>>> from lsm import SEEK_LE, SEEK_GE\n>>> db['k1xx', SEEK_LE]  # Here we will match \"k1\".\n'1'\n>>> db['k1xx', SEEK_GE]  # Here we will match \"k2\".\n'2'\n```\n\n`LSM` supports other common dictionary methods such as:\n\n* `keys()`\n* `values()`\n* `update()`\n\n### Slices and Iteration\n\nThe database can be iterated through directly, or sliced. When you are slicing the database the start and end keys need not exist -- ``lsm-db`` will find the closest key (details can be found in the [LSM.fetch_range()](https://lsm-db.readthedocs.io/en/latest/api.html#lsm.LSM.fetch_range) documentation).\n\n```python\n\n>>> [item for item in db]\n[('foo', 'bar'), ('k0', '0'), ('k1', '1'), ('k2', '2')]\n\n>>> db['k0':'k99']\n<generator object at 0x7f2ae93072f8>\n\n>>> list(db['k0':'k99'])\n[('k0', '0'), ('k1', '1'), ('k2', '2')]\n```\n\nYou can use open-ended slices. If the lower- or upper-bound is outside the range of keys an empty list is returned.\n\n```python\n\n>>> list(db['k0':])\n[('k0', '0'), ('k1', '1'), ('k2', '2')]\n\n>>> list(db[:'k1'])\n[('foo', 'bar'), ('k0', '0'), ('k1', '1')]\n\n>>> list(db[:'aaa'])\n[]\n```\n\nTo retrieve keys in reverse order, simply use a higher key as the first parameter of your slice. If you are retrieving an open-ended slice, you can specify ``True`` as the ``step`` parameter of the slice.\n\n```python\n\n>>> list(db['k1':'aaa'])  # Since 'k1' > 'aaa', keys are retrieved in reverse:\n[('k1', '1'), ('k0', '0'), ('foo', 'bar')]\n\n>>> list(db['k1'::True])  # Open-ended slices specify True for step:\n[('k1', '1'), ('k0', '0'), ('foo', 'bar')]\n```\n\nYou can also **delete** slices of keys, but note that the delete **will not** include the keys themselves:\n\n```python\n\n>>> del db['k0':'k99']\n\n>>> list(db)  # Note that 'k0' still exists.\n[('foo', 'bar'), ('k0', '0')]\n```\n\n### Cursors\n\nWhile slicing may cover most use-cases, for finer-grained control you can use cursors for traversing records.\n\n```python\n\n>>> with db.cursor() as cursor:\n...     for key, value in cursor:\n...         print key, '=>', value\n...\nfoo => bar\nk0 => 0\n\n>>> db.update({'k1': '1', 'k2': '2', 'k3': '3'})\n\n>>> with db.cursor() as cursor:\n...     cursor.first()\n...     print cursor.key()\n...     cursor.last()\n...     print cursor.key()\n...     cursor.previous()\n...     print cursor.key()\n...\nfoo\nk3\nk2\n\n>>> with db.cursor() as cursor:\n...     cursor.seek('k0', SEEK_GE)\n...     print list(cursor.fetch_until('k99'))\n...\n[('k0', '0'), ('k1', '1'), ('k2', '2'), ('k3', '3')]\n```\n\nIt is very important to close a cursor when you are through using it. For this reason, it is recommended you use the `LSM.cursor()` context-manager, which ensures the cursor is closed properly.\n\n### Transactions\n\n``lsm-db`` supports nested transactions. The simplest way to use transactions is with the `LSM.transaction()` method, which doubles as a context-manager or decorator.\n\n```python\n\n>>> with db.transaction() as txn:\n...     db['k1'] = '1-mod'\n...     with db.transaction() as txn2:\n...         db['k2'] = '2-mod'\n...         txn2.rollback()\n...\nTrue\n>>> print db['k1'], db['k2']\n1-mod 2\n```\n\nYou can commit or roll-back transactions part-way through a wrapped block:\n\n```python\n\n>>> with db.transaction() as txn:\n...    db['k1'] = 'outer txn'\n...    txn.commit()  # The write is preserved.\n...\n...    db['k1'] = 'outer txn-2'\n...    with db.transaction() as txn2:\n...        db['k1'] = 'inner-txn'  # This is commited after the block ends.\n...    print db['k1']  # Prints \"inner-txn\".\n...    txn.rollback()  # Rolls back both the changes from txn2 and the preceding write.\n...    print db['k1']\n...\n1              <- Return value from call to commit().\ninner-txn      <- Printed after end of txn2.\nTrue           <- Return value of call to rollback().\nouter txn      <- Printed after rollback.\n```\n\nIf you like, you can also explicitly call `LSM.begin()`, `LSM.commit()`, and `LSM.rollback()`.\n\n```python\n\n>>> db.begin()\n>>> db['foo'] = 'baze'\n>>> print db['foo']\nbaze\n>>> db.rollback()\nTrue\n>>> print db['foo']\nbar\n```\n\n### Reading more\n\nFor more information, check out the project's documentation, hosted at readthedocs:\n\nhttps://lsm-db.readthedocs.io/en/latest/\n",
+    "docs_url": null,
+    "download_url": "UNKNOWN",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "UNKNOWN",
+    "keywords": null,
+    "license": "UNKNOWN",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "lsm-db",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/lsm-db/",
+    "release_url": "https://pypi.org/project/lsm-db/0.4.0/",
+    "requires_python": null,
+    "summary": "Python bindings for the SQLite4 LSM database.",
+    "version": "0.4.0"
+  },
+  "releases": {
+    "0.1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5c2947f04689711f47b2048df0408e75",
+          "sha256": "402e5dd306f40e15173ac5eed1e89fac264e701fd7735d0b70c59261b03d795e"
+        },
+        "downloads": 1299,
+        "filename": "lsm-db-0.1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5c2947f04689711f47b2048df0408e75",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1082773,
+        "upload_time": "2015-08-03T06:58:17",
+        "url": "https://files.pythonhosted.org/packages/0b/f6/0d0c10c342844577363454e48f92bf3e6c1da33cba62b51f45ea3a3313d9/lsm-db-0.1.0.tar.gz"
+      }
+    ],
+    "0.1.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "72e94686fd1cfaf91386dc37c46b6d8a",
+          "sha256": "b4e7753e73d4236b355785ea6edb4c7503d8be5bc7ffc777e2dfc273a7381e76"
+        },
+        "downloads": 774,
+        "filename": "lsm-db-0.1.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "72e94686fd1cfaf91386dc37c46b6d8a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1346296,
+        "upload_time": "2015-08-13T06:07:06",
+        "url": "https://files.pythonhosted.org/packages/a3/2f/e5e1d6a21b3bbb069b644c2d735f58fa36e224c16dfcdbe8130140593754/lsm-db-0.1.1.tar.gz"
+      }
+    ],
+    "0.1.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f21ac288609f927fe49470608097f68c",
+          "sha256": "28231d1ad92f05c5eb589785df0973b799379c23353bbfb8be7f206c687c3ae9"
+        },
+        "downloads": 766,
+        "filename": "lsm-db-0.1.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f21ac288609f927fe49470608097f68c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1094986,
+        "upload_time": "2015-08-13T12:24:25",
+        "url": "https://files.pythonhosted.org/packages/b8/0c/251e7af6afde3745e1efe8d0430f652dffacc160ecf86dfa492329273de2/lsm-db-0.1.2.tar.gz"
+      }
+    ],
+    "0.1.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "59216b8d2345425432a8b51d0e7d92c5",
+          "sha256": "4de8b526e85f940b69248c68fc652e3401e0c47d0afc593e0e2251bbbb01190c"
+        },
+        "downloads": 782,
+        "filename": "lsm-db-0.1.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "59216b8d2345425432a8b51d0e7d92c5",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1350901,
+        "upload_time": "2015-08-14T05:20:24",
+        "url": "https://files.pythonhosted.org/packages/ef/26/e8f6db01b33be81ba050d848347453ea159003553869c79c13365aa2dc30/lsm-db-0.1.3.tar.gz"
+      }
+    ],
+    "0.1.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "077188d6581afb0b5d2a31eff7b2ab76",
+          "sha256": "ae580fc2cfad1841657a9d5e8604534c97def82883d0463b2954cb7c295ebfe7"
+        },
+        "downloads": 820,
+        "filename": "lsm-db-0.1.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "077188d6581afb0b5d2a31eff7b2ab76",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1350800,
+        "upload_time": "2015-08-15T06:16:00",
+        "url": "https://files.pythonhosted.org/packages/d2/5b/03260bf236787de3cda40ef791817329ae263d33d7c080e1d0b90cf8de74/lsm-db-0.1.4.tar.gz"
+      }
+    ],
+    "0.1.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1ce3bac4dc7a8819a08b39cdf84a8a46",
+          "sha256": "2e8b816dba89dadc4ca649b1b2fc5d4fd65510408e4ea35bc22544c9c200abb0"
+        },
+        "downloads": 356,
+        "filename": "lsm-db-0.1.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1ce3bac4dc7a8819a08b39cdf84a8a46",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1361135,
+        "upload_time": "2015-12-10T12:38:56",
+        "url": "https://files.pythonhosted.org/packages/10/a3/7af5316db9cd03c1b5d5806534d11f3a6b0f53909ec323ff90349f754a36/lsm-db-0.1.5.tar.gz"
+      }
+    ],
+    "0.2.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6913dae01496b81091164965f69a08ab",
+          "sha256": "2188ae2eac2dd1652b52a56f89dced99e1d47a79cf1e58757d3bc543f851950d"
+        },
+        "downloads": 442,
+        "filename": "lsm-db-0.2.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6913dae01496b81091164965f69a08ab",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1358921,
+        "upload_time": "2015-12-24T11:57:52",
+        "url": "https://files.pythonhosted.org/packages/9e/27/a2f569f4fecacbeb79eec30ea960d1c5cbfd06b3b2c6172dd6ac933bb266/lsm-db-0.2.0.tar.gz"
+      }
+    ],
+    "0.2.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3afc2c362284696f7715aacace89a079",
+          "sha256": "13141e5454c65a73c06f5b19aecc691e6c3f8122f1253c3a4f8b3990e79d0b0c"
+        },
+        "downloads": 519,
+        "filename": "lsm-db-0.2.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3afc2c362284696f7715aacace89a079",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 541254,
+        "upload_time": "2015-12-24T13:09:36",
+        "url": "https://files.pythonhosted.org/packages/a5/2a/b5c89f31b28ca204da47f1353ab5798288063d80f16c19218798bae1322a/lsm-db-0.2.1.tar.gz"
+      }
+    ],
+    "0.2.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e152f3493cfa2270ca542de99189f234",
+          "sha256": "76c790ddb3b8d1f67ba95ba20396092ffbc39677b299dc3be0d2d54c40be1b82"
+        },
+        "downloads": 317,
+        "filename": "lsm-db-0.2.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e152f3493cfa2270ca542de99189f234",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 543539,
+        "upload_time": "2016-02-01T00:55:56",
+        "url": "https://files.pythonhosted.org/packages/c6/33/f8a113085400eff04f00f1e84245adad91956e778eb3d38203221a0150e8/lsm-db-0.2.2.tar.gz"
+      }
+    ],
+    "0.2.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c5aedec6121a8c795f4e24ed3981428c",
+          "sha256": "cf4957c704dbe9901308285553f6ccf743dbb9ca0fe76380f34ed847c2895628"
+        },
+        "downloads": 274,
+        "filename": "lsm-db-0.2.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c5aedec6121a8c795f4e24ed3981428c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 543984,
+        "upload_time": "2016-02-02T22:06:47",
+        "url": "https://files.pythonhosted.org/packages/93/60/967c653c0dd675642810843bddb562e2c05005cc04f2c990091462c29c79/lsm-db-0.2.3.tar.gz"
+      }
+    ],
+    "0.3.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0233c9d7d3ca6b825b4da36dff2b2a03",
+          "sha256": "9ffb6a4591c7d986b985a0dc67c425bfb4284efe6c54dd14d58033668f1621ab"
+        },
+        "downloads": 181,
+        "filename": "lsm-db-0.3.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0233c9d7d3ca6b825b4da36dff2b2a03",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 548441,
+        "upload_time": "2016-02-04T09:23:56",
+        "url": "https://files.pythonhosted.org/packages/d5/c6/e648c014ff269d8fc3823c95b46626547fae3a8d6f488b9c665db36bf7c8/lsm-db-0.3.0.tar.gz"
+      }
+    ],
+    "0.3.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "64695b65db2badaae2f97056211b9065",
+          "sha256": "baf3cad5b70cf88af33b880ef431ae4e8720251dfcf2aab262f6c30d094bd23b"
+        },
+        "downloads": 196,
+        "filename": "lsm-db-0.3.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "64695b65db2badaae2f97056211b9065",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 547838,
+        "upload_time": "2016-02-04T17:03:27",
+        "url": "https://files.pythonhosted.org/packages/ab/5f/afe4b4d40947cee6617e27f39aa8f80ac0be83775557d5bf1c68cbf9e4a2/lsm-db-0.3.1.tar.gz"
+      }
+    ],
+    "0.3.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "60ce3050bd29b49db63c1c34f1ec0ffa",
+          "sha256": "2b1688e9213e47216fe9ab98a8ca94584b19d237fb2b4af0840676cbbf99452c"
+        },
+        "downloads": 574,
+        "filename": "lsm-db-0.3.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "60ce3050bd29b49db63c1c34f1ec0ffa",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 547830,
+        "upload_time": "2016-02-05T03:41:11",
+        "url": "https://files.pythonhosted.org/packages/37/c4/d7a0417ad3088866b816c718af1ad5c01bbbe129e0e50ad703bcbbc750d8/lsm-db-0.3.2.tar.gz"
+      }
+    ],
+    "0.4.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d8cab06c29d8479cbd80fd63441893ab",
+          "sha256": "0a15193c0e780a678d1caa5f2dbe81df594479df2a04bb518a7fa663a95d09e2"
+        },
+        "downloads": 260,
+        "filename": "lsm-db-0.4.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d8cab06c29d8479cbd80fd63441893ab",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 291131,
+        "upload_time": "2016-10-25T17:14:14",
+        "url": "https://files.pythonhosted.org/packages/13/5e/fb7f026aaac09537a3cd27084c79ba1a37054781c83c3cf042919ff3a6a9/lsm-db-0.4.0.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "d8cab06c29d8479cbd80fd63441893ab",
+        "sha256": "0a15193c0e780a678d1caa5f2dbe81df594479df2a04bb518a7fa663a95d09e2"
+      },
+      "downloads": 260,
+      "filename": "lsm-db-0.4.0.tar.gz",
+      "has_sig": false,
+      "md5_digest": "d8cab06c29d8479cbd80fd63441893ab",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 291131,
+      "upload_time": "2016-10-25T17:14:14",
+      "url": "https://files.pythonhosted.org/packages/13/5e/fb7f026aaac09537a3cd27084c79ba1a37054781c83c3cf042919ff3a6a9/lsm-db-0.4.0.tar.gz"
+    }
+  ]
+}

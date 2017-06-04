@@ -1,0 +1,120 @@
+{
+  "info": {
+    "author": "Dmytro Kostiuchenko",
+    "author_email": "edio@archlinux.us",
+    "bugtrack_url": null,
+    "classifiers": [],
+    "description": "# randrctl\n\nScreen profiles manager for X.\n\nIt allows to store current screen setup in a declarative configuration file (a profile) and apply stored settings later\nwith a simple command.\n\nTool may be useful to people who work on their laptop connecting external displays in many different locations.\n\nUsage is very simple:\n\n0. Setup your screen to suit your needs (randrctl does not handle that)\n\n1. Dump settings with randrctl to a named profile\n\n  ```randrctl dump -e home```\n\n2. Re-apply those settings, whenever you need them\n\n  ```randrctl switch-to home```\n\n3. ... or let randrctl to inspect currently connected displays and choose profile that fits them best\n\n  ```randrctl auto```\n\n  Auto-switching will also happen automatically if provided udev rules are installed to the system.\n  \n4. For more info on usage refer to help\n\n  ```randrctl --help```\n\n\n## Auto-switching<a name=\"auto\"></a>\n\n```randrctl``` can associate profile with currently connected displays and switch to this profile automatically whenever\nsame (or similar) set of displays is connected.\n\nProfile is matched to the set of connected displays by evaluating one or more of the following rules for every connected\ndisplay:\n\n* list of supported modes of connected display includes the current mode\n\n  ```randrctl dump -m profile1```\n\n  You can use this to create profile that is activated whenever connected display supports the mode that is currently\n  set for that output.\n\n* preferred mode of connected display is the current mode\n\n  ```randrctl dump -p profile2```\n\n  Display can support wide range of modes from 640x480 to 1920x1200, but prefer only one of those. When dumped this way,\n  profile is considered a match if connected display prefers the mode, that is currently set for it.\n\n* unique identifier of connected display is exactly tha same\n\n  ```randrctl dump -e profile3```\n\n  Unique identifier (edid) of every display is dumped with the profile, so it matches, only if exactly same displays\n  are connected.\n\nNaturally, the more specific the rule, the bigger weight it has, so in case if you invoked those 3 dump commands above\nwith the same displays connected, `profile3` will be chosen as the best (i.e. the most specific) match.\n\nIt is possible to specify any combination of `-m -p -e` keys to dump command. In this case randrctl will try to match\nall the rules combining them with logical AND (for example, display must support and at the same time prefer the mode).\nAlthough such combination of rules might seem redundant (because if the more specific rule matches, the more generic\nwill do too), it might have sense if rule is edited manually.\n\nIf `randrctl dump` is invoked without additional options, it dumps only screen setup, so profile won't be considered\nduring auto-switching.\n\n\n## Prior/Post hooks\n\nrandrctl can execute custom commands (hooks) before and after switching to profile or if switching fails. Hooks are\nspecified in config file `$XDG_CONFIG_HOME/randrctl/config.ini`\n\n```\n[hooks]\nprior_switch = /usr/bin/killall -SIGSTOP i3\npost_switch = /usr/bin/killall -SIGCONT i3 && /usr/bin/notify-send -u low \"randrctl\" \"switched to $randr_profile\"\npost_fail = /usr/bin/killall -SIGCONT i3 && /usr/bin/notify-send -u critical \"randrctl error\" \"$randr_error\"\n```\n\nThe typical use-case of this is displaying desktop notification with libnotify.\n\nI also use it to pause i3 window manager as it was known to crash sometimes during the switch.\n\n\n## Profile format\n\nProfile is a simple text file in JSON format. It can be edited manually, however it is rarely required in practice\nbecause `randrctl dump` handles most common cases.\n\nAs in usual JSON all values are case-sensitive, white-spaces don't matter.\n\n```\n{\n  \"match\": {\n    \"LVDS1\": {},\n    \"DP1\": {\n        \"prefers\": \"1920x1080\"\n    }\n  },\n  \"outputs\": {\n    \"LVDS1\": {\n      \"mode\": \"1366x768\",\n      \"panning\": \"1366x1080\n    },\n    \"DP1\": {\n      \"mode\": \"1920x1080\",\n      \"pos\": \"1366x0\",\n      \"rotate\": \"inverted\"\n    }\n  },\n  \"primary\": \"DP1\"\n}\n```\n\nProfile is required to contain 2 sections (`outputs` and `primary`). That is what dumped when `randrctl dump` is invoked\nwithout additional options.\n\nThe `match` section is optional and is dumped only when one of the auto-switching rules is specified.\n\n\n### Outputs\n\nEach property of `outputs` section references output as seen in xrandr (i.e. *DP1*, *HDMI2*, etc.). Meaning of the\nproperties is the same as in the xrandr utility.\n\n`mode` is mandatory, the others may be omitted.\n\n```\n\"DP1-2\": {\n    \"mode\": \"1920x1200\",\n    \"panning\": \"2496x1560+1920+0\",\n    \"pos\": \"1920x0\",\n    \"rate\": 60,\n    \"rotate\": \"normal\",\n    \"scale\": \"1.3x1.3\"\n},\n```\n\n\n### Primary\n\nName of the primary output as seen in xrandr.\n\n```\n\"primary\": \"eDP1\"\n```\n\n### Match\n\nSet of rules for auto-switching.\n\nThe minimum rule is\n\n```\n\"HDMI1\": {}\n```\n\nwhich means, that something must be connected to that output.\n\nRule corresponding to `randrctl dump -m` would be\n\n```\n\"HDMI1\": {\n    \"supports\": \"1920x1080\"\n}\n```\n\n`randrctl dump -p` is\n\n```\n\"HDMI1\": {\n    \"prefers\": \"1920x1080\"\n}\n```\n\nand `randrctl dump -e` is\n\n```\n\"HDMI1\": {\n    \"edid\": \"efdbca373951c898c5775e1c9d26c77f\"\n}\n```\n\n`edid` is md5 hash of actual display's `edid`. To obtain that value, use `randrctl show`.\n\nAs was mentioned, `prefers`, `supports` and `edid` can be combined in the same rule, so it is possible to manually\ncreate a more sophisticated rule\n\n```\n{\n  \"match\": {\n    \"LVDS1\": {},\n    \"HDMI1\": {\n      \"prefers\": \"1600x1200\",\n      \"supports\": \"800x600\"\n    }\n  },\n  \"outputs\": {\n    \"LVDS1\": {\n      ...\n    },\n    \"HDMI1\": {\n      ...\n    }\n  }\n}\n```\n\n\n## Installation\n\n###Archlinux\n\nThere is AUR package https://aur.archlinux.org/packages/randrctl-git/\n\n\n###PyPi\n\n```\n# pip install randrctl\n# randrctl-setup\n```\n\n\n###Manual from sources\n\n```\n$ git clone https://github.com/edio/randrctl.git\n$ cd randrctl\n$ cp -r etc/randrctl ~/.config\n# python setup.py install\n# randrct-setup\n```\n\n\n## License\nGPLv3",
+    "docs_url": null,
+    "download_url": "UNKNOWN",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "http://github.com/edio/randrctl",
+    "keywords": null,
+    "license": "GPLv3",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "randrctl",
+    "platform": "linux",
+    "project_url": "https://pypi.org/project/randrctl/",
+    "release_url": "https://pypi.org/project/randrctl/1.2/",
+    "requires_python": null,
+    "summary": "Profile based screen manager for X",
+    "version": "1.2"
+  },
+  "releases": {
+    "1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "cdbadb6a3301aab03eb2cd08be1bc799",
+          "sha256": "d3e0673f96953e5834695e4e2224236ec4c7282b7bedb7541d1c0a8dcdb4b996"
+        },
+        "downloads": 373,
+        "filename": "randrctl-1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "cdbadb6a3301aab03eb2cd08be1bc799",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 31137,
+        "upload_time": "2016-03-15T19:37:09",
+        "url": "https://files.pythonhosted.org/packages/f1/e7/e4d152d1b2cf799c712829bd175851743a5df829f06aab6c5658eb05453a/randrctl-1.0.tar.gz"
+      }
+    ],
+    "1.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "dfd17a97c1733f2e7cd9aba9566f6c32",
+          "sha256": "5e060937015cb7515a040f8f1daefc281d403f2604132dcf6fffe0c3d0ccff99"
+        },
+        "downloads": 368,
+        "filename": "randrctl-1.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "dfd17a97c1733f2e7cd9aba9566f6c32",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 32125,
+        "upload_time": "2016-08-24T02:35:31",
+        "url": "https://files.pythonhosted.org/packages/3b/f9/7892b23570aee33cc9710af3b05ee3e1ba959ab89d1965b6d79524de4cb1/randrctl-1.1.tar.gz"
+      }
+    ],
+    "1.1.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "76a273aa7d6728e568b09b16f56dc5c1",
+          "sha256": "7a193c4247b01280ebaa824620aaa2cac44a632832297fb968cf2f8300e02108"
+        },
+        "downloads": 448,
+        "filename": "randrctl-1.1.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "76a273aa7d6728e568b09b16f56dc5c1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 32175,
+        "upload_time": "2016-08-29T20:23:23",
+        "url": "https://files.pythonhosted.org/packages/e9/f1/2f3e4b6d2c7eba8eece14173d34057f522a43042e2301d00c8863c9afd1b/randrctl-1.1.1.tar.gz"
+      }
+    ],
+    "1.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "86741220ac79db363a77e9580a3ae794",
+          "sha256": "a55dabde7c4500c3f6f188e250bf0de60d5d4e4a751bfcfe8990cfe9e61d6581"
+        },
+        "downloads": 317,
+        "filename": "randrctl-1.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "86741220ac79db363a77e9580a3ae794",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 32116,
+        "upload_time": "2016-09-10T07:50:20",
+        "url": "https://files.pythonhosted.org/packages/8a/50/a179f15544889d1bbb44ba4a22a013257404bf5683a2deb3808008beeb9a/randrctl-1.2.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "86741220ac79db363a77e9580a3ae794",
+        "sha256": "a55dabde7c4500c3f6f188e250bf0de60d5d4e4a751bfcfe8990cfe9e61d6581"
+      },
+      "downloads": 317,
+      "filename": "randrctl-1.2.tar.gz",
+      "has_sig": false,
+      "md5_digest": "86741220ac79db363a77e9580a3ae794",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 32116,
+      "upload_time": "2016-09-10T07:50:20",
+      "url": "https://files.pythonhosted.org/packages/8a/50/a179f15544889d1bbb44ba4a22a013257404bf5683a2deb3808008beeb9a/randrctl-1.2.tar.gz"
+    }
+  ]
+}

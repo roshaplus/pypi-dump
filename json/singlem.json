@@ -1,0 +1,73 @@
+{
+  "info": {
+    "author": "Ben Woodcroft",
+    "author_email": "UNKNOWN",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 3 - Alpha",
+      "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+      "Programming Language :: Python :: 2",
+      "Programming Language :: Python :: 2.7",
+      "Topic :: Scientific/Engineering",
+      "Topic :: Scientific/Engineering :: Bio-Informatics"
+    ],
+    "description": "Welcome to SingleM.\n\nSingleM is a tool to find the abundances of discrete operational taxonomic units (OTUs) directly from shotgun metagenome data, without heavy reliance of reference sequence databases. It is able to differentiate closely related species even if those species are from lineages new to science.\n\nWhere [GraftM](https://github.com/geronimp/graftM) can give a taxonomic overview of your community e.g. proportion of a community from a particular taxonomic family, SingleM gives you the ability to answer related but distinct questions such as:\n\n* How many different kinds of TM6 do I have?\n* What is the Chao 1 diversity of my sample?\n* Are the Acidobacteria in sample 1 very closely related to the Acidobacteria in sample 2?\n* Do I have population genomes for the main community members?\n* How diverse are the Pelagibacteria relative to the Flavobacteria?\n* Has my genome been observed in any samples submitted to the [SRA](http://www.ncbi.nlm.nih.gov/sra)?\n\n##Generating an OTU table\nAn overview of your community can be obtained like so. Please use **raw** metagenome reads, not QC'd reads. QC'ing reads often makes them too short for SingleM to use.\n```\nsinglem pipe --sequences my_sequences.fastq.gz --otu_table otu_table.csv --threads 24\n```\nThe output table consists of columns:\n```\ngene    sample  sequence        num_hits        coverage        taxonomy\n4.21.ribosomal_protein_S19_rpsS my_sequences  TGGTCGCGCCGTTCGACGGTCACTCCGGACTTCATCGGCCTACAGTTCGCCGTGCACATC    1       1.64    Root; d__Bacteria; p__Proteobacteria; c__Deltaproteobacteria; o__Desulfuromonadales\n4.21.ribosomal_protein_S19_rpsS my_sequences  TGGTCGCGGCGCTCAACCATTCTGCCCGAGTTCGTCGGCCACACCGTGGCCGTTCACAAC    1       1.64    Root; d__Bacteria; p__Acidobacteria; c__Solibacteres; o__Solibacterales; f__Solibacteraceae; g__Candidatus_Solibacter; s__Candidatus_Solibacter_usitatus\n```\n1. marker name\n2. sample name\n3. sequence of the OTU\n4. number of reads detected from that OTU\n5. estimated coverage of a genome from this OTU\n6. \"median\" taxonomic classification of each of the reads in the OTU according to [pplacer](http://matsen.fhcrc.org/pplacer/)\n\nCurrently SingleM concentrates on 15 single copy marker genes to provide fine-grained differentiation of species that is independent of the copy-number variation issues that hamper 16S analyses. SingleM is reasonably fast and is quite scalable, although there is much room for improvement. On average, each of the 15 genes better differentiates closely related lineages than a typical 16S amplicon-based study.\n\n##Further processing of OTU tables\n###Summarising OTU tables\nOnce an OTU table has been generated with the `pipe` command, it can be further processed in various ways using `summarise`:\n\nCreate a [Krona](https://sourceforge.net/p/krona/) plot of the community. The following command generates `my_krona*.html` files which can be viewed in a web browser:\n```\nsinglem summarise --input_otu_table otu_table.csv --krona my_krona\n```\n\nCluster sequences, collapsing them into OTUs with less resolution, but with more robustness against sequencing error:\n```\nsinglem summarise --input_otu_table otu_table.csv --cluster --clustered_output_otu_table clustered.otu_table.csv\n```\n\nRarefy a set of OTU tables so that each sample contains the same number of OTU sequences:\n```\nsinglem summarise --input_otu_tables otu_table.csv other_samples.otu_table.csv --rarefied_output_otu_table rarefied.otu_table.csv --number_to_choose 100\n```\n\n###Calculating beta diversity between samples\nAs SingleM generates OTUs that are independent of taxonomy, they can be used as input to beta diversity methods known to be appropriate for the analysis of 16S amplicon studies, of which there are many. We recommend [express beta diversity](https://github.com/dparks1134/ExpressBetaDiversity) (EBD) as it implements many different metrics with a unified interface. For instance to calculate Bray-Curtis beta diversity, first convert your OTU table to unifrac format using `singlem summarise`:\n```\nsinglem summarise --input_otu_table otu_table.csv --unifrac otu_table.unifrac\n```\nThe above commands generates 15 different unifrac format files, one for each marker gene used in SingleM. At this point, you need to choose one table to proceed with. Hopefully, the choice matters little, but it might pay to use multiple tables and ensure that the results are consistent.\n\nTo calculate beta diversity, use the EBD script `convertToEBD.py` to convert the unifrac format into ebd format, and calculate the diversity metric:\n```\nconvertToEBD.py otu_table.unifrac.4.12.ribosomal_protein_L11_rplK.unifrac otu_table.ebd\nExpressBetaDiversity -s otu_table.ebd -c Bray-Curtis\n```\nPhylogenetic tree-based methods of calculating beta diversity can also be calculated, but `pipe` must be used to generate a new OTU table using the `diamond_example` taxonomy assignment method so that each OTU is assigned to a single leaf in the tree:\n```\nsinglem pipe --sequences my_sequences.fastq.gz --otu_table otu_table.diamond_example.csv --threads 24 --assignment_method diamond_example\nsinglem summarise --otu_tables otu_table.diamond_example.csv --unifrac otu_table.diamond_example.csv\nconvertToEBD.py otu_table.diamond_example.unifrac otu_table.diamond_example.ebd\nExpressBetaDiversity -s otu_table.diamond_example.ebd -c Bray-Curtis -t `singlem get_tree --marker_name 4.21.ribosomal_protein_S19_rpsS`\n```\n\n\n###Creating and querying SingleM databases\nIt can be useful in some situations to search for sequences in OTU tables. For instance, you may ask \"is the most abundant OTU or anything similar in samples B, C or D?\" To answer this question make a SingleM database from sample B, C & D's OTU tables:\n```\nsinglem makedb --otu_tables sample_B.csv sample_C.csv sample_D.csv --db_path sample_BCD.sdb\n```\n`.sdb` is the conventional file extension for SingleM databases. Then to query this database\n```\nsinglem query --query_sequence TGGTCGCGGCGCTCAACCATTCTGCCCGAGTTCGTCGGCCACACCGTGGCCGTTCACAAC --db sample_BCD.sdb\n```\n\n\n\n###Installation\nSingleM is not currently available on pip, though we anticipate this in future. To install, clone from the GitHub repository and run from the checked out respository:\n```\ngit clone https://github.com/wwood/singlem\n./singlem/bin/singlem -h\n```\n\nSingleM also has the following dependencies:\n* [GraftM](https://github.com/geronimp/graftM), which in itself has several dependencies :( and worse, SingleM currently requires changes in GraftM introduced after 0.9.5. This will be fixed soon.\n* [BLAST+](http://blast.ncbi.nlm.nih.gov/Blast.cgi)\n* [VSEARCH](https://github.com/torognes/vsearch)\n\n##License\nSingleM is written by [Ben Woodcroft](http://ecogenomic.org/personnel/dr-ben-woodcroft) (@wwood) at the Australian Centre for Ecogenomics (UQ) and is licensed under [GPL3 or later](https://gnu.org/licenses/gpl.html).",
+    "docs_url": null,
+    "download_url": null,
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/wwood/SingleM",
+    "keywords": "metagenomics bioinformatics",
+    "license": "GPL3+",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "singlem",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/singlem/",
+    "release_url": "https://pypi.org/project/singlem/0.7.1/",
+    "requires_python": null,
+    "summary": "Find de-novo operational taxonomic units (OTUs) from metagenome data",
+    "version": "0.7.1"
+  },
+  "releases": {
+    "0.7.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8806f295350304210d7300807d42d16d",
+          "sha256": "6e129ad769d0ab411221ecd7be4ab7cb11b15c999d8ab11a59f4f93d0a9efb32"
+        },
+        "downloads": 11,
+        "filename": "singlem-0.7.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8806f295350304210d7300807d42d16d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 39415229,
+        "upload_time": "2017-02-11T06:32:05",
+        "url": "https://files.pythonhosted.org/packages/35/55/72780c79146b2ccd465016b28eccbe6c326493f5a8db3c489eda3382fbb1/singlem-0.7.1.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "8806f295350304210d7300807d42d16d",
+        "sha256": "6e129ad769d0ab411221ecd7be4ab7cb11b15c999d8ab11a59f4f93d0a9efb32"
+      },
+      "downloads": 11,
+      "filename": "singlem-0.7.1.tar.gz",
+      "has_sig": false,
+      "md5_digest": "8806f295350304210d7300807d42d16d",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 39415229,
+      "upload_time": "2017-02-11T06:32:05",
+      "url": "https://files.pythonhosted.org/packages/35/55/72780c79146b2ccd465016b28eccbe6c326493f5a8db3c489eda3382fbb1/singlem-0.7.1.tar.gz"
+    }
+  ]
+}

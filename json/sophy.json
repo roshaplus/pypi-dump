@@ -1,0 +1,174 @@
+{
+  "info": {
+    "author": "Charles Leifer",
+    "author_email": "UNKNOWN",
+    "bugtrack_url": null,
+    "classifiers": [],
+    "description": "<a href=\"http://sphia.org\"><img src=\"http://media.charlesleifer.com/blog/photos/sophia-logo.png\" width=\"215px\" height=\"95px\" /></a>\n\n`sophy`, fast Python bindings for [Sophia Database](http://sphia.org), v2.1.\n\nFeatures:\n\n* Append-only MVCC database\n* ACID transactions\n* Consistent cursors\n* Compression\n* Multi-part keys\n* Ordered key/value store\n* Range searches\n* Read-only views of point-in-time\n* Prefix searches\n* Python 2.x and 3.x\n\nLimitations:\n\n* Not tested on Windoze.\n\nThe source for `sophy` is [hosted on GitHub](https://github.com/coleifer/sophy)\n\nIf you encounter any bugs in the library, please [open an issue](https://github.com/coleifer/sophy/issues/new), including a description of the bug and any related traceback.\n\n## Installation\n\nThe [sophia](http://sphia.org) sources are bundled with the `sophy` source code, so the only thing you need to install is [Cython](http://cython.org). You can install from [GitHub](https://github.com/coleifer/sophy) or from [PyPI](https://pypi.python.org/pypi/sophy/).\n\nPip instructions:\n\n```console\n$ pip install Cython sophy\n```\n\nGit instructions:\n\n```console\n$ pip install Cython\n$ git clone https://github.com/coleifer/sophy\n$ cd sophy\n$ python setup.py build\n$ python setup.py install\n```\n\n## Usage\n\nSophy is very simple to use. It acts primarly like a Python `dict` object, but in addition to normal dictionary operations, you can read slices of data that are returned efficiently using cursors. Similarly, bulk writes using `update()` use an efficient, atomic batch operation.\n\nTo begin, instantiate your Sophia database. Multiple databases can exist under the same path:\n\n```pycon\n>>> from sophy import connect\n>>> db = connect('data-dir', 'db-name')\n```\n\nWe can set values individually or in groups:\n\n```pycon\n>>> db['k1'] = 'v1'\n>>> db.update(k2='v2', k3='v3', k4='v4')  # Efficient, atomic.\n>>> with db.transaction() as txn:  # Same as .update()\n...     txn['k1'] = 'v1-e'\n...     txn['k5'] = 'v5'\n...\n```\n\nWe can read values individually or in groups. When requesting a slice, the third parameter (`step`) is used to indicate the results should be returned in reverse. Alternatively, if the first key is higher than the second key in a slice, `sophy` will interpret that as ordered in reverse.\n\n```pycon\n>>> db['k1']\n'v1-e'\n>>> [item for item in db['k2': 'k444']]\n[('k2', 'v2'), ('k3', 'v3'), ('k4', 'v4')]\n\n>>> list(db['k3':'k1'])  # Results are returned in reverse.\n[('k3', 'v3'), ('k2', 'v2'), ('k1', 'v1-e')]\n\n>>> list(db[:'k3'])  # All items from lowest key up to 'k3'.\n[('k1', 'v1-e'), ('k2', 'v2'), ('k3', 'v3')]\n\n>>> list(db[:'k3':True])  # Same as above, but ordered in reverse.\n[('k3', 'v3'), ('k2', 'v2'), ('k1', 'v1-e')]\n\n>>> list(db['k3':])  # All items from k3 to highest key.\n[('k3', 'v3'), ('k4', 'v4'), ('k5', 'v5')]\n```\n\nValues can also be deleted singly or in groups. To delete multiple items atomically use the `transaction()` method.\n\n```pycon\n>>> del db['k3']\n>>> db['k3']  # 'k3' no longer exists.\nTraceback (most recent call last):\n  ...\nKeyError: 'k3'\n\n>>> with db.transaction() as txn:\n...     del txn['k2']\n...     del txn['k5']\n...     del txn['kxx']  # No error raised.\n...\n>>> list(db)\n[('k1', 'v1-e'), ('k4', 'v4')]\n```\n\n### Transactions\n\n```pycon\n>>> with db.transaction() as txn:\n...     txn['k2'] = 'v2-e'\n...     txn['k1'] = 'v1-e2'\n...\n>>> list(db[::True])\n[('k4', 'v4'), ('k2', 'v2-e'), ('k1', 'v1-e2')]\n```\n\nYou can call `commit()` or `rollback()` inside the transaction block itself:\n\n```pycon\n>>> with db.transaction() as txn:\n...     txn['k1'] = 'whoops'\n...     txn.rollback()\n...     txn['k2'] = 'v2-e2'\n...\n>>> list(db.items())\n[('k1', 'v1-e2'), ('k2', 'v2-e2'), ('k4', 'v4')]\n```\n\nIf an exception occurs in the wrapped block, the transaction will automatically be rolled back.\n\n### Cursors\n\nSophia is an ordered key/value store, so cursors will by default iterate through the keyspace in ascending order. To iterate in descending order, you can specify this using the slicing technique described above. For finer-grained control, however, you can use the `cursor()` method.\n\nThe `Database.cursor()` method supports a number of interesting parameters:\n\n* `order`: either `'>='` (default), `'<='` (reverse), `'>'` (ascending not including endpoint), `'<'` (reverse, not including endpoint).\n* `key`: seek to this key before beginning to iterate.\n* `prefix`: perform a prefix search.\n* `keys`: include the database key while iterating (default `True`).\n* `values`: include the database value while iterating (default `True`).\n\nTo perform a prefix search, for example, you might do something like:\n\n```pycon\n>>> db.update(aa='foo', abc='bar', az='baze', baz='nugget')\n>>> for item in db.cursor(prefix='a'):\n...     print item\n...\n('aa', 'foo')\n('abc', 'bar')\n('az', 'baze')\n```\n\n### Configuration\n\nSophia supports a huge number of [configuration options](http://sphia.org/configuration.html), most of which are exposed as simple properties on the `Sophia` or `Database` objects. For example, to configure a `Sophia` database to use mmap and compression:\n\n```pycon\n>>> env = Sophia('my/data-dir', log_path='my/log-dir', threads=4)\n>>> db = env.database('my-db', mmap=True, sync=True, compression='zstd')\n```\n\nYou can also force checkpointing, garbage-collection, and other things using simple methods:\n\n```pycon\n>>> db.checkpoint()\n>>> db.gc()\n```\n\nSome properties are read-only:\n\n```pycon\n>>> db.index_count\n10\n>>> len(db)\n10\n>>> db.status\n'online'\n>>> db.memory_used\n69\n```\n\nTake a look at the [configuration docs](http://sphia.org/configuration.html) for more details.\n\n### Views\n\nTo-do.\n\n### Multi-part keys\n\nTo-do.\n",
+    "docs_url": null,
+    "download_url": "UNKNOWN",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "UNKNOWN",
+    "keywords": null,
+    "license": "UNKNOWN",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "sophy",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/sophy/",
+    "release_url": "https://pypi.org/project/sophy/0.1.6/",
+    "requires_python": null,
+    "summary": "Python bindings for the sophia database.",
+    "version": "0.1.6"
+  },
+  "releases": {
+    "0.1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "63d90a09ea088f5e9712474574060c84",
+          "sha256": "e93c47f5e518c9fba78dacb8aa4699875339efc9e5d8a5f57b47c665a8e628e6"
+        },
+        "downloads": 740,
+        "filename": "sophy-0.1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "63d90a09ea088f5e9712474574060c84",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 248057,
+        "upload_time": "2015-12-18T22:08:30",
+        "url": "https://files.pythonhosted.org/packages/3e/5c/4c41c72ce1210873c408c3fcccc436064db6039c9d438e12aed9cba3fbc5/sophy-0.1.0.tar.gz"
+      }
+    ],
+    "0.1.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "447e1b5d5e215a4d866e4eb63af6bdef",
+          "sha256": "0c70b8d1adc7631cb1747941e96c93655c1d438f8135b2130c23333cd7f42bdf"
+        },
+        "downloads": 377,
+        "filename": "sophy-0.1.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "447e1b5d5e215a4d866e4eb63af6bdef",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 256308,
+        "upload_time": "2015-12-19T01:15:25",
+        "url": "https://files.pythonhosted.org/packages/ef/b0/13f47562c23050d435987badc64be30a82179ae04ffbc6e5b0c2a39dd292/sophy-0.1.1.tar.gz"
+      }
+    ],
+    "0.1.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9d5f53f256d23e7027ad0821a246e1f2",
+          "sha256": "d410a52e965dccd7cb3d052ca3220d43dffc340a9d653db038fc5f87d627032e"
+        },
+        "downloads": 400,
+        "filename": "sophy-0.1.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "9d5f53f256d23e7027ad0821a246e1f2",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 297871,
+        "upload_time": "2015-12-24T09:40:24",
+        "url": "https://files.pythonhosted.org/packages/7b/0d/9091d09cd3a072e549dce243fbbeb1834ab12bcd6cfcf14c32e54223d93c/sophy-0.1.2.tar.gz"
+      }
+    ],
+    "0.1.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "691854315e23fcf1355a9b03e9e59445",
+          "sha256": "27a6b5a72d1f92a7ceea8db893f2a5d20b6b2da8bfc1863d0b3e163b06c192a1"
+        },
+        "downloads": 283,
+        "filename": "sophy-0.1.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "691854315e23fcf1355a9b03e9e59445",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 327692,
+        "upload_time": "2016-01-25T04:54:15",
+        "url": "https://files.pythonhosted.org/packages/04/61/b3b44bd544a126fcf441b8f1f26a5dcf66a6c82a4aa549190b1f1fe85202/sophy-0.1.3.tar.gz"
+      }
+    ],
+    "0.1.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "401017da87fb3876f363f8012ab80aaa",
+          "sha256": "400e4648ad57ffc8f21a25914436fee3e67223f0afd1e8df2b3538f651765882"
+        },
+        "downloads": 264,
+        "filename": "sophy-0.1.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "401017da87fb3876f363f8012ab80aaa",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 333628,
+        "upload_time": "2016-01-27T06:37:10",
+        "url": "https://files.pythonhosted.org/packages/d5/1c/9a5ea30ee5fbd76c3499ea1431ddceb60f3b8767286a1541c57cbd15caec/sophy-0.1.4.tar.gz"
+      }
+    ],
+    "0.1.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "377185adcf31498ee3fac7d1dbefcb17",
+          "sha256": "36072329e65f7453603da94fa0d277dc1f426348bbdd735150b11f5de3b05a43"
+        },
+        "downloads": 235,
+        "filename": "sophy-0.1.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "377185adcf31498ee3fac7d1dbefcb17",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 333928,
+        "upload_time": "2016-02-01T01:00:01",
+        "url": "https://files.pythonhosted.org/packages/dd/6a/3649d88c6ea3b7f4c19da0f5d88ceb8dd9aadc9d48ee449a98148c929a5d/sophy-0.1.5.tar.gz"
+      }
+    ],
+    "0.1.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "106410b3059ea1cdd047c9f0fdd3899f",
+          "sha256": "ca13a2d290b426bd8ee7a42fa75bc80462ab632be85897686a8c603c510c1e9e"
+        },
+        "downloads": 139,
+        "filename": "sophy-0.1.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "106410b3059ea1cdd047c9f0fdd3899f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 334163,
+        "upload_time": "2016-02-03T15:41:33",
+        "url": "https://files.pythonhosted.org/packages/e6/4d/d50368794d595d57b2e7c5c238c5a3f3703f511f5818598394cedc859de5/sophy-0.1.6.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "106410b3059ea1cdd047c9f0fdd3899f",
+        "sha256": "ca13a2d290b426bd8ee7a42fa75bc80462ab632be85897686a8c603c510c1e9e"
+      },
+      "downloads": 139,
+      "filename": "sophy-0.1.6.tar.gz",
+      "has_sig": false,
+      "md5_digest": "106410b3059ea1cdd047c9f0fdd3899f",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 334163,
+      "upload_time": "2016-02-03T15:41:33",
+      "url": "https://files.pythonhosted.org/packages/e6/4d/d50368794d595d57b2e7c5c238c5a3f3703f511f5818598394cedc859de5/sophy-0.1.6.tar.gz"
+    }
+  ]
+}

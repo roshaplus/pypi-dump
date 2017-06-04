@@ -1,0 +1,344 @@
+{
+  "info": {
+    "author": "Luke Hodkinson",
+    "author_email": "furious.luke@gmail.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 3 - Alpha",
+      "Framework :: Django",
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: BSD License",
+      "Natural Language :: English",
+      "Operating System :: OS Independent",
+      "Programming Language :: Python"
+    ],
+    "description": "# django-cq\n\n\n## Description\n\nAn attempt to implement a distributed task queue for use with Django channels.\nModelled after RQ and Celery, complex task workflows are possible, all leveraging\nthe Channels machinery.\n\n\n## Why\n\nThere are three reasons:\n\n 1. Aiming for more fault tolerant tasks. There are many occasions where information\n    regarding how tests are progressing is needed to be stored persistently. For\n    important tasks, this should be stored even in the case of a Redis fault, or if\n    the worker goes down.\n\n 2. Prefer to leverage the same machinery as channels.\n\n 3. Would like to have a little extra functionality surrounding subtasks that didn't\n    seem to be available via Celery or RQ.\n\n\n## Limitations\n\nThere are two limitations involved:\n\n  * REDIS must be used as the Django cache.\n\n  * `asgi_redis` must be used as the channel backend.\n\nThere is work being done to remove these restrictions.\n\n\n## Installation\n\nUse pip if you can:\n\n```bash\npip install cq\n```\n\nor live on the edge:\n\n```bash\npip install -e https://github.com/furious-luke/django-cq.git#egg=django-cq\n```\n\nAdd the package to your settings file:\n\n```python\nINSTALLED_APPS = [\n   'cq',\n   ...\n]\n```\n\nAnd include the routing information in your channel routing list:\n\n```python\nchannel_routing = [\n    include('cq.routing.channel_routing'),\n    ...\n]\n```\n\nYou'll need to migrate to include the models:\n\n```bash\n./manage.py migrate\n```\n\nYou'll most likely want to create a new channel layer for your CQ\ntasks. The default layer has a short time-to-live on the channel messages,\nwhich causes slightly long running tasks to kill off any queued messages.\nUpdate your settings file to include the following:\n\n```python\nCHANNEL_LAYERS = {\n    'default': {\n        ...\n    },\n    'long': {\n        'BACKEND': 'asgi_redis.RedisChannelLayer',\n        'CONFIG': {\n            'hosts': [REDIS_URL],\n            'expiry': 1800,\n            'channel_capacity': {\n                'cq-tasks': 1000\n            }\n        },\n        'ROUTING': 'path.to.your.channels.channel_routing',\n    },\n}\n\nCQ_CHANNEL_LAYER = 'long'\n```\n\n\n## Tasks\n\nBasic task usage is straight forward:\n\n```python\n@task\ndef send_email(cqt, addr):\n    ...\n    return 'OK'\n\ntask = send_emails.delay('dummy@dummy.org')\ntask.wait()\nprint(task.result)  # \"OK\"\n```\n\nHere, `cqt` is the task representation for the `send_email` task. This\ncan be used to launch subtasks, chain subsequent tasks, amongst other\nthings.\n\nTasks may also be run in serial by just calling them:\n\n```python\nresult = send_email('dummy@dummy.org')\nprint(result)  # \"OK\"\n```\n\n\n## Subtasks\n\nFor more complex workflows, subtasks may be launched from within\nparent tasks:\n\n```python\n@task\ndef send_emails(cqt):\n    ...\n    for addr in email_addresses:\n        cqt.subtask(send_email, addr)\n    ...\n    return 'OK'\n\ntask = send_emails.delay()\ntask.wait()\nprint(task.result)  # \"OK\"\n```\n\nThe difference between a subtask and another task launched using `delay` from\nwithin a task is that the parent task of a subtask will not be marked as complete\nuntil all subtasks are also complete.\n\n```python\nfrom cq.models import Task\n\n@task\ndef parent(cqt):\n    task_a.delay()  # not a subtask\n    cqt.subtask(task_b)  # subtask\n\nparent.delay()\nparent.status == Task.STATUS_WAITING  # True\n# once task_b completes\nparent.wait()\nparent.status == Task.STATUS_COMPLETE  # True\n```\n\n\n## Chained Tasks\n\nTODO\n\n```python\n@task\ndef calculate_something(cqt):\n    return calc_a.delay(3).chain(add_a_to_4, (4,))\n```\n\n\n## Non-atomic Tasks\n\nBy default every CQ task is atomic; no changes to the database will persist\nunless the task finishes without an exception. If you need to keep changes to\nthe database, even in the event of an error, then use the `atomic` flag:\n\n```python\n@task(atomic=False)\ndef unsafe_task(cqt):\n    pass\n```\n\n\n## Logging\n\nFor longer running tasks it's useful to be able to access an ongoing log\nof the task's progress. CQ tasks have a `log` method to send logging\nmessages to both the standard Django log streams, and also cache them on\nthe running task.\n\n```python\n@task\ndef long_task(cqt):\n    cqt.log('standard old log')\n    cqt.log('debugging log', logging.DEBUG)\n```\n\nIf the current task is a subtask, the logs will go to the parent.\nThis way there is a central task (the top-level task) which can be used\nto monitor the progress and status of a network of sub and chained tasks.\n\n### Performance\n\nDue to the way logs are handled there can be issues with performance\nwith a lot of frequent log messages. There are two ways to prevent this.\n\nReduce the frequency of logs by setting `publish` to `False` on as many\nlog calls as you can. This will cache the logs locally and store them\non the next `publish=True` call.\n\n```python\n@task\ndef long_task(cqt):\n    for ii in range(100):\n        cqt.log('iteration %d' % ii, publish=False)\n    cqt.log('done')  # publish=True\n```\n\nSecondly, reducing the volume of logs may be accomplished by limiting the\nnumber of log lines that are kept. The `limit` option specifies this. The\nfollowing will only keep 10 of the logged iterations:\n\n```python\n@task\ndef long_task(cqt):\n    for ii in range(100):\n        cqt.log('iteration %d' % ii, publish=False)\n    cqt.log('done', limit=10)\n```\n\n## Time-to-live\n\nTODO\n\n## Repeating Tasks\n\nCQ comes with robust repeating tasks. There are two ways to create\nrepeating tasks:\n\n 1. From the Django admin.\n\n 2. Using a data migration.\n\nFrom the admin, click into `cq` and `repeating tasks`. From there you\ncan create a new repeating task, specifying the background task to call,\nand a CRON time for repetition.\n\nTo create a repeating task from a migration, use the helper function\n`schedule_task`.\n\n```python\nfrom django.db import migrations\nfrom cq.models import schedule_task\n\nfrom myapp.tasks import a_task\n\n\ndef add_repeating(apps, scema_editor):\n    RepeatingTask = apps.get_model('cq.RepeatingTask')\n    schedule_task(\n        RepeatingTask,\n        '* * * * *',\n        a_task\n    )\n\n\nclass Migration(migrations.Migration):\n    operations = [\n        migrations.RunPython(add_repeating, reverse_code=migrations.RunPython.noop)\n    ]\n```\n\n\n### Coalescing\n\n# TODO\n",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/furious-luke/django-cq",
+    "keywords": "",
+    "license": "BSD",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "django-cq",
+    "platform": "",
+    "project_url": "https://pypi.org/project/django-cq/",
+    "release_url": "https://pypi.org/project/django-cq/0.1.15/",
+    "requires_python": "",
+    "summary": "",
+    "version": "0.1.15"
+  },
+  "releases": {
+    "0.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "591cfad36e854c9f7441ce27988eeafd",
+          "sha256": "064ad27de13b415613ca240d7369f1b957eb1e3bb5eaaf369f09b441825ac20b"
+        },
+        "downloads": 171,
+        "filename": "django-cq-0.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "591cfad36e854c9f7441ce27988eeafd",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 18097,
+        "upload_time": "2016-09-30T11:25:47",
+        "url": "https://files.pythonhosted.org/packages/27/a3/057cf3caecfc23ebc7e98a62a3dc72bd28883e510d639e27c436d7c88c3f/django-cq-0.1.tar.gz"
+      }
+    ],
+    "0.1.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d16672bc5ff6c3256b835e02fac2a94e",
+          "sha256": "b365631f7d1e51f14451f662d80455d96dd6f8a2605ac77295b02c4b7c77ecd2"
+        },
+        "downloads": 107,
+        "filename": "django-cq-0.1.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d16672bc5ff6c3256b835e02fac2a94e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 19519,
+        "upload_time": "2016-09-30T11:56:08",
+        "url": "https://files.pythonhosted.org/packages/5e/cf/8f5f93aa4862b0e9f74a66aa5287c180869ebdb539d3e83eb141b8e36bdd/django-cq-0.1.1.tar.gz"
+      }
+    ],
+    "0.1.10": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "20a0ebc76ccd1c28e5a20bd7d995c7de",
+          "sha256": "59d7f32bc89952374ec6f575b340d45f5e36fc3c90a6de720852a7d63c162c8a"
+        },
+        "downloads": 99,
+        "filename": "django-cq-0.1.10.tar.gz",
+        "has_sig": false,
+        "md5_digest": "20a0ebc76ccd1c28e5a20bd7d995c7de",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 22056,
+        "upload_time": "2016-10-27T23:16:15",
+        "url": "https://files.pythonhosted.org/packages/74/6a/1c22441dc75a2d47ea9cc9b194099e610f170bc72448d793c3c2477cd16a/django-cq-0.1.10.tar.gz"
+      }
+    ],
+    "0.1.11": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "03ddb85230490bcf821aac13059d3263",
+          "sha256": "6b08f68c41f25fb98280554c177b885386f4992e7e16fc094cfd16afb1e51bf7"
+        },
+        "downloads": 58,
+        "filename": "django-cq-0.1.11.tar.gz",
+        "has_sig": false,
+        "md5_digest": "03ddb85230490bcf821aac13059d3263",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 22130,
+        "upload_time": "2016-11-17T23:51:29",
+        "url": "https://files.pythonhosted.org/packages/16/79/34f6c77a96d7a0f54dfb11de23729270435db34e2eed1412e329c18f4294/django-cq-0.1.11.tar.gz"
+      }
+    ],
+    "0.1.12": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "bc4f7fd1297f892ab4eda660ae9b5094",
+          "sha256": "b6d2762c11fdbead8d77d506ab9ebad6978dc0cfb2c4fb52e33e2ad67985e27c"
+        },
+        "downloads": 63,
+        "filename": "django-cq-0.1.12.tar.gz",
+        "has_sig": false,
+        "md5_digest": "bc4f7fd1297f892ab4eda660ae9b5094",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 22055,
+        "upload_time": "2016-11-18T00:58:01",
+        "url": "https://files.pythonhosted.org/packages/55/11/dcbc72d42b0c92a12090cbb6f75b237123156ddbe322ae43fb726120b797/django-cq-0.1.12.tar.gz"
+      }
+    ],
+    "0.1.13": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ce9a806e41416a0e0eb95a0d798104a4",
+          "sha256": "62120fd074241d03742f7e1cbbd077e6b4054a144256776e4589f684c18ed83b"
+        },
+        "downloads": 73,
+        "filename": "django-cq-0.1.13.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ce9a806e41416a0e0eb95a0d798104a4",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 22054,
+        "upload_time": "2016-11-18T01:18:56",
+        "url": "https://files.pythonhosted.org/packages/92/51/d3ccf992018532652357dff5a29100c449f4125c21fce6ebb3a4a8cab9c8/django-cq-0.1.13.tar.gz"
+      }
+    ],
+    "0.1.14": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c20ab761ff5460e4cc12eb604d70603b",
+          "sha256": "fb12fa861f55622b560dfa19558aa612023d05114a4038a5d17a3e9b8c7378d5"
+        },
+        "downloads": 49,
+        "filename": "django-cq-0.1.14.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c20ab761ff5460e4cc12eb604d70603b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 22081,
+        "upload_time": "2016-12-02T02:48:16",
+        "url": "https://files.pythonhosted.org/packages/de/58/f759052f8d6003f38d293e2722e3ba73fe2ba6fd63ed468d25c16d915565/django-cq-0.1.14.tar.gz"
+      }
+    ],
+    "0.1.15": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1557a379c44f59908485c4f4b333f8ae",
+          "sha256": "e89c72bba9e532d9779653abef681f1760ab785f594803e979eb1992e62e4d50"
+        },
+        "downloads": 11,
+        "filename": "django-cq-0.1.15.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1557a379c44f59908485c4f4b333f8ae",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 22683,
+        "upload_time": "2017-01-12T23:02:18",
+        "url": "https://files.pythonhosted.org/packages/24/cf/9c910708380ad92f399cb57ea4a559543d2ce41e01643794ae452099c05c/django-cq-0.1.15.tar.gz"
+      }
+    ],
+    "0.1.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b92c125aad85c8e137d655e38de72786",
+          "sha256": "403314f9b2a8365422e5ee495fa86225b6fdf7020567c8af9beb823c6d111247"
+        },
+        "downloads": 108,
+        "filename": "django-cq-0.1.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b92c125aad85c8e137d655e38de72786",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 19525,
+        "upload_time": "2016-09-30T12:31:53",
+        "url": "https://files.pythonhosted.org/packages/b1/4b/6e8d216a58ac2d0ab12c6215c69d1feabfee70f498db456669841464bf31/django-cq-0.1.2.tar.gz"
+      }
+    ],
+    "0.1.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e962da0a52cce935b3377209e23372a0",
+          "sha256": "d5fa7ea6ab8e1eb135ee8b48b6a6cf22a65600dde970665fb3e7e7f961f45b82"
+        },
+        "downloads": 169,
+        "filename": "django-cq-0.1.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e962da0a52cce935b3377209e23372a0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 18199,
+        "upload_time": "2016-10-03T03:15:49",
+        "url": "https://files.pythonhosted.org/packages/e6/51/c3f085837b4ec7e3c95e6fcde151396098745303386d0f7679f43b4ff39c/django-cq-0.1.3.tar.gz"
+      }
+    ],
+    "0.1.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "fc610d7019981fb258eb24c8fa667a1d",
+          "sha256": "96da66106fdf8f489b03e1fcedc1d374673694624423e25f738d2046431f0be1"
+        },
+        "downloads": 357,
+        "filename": "django-cq-0.1.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "fc610d7019981fb258eb24c8fa667a1d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 18263,
+        "upload_time": "2016-10-04T00:15:49",
+        "url": "https://files.pythonhosted.org/packages/18/9e/a97bb39b351196170644239230c9ecee05333755da0e993eb6cfa1f83da4/django-cq-0.1.4.tar.gz"
+      }
+    ],
+    "0.1.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "390111cf6f949a1ead520c9a738cb53b",
+          "sha256": "4944a2d43b24e6166bcfb39e496b35daac8337e4b286850f9a5e567d37f11d67"
+        },
+        "downloads": 92,
+        "filename": "django-cq-0.1.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "390111cf6f949a1ead520c9a738cb53b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 18290,
+        "upload_time": "2016-10-06T22:10:48",
+        "url": "https://files.pythonhosted.org/packages/8f/bf/ac592fc9c8f802a8499599ab367ffaf9cafbfbfa93d60c81526e88556b53/django-cq-0.1.5.tar.gz"
+      }
+    ],
+    "0.1.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "55d5d49ee01028e62e1b595a91749794",
+          "sha256": "281a5b789f31fcc49a2f71b0831f7164fa2280e7086eddad307cbd18076d2d43"
+        },
+        "downloads": 94,
+        "filename": "django-cq-0.1.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "55d5d49ee01028e62e1b595a91749794",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 19599,
+        "upload_time": "2016-10-10T01:51:42",
+        "url": "https://files.pythonhosted.org/packages/f1/27/b5c8445184ab699cecb2ed0ad3634d841f941b7fecc620c9a385c498e2c5/django-cq-0.1.6.tar.gz"
+      }
+    ],
+    "0.1.7": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8dfdc7204b4c0afff6f4826d0a501a03",
+          "sha256": "7eada58d380c2ea7c10f3b05d86c61091f87267ca5b9ba94d5b6b968ea851ab7"
+        },
+        "downloads": 128,
+        "filename": "django-cq-0.1.7.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8dfdc7204b4c0afff6f4826d0a501a03",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 19790,
+        "upload_time": "2016-10-10T05:47:02",
+        "url": "https://files.pythonhosted.org/packages/b3/3f/3e91c3f3219c5a765aca0e9ff76929b7b8a57d9efe1e102b4c602c939edb/django-cq-0.1.7.tar.gz"
+      }
+    ],
+    "0.1.8": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c0b8e4aa8083f83d7146d8e018948bd7",
+          "sha256": "eb7d75023205caed9e2610cc4262ac023d1f9106aa1aac85792ed9dd55ee8cc9"
+        },
+        "downloads": 314,
+        "filename": "django-cq-0.1.8.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c0b8e4aa8083f83d7146d8e018948bd7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 20201,
+        "upload_time": "2016-10-24T01:19:13",
+        "url": "https://files.pythonhosted.org/packages/f0/8d/4aaf793edd41286177d6ead967e5de158ee234ca159bbceb5cf69235fe65/django-cq-0.1.8.tar.gz"
+      }
+    ],
+    "0.1.9": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a6baceeb7a7ad917781bbb9578b06307",
+          "sha256": "513e17b94e4ede74420d1b469ea591f1b0f7b4a81e6376c565c274bb232907dd"
+        },
+        "downloads": 389,
+        "filename": "django-cq-0.1.9.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a6baceeb7a7ad917781bbb9578b06307",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 20711,
+        "upload_time": "2016-10-24T02:50:59",
+        "url": "https://files.pythonhosted.org/packages/2b/5c/42e1da370829abde24c079f08f00bdb21f53f07dcd54924af94788729d6d/django-cq-0.1.9.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "1557a379c44f59908485c4f4b333f8ae",
+        "sha256": "e89c72bba9e532d9779653abef681f1760ab785f594803e979eb1992e62e4d50"
+      },
+      "downloads": 11,
+      "filename": "django-cq-0.1.15.tar.gz",
+      "has_sig": false,
+      "md5_digest": "1557a379c44f59908485c4f4b333f8ae",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 22683,
+      "upload_time": "2017-01-12T23:02:18",
+      "url": "https://files.pythonhosted.org/packages/24/cf/9c910708380ad92f399cb57ea4a559543d2ce41e01643794ae452099c05c/django-cq-0.1.15.tar.gz"
+    }
+  ]
+}

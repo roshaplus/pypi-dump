@@ -1,0 +1,205 @@
+{
+  "info": {
+    "author": "James William Pye",
+    "author_email": "mailto:x@jwp.io",
+    "bugtrack_url": "",
+    "classifiers": [
+      "Development Status :: 3 - Alpha",
+      "Intended Audience :: Developers",
+      "License :: Public Domain",
+      "Natural Language :: English",
+      "Operating System :: OS Independent",
+      "Programming Language :: C",
+      "Programming Language :: Python",
+      "Programming Language :: Python :: 3",
+      "Topic :: Communications",
+      "Topic :: Internet",
+      "Topic :: Software Development :: Libraries",
+      "Topic :: System :: Networking"
+    ],
+    "description": ".. role:: manpage(literal)\r\n.. role:: py:meth(literal)\r\n.. role:: py:class(literal)\r\n.. role:: py:mod(literal)\r\n.. role:: py:obj(literal)\r\n.. role:: py:func(literal)\r\n.. role:: py:attr(literal)\r\n.. role:: py:attribute(literal)\r\n.. role:: py:module(literal)\r\n.. role:: py:object(literal)\r\n.. role:: py:method(literal)\r\n.. role:: py:function(literal)\r\n\r\n\r\n\ud83d\udea6 About\r\n--------\r\n\r\nTraffic provides :manpage:`kqueue(2)` based event driven I/O for Python.\r\nHowever, in addition to listening for the I/O events, Traffic performs the\r\ncorresponding I/O operation prior to propagating the notification.\r\nIn essence, Traffic transforms can-read and can-write events into did-read and\r\ndid-write.\r\n\r\n.. warning:: Traffic a work in progress. The APIs may change without warning.\r\n\r\nTraffic is designed to maximize efficiency by performing I/O operations in bulk.\r\nBy grouping the collection of I/O events and\r\nthe execution of I/O operations that work directly with pre-allocated buffer objects,\r\nTraffic is capable of performing a fair amount of work while the GIL is released.\r\nThis batching of operations also reduces the number of times that the GIL is released and\r\nacquired within a process.\r\n\r\n.. note:: Traffic aims to be the I/O foundation for frameworks.\r\n          Direct use of Traffic will require a fair amount of boilerplate.\r\n\r\nTransferring Data with Traffic\r\n------------------------------\r\n\r\nMaking a connection is easy::\r\n\r\n\timport traffic.libkqueue\r\n\timport traffic.libloop\r\n\r\n\ts1, s2 = traffic.libkqueue.Octets.connect_stream_socketpair()\r\n\r\nTraffic manages channels, a \"Transit\", as distinct, half-duplex objects. The above example is\r\nreferring to an invocation of :manpage:`socketpair(2)`, so the results,\r\n``s1`` and ``s2``, are actually tuples of two :py:class:`traffic.libkqueue.Octets` instances.\r\nThe receive part is the first item and the send part, the second--`I` then `O` of I/O.\r\n\r\nIn order for these objects to perform actual transfers, they must be attached to a\r\n:py:class:`traffic.libkqueue.Traffic` instance, which manages the kqueue subscriptions::\r\n\r\n\ttraffic = traffic.libkqueue.Traffic()\r\n\ts1read, s1write = s1\r\n\ts2read, s2write = s2\r\n\r\nAttachment is performed with the :py:meth:`traffic.libkqueue.Traffic.acquire` method.\r\nOnce acquired, the Transit is owned by the Traffic object, and will not be\r\nreleased until termination::\r\n\r\n\ttraffic.acquire(s1read)\r\n\ttraffic.acquire(s1write)\r\n\ttraffic.acquire(s2read)\r\n\ttraffic.acquire(s2write)\r\n\r\nNow that the traffic instance has acquired the Transits, transfers are possible\r\ngiven resource availability: the Transits now need to acquire resources to\r\ntransfer; some data to send or some space to receive into. Similar to Traffic,\r\nthis is done with the acquire method, :py:meth:`traffic.libkqueue.Octets.acquire`::\r\n\r\n\tmutable_buffer = traffic.libkqueue.Octets.rallocate(128) # memoryview(bytearray()) object\r\n\ts1read.acquire(mutable_buffer)\r\n\ts1write.acquire(b'Hello, that side of the world!')\r\n\r\nLikewise the other end needs to acquire resources as well::\r\n\r\n\ts2read.acquire(traffic.libkqueue.Octets.rallocate(128))\r\n\ts2write.acquire(b'Nobody is home! Go Away!')\r\n\r\nAll of the Transits have the necessary resources for performing a transfer.\r\nFor illustrative purposes, events will be placed into a Queue by a loop performed in a\r\nthread::\r\n\r\n\timport queue\r\n\timport threading\r\n\r\n\tq = queue.Queue(6)\r\n\tdeliver = q.put\r\n\r\n\tthread = threading.Thread(args = (deliver, traffic), target = traffic.libloop.loop)\r\n\tthread.start()\r\n\r\nThe loop is now performing transfers and delivering sequences of\r\n:py:class:`traffic.libloop.Activity` instances using :py:meth:`q.put`.\r\nReading the sequences with :py:meth:`q.get`, the transfers can be processed\r\n*while* the :py:func:`traffic.libloop.loop` performs the next set of transfers for\r\nsubsequent processing::\r\n\r\n\tio = q.get()\r\n\twhile io is not None:\r\n\t\tfor x in io:\r\n\t\t\tif x.demand is not None:\r\n\t\t\t\t# It's a write Transit that has sent all its data.\r\n\t\t\t\tx.transit.terminate()\r\n\t\t\telse:\r\n\t\t\t\tprint(x)\r\n\t\tif traffic.volume == 0:\r\n\t\t\t# all transits have terminated\r\n\t\t\ttraffic.terminate()\r\n\t\tio = q.get()\r\n\tprint(\"Complete!\")\r\n\r\nThe output of the above should look something like::\r\n\r\n\tActivity(transit=<traffic.libkqueue.Octets object at 0xDEADBEEF1>, termination=None, transferred=bytearray(b'Hello, that side of the world!'), demand=None)\r\n\tActivity(transit=<traffic.libkqueue.Octets object at 0xDEADBEEF2>, termination=None, transferred=bytearray(b'Nobody is home! Go Away!'), demand=None)\r\n\tActivity(transit=<traffic.libkqueue.Octets object at 0xDEADBEEF3>, termination=<Status>, transferred=None, demand=None)\r\n\tActivity(transit=<traffic.libkqueue.Octets object at 0xDEADBEEF4>, termination=<Status>, transferred=None, demand=None)\r\n\tActivity(transit=<traffic.libkqueue.Octets object at 0xDEADBEEF5>, termination=<Status>, transferred=None, demand=None)\r\n\tActivity(transit=<traffic.libkqueue.Octets object at 0xDEADBEEF6>, termination=<Status>, transferred=None, demand=None)\r\n\r\nNaturally, the code in this example doesn't really benefit from having the\r\nloop performed in a separate thread. However, the purpose of the example is to\r\nilluminate the anticipated form of use. In cases of numerous connections, the above\r\nmodel is extremely efficient as transfers are *actually* being performed\r\nconcurrently with processing. The concurrency itself does not contrast much with\r\ntraditional multi-threaded Python processes. Most Python interfaces to\r\nunderlying C functions release the GIL and allow true concurrency with regards\r\nto the processing performed by the C function. The contrast is in the form of GIL\r\ncontention and payload delivery: Traffic loops can perform *multiple* I/O\r\noperations without the GIL being held and deliver the data into an actual\r\nPython object.\r\n\r\nThe Usage chapter of the documentation covers the details of what is\r\nsummarized here. There are important facets not directly addressed in this introduction.\r\nNotably, the use of buffer exhaustion for flow control.",
+    "docs_url": "https://pythonhosted.org/traffic/",
+    "download_url": "UNKNOWN",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "http://github.com/jwp/py-traffic",
+    "keywords": "",
+    "license": "UNKNOWN",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "traffic",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/traffic/",
+    "release_url": "https://pypi.org/project/traffic/0.9.0/",
+    "requires_python": null,
+    "summary": "event driven I/O for deities",
+    "version": "0.9.0"
+  },
+  "releases": {
+    "0.5.0dev": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ce8f57215639c84d36458cdf77ef714e",
+          "sha256": "f4f5fb61c52c71e7d8df4ef5a4ffbc9bf978a2060dab6d460553070162fe5ece"
+        },
+        "downloads": 2726,
+        "filename": "traffic-0.5.0dev.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ce8f57215639c84d36458cdf77ef714e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 33919,
+        "upload_time": "2012-02-07T20:51:57",
+        "url": "https://files.pythonhosted.org/packages/b5/95/e0c3e05c1dae1b4f237469cd3a422b6459377ee21b09282ef4d705a2dd70/traffic-0.5.0dev.tar.gz"
+      }
+    ],
+    "0.6.0dev": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0ae0ebdff945f20ffd73cfed215b5b3d",
+          "sha256": "159ca0d8a11e3782243543bfa08b1e2e1147edb3fcffe4966a0a0669ea8e31d6"
+        },
+        "downloads": 2768,
+        "filename": "traffic-0.6.0dev.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0ae0ebdff945f20ffd73cfed215b5b3d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 29681,
+        "upload_time": "2012-02-20T00:03:03",
+        "url": "https://files.pythonhosted.org/packages/aa/44/d89a0aec2c52ab0b978efd5e2a90bf826940d757595ed9f3927fa2db2b4d/traffic-0.6.0dev.tar.gz"
+      }
+    ],
+    "0.7.0dev": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4c579fb3fb7ea5a58492ecbd11972567",
+          "sha256": "a5c5084805a4110ac2c163b9d647296e19f0fc206675b36cadc3df79da8ad2a6"
+        },
+        "downloads": 2480,
+        "filename": "traffic-0.7.0dev.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4c579fb3fb7ea5a58492ecbd11972567",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 33999,
+        "upload_time": "2012-06-20T04:20:58",
+        "url": "https://files.pythonhosted.org/packages/7e/cf/5d816fa690e32efa88e2b3672afdc5d9925be163ced98836991e106183c3/traffic-0.7.0dev.tar.gz"
+      }
+    ],
+    "0.8.0dev": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7036ccc426416ea8a6df4ff07a38ffc4",
+          "sha256": "99cfec33141b1ac07ebca94db3aacfe1bd34fc29be065bb059d42b4291b458fa"
+        },
+        "downloads": 2414,
+        "filename": "traffic-0.8.0dev.tar.bz2",
+        "has_sig": false,
+        "md5_digest": "7036ccc426416ea8a6df4ff07a38ffc4",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 32762,
+        "upload_time": "2012-06-24T22:30:21",
+        "url": "https://files.pythonhosted.org/packages/7e/6c/1401792cf9d352e44b7396e546b4c0845e110bd458b7355781d3b3136e77/traffic-0.8.0dev.tar.bz2"
+      }
+    ],
+    "0.8.1dev": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1a8087c34fab891a6500859524c11496",
+          "sha256": "43f5d0d113d357500863c0656efb1e489d300b84743190b233c3761b40a3bd45"
+        },
+        "downloads": 2261,
+        "filename": "traffic-0.8.1dev.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1a8087c34fab891a6500859524c11496",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 40015,
+        "upload_time": "2012-07-16T04:58:16",
+        "url": "https://files.pythonhosted.org/packages/be/b0/6df89c8852f113dcf1ad838c232cc4310b327ad3c2aa1fc53b01826e3a14/traffic-0.8.1dev.tar.gz"
+      }
+    ],
+    "0.8.2dev": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "403de8aa6b5714aae52235873d2ba708",
+          "sha256": "f0a54100569b3484c73dbd316ff5e201420db40088f8bd7bdc0134e8cb835cb6"
+        },
+        "downloads": 2183,
+        "filename": "traffic-0.8.2dev.tar.gz",
+        "has_sig": false,
+        "md5_digest": "403de8aa6b5714aae52235873d2ba708",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 40257,
+        "upload_time": "2012-07-25T07:04:33",
+        "url": "https://files.pythonhosted.org/packages/84/7c/19d20cfeae90f503c19f8865441e80f7d2f2ddac59f193a83a515f41bf9a/traffic-0.8.2dev.tar.gz"
+      }
+    ],
+    "0.8.3dev": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "443bbb08985a7a49b53e4ccfc03b0d10",
+          "sha256": "dc5d88428ce415d862dd150f8a364e7ed11bd88743f1a3ba7bea76902996be03"
+        },
+        "downloads": 2144,
+        "filename": "traffic-0.8.3dev.tar.gz",
+        "has_sig": false,
+        "md5_digest": "443bbb08985a7a49b53e4ccfc03b0d10",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 42462,
+        "upload_time": "2012-07-28T12:26:09",
+        "url": "https://files.pythonhosted.org/packages/b6/d9/f6445d2fbee9de2af6b49e6375e62204730cbf4ae554a1da489084da58ca/traffic-0.8.3dev.tar.gz"
+      }
+    ],
+    "0.9.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "bccb9fd8e39076af6e78e318aebb553c",
+          "sha256": "aa2d4296e142fcf25bf61232ed1655ee9ccddd6e928f158e1e5a850ec5073795"
+        },
+        "downloads": 2710,
+        "filename": "traffic-0.9.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "bccb9fd8e39076af6e78e318aebb553c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 51420,
+        "upload_time": "2012-09-16T04:47:34",
+        "url": "https://files.pythonhosted.org/packages/e9/8a/ad648cc869e49749fcf77365ec476af5373cda8199375993925c64488608/traffic-0.9.0.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "bccb9fd8e39076af6e78e318aebb553c",
+        "sha256": "aa2d4296e142fcf25bf61232ed1655ee9ccddd6e928f158e1e5a850ec5073795"
+      },
+      "downloads": 2710,
+      "filename": "traffic-0.9.0.tar.gz",
+      "has_sig": false,
+      "md5_digest": "bccb9fd8e39076af6e78e318aebb553c",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 51420,
+      "upload_time": "2012-09-16T04:47:34",
+      "url": "https://files.pythonhosted.org/packages/e9/8a/ad648cc869e49749fcf77365ec476af5373cda8199375993925c64488608/traffic-0.9.0.tar.gz"
+    }
+  ]
+}

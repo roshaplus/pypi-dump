@@ -1,0 +1,325 @@
+{
+  "info": {
+    "author": "elegans.io Ltd",
+    "author_email": "info@elegans.io",
+    "bugtrack_url": "",
+    "classifiers": [
+      "Development Status :: 4 - Beta",
+      "Intended Audience :: Information Technology",
+      "License :: OSI Approved :: GNU General Public License v2 (GPLv2)",
+      "Programming Language :: Python :: 2.7",
+      "Topic :: Scientific/Engineering :: Artificial Intelligence"
+    ],
+    "description": "Easy, fast, greedy recommender\r\n==============================\r\n\r\n\"Will it scale?\" is a less important question than \"will it ever matter?\" ([David Kadavy](http://kadavy.net))\r\n\r\n******************************************************\r\nNB: We have re-written good part of the recommender.\r\n\r\nThe APIs have changed, and the **webapp** is now a separate package, called `cold-start-recommender-webapp`, which can be installed via `pip`.\r\nYou can still access the old version with:\r\n\r\n`pip install cold-start-recommender==0.3.15`\r\n\r\nAny comment sent to info@elegans.io will be appreciated.\r\n******************************************************\r\n\r\nWe developed Cold Start Recommender because we needed a recommender\r\nwith the following characteristics:\r\n\r\n* **Greedy.** Useful in situations where no previous data on Items or\r\n    Users are available, therefore *any* information must be used\r\n    --not just which Item a User likes, but also --in the case of a\r\n    book-- the corresponding category, author etc.\r\n\r\n* **Fast.** Any information on Users and Item should be stored and\r\n    used immediately. A rating by any User should improve\r\n    recommendations for this User, but also for other Users. This\r\n    means  in-memory database and no batch computations.\r\n\r\n* **Ready to use.** Take a look at recommender_api.py to start\r\n    a webapp that POSTs information and GETs recommendations.\r\n\r\n\r\nCSRec should not (yet) be used for production systems, but only for\r\npilots, where statistics are so low that filters (e.g. loglikelihood\r\nfilter on the co-occurence matrix) are premature. It aims to\r\n*gather data* in order to immediately personalise the user experience.\r\n\r\nCSRec is written in Python, and under the hood it uses the `Pandas`_\r\nlibrary. \r\n\r\nDependencies\r\n============\r\n\r\nThe following python packages are needed in order to run the recommender:\r\n\r\n* pickle\r\n* pandas\r\n* numpy\r\n\r\nSince version 4, the web service has been taken out of the package.\r\nYou need to install elegans.io's package [csrec-webapp](https://github.com/elegans-io/csrec-webapp)\r\n\r\nFeatures\r\n========\r\n\r\nThe Cold Start Problem\r\n----------------------\r\n\r\nThe Cold Start Problem originates from the fact that collaborative\r\nfiltering recommenders need data to build recommendations. Typically,\r\nif Users who liked item 'A' also liked item 'B', the recommender would\r\nrecommend 'B' to a user who just liked 'A'. But if you have no\r\nprevious rating by any User, you cannot make any recommendation.\r\n\r\nCSRec tackles the issue in various ways.\r\n\r\n###Selective profiling\r\n\r\nCSRec allows **profiling with well-known Items without biasing the results**.\r\n\r\nFor instance, if a call to insert_rating is done in this way:\r\n\r\n   `engine.db.insert_item_action(user_id='user1', item_id='item1', code=4, item_meaningful_info=['author', 'tags'], only_info=True)`\r\n\r\nCSRec will only register that `user1` likes a certain author, certain tags,\r\nbut not that s/he might like `item1`. This is of fundamental\r\nimportance when profiling users through a \"profiling page\" on your\r\nwebsite.  If you ask users whether they prefer \"Harry Potter\" or \"The\r\nBetter Angels of Our Nature\", and most of them choose Harry Potter, you would not \r\nwant to make the Item \"Harry Potter\" even more popular. You might just want to record\r\nthat those users like children's books marketed as adult literature.\r\n\r\nCSRec does that because, unless you are Amazon or a similar brand, the\r\nco-occurence matrix is often too sparse to compute decent\r\nrecommendations. In this way you start building multiple, denser,\r\nco-occurence matrices and use them from the very beginning.\r\n\r\n###Store any possible information\r\n\r\nAny information is used. You decide which information you should\r\nrecord about a User rating an Item. This is similar to the previous\r\npoint, but you also register the item_id.\r\n\r\n###Use everything you can, now\r\n\r\nAny information is used *immediately*. The co-occurence matrix is\r\nupdated as soon as a rating is inserted.\r\n\r\n###Efficient users' tracking\r\n\r\nIt tracks anonymous users and merges their preferences into profiles. E.g. an anonymous visitors of a website\r\nlikes a few items before the sign in/ sign up process. After sign up/ sign in the\r\ninformation can be reconciled --information relative to the session ID\r\nis moved into the correspondent user ID entry.\r\n\r\n###Mix recommended items and popular items\r\n\r\nWhat about users who would only receive a couple of recommendations?\r\nNo problem! CSRec will fill the list with the most popular items (nor rated by such users).\r\n\r\n###Algorithms\r\n\r\nAt the moment CSRec only provides purely item-based recommendations\r\n(co-occurence matrix dot the User's ratings array). In this way we can\r\nprovide recommendations in less than 200msec for a matrix of about\r\n10,000 items.\r\n\r\nA simple script\r\n---------------\r\n\r\n\r\n```python\r\nfrom csrec import Recommender\r\nengine = Recommender()\r\n\r\n# Insert items with their properties (e.g. author, tags...)\r\n# NB lists can be passed as json-parseable strings or strings\r\nengine.db.insert_item(item_id='item1', attributes={'author': 'Author A', 'tags': '[\"nice\", \"good\", \"new\"]'})\r\n\r\n# The author field is a list, even if it was passed as a simple string:\r\nassert engine.db.items_tbl['item1']['author'] ==  ['Author A']\r\n\r\nengine.db.insert_item(item_id='item2', attributes={'author': '[\"Author B\", \"Author Z\"]', 'tags': '[\"nice\", \"fair\"]'})\r\nengine.db.insert_item(item_id='item3', attributes={'author': 'Author B', 'tags': '[\"nice\", \"good\"]'})\r\nengine.db.insert_item(item_id='item4', attributes={'author': 'Author C', 'tags': '[\"new\", \"fashion\"]'})\r\n\r\n# The following lines tell the recommender that user1 likes items 1 and 2 but also \"Author A\", \"B\", \"Z\"\r\n# and tags \"nice\", \"good\" and \"fair\"\r\n\r\nengine.db.insert_item_action(user_id='user1', item_id='item1', code=4, item_meaningful_info=['author', 'tags'])\r\nengine.db.insert_item_action(user_id='user1', item_id='item2', code=5, item_meaningful_info=['author', 'tags'])\r\n\r\n# user1 has given a total of 4 points to Author A, 5 to Author B and Z, 4 to tag good, 5 to fair, and 9 to nice:\r\nassert engine.db.tot_categories_user_ratings == {'author': {'user1': {'Author A': 4, 'Author B': 5, 'Author Z': 5}},\r\n'tags': {'user1': {'fair': 5, 'good': 4, 'new': 4, 'nice': 9}}}\r\n\r\n# ...and user2 likes item3, \"Author B\", \"nice\" and \"good\" items:\r\nengine.db.insert_item_action(user_id='user2', item_id='item3', code=5, item_meaningful_info=['author', 'tags'])\r\n\r\n# ...and user3 likes item4, \"Author C\", but we give no information about the tag!\r\nengine.db.insert_item_action(user_id='user3', item_id='item4', code=5, item_meaningful_info=['author'])\r\n\r\n# ...and user4 only goes through the profiling page, and say she likes books tagged as 'new' and 'fashion'\r\nengine.db.insert_item_action(user_id='user4', item_id='item4', code=5, item_meaningful_info=['tags'], only_info=True)\r\n\r\n# We should recommend to user1 items 3 and then 4, etc etc\r\nassert engine.get_recommendations('user1') == ['item3', 'item4']\r\n\r\n# 'user2' signs in and we discover that it's 'user1' who was browsing anonymously\r\nengine.db.reconcile_user('user2', 'user1')\r\n\r\n# now we know user1 liked item1, 2, 3\r\nassert engine.db.users_ratings_tbl['user1'] == {'item1': 4, 'item2': 5, 'item3': 5}\r\n\r\n# so we can only recommend item4\r\nassert engine.get_recommendations('user1') == ['item4']\r\n```\r\n\r\nRemember that the cold start recommender is now only in memory, which means that you must implement a\r\n periodic saving of the data:\r\n\r\n```python\r\n# Save the data from the engine from above\r\nengine.db.serialize('pippo.db')\r\n\r\n# create a new engine with the same data:\r\nnew_engine = Recommender()\r\nnew_engine.db.restore('pippo.db')\r\n```\r\n\r\n\r\nVersions\r\n--------\r\n**v 0.4.0 No backward compatibility with 3**\r\n\r\n* Action of users on users can be saved (see `insert_social_action` in dal.py)\r\n* Various new metrics to monitor users' interaction (see e.g. `get_social_actions` in dal.py)\r\n* No more embedded web service: use [csrec-webapp](https://github.com/elegans-io/csrec-webapp)\r\n* TODO: make \"social\" recommendations based on users saving actions on each other\r\n* Heavy refactoring\r\n* Serialization and de-serialization of the data in a file for backup\r\n* Data Abstraction Layers for memory and mongo.\r\n\r\n**v 0.3.15**\r\n\r\n* It is now a singleton, improved performance when used with, eg, Pyramid\r\n\r\n**v 0.3.14**\r\n\r\n* Minor bugs\r\n\r\n**v 0.3.13**\r\n\r\n* Added self.drop_db\r\n\r\n**v 0.3.12**\r\n\r\n* Bug fixed\r\n\r\n**v 0.3.11**\r\n\r\n* Some debugs messsages added\r\n\r\n**v 0.3.10**\r\n\r\n* Categories can now be a list (or passed as json-parseable string).\r\n  This is important for, eg, tags which can now be passed in a REST API as:\r\n\r\n      curl -X POST \"http://127.0.0.1:8081/insertitem?id=Boo2&author=TheAuthor&cathegory=Horror&tags=scary,terror\"\r\n\r\n* Fixed bug in recommender_api example file\r\n\r\n**v 0.3.8**\r\n\r\n* Sync categories' users and items collections in get_recommendations\r\n\r\n**v 0.3.7**\r\n\r\n* Bug fixing for in-memory\r\n\r\n**v 0.3.5**\r\n\r\n* Added logging\r\n* Added creation of collections for super-cold start (not even one rating, and still user asking for recommendations...)\r\n* Additional info used for recommendations (eg Authors etc) are now stored in the DB\r\n* _sync_user_item_ratings now syncs addition info's collections too\r\n* popular_items now are always returned, even in case of no rating done, and get_recommendations eventually adjusts the order if some profiling has been done \r\n\r\n\r\n.. _Pandas: http://pandas.pydata.org",
+    "docs_url": null,
+    "download_url": "UNKNOWN",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/elegans-io/cold-start-recommender",
+    "keywords": "recommendations,recommender,recommendation engine",
+    "license": "GPL v2",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "cold-start-recommender",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/cold-start-recommender/",
+    "release_url": "https://pypi.org/project/cold-start-recommender/0.4.1/",
+    "requires_python": null,
+    "summary": "In-memory recommender for recommendations produced on-the-fly",
+    "version": "0.4.1"
+  },
+  "releases": {
+    "0.3.10": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e1e5662278c7de3007668d7bba9748b0",
+          "sha256": "aa690dc6c95a56854aedf35ac7e0e6bad693e672617e92727d5a8e08956af851"
+        },
+        "downloads": 1345,
+        "filename": "cold-start-recommender-0.3.10.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e1e5662278c7de3007668d7bba9748b0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10942,
+        "upload_time": "2014-12-04T16:33:08",
+        "url": "https://files.pythonhosted.org/packages/98/9e/bb702cd45fa4c60ae518a5abe344c3aea45118983f5cb498d486ca728ee3/cold-start-recommender-0.3.10.tar.gz"
+      }
+    ],
+    "0.3.11": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "147729c4ad32866a48ebf8ffa970d411",
+          "sha256": "d0f79f701ae86f62c40932762d4f58434a44fe2b0f187844927d8f1a863300b4"
+        },
+        "downloads": 1313,
+        "filename": "cold-start-recommender-0.3.11.tar.gz",
+        "has_sig": false,
+        "md5_digest": "147729c4ad32866a48ebf8ffa970d411",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 11019,
+        "upload_time": "2014-12-11T09:55:31",
+        "url": "https://files.pythonhosted.org/packages/db/da/48be28fa273eff40406e8d8a4887f666bfc8d832db6b830cce959a4c111f/cold-start-recommender-0.3.11.tar.gz"
+      }
+    ],
+    "0.3.12": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "75eb25260c4f3d904399f1fba8ca678c",
+          "sha256": "fc478ccffd31901e4dcb2b904e1da0673c95381c947a35a3a78011f2e45624ec"
+        },
+        "downloads": 1326,
+        "filename": "cold-start-recommender-0.3.12.tar.gz",
+        "has_sig": false,
+        "md5_digest": "75eb25260c4f3d904399f1fba8ca678c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 11036,
+        "upload_time": "2014-12-11T18:13:40",
+        "url": "https://files.pythonhosted.org/packages/05/51/1103343e1494b58e7fb84de527a7b30d06a0a59178c9cf48724890aa975d/cold-start-recommender-0.3.12.tar.gz"
+      }
+    ],
+    "0.3.13": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a56a9eb398e17da2be4506c3f0128abd",
+          "sha256": "cee4ed7b607190a7635929cbca79ac841497151e934358a349f1cc8471df1a79"
+        },
+        "downloads": 1315,
+        "filename": "cold-start-recommender-0.3.13.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a56a9eb398e17da2be4506c3f0128abd",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 11192,
+        "upload_time": "2014-12-28T11:11:13",
+        "url": "https://files.pythonhosted.org/packages/11/18/31e38c91ee23a96d744c0414a2ae8d66913024a4513ec3e6156be63a9757/cold-start-recommender-0.3.13.tar.gz"
+      }
+    ],
+    "0.3.14": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e3e8ff7e824b47d9f2e764c4efb4fd43",
+          "sha256": "b3fb21a1d4288de8a62a97a123f281d4a6b081d9335a4a75740e7b55c1edf1dd"
+        },
+        "downloads": 1258,
+        "filename": "cold-start-recommender-0.3.14.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e3e8ff7e824b47d9f2e764c4efb4fd43",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 11186,
+        "upload_time": "2015-01-11T17:11:13",
+        "url": "https://files.pythonhosted.org/packages/a4/dd/ab4ee4a56e843a97d3f586249affaa98475581acd0b68f4f887bddd52c94/cold-start-recommender-0.3.14.tar.gz"
+      }
+    ],
+    "0.3.15": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "adf3115dd727fc89cb27d8f11597d466",
+          "sha256": "8e3a3d4255836f9e54002a2b8a8af496a8def6539c78e423e3cef5a5acffd0b6"
+        },
+        "downloads": 1436,
+        "filename": "cold-start-recommender-0.3.15.tar.gz",
+        "has_sig": false,
+        "md5_digest": "adf3115dd727fc89cb27d8f11597d466",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 11704,
+        "upload_time": "2015-01-19T09:15:38",
+        "url": "https://files.pythonhosted.org/packages/ca/c6/c63ac12747cc1916a05fd163c3a171392bd1deb2be5e094e6df04669a562/cold-start-recommender-0.3.15.tar.gz"
+      }
+    ],
+    "0.3.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8680e0c0beb502d63c9ba2bae75f2ad8",
+          "sha256": "e025b79cf54597acf56f37551993c72f30460e286c977cfc4bcdcb468855a8cf"
+        },
+        "downloads": 1747,
+        "filename": "cold-start-recommender-0.3.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8680e0c0beb502d63c9ba2bae75f2ad8",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 5732,
+        "upload_time": "2014-07-28T15:10:47",
+        "url": "https://files.pythonhosted.org/packages/84/f6/341c0af1e2ba549f04427f7098958ef80a0e1439df87be73a1640d8ba2db/cold-start-recommender-0.3.2.tar.gz"
+      }
+    ],
+    "0.3.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ffaa3c4530ed16c680f203a2ce3237c1",
+          "sha256": "0546e462e711ee59b71984ba08c12c2415999fb005fff529d2c7b7422e953208"
+        },
+        "downloads": 1733,
+        "filename": "cold-start-recommender-0.3.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ffaa3c4530ed16c680f203a2ce3237c1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 5552,
+        "upload_time": "2014-07-28T15:25:52",
+        "url": "https://files.pythonhosted.org/packages/93/ae/29c1bc0bcdd2549c8556f6007bfc0627c63e20cb526d08a03f68d6f68ddf/cold-start-recommender-0.3.3.tar.gz"
+      }
+    ],
+    "0.3.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4e58f2223e7ea20405de159d9bec91c4",
+          "sha256": "88e9580d47eff238466bf9bf65329052dc8d0426aa3d99fa8c6e505784324c26"
+        },
+        "downloads": 1742,
+        "filename": "cold-start-recommender-0.3.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4e58f2223e7ea20405de159d9bec91c4",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 5565,
+        "upload_time": "2014-07-28T17:09:32",
+        "url": "https://files.pythonhosted.org/packages/8f/a7/6c83f6f01a1db58239006615c568ed637c50755bd30e7bc6b8cc1a5e8342/cold-start-recommender-0.3.4.tar.gz"
+      }
+    ],
+    "0.3.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4dd58f34464296869f7f29f7ab891c45",
+          "sha256": "46307cf5f2b163befdcf5ac675e30c2c13f618a8fe932d4efd05a2f5d34cc2e3"
+        },
+        "downloads": 1705,
+        "filename": "cold-start-recommender-0.3.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4dd58f34464296869f7f29f7ab891c45",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10097,
+        "upload_time": "2014-08-01T10:14:46",
+        "url": "https://files.pythonhosted.org/packages/54/11/6f0a7d3dcab29c4071164bad75caf8be366aff4b745573d62882a4956a43/cold-start-recommender-0.3.5.tar.gz"
+      }
+    ],
+    "0.3.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9325aa2fe522799d959dce6af60b1c58",
+          "sha256": "d0c578d1d4f9bb87af5739c158f0a1bebac20b2180cbd833f78f7e2f13015e73"
+        },
+        "downloads": 1675,
+        "filename": "cold-start-recommender-0.3.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "9325aa2fe522799d959dce6af60b1c58",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 7579,
+        "upload_time": "2014-08-01T10:22:39",
+        "url": "https://files.pythonhosted.org/packages/a7/af/f873a1e79c0059fe7586f636815a666ac023bcf36301d7eb8805e1d7bdeb/cold-start-recommender-0.3.6.tar.gz"
+      }
+    ],
+    "0.3.7": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f976861cf02dd12c89bc402cda3e68ba",
+          "sha256": "e815b57a1bd9182dab028998a6f6e6394467875ffb7e8a2594c8a00995025d4e"
+        },
+        "downloads": 1683,
+        "filename": "cold-start-recommender-0.3.7.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f976861cf02dd12c89bc402cda3e68ba",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 7690,
+        "upload_time": "2014-08-01T13:44:57",
+        "url": "https://files.pythonhosted.org/packages/e0/1a/b9ae3ab73e52e3cee8030f06cc204ff3a8ad9944a4e94e6186897c5598f7/cold-start-recommender-0.3.7.tar.gz"
+      }
+    ],
+    "0.3.8": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2ec5e535a16b37d69297e973666b9b26",
+          "sha256": "abde58b45374994ce0052c2be184969b3e795262607639f08219a2a740b3319c"
+        },
+        "downloads": 2073,
+        "filename": "cold-start-recommender-0.3.8.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2ec5e535a16b37d69297e973666b9b26",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10225,
+        "upload_time": "2014-08-02T10:27:28",
+        "url": "https://files.pythonhosted.org/packages/6d/58/7e48fb6187702f1f817d2cd2eb490bb6f75f020c9ef32e671ed5da959a05/cold-start-recommender-0.3.8.tar.gz"
+      }
+    ],
+    "0.3.9": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a0da7aa92c27957da290cead39428487",
+          "sha256": "65889dae9e882fee33f196e394da4006ebb084b1b97934f29c7de4bd62cd4293"
+        },
+        "downloads": 1661,
+        "filename": "cold-start-recommender-0.3.9.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a0da7aa92c27957da290cead39428487",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10337,
+        "upload_time": "2014-08-28T13:57:42",
+        "url": "https://files.pythonhosted.org/packages/77/21/d096b0d5e8c51b1cf8144d5d4b9d4727f75a9003eb41f9830cc176779201/cold-start-recommender-0.3.9.tar.gz"
+      }
+    ],
+    "0.4.0": [],
+    "0.4.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "93299f5bc078834332a7fd2e88ef8cc3",
+          "sha256": "506eafd85029b191956d000fe03d6fed449b730c8da80ff1d382c0d13f1b06c5"
+        },
+        "downloads": 292,
+        "filename": "cold-start-recommender-0.4.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "93299f5bc078834332a7fd2e88ef8cc3",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 35058,
+        "upload_time": "2016-02-01T19:53:04",
+        "url": "https://files.pythonhosted.org/packages/4b/5a/3fc29a351a7bdabfc1294792754d2b15c6c5384d32965aa6d6c1f71bc06f/cold-start-recommender-0.4.1.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "93299f5bc078834332a7fd2e88ef8cc3",
+        "sha256": "506eafd85029b191956d000fe03d6fed449b730c8da80ff1d382c0d13f1b06c5"
+      },
+      "downloads": 292,
+      "filename": "cold-start-recommender-0.4.1.tar.gz",
+      "has_sig": false,
+      "md5_digest": "93299f5bc078834332a7fd2e88ef8cc3",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 35058,
+      "upload_time": "2016-02-01T19:53:04",
+      "url": "https://files.pythonhosted.org/packages/4b/5a/3fc29a351a7bdabfc1294792754d2b15c6c5384d32965aa6d6c1f71bc06f/cold-start-recommender-0.4.1.tar.gz"
+    }
+  ]
+}

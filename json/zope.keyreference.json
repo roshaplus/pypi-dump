@@ -1,0 +1,228 @@
+{
+  "info": {
+    "author": "Zope Foundation and Contributors",
+    "author_email": "zope-dev@zope.org",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 5 - Production/Stable",
+      "Environment :: Web Environment",
+      "Framework :: Zope3",
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: Zope Public License",
+      "Natural Language :: English",
+      "Operating System :: OS Independent",
+      "Programming Language :: Python",
+      "Programming Language :: Python :: 2",
+      "Programming Language :: Python :: 2.6",
+      "Programming Language :: Python :: 2.7",
+      "Programming Language :: Python :: 3",
+      "Programming Language :: Python :: 3.3",
+      "Programming Language :: Python :: 3.4",
+      "Programming Language :: Python :: Implementation :: CPython",
+      "Programming Language :: Python :: Implementation :: PyPy",
+      "Topic :: Internet :: WWW/HTTP"
+    ],
+    "description": "``zope.keyreference``\n=====================\n\nObject references that support stable comparison and hashes.\n\n\nDetailed Documentation\n----------------------\n\n\n=====================================\nKey References for Persistent Objects\n=====================================\n\n`zope.keyreference.persistent.KeyReferenceToPersistent` provides an\n`zope.keyreference.interfaces.IKeyReference` reference for persistent\nobjects.\n\nLet's look at an example. First, we'll create some persistent objects\nin a database:\n\n    >>> from ZODB.MappingStorage import DB\n    >>> import transaction\n    >>> from persistent.mapping import PersistentMapping\n\n    >>> db = DB()\n    >>> conn = db.open()\n    >>> root = conn.root()\n\n    >>> root['ob1'] = PersistentMapping()\n    >>> root['ob2'] = PersistentMapping()\n\n    >>> transaction.commit()\n\nThen we'll create some key references:\n\n    >>> from zope.keyreference.persistent import KeyReferenceToPersistent\n\n    >>> key1 = KeyReferenceToPersistent(root['ob1'])\n    >>> key2 = KeyReferenceToPersistent(root['ob2'])\n\nWe can call the keys to get the objects:\n\n    >>> key1() is root['ob1'], key2() is root['ob2']\n    (True, True)\n\nNew keys to the same objects are equal to the old:\n\n    >>> KeyReferenceToPersistent(root['ob1']) == key1\n    True\n\nand have the same hashes:\n\n    >>> hash(KeyReferenceToPersistent(root['ob1'])) == hash(key1)\n    True\n\nOther key reference implementations are differed by their key type id.\nKey references should sort first on their key type and second on any\ntype-specific information:\n\n    >>> from zope.interface import implementer\n    >>> from zope.keyreference.interfaces import IKeyReference\n\n    >>> @implementer(IKeyReference)\n    ... class DummyKeyReference(object):\n    ...     key_type_id = 'zope.app.keyreference.object'\n    ...     def __init__(self, obj):\n    ...         self.object = obj\n    ...     def _get_cmp_keys(self, other):\n    ...          if self.key_type_id == other.key_type_id:\n    ...              return self.object, other.object\n    ...          return self.key_type_id, other.key_type_id\n    ...     def __cmp__(self, other):\n    ...         return cmp(*self._get_cmp_keys(other))\n    ...     def __eq__(self, other):\n    ...         a, b = self._get_cmp_keys(other)\n    ...         return a == b\n    ...     def __lt__(self, other):\n    ...         a, b = self._get_cmp_keys(other)\n    ...         return a < b\n    ...     def __ne__(self, other):\n    ...         a, b = self._get_cmp_keys(other)\n    ...         return a != b\n    ...     def __gt__(self, other):\n    ...         a, b = self._get_cmp_keys(other)\n    ...         return a > b\n    ...     def __le__(self, other):\n    ...         a, b = self._get_cmp_keys(other)\n    ...         return a <= b\n    ...     def __ge__(self, other):\n    ...         a, b = self._get_cmp_keys(other)\n    ...         return a >= b\n\n    >>> dummy_key1 = DummyKeyReference(1)\n    >>> dummy_key2 = DummyKeyReference(2)\n    >>> dummy_key3 = DummyKeyReference(3)\n\n    >>> keys = [key1, dummy_key1, dummy_key2, key2, dummy_key3]\n    >>> keys.sort()\n    >>> key_type_ids = [key.key_type_id for key in keys]\n    >>> key_type_ids[0:3].count('zope.app.keyreference.object')\n    3\n    >>> key_type_ids[3:].count('zope.app.keyreference.persistent')\n    2\n\nWe'll store the key references in the database:\n\n    >>> root['key1'] = key1\n    >>> root['key2'] = key2\n\nand use the keys to store the objects again:\n\n    >>> root[key1] = root['ob1']\n    >>> root[key2] = root['ob2']\n\n    >>> transaction.commit()\n\nNow we'll open another connection:\n\n    >>> conn2 = db.open()\n\nAnd verify that we can use the keys to look up the objects:\n\n    >>> root2 = conn2.root()\n    >>> key1 = root2['key1']\n    >>> root2[key1] is root2['ob1']\n    True\n    >>> key2 = root2['key2']\n    >>> root2[key2] is root2['ob2']\n    True\n\nand that we can also call the keys to get the objects:\n\n    >>> key1() is root2['ob1']\n    True\n    >>> key2() is root2['ob2']\n    True\n\nWe can't get the key reference for an object that hasn't been saved\nyet:\n\n    >>> KeyReferenceToPersistent(PersistentMapping())\n    ... # doctest: +ELLIPSIS\n    Traceback (most recent call last):\n    ...\n    NotYet: ...\n\nNote that we get a NotYet error. This indicates that we might be able\nto get a key reference later.\n\nWe can get references to unsaved objects if they have an adapter to\n`ZODB.interfaces.IConnection`.  The `add` method on the connection\nwill be used to give the object an object id, which is enough\ninformation to compute the reference.  To see this, we'll create an\nobject that conforms to `IConnection` in a silly way:\n\n    >>> import persistent\n    >>> from ZODB.interfaces import IConnection\n    >>> class C(persistent.Persistent):\n    ...     def __conform__(self, iface):\n    ...         if iface is IConnection:\n    ...             return conn2\n\n    >>> ob3 = C()\n    >>> key3 = KeyReferenceToPersistent(ob3)\n    >>> transaction.abort()\n\nConflict Resolution\n-------------------\n\nDuring conflict resolution, as discussed in ZODB/ConflictResolution.txt,\nreferences to persistent objects are actually instances of\nZODB.ConflictResolution.PersistentReference.  This is pertinent in two ways\nfor KeyReferenceToPersistent.  First, it explains a subtlety of the class: it\ndoes not inherit from persistent.Persistent.  If it did, it would not be\navailable for conflict resolution, just its PersistentReference stand-in.\n\nSecond, it explains some of the code in the __hash__ and __cmp__\nmethods. These methods not only handle persistent.Persistent objects,\nbut PersistentReference objects.  Without this behavior, objects, such\nas the classic ZODB BTrees, that use KeyReferenceToPersistent as keys or\nset members will be unable to resolve conflicts.  Even with the special\ncode, in some cases the KeyReferenceToPersistent will refuse to compare\nand hash during conflict resolution because it cannot reliably do so.\n\n__hash__ will work relatively rarely during conflict resolution: only for\nmultidatabase references.  Here are a couple of examples.\n\n    >>> from ZODB.ConflictResolution import PersistentReference\n\n    >>> def factory(ref):\n    ...     res = KeyReferenceToPersistent.__new__(\n    ...         KeyReferenceToPersistent, ref)\n    ...     res.object = ref\n    ...     return res\n    ...\n\n    >>> hash(factory(PersistentReference(\n    ...     ('an oid', 'class metadata')))) # a typical reference\n    Traceback (most recent call last):\n    ...\n    ValueError: database name unavailable at this time\n\n    >>> bool(hash(factory(PersistentReference(\n    ...     ['m', ('a database', 'an oid', 'class metadata')])))) # multidatabase\n    True\n\nThis means that KeyReferenceToPersistent will often hinder conflict resolution\nfor classes such as PersistentMapping.\n\n__cmp__ works unless one object is a multidatabase reference and the other is\nnot.  Here are a few examples.\n\n    >>> def cmp(a, b):\n    ...    return (a > b) - (a < b)\n\n    >>> cmp(factory(PersistentReference(\n    ...         (b'an oid', 'class metadata'))),\n    ...     factory(PersistentReference(\n    ...         (b'an oid', 'class metadata'))))\n    0\n\n    >>> cmp(factory(PersistentReference(\n    ...         (b'an oid', 'class metadata'))),\n    ...     factory(PersistentReference(\n    ...         (b'another oid', 'class metadata'))))\n    -1\n\n    >>> cmp(factory(PersistentReference(b'an oid')),\n    ...     factory(PersistentReference(\n    ...         (b'an oid', 'class metadata'))))\n    0\n\n    >>> cmp(factory(PersistentReference(b'an oid')),\n    ...     factory(PersistentReference(\n    ...         (b'an oid', 'class metadata'))))\n    0\n\n    >>> cmp(factory(PersistentReference(\n    ...         ['m', ('a database', b'an oid', 'class metadata')])),\n    ...     factory(PersistentReference(\n    ...         ['m', ('a database', b'an oid', 'class metadata')])))\n    0\n\n    >>> cmp(factory(PersistentReference(\n    ...         ['m', ('a database', b'an oid', 'class metadata')])),\n    ...     factory(PersistentReference(\n    ...         ['n', ('a database', b'an oid')])))\n    0\n\n    >>> cmp(factory(PersistentReference(\n    ...         ['m', ('a database', b'an oid', 'class metadata')])),\n    ...     factory(PersistentReference(\n    ...         ['m', ('another database', b'an oid', 'class metadata')])))\n    -1\n\n    >>> cmp(factory(PersistentReference(\n    ...         ['m', ('a database', b'an oid', 'class metadata')])),\n    ...     factory(PersistentReference(\n    ...         (b'an oid', 'class metadata'))))\n    Traceback (most recent call last):\n    ...\n    ValueError: cannot sort reliably\n\nLocation-based connection adapter\n---------------------------------\n\nThe function `zope.keyreference.connectionOfPersistent` adapts\nobjects to connections using a simple location-based heuristic. It\nchecked to see if the object has a `__parent__` that has a connection:\n\n    >>> from zope.keyreference.persistent import connectionOfPersistent\n    >>> ob3 = PersistentMapping()\n    >>> print(connectionOfPersistent(ob3))\n    None\n\n    >>> ob3.__parent__ = root2['ob1']\n    >>> connectionOfPersistent(ob3) is conn2\n    True\n\n\nChanges\n=======\n\n4.1.0 (2014-12-27)\n--------------------\n\n- Add support for PyPy (PyPy3 blocked on PyPy3-compatible ``zodbpickle``).\n\n- Add support for Python 3.4.\n\n\n4.0.0 (2014-12-20)\n--------------------\n\n- Add support for testing on Travis.\n\n\n4.0.0a2 (2013-02-25)\n--------------------\n\n- Ensure that the ``SimpleKeyReference`` implementation (used for testing)\n  also implements rich comparison properly.\n\n\n4.0.0a1 (2013-02-22)\n--------------------\n\n- Add support for Python 3.3.\n\n- Replace deprecated ``zope.component.adapts`` usage with equivalent\n  ``zope.component.adapter`` decorator.\n\n- Replace deprecated ``zope.interface.implements`` usage with equivalent\n  ``zope.interface.implementer`` decorator.\n\n- Drop support for Python 2.4 and 2.5.\n\n\n3.6.4 (2011-11-30)\n------------------\n\n- Fix tests broken by removal of ``zope.testing`` from test dependencies:\n  avoid the ``ZODB3`` module that needs it.\n\n3.6.3 (2011-11-29)\n------------------\n\n- Prefer the standard libraries doctest module to the one from ``zope.testing``.\n\n3.6.2 (2009-09-15)\n------------------\n\n- Make the tests pass with ZODB3.9, which changed the repr() of the persistent\n  classes.\n\n3.6.1 (2009-02-01)\n------------------\n\n- Load keyreferences, pickled by old zope.app.keyreference even\n  if its not installed anymore (so don't break if one updates a\n  project that don't directly depends on zope.app.keyreference).\n\n3.6.0 (2009-01-31)\n------------------\n\n- Rename ``zope.app.keyreference`` to ``zope.keyreference``.",
+    "docs_url": null,
+    "download_url": "UNKNOWN",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "http://pypi.python.org/pypi/zope.keyreference",
+    "keywords": "zope3 key reference persistent",
+    "license": "ZPL 2.1",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "zope.keyreference",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/zope.keyreference/",
+    "release_url": "https://pypi.org/project/zope.keyreference/4.1.0/",
+    "requires_python": null,
+    "summary": "Key References",
+    "version": "4.1.0"
+  },
+  "releases": {
+    "3.6.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "921678871f64c8151c2f5e555c2037eb",
+          "sha256": "67a06e55aac2d56a3f10564c916241612cff6e21a6d4ddba2d8970c539e919aa"
+        },
+        "downloads": 2724,
+        "filename": "zope.keyreference-3.6.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "921678871f64c8151c2f5e555c2037eb",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 8419,
+        "upload_time": "2009-01-31T18:31:57",
+        "url": "https://files.pythonhosted.org/packages/6f/ab/e1bb93f789f52fb20af65122c6612a980572fe8393e314da55b39b81c9d7/zope.keyreference-3.6.0.tar.gz"
+      }
+    ],
+    "3.6.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8264fe2aeedde54e24b80476f3d47036",
+          "sha256": "425ab325a007256d76944b75b672d4251c5b5b0816b1902070aea3b1e76a5f58"
+        },
+        "downloads": 7501,
+        "filename": "zope.keyreference-3.6.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8264fe2aeedde54e24b80476f3d47036",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 8699,
+        "upload_time": "2009-02-01T18:47:11",
+        "url": "https://files.pythonhosted.org/packages/09/66/f605e8996b6d491e787761a8fca96fa3dd814f8820fc5951a7468785d60f/zope.keyreference-3.6.1.tar.gz"
+      }
+    ],
+    "3.6.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5ca5e64db7bc89b7721417e83ffb40e6",
+          "sha256": "f9a4b8f360993844259a0b1a0e77e05bc64ac18045c3ae020e80dd64a8ad796f"
+        },
+        "downloads": 32389,
+        "filename": "zope.keyreference-3.6.2.zip",
+        "has_sig": true,
+        "md5_digest": "5ca5e64db7bc89b7721417e83ffb40e6",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 19723,
+        "upload_time": "2009-09-15T14:37:16",
+        "url": "https://files.pythonhosted.org/packages/c8/99/cb0f648c56d6f302366e74b4c8757a1a8f70eef6d5e2c65ec89141ba4f89/zope.keyreference-3.6.2.zip"
+      }
+    ],
+    "3.6.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "23b23f0c954173d4ab01448d6a51e536",
+          "sha256": "ced167802d6807be5f415e8ee27ab6fe3338d3293b4cc5e0b653ee5cf017f468"
+        },
+        "downloads": 2635,
+        "filename": "zope.keyreference-3.6.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "23b23f0c954173d4ab01448d6a51e536",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10569,
+        "upload_time": "2011-11-29T19:02:14",
+        "url": "https://files.pythonhosted.org/packages/35/0f/ccf19fe4ece8c75e5974486bcd6dc7381ad6b9991cea7c49b4ac5e35dded/zope.keyreference-3.6.3.tar.gz"
+      }
+    ],
+    "3.6.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3774c90f236f880547f4c042ee0997e9",
+          "sha256": "8cd20b29e3e9ff5ab78212470d87585358c14f08cdfbd153cfb50bbeba8335fc"
+        },
+        "downloads": 65415,
+        "filename": "zope.keyreference-3.6.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3774c90f236f880547f4c042ee0997e9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10682,
+        "upload_time": "2011-11-30T11:14:24",
+        "url": "https://files.pythonhosted.org/packages/7b/1a/ca9335023253a369cfd3334dfaa43e96e57f1c065d5c4d429f1baa1a830d/zope.keyreference-3.6.4.tar.gz"
+      }
+    ],
+    "4.0.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "69f22ccb867f8bc9a381d78c835d9af3",
+          "sha256": "b21fea2a019ff5f62dcb621011ab23bfc857528faca8fa6a9fb819e8ccb94f72"
+        },
+        "downloads": 1746,
+        "filename": "zope.keyreference-4.0.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "69f22ccb867f8bc9a381d78c835d9af3",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 13737,
+        "upload_time": "2014-12-21T03:45:07",
+        "url": "https://files.pythonhosted.org/packages/10/01/e0a19779b50e4acad1090e1143ab23fe37b1d674deebee809cd009263379/zope.keyreference-4.0.0.tar.gz"
+      }
+    ],
+    "4.0.0a1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "983fc46f8c72850c06b8698557774cf2",
+          "sha256": "ed2c95f47516951272aadcd31b7008f0e59224c82cf25bea0cf2d3379742131d"
+        },
+        "downloads": 1992,
+        "filename": "zope.keyreference-4.0.0a1.zip",
+        "has_sig": false,
+        "md5_digest": "983fc46f8c72850c06b8698557774cf2",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 24389,
+        "upload_time": "2013-02-23T02:27:05",
+        "url": "https://files.pythonhosted.org/packages/80/f8/e1fa1268f4d3055e6f28a429e02e9c2f6f8e2e3d732e68c4272a1b19d09a/zope.keyreference-4.0.0a1.zip"
+      }
+    ],
+    "4.0.0a2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "560090441e589636c967b61474d9fb3e",
+          "sha256": "2d42381eb985ddbad853e15caa2f5142430018407aa94f5e5d0389c5138532ef"
+        },
+        "downloads": 6083,
+        "filename": "zope.keyreference-4.0.0a2.zip",
+        "has_sig": false,
+        "md5_digest": "560090441e589636c967b61474d9fb3e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 24664,
+        "upload_time": "2013-02-25T22:16:11",
+        "url": "https://files.pythonhosted.org/packages/a2/44/3bcc7cdadb09dde251285109aa53df7b3044511c080b3cd2fb92f8076e3c/zope.keyreference-4.0.0a2.zip"
+      }
+    ],
+    "4.1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "09eb4f63d5c83822add0cd4cd76c35db",
+          "sha256": "e697a29a81886e5f1f584084da54d34f04a9fd5155e031cf0de7979ac2495bcf"
+        },
+        "downloads": 3121,
+        "filename": "zope.keyreference-4.1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "09eb4f63d5c83822add0cd4cd76c35db",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16472,
+        "upload_time": "2014-12-27T22:06:34",
+        "url": "https://files.pythonhosted.org/packages/27/be/44b701c20fda905cd2fd638c97df33154873bf3548f630db1f5afd64ae4f/zope.keyreference-4.1.0.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "09eb4f63d5c83822add0cd4cd76c35db",
+        "sha256": "e697a29a81886e5f1f584084da54d34f04a9fd5155e031cf0de7979ac2495bcf"
+      },
+      "downloads": 3121,
+      "filename": "zope.keyreference-4.1.0.tar.gz",
+      "has_sig": false,
+      "md5_digest": "09eb4f63d5c83822add0cd4cd76c35db",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 16472,
+      "upload_time": "2014-12-27T22:06:34",
+      "url": "https://files.pythonhosted.org/packages/27/be/44b701c20fda905cd2fd638c97df33154873bf3548f630db1f5afd64ae4f/zope.keyreference-4.1.0.tar.gz"
+    }
+  ]
+}

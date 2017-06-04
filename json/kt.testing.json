@@ -1,0 +1,107 @@
+{
+  "info": {
+    "author": "Fred L. Drake, Jr.",
+    "author_email": "fred@fdrake.net",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: BSD License",
+      "Programming Language :: Python :: 2.7",
+      "Topic :: Software Development :: Testing"
+    ],
+    "description": "=============================================\n``kt.testing`` - Test harness support library\n=============================================\n\nApplications that make use of large frameworks often need to mock or\nstub out portions of those APIs in ways that provide a consistent view\non the resources that API exposes.  A test fixture often wants to\nestablish a particular state for the API at a higher level than that of\nindividual API calls; this is especially the case if an API provides\nmore than one way to do things.  How the code under test uses the\nunderlying API is less interesting than the information exposed by the\nAPI and the operations performed on it.\n\nThere are a number of ways to approach these situations using tests\nbased on ``unittest.TestCase`` (or similar) fixtures.  Too often, these\nbecome tangled messes where test authors have to pay attention to\nimplementation details of base and mix-in classes to avoid support for\ndifferent APIs interfering with each other's internal state.\n\nThis library approaches the problem by allowing APIs that support test\ncontrol of other frameworks or libraries to be independent components.\nThese *fixture components* can:\n\n- access the test object,\n\n- be involved in setup and teardown,\n\n- provide cleanup handlers,\n\n- provide APIs for tests to configure the behavior of the APIs they\n  manage, and\n\n- provide additional assertion methods specific to what they do.\n\nThese components can inject themselves into the APIs they manage in\nwhatever ways are appropriate (using ``mock.patch``, for example).\n\n\nRelease history\n---------------\n\n\n1.2.0 (2016-09-20)\n~~~~~~~~~~~~~~~~~~\n\nNew features:\n\n- ``kt.testing.requests.RequestInfo`` object encapsulates information\n  received by ``requests`` from the application.  This replaces a\n  5-tuple stored in the ``requests`` attribute of the fixture component\n  ``kt.testing.requests.Requests``, and provides named access to parts\n  of the provided data, for better readability in tests.\n\n\n1.1.0 (2016-05-10)\n~~~~~~~~~~~~~~~~~~\n\nNew features:\n\n- ``kt.testing.requests.Requests`` methods ``add_error`` and\n  ``add_response`` grew a new, optional parameter, ``filter``, which\n  accepts a callable wit the same signature as ``requests.request``.\n  The result is a Boolean value that indicates whether request should be\n  considered a match for the response.  The filter function will only be\n  called if the method and URL match.\n\n  This can be used to check whether request body matches some\n  expectation.  This can be especially valuable for RPC-type interfaces\n  (XML-RPC or SOAP, for example).\n\n- New ``kt.testing.requests.Requests`` methods: ``add_connect_timeout``,\n  ``add_read_timeout``, ``add_unreachable_host``, to add the\n  corresponding exceptions to the set of configured responses.\n\n\n1.0.0 (2016-03-21)\n~~~~~~~~~~~~~~~~~~\n\nInitial public release of library initialy created for internal use at\n`Keeper Technology`_.\n\n\nImplementing fixture components\n-------------------------------\n\nFixture components are defined by a factory object, usually a class, and\nare expected to provide a slim API for the harness.  Let's look at a\nsimple but complete, usable example::\n\n  import logging\n\n\n  class TestLoggingHandler(logging.StreamHandler):\n\n      def __init__(self, stream, records):\n          self.records = records\n          super(TestLoggingHandler, self).__init__(stream)\n\n      def handle(self, record):\n          self.records.append(record)\n          super(TestLoggingHandler, self).handle(record)\n\n\n  class LoggingFixture(object):\n\n      def __init__(self, test, name=None):\n          self.test = test\n          self.name = name\n\n      def setup(self):\n          sio = cStringIO.StringIO()\n          self.output = sio.getvalue\n          self.records = []\n          handler = TestLoggingHandler(sio, self.records)\n          logger = logging.getLogger(self.name)\n          logger.addHandler(handler)\n          self.test.addCleanup(logger.removeHandler, handler)\n\nUsing this from a test fixture is straightforward::\n\n  import unittest\n\n\n  class TestMyThing(unittest.TestCase):\n\n      logging = kt.testing.compose(LoggingFixture)\n\n      def test_some_logging(self):\n          logging.getLogger('my.package').error('not happy')\n\n          record = self.logging.records[-1]\n\n          self.assertEqual(record.getMessage(), 'not happy')\n          self.assertEqual(record.levelname, 'ERROR')\n\nFixture components may also provide a ``teardown`` method that takes no\narguments (aside from self).  These are called after the ``tearDown``\nmethod of the test case is invoked, and do not require that method to be\nsuccessful.  (They are invoked as cleanup functions of the test case.)\n\nConstructor arguments for the fixture component can be provided with\n``kt.testing.compose``, but note that the test case instance will always\nbe passed as the first positional argument::\n\n  class TestMyThing(unittest.TestCase):\n\n      logging = kt.testing.compose(LoggingFixture, name='my.package')\n\n      def test_some_logging(self):\n          logging.getLogger('your.package').error('not happy')\n\n          with self.assertRaises(IndexError):\n              self.logging.records[-1]\n\nEach instance of the test case class will get it's own instance of the\nfixture components, accessible via the properties defined using\n``kt.testing.compose``.  These instances will already be available when\nthe ``__init__`` method of the test case is invoked.\n\nIf the test class overrides the ``setUp`` method, it will need to ensure\nthe superclass ``setUp`` is invoked so the ``setup`` method of the\nfixture components are invoked::\n\n  class TestSomeThing(unittest.TestCase):\n\n      logging = kt.testing.compose(LoggingFixture, name='my.package')\n\n      def setUp(self):\n          super(TestSomeThing, self).setUp()\n          # more stuff here\n\nNote that the ``setUp`` didn't invoke ``unittest.TestCase.setUp``\ndirectly.  Since ``kt.testing.compose`` can cause an additional mix-in\nclass to be added, ``super`` is the way to go unless you're specifically\nusing a base class that's known to have the right mix-in already mixed.\n\n\nMultiple fixtures and test inheritance\n--------------------------------------\n\nMultiple fixture components of the same or different types can be added\nfor a single test class::\n\n  class TestMyThing(unittest.TestCase):\n\n      my = kt.testing.compose(LoggingFixture, name='my.package')\n      your = kt.testing.compose(LoggingFixture, name='your.package')\n\n      def test_different(self):\n          self.assertIsNot(self.my, self.your)\n\nBase classes that use fixture components will be properly initialized,\nand properties can be aliased and overridden in ways that make sense::\n\n  class TestAnotherThing(TestMyThing):\n\n      orig_my = TestMyThing.my\n      my = kt.testing.compose(LoggingFixture, name='my.another')\n\n      def test_different(self):\n          self.assertIsNot(self.my, self.your)\n          self.assertIsNot(self.orig_my, self.your)\n          self.assertIsNot(self.orig_my, self.my)\n\n          self.assertEqual(self.my.name, 'my.another')\n          self.assertEqual(self.orig_my.name, 'my.package')\n          self.assertEqual(self.your.name, 'your.package')\n\n\n``kt.testing.requests`` - Intercession for ``requests``\n-------------------------------------------------------\n\nMany applications (and other libraries) use the ``requests`` package to\nretrieve resources identified by URL.  It's often reasonable to use\n``mock`` directly to handle requests for resources in tests, but\nsometimes a little more is warranted.  The ``requests`` library provides\nmultiple ways to trigger particular requests, and applications usually\nshouldn't care which is used to make a request.\n\nA fixture component for ``requests`` is provided::\n\n  class TestMyApplication(unittest.TestCase):\n\n      requests = kt.testing.compose(kt.testing.requests.Requests)\n\nA default response entity can be provided via constructor arguments\npassed through ``compose``.  The body and content-type can both be\nprovided::\n\n  class TestMyApplication(unittest.TestCase):\n\n      requests = kt.testing.compose(\n          kt.testing.requests.Requests,\n          body='{\"success\": true, \"value\": \"let's have some json data\"}',\n          content_type='application/json',\n      )\n\nIf the default response entity is not defined, an empty body of type\ntext/plain is used.\n\nThe fixture provides these methods for configuring responses for\nparticular requests by URL:\n\n``add_response(method, url, status=200, body=None, headers={})``\n    Provide a particular response for a given URL and request method.\n    Other aspects of the request are not considered for identifying what\n    response to provide.\n\n    If the response status indicates an entity is allowed in the\n    response and `body` is provided as ``None``, the default body and\n    content-type will be returned.  This will be an empty string unless\n    some other value is provided to the fixture component constructor.\n    If the status indicates no entity should be returned, an empty body\n    will be used.\n\n    The provided information will be used to create a response that is\n    returned by the ``requests`` API.\n\n``add_error(method, url, exception)``\n    Provide an exception that should be raised when a particular\n    resource is requested.  This can be used to simulate errors such as\n    a non-responsive server or DNS resolution failure.  Only the URL and\n    request method are considered for identifying what response to\n    provide.\n\nIf a request is made that does match any provided response, an\n``AssertionError`` is raised; this will normally cause a test to fail,\nunless the code under test catches exceptions too aggressively.\n\nA test that completes without consuming all configured responses will\ncause an ``AssertionError`` to be raised during teardown.  Test runners\nbased on ``unittest`` will usually report this as an error rather than a\nfailure, but it'll require a developer to take a look, and that's the\npoint.\n\nIf multiple configurations are made for the same request method and URL\n(whether responses or errors), they'll be provided to the application in\nthe order configured.\n\n\n.. _Keeper Technology: http://www.keepertech.com/",
+    "docs_url": null,
+    "download_url": null,
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/keepertech/kt.testing",
+    "keywords": null,
+    "license": "UNKNOWN",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "kt.testing",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/kt.testing/",
+    "release_url": "https://pypi.org/project/kt.testing/1.2.0/",
+    "requires_python": null,
+    "summary": "Test support code featuring flexible harness composition",
+    "version": "1.2.0"
+  },
+  "releases": {
+    "1.0.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f4456087e5fe8cab9aa5dcb9ab512b30",
+          "sha256": "a63dc30627b836cd82e2923bfb45f3ea62230179871444f14634be8deea080aa"
+        },
+        "downloads": 113,
+        "filename": "kt.testing-1.0.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f4456087e5fe8cab9aa5dcb9ab512b30",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 14954,
+        "upload_time": "2016-03-21T14:18:44",
+        "url": "https://files.pythonhosted.org/packages/2c/5a/3278b5040c920526d9287cade11d766c230b1d41034cbe87055b4d6cc8af/kt.testing-1.0.0.tar.gz"
+      }
+    ],
+    "1.1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b2ab9ae21c67e5a8ea79c5f4db97a5a7",
+          "sha256": "b7f3bbaafdac5948cccab8b3dfd4591c5e73dc58a9066136f8083b7084780828"
+        },
+        "downloads": 419,
+        "filename": "kt.testing-1.1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b2ab9ae21c67e5a8ea79c5f4db97a5a7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16250,
+        "upload_time": "2016-05-10T17:36:33",
+        "url": "https://files.pythonhosted.org/packages/f2/82/8d8236685d9c06cba075d310d85e7dab7d29b692f7aa097b28ddc619c81d/kt.testing-1.1.0.tar.gz"
+      }
+    ],
+    "1.2.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "45dc7c2bcce824286b1715e8cc4e48d9",
+          "sha256": "0e4c72d28331b3948b4f509076f0b76a113a770dbd3147b29e7d585157d73b98"
+        },
+        "downloads": 100,
+        "filename": "kt.testing-1.2.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "45dc7c2bcce824286b1715e8cc4e48d9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16984,
+        "upload_time": "2016-09-20T17:11:03",
+        "url": "https://files.pythonhosted.org/packages/8d/de/28eb4a58cd24cc96b251acbaf7f1cc1cfdc0679840da1aa058ecebcd3aeb/kt.testing-1.2.0.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "45dc7c2bcce824286b1715e8cc4e48d9",
+        "sha256": "0e4c72d28331b3948b4f509076f0b76a113a770dbd3147b29e7d585157d73b98"
+      },
+      "downloads": 100,
+      "filename": "kt.testing-1.2.0.tar.gz",
+      "has_sig": false,
+      "md5_digest": "45dc7c2bcce824286b1715e8cc4e48d9",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 16984,
+      "upload_time": "2016-09-20T17:11:03",
+      "url": "https://files.pythonhosted.org/packages/8d/de/28eb4a58cd24cc96b251acbaf7f1cc1cfdc0679840da1aa058ecebcd3aeb/kt.testing-1.2.0.tar.gz"
+    }
+  ]
+}

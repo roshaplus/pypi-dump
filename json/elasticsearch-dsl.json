@@ -1,0 +1,573 @@
+{
+  "info": {
+    "author": "Honza Kr\u00e1l",
+    "author_email": "honza.kral@gmail.com",
+    "bugtrack_url": "",
+    "classifiers": [
+      "Development Status :: 4 - Beta",
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: Apache Software License",
+      "Operating System :: OS Independent",
+      "Programming Language :: Python",
+      "Programming Language :: Python :: 2",
+      "Programming Language :: Python :: 2.6",
+      "Programming Language :: Python :: 2.7",
+      "Programming Language :: Python :: 3",
+      "Programming Language :: Python :: 3.2",
+      "Programming Language :: Python :: 3.3",
+      "Programming Language :: Python :: 3.4",
+      "Programming Language :: Python :: Implementation :: CPython",
+      "Programming Language :: Python :: Implementation :: PyPy"
+    ],
+    "description": "Elasticsearch DSL\n=================\n\nElasticsearch DSL is a high-level library whose aim is to help with writing and\nrunning queries against Elasticsearch. It is built on top of the official\nlow-level client (`elasticsearch-py <https://github.com/elastic/elasticsearch-py>`_).\n\nIt provides a more convenient and idiomatic way to write and manipulate\nqueries. It stays close to the Elasticsearch JSON DSL, mirroring its\nterminology and structure. It exposes the whole range of the DSL from Python\neither directly using defined classes or a queryset-like expressions.\n\nIt also provides an optional wrapper for working with documents as Python\nobjects: defining mappings, retrieving and saving documents, wrapping the\ndocument data in user-defined classes.\n\nTo use the other Elasticsearch APIs (eg. cluster health) just use the\nunderlying client.\n\nCompatibility\n-------------\n\nThe library is compatible with all Elasticsearch versions since ``1.x`` but you\n**have to use a matching major version**:\n\nFor **Elasticsearch 5.0** and later, use the major version 5 (``5.x.y``) of the\nlibrary.\n\nFor **Elasticsearch 2.0** and later, use the major version 2 (``2.x.y``) of the\nlibrary.\n\nFor **Elasticsearch 1.0** and later, use the major version 0 (``0.x.y``) of the\nlibrary.\n\n\nThe recommended way to set your requirements in your `setup.py` or\n`requirements.txt` is::\n\n    # Elasticsearch 5.x\n    elasticsearch-dsl>=5.0.0,<6.0.0\n\n    # Elasticsearch 2.x\n    elasticsearch-dsl>=2.0.0,<3.0.0\n\n    # Elasticsearch 1.x\n    elasticsearch-dsl<2.0.0\n\n\nThe development is happening on ``master``, ``2.x``, and ``1.x`` branches, respectively.\n\nSearch Example\n--------------\n\nLet's have a typical search request written directly as a ``dict``:\n\n.. code:: python\n\n    from elasticsearch import Elasticsearch\n    client = Elasticsearch()\n\n    response = client.search(\n        index=\"my-index\",\n        body={\n          \"query\": {\n            \"bool\": {\n              \"must\": [{\"match\": {\"title\": \"python\"}}],\n              \"must_not\": [{\"match\": {\"description\": \"beta\"}}]\n              \"filter\": [{\"term\": {\"category\": \"search\"}}]\n            }\n          },\n          \"aggs\" : {\n            \"per_tag\": {\n              \"terms\": {\"field\": \"tags\"},\n              \"aggs\": {\n                \"max_lines\": {\"max\": {\"field\": \"lines\"}}\n              }\n            }\n          }\n        }\n    )\n\n    for hit in response['hits']['hits']:\n        print(hit['_score'], hit['_source']['title'])\n\n    for tag in response['aggregations']['per_tag']['buckets']:\n        print(tag['key'], tag['max_lines']['value'])\n\n\n\nThe problem with this approach is that it is very verbose, prone to syntax\nmistakes like incorrect nesting, hard to modify (eg. adding another filter) and\ndefinitely not fun to write.\n\nLet's rewrite the example using the Python DSL:\n\n.. code:: python\n\n    from elasticsearch import Elasticsearch\n    from elasticsearch_dsl import Search, Q\n\n    client = Elasticsearch()\n\n    s = Search(using=client, index=\"my-index\") \\\n        .filter(\"term\", category=\"search\") \\\n        .query(\"match\", title=\"python\")   \\\n        .query(~Q(\"match\", description=\"beta\"))\n\n    s.aggs.bucket('per_tag', 'terms', field='tags') \\\n        .metric('max_lines', 'max', field='lines')\n\n    response = s.execute()\n\n    for hit in response:\n        print(hit.meta.score, hit.title)\n\n    for tag in response.aggregations.per_tag.buckets:\n        print(tag.key, tag.max_lines.value)\n\nAs you see, the library took care of:\n\n  * creating appropriate ``Query`` objects by name (eq. \"match\")\n\n  * composing queries into a compound ``bool`` query\n\n  * putting the ``term`` query in a filter context of the ``bool`` query\n\n  * providing a convenient access to response data\n\n  * no curly or square brackets everywhere\n\n\nPersistence Example\n-------------------\n\nLet's have a simple Python class representing an article in a blogging system:\n\n.. code:: python\n\n    from datetime import datetime\n    from elasticsearch_dsl import DocType, Date, Integer, Keyword, Text\n    from elasticsearch_dsl.connections import connections\n\n    # Define a default Elasticsearch client\n    connections.create_connection(hosts=['localhost'])\n\n    class Article(DocType):\n        title = Text(analyzer='snowball', fields={'raw': Keyword()})\n        body = Text(analyzer='snowball')\n        tags = Keyword()\n        published_from = Date()\n        lines = Integer()\n\n        class Meta:\n            index = 'blog'\n\n        def save(self, ** kwargs):\n            self.lines = len(self.body.split())\n            return super(Article, self).save(** kwargs)\n\n        def is_published(self):\n            return datetime.now() > self.published_from\n\n    # create the mappings in elasticsearch\n    Article.init()\n\n    # create and save and article\n    article = Article(meta={'id': 42}, title='Hello world!', tags=['test'])\n    article.body = ''' looong text '''\n    article.published_from = datetime.now()\n    article.save()\n\n    article = Article.get(id=42)\n    print(article.is_published())\n\n    # Display cluster health\n    print(connections.get_connection().cluster.health())\n\n\nIn this example you can see:\n\n  * providing a default connection\n\n  * defining fields with mapping configuration\n\n  * setting index name\n\n  * defining custom methods\n\n  * overriding the built-in ``.save()`` method to hook into the persistence\n    life cycle\n\n  * retrieving and saving the object into Elasticsearch\n\n  * accessing the underlying client for other APIs\n\nYou can see more in the persistence chapter of the documentation.\n\nMigration from ``elasticsearch-py``\n-----------------------------------\n\nYou don't have to port your entire application to get the benefits of the\nPython DSL, you can start gradually by creating a ``Search`` object from your\nexisting ``dict``, modifying it using the API and serializing it back to a\n``dict``:\n\n.. code:: python\n\n    body = {...} # insert complicated query here\n\n    # Convert to Search object\n    s = Search.from_dict(body)\n\n    # Add some filters, aggregations, queries, ...\n    s.filter(\"term\", tags=\"python\")\n\n    # Convert back to dict to plug back into existing code\n    body = s.to_dict()\n\nDevelopment\n-----------\n\nActivate Virtual Environment (`virtualenvs <http://docs.python-guide.org/en/latest/dev/virtualenvs/>`_):\n\n.. code:: bash\n\n    $ virtualenv venv\n    $ source venv/bin/activate\n\nTo install all of the dependencies necessary for development, run:\n\n.. code:: bash\n\n    $ pip install -e '.[develop]'\n\nTo run all of the tests for ``elasticsearch-dsl-py``, run:\n\n.. code:: bash\n\n    $ python setup.py test\n\nAlternatively, it is possible to use the ``run_tests.py`` script in\n``test_elasticsearch_dsl``, which wraps `pytest\n<http://doc.pytest.org/en/latest/>`_, to run subsets of the test suite. Some\nexamples can be seen below:\n\n.. code:: bash\n\n    # Run all of the tests in `test_elasticsearch_dsl/test_analysis.py`\n    $ ./run_tests.py test_analysis.py\n\n    # Run only the `test_analyzer_serializes_as_name` test.\n    $ ./run_tests.py test_analysis.py::test_analyzer_serializes_as_name\n\n``pytest`` will skip tests from ``test_elasticsearch_dsl/test_integration``\nunless there is an instance of Elasticsearch on which a connection can occur.\nBy default, the test connection is attempted at ``localhost:9200``, based on\nthe defaults specified in the ``elasticsearch-py`` `Connection\n<https://github.com/elastic/elasticsearch-py/blob/master/elasticsearch\n/connection/base.py#L29>`_ class. **Because running the integration\ntests will cause destructive changes to the Elasticsearch cluster, only run\nthem when the associated cluster is empty.** As such, if the\nElasticsearch instance at ``localhost:9200`` does not meet these requirements,\nit is possible to specify a different test Elasticsearch server through the\n``TEST_ES_SERVER`` environment variable.\n\n.. code:: bash\n\n    $ TEST_ES_SERVER=my-test-server:9201 ./run_tests\n\nDocumentation\n-------------\n\nDocumentation is available at https://elasticsearch-dsl.readthedocs.io.\n\nContribution Guide\n------------------\n\nWant to hack on Elasticsearch DSL? Awesome! We have `Contribution-Guide <https://github.com/elastic/elasticsearch-dsl-py/blob/master/CONTRIBUTING.rst>`_.\n\nLicense\n-------\n\nCopyright 2013 Elasticsearch\n\nLicensed under the Apache License, Version 2.0 (the \"License\");\nyou may not use this file except in compliance with the License.\nYou may obtain a copy of the License at\n\n    http://www.apache.org/licenses/LICENSE-2.0\n\nUnless required by applicable law or agreed to in writing, software\ndistributed under the License is distributed on an \"AS IS\" BASIS,\nWITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\nSee the License for the specific language governing permissions and\nlimitations under the License.",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/elasticsearch/elasticsearch-dsl-py",
+    "keywords": "",
+    "license": "Apache License, Version 2.0",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "elasticsearch-dsl",
+    "platform": "",
+    "project_url": "https://pypi.org/project/elasticsearch-dsl/",
+    "release_url": "https://pypi.org/project/elasticsearch-dsl/5.3.0/",
+    "requires_python": "",
+    "summary": "Python client for Elasticsearch",
+    "version": "5.3.0"
+  },
+  "releases": {
+    "0.0.10": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1d6373ddd23b57826f2d661854014ca9",
+          "sha256": "ee581b1c5c912eea78c06b7cd81c1c14fb0ced0adbafc837917fd85662ee34da"
+        },
+        "downloads": 16605,
+        "filename": "elasticsearch_dsl-0.0.10-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "1d6373ddd23b57826f2d661854014ca9",
+        "packagetype": "bdist_wheel",
+        "python_version": "3.5",
+        "size": 39995,
+        "upload_time": "2016-01-24T16:59:56",
+        "url": "https://files.pythonhosted.org/packages/a5/07/e91a7720eeb1369077ce26285ff25b46e2230b7036e913c4b7c07b287546/elasticsearch_dsl-0.0.10-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0e000aef591df5fb981f08ac9a70ef9e",
+          "sha256": "0c238282cbc7f7b989acab7cd95feb1c09949e748e2134937063ffaef1edf6cb"
+        },
+        "downloads": 776,
+        "filename": "elasticsearch-dsl-0.0.10.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0e000aef591df5fb981f08ac9a70ef9e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 29943,
+        "upload_time": "2016-01-24T16:59:51",
+        "url": "https://files.pythonhosted.org/packages/ff/3b/aa59085b6f5ba016b2193b29ccc2633e4ffdd12c13d34009e45abb820ee2/elasticsearch-dsl-0.0.10.tar.gz"
+      }
+    ],
+    "0.0.11": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ec1f0af03e45c5ba0c2f80e5fd30763d",
+          "sha256": "59a76c4142478a1952bba6f9a9ca4fc7b029afb619e8ffcf0d135ce37ea692da"
+        },
+        "downloads": 66413,
+        "filename": "elasticsearch_dsl-0.0.11-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "ec1f0af03e45c5ba0c2f80e5fd30763d",
+        "packagetype": "bdist_wheel",
+        "python_version": "3.5",
+        "size": 40011,
+        "upload_time": "2016-01-28T10:08:59",
+        "url": "https://files.pythonhosted.org/packages/d2/a7/9b83d98baa7787916e2d398c05bca8d6678d1c275794bb789f0b1a61c291/elasticsearch_dsl-0.0.11-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e1295e0b5f3d7f8ba0f3fbf34d810686",
+          "sha256": "663fb62ad39200c7d903e973aa0aa693578613264d83796455cbf4cd172bd878"
+        },
+        "downloads": 2176,
+        "filename": "elasticsearch-dsl-0.0.11.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e1295e0b5f3d7f8ba0f3fbf34d810686",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 29966,
+        "upload_time": "2016-01-28T10:08:50",
+        "url": "https://files.pythonhosted.org/packages/e3/8f/5cd377b227f7a9ca47516cb992eb700c85d5f7368b01220b0919868380a7/elasticsearch-dsl-0.0.11.tar.gz"
+      }
+    ],
+    "0.0.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "771827205fa80ee6ca9fa84082234fda",
+          "sha256": "8c465c9649d5de3e17b46385722a490511110b603ca3c13ad9c77132a467c42c"
+        },
+        "downloads": 13172,
+        "filename": "elasticsearch_dsl-0.0.2-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "771827205fa80ee6ca9fa84082234fda",
+        "packagetype": "bdist_wheel",
+        "python_version": "3.4",
+        "size": 18680,
+        "upload_time": "2014-08-27T20:24:25",
+        "url": "https://files.pythonhosted.org/packages/ca/b8/a61902cf7ee13e4f726ac95bd5646ebf5bca91588c7bd867ac1e6aef15d5/elasticsearch_dsl-0.0.2-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "83fc58e53a0a1a55b65b5367225c865f",
+          "sha256": "6ad6ff946323027b255debcb66e3e035e545d5f8427bb5638b62e3b246d4d88a"
+        },
+        "downloads": 5840,
+        "filename": "elasticsearch-dsl-0.0.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "83fc58e53a0a1a55b65b5367225c865f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 13024,
+        "upload_time": "2014-08-27T20:24:21",
+        "url": "https://files.pythonhosted.org/packages/a8/3f/f0eeae1377e0aa99c0d0ea1e98580a7efd4978dccc39e0ddb97f1f4affd0/elasticsearch-dsl-0.0.2.tar.gz"
+      }
+    ],
+    "0.0.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f95c13431af0e4c9b1cd7149b6c1b796",
+          "sha256": "2d46fb1e79bd23d5ea463303c6f5b45356e3dcbc87cde6aee578a83b29d82bc0"
+        },
+        "downloads": 17592,
+        "filename": "elasticsearch_dsl-0.0.3-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "f95c13431af0e4c9b1cd7149b6c1b796",
+        "packagetype": "bdist_wheel",
+        "python_version": "3.3",
+        "size": 27334,
+        "upload_time": "2015-01-23T19:12:21",
+        "url": "https://files.pythonhosted.org/packages/23/04/fc6ea0cd5ef345f8404b8185f78a5150a85f15212afb1732e26b5c967e8d/elasticsearch_dsl-0.0.3-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6cbc9ed7aefb3ef804be4e3b318b2570",
+          "sha256": "be3b405f67b36f26ef04d34a912252be9b3e4346f1b5f5d02bfd23cc7dd941e8"
+        },
+        "downloads": 183643,
+        "filename": "elasticsearch-dsl-0.0.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6cbc9ed7aefb3ef804be4e3b318b2570",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 18994,
+        "upload_time": "2015-01-23T19:12:17",
+        "url": "https://files.pythonhosted.org/packages/e3/b5/f48cf9bdd1ef3520d0076b9bd261526088eb7711e99890b984ab1731ad8d/elasticsearch-dsl-0.0.3.tar.gz"
+      }
+    ],
+    "0.0.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6c865cac56900518ea8c4a64c1621865",
+          "sha256": "2b90e57e1527a82ccf27836db00e183125fe30e2843fbfcb983a4216271d0ed2"
+        },
+        "downloads": 58813,
+        "filename": "elasticsearch_dsl-0.0.4-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "6c865cac56900518ea8c4a64c1621865",
+        "packagetype": "bdist_wheel",
+        "python_version": "3.3",
+        "size": 31496,
+        "upload_time": "2015-04-24T16:38:10",
+        "url": "https://files.pythonhosted.org/packages/f4/76/83e932ce972dc8b6b9233c702d42866f5fda1d1f15a33ea27ebcd7204d5d/elasticsearch_dsl-0.0.4-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f37c49bb7a14557c2d2fe7e375a9b11e",
+          "sha256": "42854a51e82f8d7e4040a14c4cff67a6879ab015b5254c1f083f9f8941b8e82f"
+        },
+        "downloads": 18679,
+        "filename": "elasticsearch-dsl-0.0.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f37c49bb7a14557c2d2fe7e375a9b11e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 22366,
+        "upload_time": "2015-04-24T16:38:06",
+        "url": "https://files.pythonhosted.org/packages/16/8f/1b13e7307ca386b9c9ca00df8e3c190554e41b76d051aca62f65f2e4c925/elasticsearch-dsl-0.0.4.tar.gz"
+      }
+    ],
+    "0.0.4.dev": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4b7060411d4ae6065183290e10070b37",
+          "sha256": "1f4a9315f05679dca9002cb1d65b65c4e235036f2ef543e12fc67ba0add442aa"
+        },
+        "downloads": 39355,
+        "filename": "elasticsearch-dsl-0.0.4.dev.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4b7060411d4ae6065183290e10070b37",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 19095,
+        "upload_time": "2015-01-29T02:20:12",
+        "url": "https://files.pythonhosted.org/packages/20/88/ebef1db629993811b6d500a5a52a3a0aa09816b44b3175dc90ad56474ee5/elasticsearch-dsl-0.0.4.dev.tar.gz"
+      }
+    ],
+    "0.0.8": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "28ea11ee16e39db11b2913398cfabf53",
+          "sha256": "4e9771d9af0464894717f3d050506b6217c799770ee00b4a6803b9c64590018e"
+        },
+        "downloads": 29041,
+        "filename": "elasticsearch_dsl-0.0.8-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "28ea11ee16e39db11b2913398cfabf53",
+        "packagetype": "bdist_wheel",
+        "python_version": "3.3",
+        "size": 37635,
+        "upload_time": "2015-08-28T15:15:47",
+        "url": "https://files.pythonhosted.org/packages/50/4e/95494058b167183c9158cc09f7f9181b1529f1ceeb5178361be16d648046/elasticsearch_dsl-0.0.8-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7732f92ce492e6404c11fa88842da5b9",
+          "sha256": "f14b8ced666be142654133fe6739d656b319c4a9ec3228ad144bd0f28e36a435"
+        },
+        "downloads": 4973,
+        "filename": "elasticsearch-dsl-0.0.8.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7732f92ce492e6404c11fa88842da5b9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 27496,
+        "upload_time": "2015-08-28T15:15:43",
+        "url": "https://files.pythonhosted.org/packages/7d/15/ed20f61a84f08612c784d94317e6454d77985d5d94180ebdaf6b3a3f7820/elasticsearch-dsl-0.0.8.tar.gz"
+      }
+    ],
+    "0.0.9": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5c4a6ab881d5eaff4339ca20bdc0e0de",
+          "sha256": "9b5404180d2747fa2e43c2e5cd78d39241cb80d041f492cccdd2a2e6272b0bda"
+        },
+        "downloads": 93791,
+        "filename": "elasticsearch_dsl-0.0.9-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "5c4a6ab881d5eaff4339ca20bdc0e0de",
+        "packagetype": "bdist_wheel",
+        "python_version": "3.5",
+        "size": 38707,
+        "upload_time": "2015-10-26T20:42:50",
+        "url": "https://files.pythonhosted.org/packages/2a/b7/890e200f2cd1e22d1c987060c0a1af088731da5851766d2ca2f120ec8778/elasticsearch_dsl-0.0.9-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f03880251185ad0c15ee73a621f232c4",
+          "sha256": "72c108f794a79b154c32cf594a1185459338d6aaec337051f03b2034a16eacbd"
+        },
+        "downloads": 8492,
+        "filename": "elasticsearch-dsl-0.0.9.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f03880251185ad0c15ee73a621f232c4",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 28952,
+        "upload_time": "2015-10-26T20:42:44",
+        "url": "https://files.pythonhosted.org/packages/2f/fe/99d8b134fe5e50f7d3527772d227ec41c33fff224db26ae7c8ce001160de/elasticsearch-dsl-0.0.9.tar.gz"
+      }
+    ],
+    "2.0.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "cb18a112396945e0ebad810ca1a9df34",
+          "sha256": "d19a055b2c4f5b537dc4e3d8f3d7d8392d9c090f8790d71697e587550e9f812a"
+        },
+        "downloads": 50303,
+        "filename": "elasticsearch_dsl-2.0.0-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "cb18a112396945e0ebad810ca1a9df34",
+        "packagetype": "bdist_wheel",
+        "python_version": "3.5",
+        "size": 38668,
+        "upload_time": "2016-02-18T21:44:16",
+        "url": "https://files.pythonhosted.org/packages/f1/70/a283974d3bb781c079ef7c92d8bb2fd94ff111a63c479ae82ae81bbad029/elasticsearch_dsl-2.0.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4cdfec81bb35383dd3b7d02d7dc5ee68",
+          "sha256": "9060e4ff9abfc632b78f730b442ad2997f2fb985be9f6e49e3612ce292b5c36a"
+        },
+        "downloads": 363,
+        "filename": "elasticsearch-dsl-2.0.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4cdfec81bb35383dd3b7d02d7dc5ee68",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 27177,
+        "upload_time": "2016-02-18T21:44:07",
+        "url": "https://files.pythonhosted.org/packages/4e/5d/e788ae8dbe2ff4d13426db0a027533386a5c276c77a2654dc0e2007ce04a/elasticsearch-dsl-2.0.0.tar.gz"
+      }
+    ],
+    "2.1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "11d7d9b88e851d2cadb3e823cddf835e",
+          "sha256": "48f5869035e852f68bfaf1ba586becf4b109c661e7c054045395f554ac7566af"
+        },
+        "downloads": 45625,
+        "filename": "elasticsearch_dsl-2.1.0-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "11d7d9b88e851d2cadb3e823cddf835e",
+        "packagetype": "bdist_wheel",
+        "python_version": "3.5",
+        "size": 37698,
+        "upload_time": "2016-06-29T13:11:51",
+        "url": "https://files.pythonhosted.org/packages/b8/86/3a657b69ee063888b951ea5adf0f98130e4bb25983413a4f2911933efcb4/elasticsearch_dsl-2.1.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3cc984bff77bce11f164071d7082e022",
+          "sha256": "e11881321a2d0f40c78efcc50905f8f6dc090e1929e541727d7abdf5b8a446d9"
+        },
+        "downloads": 1197,
+        "filename": "elasticsearch-dsl-2.1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3cc984bff77bce11f164071d7082e022",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 28414,
+        "upload_time": "2016-06-29T13:11:46",
+        "url": "https://files.pythonhosted.org/packages/16/2d/6b5dde118de1426173273c3760701842f2b7ed13349436d68fd47fad5997/elasticsearch-dsl-2.1.0.tar.gz"
+      }
+    ],
+    "2.2.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "774cc4ad78476f3ecda70f370aaedc47",
+          "sha256": "c8132c6e1bdfc5c345999d3949dd53a53b59ea73e2ee005f695de78be0552ceb"
+        },
+        "downloads": 11294,
+        "filename": "elasticsearch_dsl-2.2.0-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "774cc4ad78476f3ecda70f370aaedc47",
+        "packagetype": "bdist_wheel",
+        "python_version": "3.5",
+        "size": 38180,
+        "upload_time": "2016-11-04T15:38:40",
+        "url": "https://files.pythonhosted.org/packages/fe/99/b10da0666f3ada64d42cda5718dc254d27c42817a4f198127bf8df50d2ec/elasticsearch_dsl-2.2.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "fa6bd3c87ea3caa8f0f051bc37c53221",
+          "sha256": "99bbb4dcbcfb5db4f57499237f24acf1397543e895e99994a09af2a6fbef93bc"
+        },
+        "downloads": 522,
+        "filename": "elasticsearch-dsl-2.2.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "fa6bd3c87ea3caa8f0f051bc37c53221",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 28547,
+        "upload_time": "2016-11-04T15:38:34",
+        "url": "https://files.pythonhosted.org/packages/66/2f/52a086968788e58461641570f45c3207a52d46ebbe9b77dc22b6a8ffda66/elasticsearch-dsl-2.2.0.tar.gz"
+      }
+    ],
+    "5.0.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "434648c7f14a626862a3d919e8855883",
+          "sha256": "9ad78dda39e22dcfa16541a447bf7eda57c4766bfed772d86a7b3b6a9e542250"
+        },
+        "downloads": 4499,
+        "filename": "elasticsearch_dsl-5.0.0-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "434648c7f14a626862a3d919e8855883",
+        "packagetype": "bdist_wheel",
+        "python_version": "3.5",
+        "size": 37914,
+        "upload_time": "2016-11-04T15:57:33",
+        "url": "https://files.pythonhosted.org/packages/f8/d6/afab77035f4d1142a384167b7966398dab239c4ae449bb62a33e2034d330/elasticsearch_dsl-5.0.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "bbdfd3c84fba028beea4eb2cf94d8b40",
+          "sha256": "e686337a4094cc0e9241c616090e86b47e96462e43fe9ecc543025a2cfc9ae7d"
+        },
+        "downloads": 283,
+        "filename": "elasticsearch-dsl-5.0.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "bbdfd3c84fba028beea4eb2cf94d8b40",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 28194,
+        "upload_time": "2016-11-04T15:57:31",
+        "url": "https://files.pythonhosted.org/packages/7f/28/c4f2b2da048c47e98f2746662b2c0c7abcc49ca980609750fad3bab883f8/elasticsearch-dsl-5.0.0.tar.gz"
+      }
+    ],
+    "5.1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9b16cc6d12442d3f17dd73335987827f",
+          "sha256": "396393f7102a49605a91261d16218b5dd66b991a4a57cea982649cb52e6f25ac"
+        },
+        "downloads": 2740,
+        "filename": "elasticsearch_dsl-5.1.0-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "9b16cc6d12442d3f17dd73335987827f",
+        "packagetype": "bdist_wheel",
+        "python_version": "3.5",
+        "size": 42879,
+        "upload_time": "2017-01-08T20:47:40",
+        "url": "https://files.pythonhosted.org/packages/51/ea/ff5830c438da44467025c0c8d68ed58c76ffa8c6de300c64fb885ffa2983/elasticsearch_dsl-5.1.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7b6600b84c3e9cda84164280eb60e2fc",
+          "sha256": "5d3800d75240e99bbb0b5b16041e88a65cc8f7ddb34b6041d515a2d76df4352b"
+        },
+        "downloads": 81,
+        "filename": "elasticsearch-dsl-5.1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7b6600b84c3e9cda84164280eb60e2fc",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 31382,
+        "upload_time": "2017-01-08T20:47:38",
+        "url": "https://files.pythonhosted.org/packages/24/1d/e754a024537663e4cdf7d7b32c0dd8c8f9f2cb1ee62be88054ba95c86069/elasticsearch-dsl-5.1.0.tar.gz"
+      }
+    ],
+    "5.2.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9aab2340f1e86fbcd3e51f3ac61a15b0",
+          "sha256": "1a816fed5a0b9cbc862670f3455aa151e75f6042db38a1b008f73cc12173e0d0"
+        },
+        "downloads": 3563,
+        "filename": "elasticsearch_dsl-5.2.0-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "9aab2340f1e86fbcd3e51f3ac61a15b0",
+        "packagetype": "bdist_wheel",
+        "python_version": "3.6",
+        "size": 46597,
+        "upload_time": "2017-03-26T12:23:27",
+        "url": "https://files.pythonhosted.org/packages/ed/ae/4f5e444a15f587f83fe2fdc5d5f0b42a68fcff12bfe770d02b38da5d865b/elasticsearch_dsl-5.2.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4618cc0a3a5a29baa4ed663c0a1a0973",
+          "sha256": "0c4df03eeb2c254d0c2df49df3fcfbfb1f9af18ab22308487b023f9c9adbf87d"
+        },
+        "downloads": 28,
+        "filename": "elasticsearch-dsl-5.2.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4618cc0a3a5a29baa4ed663c0a1a0973",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 39668,
+        "upload_time": "2017-03-26T12:23:25",
+        "url": "https://files.pythonhosted.org/packages/2b/ba/7784478453d247ff1fd0d526b0a086c0598391a149d9adae4e5158e8600f/elasticsearch-dsl-5.2.0.tar.gz"
+      }
+    ],
+    "5.3.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "97effc1ee60bdccafc756c040c05ad26",
+          "sha256": "de5fd68901c5b94e51e2ae4e8ad6f618b22665d89794d96f9b6b763986665527"
+        },
+        "downloads": 0,
+        "filename": "elasticsearch_dsl-5.3.0-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "97effc1ee60bdccafc756c040c05ad26",
+        "packagetype": "bdist_wheel",
+        "python_version": "3.6",
+        "size": 46705,
+        "upload_time": "2017-05-18T17:22:11",
+        "url": "https://files.pythonhosted.org/packages/d7/51/de768b8fed9b30798b1405a86dbe41fd88f22c49f6d3bf53b1a658917474/elasticsearch_dsl-5.3.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1d2af14686da07965ab38194155c42db",
+          "sha256": "de81b2322cde9bf1171c8a41d80596cdadd433b88b93daa09060af3a512523a7"
+        },
+        "downloads": 0,
+        "filename": "elasticsearch-dsl-5.3.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1d2af14686da07965ab38194155c42db",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 39736,
+        "upload_time": "2017-05-18T17:22:09",
+        "url": "https://files.pythonhosted.org/packages/01/db/82d08053c892faaaa3a29337bc1032aaf35811b9ee2eb211c3c39bc901d7/elasticsearch-dsl-5.3.0.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "97effc1ee60bdccafc756c040c05ad26",
+        "sha256": "de5fd68901c5b94e51e2ae4e8ad6f618b22665d89794d96f9b6b763986665527"
+      },
+      "downloads": 0,
+      "filename": "elasticsearch_dsl-5.3.0-py2.py3-none-any.whl",
+      "has_sig": false,
+      "md5_digest": "97effc1ee60bdccafc756c040c05ad26",
+      "packagetype": "bdist_wheel",
+      "python_version": "3.6",
+      "size": 46705,
+      "upload_time": "2017-05-18T17:22:11",
+      "url": "https://files.pythonhosted.org/packages/d7/51/de768b8fed9b30798b1405a86dbe41fd88f22c49f6d3bf53b1a658917474/elasticsearch_dsl-5.3.0-py2.py3-none-any.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "1d2af14686da07965ab38194155c42db",
+        "sha256": "de81b2322cde9bf1171c8a41d80596cdadd433b88b93daa09060af3a512523a7"
+      },
+      "downloads": 0,
+      "filename": "elasticsearch-dsl-5.3.0.tar.gz",
+      "has_sig": false,
+      "md5_digest": "1d2af14686da07965ab38194155c42db",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 39736,
+      "upload_time": "2017-05-18T17:22:09",
+      "url": "https://files.pythonhosted.org/packages/01/db/82d08053c892faaaa3a29337bc1032aaf35811b9ee2eb211c3c39bc901d7/elasticsearch-dsl-5.3.0.tar.gz"
+    }
+  ]
+}

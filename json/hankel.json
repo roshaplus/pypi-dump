@@ -1,0 +1,316 @@
+{
+  "info": {
+    "author": "Steven Murray",
+    "author_email": "steven.murray@curtin.edu.au",
+    "bugtrack_url": null,
+    "classifiers": [],
+    "description": "------\nhankel\n------\n\nPerform simple and accurate Hankel transformations using the method of Ogata 2005.\n\nHankel transforms and integrals are commonplace in any area in which Fourier Transforms\nare required over fields that are radially symmetric (see `Wikipedia <https://en.wikipedia.org/wiki/Hankel_transform>`_\nfor a thorough description). They involve integrating an arbitrary function\nmultiplied by a Bessel function of arbitrary order (of the first kind).\nTypical integration schemes often fall over\nbecause of the highly oscillatory nature of the transform.\nOgata's quadrature method used in this package\nprovides a fast and accurate way of performing the integration based on locating\nthe zeros of the Bessel function.\n\n\n\nInstallation\n------------\nEither clone the repository at github.com/steven-murray/hankel and use\n``python setup.py install``, or simply install using ``pip install hankel``.\n\nThe only dependencies are numpy, scipy and mpmath (as of v0.2.0).\n\nUsage\n-----\n\nSetup\n+++++\nThis implementation is set up to allow efficient calculation of multiple\nfunctions *f(x)*. To do this, the format is class-based, with the main object\ntaking as arguments the order of the Bessel function, and the number and size\nof the integration steps (see Limitations_ for discussion about how to choose\nthese key parameters).\n\nFor any general integration or transform of a function, we perform the following\nsetup:\n\n.. code:: python\n\n    from hankel import HankelTransform     # Import the basic class\n\n    ht = HankelTransform(nu= 0,            # The order of the bessel function\n                         N = 120,          # Number of steps in the integration\n                         h = 0.03)         # Proxy for \"size\" of steps in integration\n\nAlternatively, each of the parameters has defaults, so you needn't pass any.\nThe order of the bessel function will be defined by the problem at hand, while the other\narguments typically require some exploration to set them optimally.\n\n\nIntegration\n+++++++++++\nA Hankel-type integral is the integral\n\n.. image:: docimages/integrate.svg\n\nHaving set up our transform with ``nu = 0``, we may wish to perform this integral for *f(x) = 1*.\nTo do this, we do the following:\n\n.. code:: python\n\n    f = lambda x : 1   # Create a function which identically 1.\n    ht.integrate(f)    # Should give (1.0000000000003544, -9.8381428368537518e-15)\n\n\nThe correct answer is 1, so we have done quite well. The second element of the \nreturned result is an estimate of the error (it is the last term in the\nsummation). The error estimate can be omitted using the argument\n``ret_err=False``.\n\nWe may now wish to integrate a different function, say *x/(x^2 + 1)*. We can do this\ndirectly with the same object, without re-instantiating (avoiding unnecessary recalculation):\n\n.. code:: python\n\n    f = lambda x : x/(x**2 + 1)\n    ht.integrate(f)               # Should give (0.42098875721567186, -2.6150757700135774e-17)\n\nThe analytic answer here is *K_0(1) = 0.4210*. The accuracy could be increased by\ncreating ``ht`` with a higher number of steps ``N``, and lower stepsize ``h`` (see Limitations_).\n\nTransforms\n++++++++++\nThe Hankel transform is defined as\n\n.. image:: docimages/transform.svg\n\n\nWe see that the Hankel-type integral is the Hankel transform of *f(r)/r* with *k=1*.\nTo perform this more general transform, we must supply the *k* values. Again, let's\nuse our previous function, *x/(x^2 + 1)*:\n\n.. code:: python\n\n    import numpy as np              # Import numpy\n    k = np.logspace(-1,1,50)        # Create a log-spaced array of k from 0.1 to 10.\n    ht.transform(f,k,ret_err=False) # Return the transform of f at k.\n\nFourier Transforms\n++++++++++++++++++\nOne of the most common applications of the Hankel transform is to solve the `radially symmetric\nn-dimensional Fourier transform <https://en.wikipedia.org/wiki/Hankel_transform#Relation_to_the_Fourier_transform_.28radially_symmetric_case_in_n-dimensions.29>`_:\n\n.. image:: docimages/fourier.svg\n\nWe provide a specific class to do this transform, which takes into account the various normalisations and substitutions\nrequired, and also provides the inverse transform. The procedure is similar to the basic ``HankelTransform``, but\nwe provide the number of dimensions, rather than the Bessel order directly. Say we wish to find the Fourier transform\nof *f(r) = 1/r* in 3 dimensions:\n\n.. code:: python\n\n    from hankel import SymmetricFourierTransform\n    ft = SymmetricFourierTransform(ndim=3, N = 200, h = 0.03)\n\n    f = lambda r : 1./r\n    ft.transform(f,k, ret_err=False)\n\nTo do the inverse transformation (which is different by a normalisation constant), merely supply ``inverse=True`` to the\n``.transform()`` method.\n\n\nLimitations\n-----------\nEfficiency\n++++++++++\nAn implementation-specific limitation is that the method is not perfectly\nefficient in all cases. Care has been taken to make it efficient in the general \nsense. However, for specific orders and functions, simplifications may be made\nwhich reduce the number of trigonometric functions evaluated. For instance,\nfor a zeroth-order spherical transform, the weights are analytically always identically\n1. \n\nLower-Bound Convergence\n+++++++++++++++++++++++\nIn terms of limitations of the method, they are very dependent on the form of the\nfunction chosen. Notably, functions which tend to infinity at x=0 will be poorly\napproximated in this method, and will be highly dependent on the step-size\nparameter, as the information at low-x will be lost between 0 and the first step.\nAs an example consider the simple function *f(x) = 1/sqrt(x)* with a 1/2 order bessel function.\nThe total integrand tends to 1 at x=0, rather than 0:\n\n.. code:: python\n\n    f = lambda x: 1/np.sqrt(x)\n    h = HankelTransform(0.5,120,0.03)\n    h.integrate(f)  #(1.2336282286725169, 9.1467916948046785e-17)\n\nThe true answer is *sqrt(pi/2)*, which is a difference of about 1.6%. Modifying the step\nsize and number of steps to gain accuracy we find:\n\n.. code:: python\n\n    h = HankelTransform(0.5,700,0.001)\n    h.integrate(f)   #(1.2523045156429067, -0.0012281146007910256)\n\nThis has much better than percent accuracy, but uses 5 times the amount\nof steps. The key here is the reduction of h to \"get inside\" the low-x information.\nThis limitation is amplified for cases where the function really does tend to\ninfinity at x=0, rather than a finite positive number, such as f(x) = 1/x.\nClearly the integral becomes non-convergent for some *f(x)*, in which case\nthe numerical approximation can never be correct.\n\nUpper-Bound Convergence\n+++++++++++++++++++++++\nIf the function *f(x)* is monotonically increasing, or at least very slowly decreasing, then higher and higher zeros\nof the Bessel function will be required to capture the convergence. Often, it will be the case that if this is so, the\namplitude of the function is low at low *x*, so that the step-size ``h`` can be increased to facilitate this. Otherwise,\nthe number of steps ``N`` can be increased.\n\nFor example, the 1/2-order integral supports functions that are increasing up to *f(x) = x^0.5* and no more\n(otherwise they diverge). Let's use *f(x) = x^0.4* as an example of a slowly converging function, and use our \"hi-res\"\nsetup from the previous section:\n\n.. code:: python\n\n    h = HankelTransform(0.5,700,0.001)\n    f = lambda x : x**0.4\n    h.integrate(f)   # (0.53678277933471386, -1.0590954621246349)\n\nThe analytic result is 0.8421449 -- very far from our result. Note that in this case, the error estimate itself is a\ngood indication that we haven't reached convergence. We could try increasing ``N``:\n\n.. code:: python\n\n    h = HankelTransform(0.5,10000,0.001)\n    h.integrate(f,ret_err=False)/0.8421449 -1     ## 7.128e-07\n\nThis is very accurate, but quite slow. Alternatively, we could try increasing ``h``:\n\n.. code:: python\n\n    h = HankelTransform(0.5,700,0.03)\n    h.integrate(f,ret_err=False)/0.8421449 -1     ## 0.00045616\n\nNot quite as accurate, but still far better than a percent for a hundredth of the cost!\n\nThere are some notebooks in the devel/ directory which toy with some known integrals, and show how accurate different\nchoices of ``N`` and ``h`` are. They are interesting to view to see some of the patterns.\n\n\nReferences\n----------\nBased on the algorithm provided in \n\n   H. Ogata, A Numerical Integration Formula Based on the Bessel Functions,\n   Publications of the Research Institute for Mathematical Sciences, \n   vol. 41, no. 4, pp. 949-970, 2005.\n\nAlso draws inspiration from \n\n   Fast Edge-corrected Measurement of the Two-Point Correlation Function and the Power Spectrum\n   Szapudi,  Istvan;  Pan,  Jun;  Prunet,  Simon;  Budavari,  Tamas (2005)\n   The Astrophysical Journal\tvol. 631 (1)",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/steven-murray/hankel",
+    "keywords": "",
+    "license": "MIT",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "hankel",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/hankel/",
+    "release_url": "https://pypi.org/project/hankel/0.3.1/",
+    "requires_python": "",
+    "summary": "Hankel Transformations using method of Ogata 2005",
+    "version": "0.3.1"
+  },
+  "releases": {
+    "0.1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d6f02a2c03fc02d640b1deb04dad839b",
+          "sha256": "eb9db2ffc3888b37502b495a6a6328aeb489f1815deaa53875e07e82fd3c9a2d"
+        },
+        "downloads": 2169,
+        "filename": "hankel-0.1.0-py2.7.egg",
+        "has_sig": false,
+        "md5_digest": "d6f02a2c03fc02d640b1deb04dad839b",
+        "packagetype": "bdist_egg",
+        "python_version": "2.7",
+        "size": 5229,
+        "upload_time": "2014-04-24T01:10:36",
+        "url": "https://files.pythonhosted.org/packages/aa/ad/5a3fdf6863f76adc9a92802906450f27c0ebd13cc1c6a05ebe99d19b9d06/hankel-0.1.0-py2.7.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "07b76ca096b6d164b117f601d86cebcb",
+          "sha256": "65381ef8194cb1ae8b4f19c04143cb1a5ec43caa7b5069cb50dea79fa5678b6e"
+        },
+        "downloads": 1838,
+        "filename": "hankel-0.1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "07b76ca096b6d164b117f601d86cebcb",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 4239,
+        "upload_time": "2014-04-24T01:09:52",
+        "url": "https://files.pythonhosted.org/packages/83/23/e94853c39990b96b488b45277cf596997003c7815eee933f62e56a16aa10/hankel-0.1.0.tar.gz"
+      }
+    ],
+    "0.2.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c2aa4f3bb044aa4dd92e3a014411d849",
+          "sha256": "9e5fb1a28e0a1c99f02825c3c3bc8de1cffcee5dfa9fc25d7d1b4e4607a95809"
+        },
+        "downloads": 1463,
+        "filename": "hankel-0.2.0-py2.7.egg",
+        "has_sig": false,
+        "md5_digest": "c2aa4f3bb044aa4dd92e3a014411d849",
+        "packagetype": "bdist_egg",
+        "python_version": "2.7",
+        "size": 7180,
+        "upload_time": "2014-09-10T09:21:16",
+        "url": "https://files.pythonhosted.org/packages/b6/a7/940b1e1f45a92e64e0972ed82bc817f62b825cd46b2e079c1ddd8069f646/hankel-0.2.0-py2.7.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "798e369570625483db27a47e9ac73fa4",
+          "sha256": "254031344aa646393edf20322ecbae46791207933f83411743cf7bb3cca5b3dd"
+        },
+        "downloads": 1685,
+        "filename": "hankel-0.2.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "798e369570625483db27a47e9ac73fa4",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 4573,
+        "upload_time": "2014-09-10T09:21:07",
+        "url": "https://files.pythonhosted.org/packages/6a/fe/2f222401875b53abce83fc50cb22fe0f8c4046394c65216754520e47cdf2/hankel-0.2.0.tar.gz"
+      }
+    ],
+    "0.2.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6809096b9f841a69660c4466094566e9",
+          "sha256": "4f5fdaebc3df002660cd7000189c4322d8bc206687b4d105ee6a400eb4ecd70e"
+        },
+        "downloads": 134,
+        "filename": "hankel-0.2.1-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "6809096b9f841a69660c4466094566e9",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 7663,
+        "upload_time": "2016-02-18T02:21:08",
+        "url": "https://files.pythonhosted.org/packages/e8/35/0ee2ee3b9c0f73599104245cf59f043d36ce7d08135725a50141c8ae2393/hankel-0.2.1-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5a854f420992a2bfeead826588facbc9",
+          "sha256": "e647fbd3bcec44e9927cca020795bbbe5c986ac96efb109f191c11e9014a693e"
+        },
+        "downloads": 144,
+        "filename": "hankel-0.2.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5a854f420992a2bfeead826588facbc9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 4735,
+        "upload_time": "2016-02-18T02:20:51",
+        "url": "https://files.pythonhosted.org/packages/66/0e/340eab8daecd1c3ae96c4644f5c06aa5db49cbc6ee2387cd2f846bafe6eb/hankel-0.2.1.tar.gz"
+      }
+    ],
+    "0.2.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6d760a793af00d3fb3db4b56b3c03b7d",
+          "sha256": "d85ccaf46ceed9963e1fd67e8fe7f1abfa92172e563bc353cba692fccd85ff79"
+        },
+        "downloads": 174,
+        "filename": "hankel-0.2.2-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "6d760a793af00d3fb3db4b56b3c03b7d",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 7782,
+        "upload_time": "2016-04-29T01:34:23",
+        "url": "https://files.pythonhosted.org/packages/52/0a/d2d41c0f1b1dda0b93e0e7f67fc298a525f86f7249c33bf74729f75fa366/hankel-0.2.2-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a4f2247545c5367b0615a503584a575c",
+          "sha256": "df4f04f862f7830b5365f7c216b01a19ab4523c64850db979c66201a812f66e7"
+        },
+        "downloads": 148,
+        "filename": "hankel-0.2.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a4f2247545c5367b0615a503584a575c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 4866,
+        "upload_time": "2016-04-29T01:34:03",
+        "url": "https://files.pythonhosted.org/packages/84/ee/3ad2075035ea84ff772354ca82c04ce0627e3e73ac0d42e3161f885a5c81/hankel-0.2.2.tar.gz"
+      }
+    ],
+    "0.3.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d6c831a6508a8a68722d275d9700a597",
+          "sha256": "e8042120d4081b5d6d4fcfe3417a7c47943e0fd070f2bf1e73ee7d01cfbbbac6"
+        },
+        "downloads": 252,
+        "filename": "hankel-0.3.0-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "d6c831a6508a8a68722d275d9700a597",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2",
+        "size": 14479,
+        "upload_time": "2017-01-04T07:03:40",
+        "url": "https://files.pythonhosted.org/packages/25/9e/d348b02e7018cf47f0aeaaf78b74afb294e6961468608f723fffa323be49/hankel-0.3.0-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "cc64de8086430bb1cec17927b1eec839",
+          "sha256": "6ac177b0ec5a945b1969e36434281200048555b54e1d9fa6a9773593731e9205"
+        },
+        "downloads": 249,
+        "filename": "hankel-0.3.0-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "cc64de8086430bb1cec17927b1eec839",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "size": 14479,
+        "upload_time": "2017-01-04T07:03:14",
+        "url": "https://files.pythonhosted.org/packages/5e/01/a5504e55843ba518b65e8c2b3f1c4def2b85354be52671703dec90e7f61c/hankel-0.3.0-py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b18929b2c24fa3bfbefc1dd7e0d3d7db",
+          "sha256": "8a43f70703b444fd3923c8ce6722e5e1813e8b3f43310251c481d7b0ade5f42f"
+        },
+        "downloads": 258,
+        "filename": "hankel-0.3.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b18929b2c24fa3bfbefc1dd7e0d3d7db",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 8110,
+        "upload_time": "2017-01-04T07:03:17",
+        "url": "https://files.pythonhosted.org/packages/7e/a9/4adadfc493b9e571bab223fc4f4731ced29586ae0c017e7cb1960beb3474/hankel-0.3.0.tar.gz"
+      }
+    ],
+    "0.3.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "eabdb68c161b79bbcc8b09ea058f3915",
+          "sha256": "5c8b6251459a9dd5093e22e6e771527f808c72fe09d6cf50e277c1d7470676f4"
+        },
+        "downloads": 242,
+        "filename": "hankel-0.3.1-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "eabdb68c161b79bbcc8b09ea058f3915",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2",
+        "size": 15089,
+        "upload_time": "2017-01-05T03:44:46",
+        "url": "https://files.pythonhosted.org/packages/5b/4c/97adb2a6039dc4194f9812c5365fc1e7e176224b79e5a34f3a0d8b53958e/hankel-0.3.1-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "702db560be6f1bd89f9db8ed6588885b",
+          "sha256": "118047610d70183d55b48860350b60456b1660f99b77fb587da0aeda702d6085"
+        },
+        "downloads": 236,
+        "filename": "hankel-0.3.1-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "702db560be6f1bd89f9db8ed6588885b",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "size": 15099,
+        "upload_time": "2017-01-05T03:50:42",
+        "url": "https://files.pythonhosted.org/packages/3c/3b/1bd68db175a77c31bb4b9aff08cc7fd244fb01da9f905eff6f4321300ec8/hankel-0.3.1-py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "494d7543962ac2e22658760dad7e21e8",
+          "sha256": "be7f725833b6e1efefe23f492f4fa7cadde65503a718f28134ba1db3f75af5d3"
+        },
+        "downloads": 242,
+        "filename": "hankel-0.3.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "494d7543962ac2e22658760dad7e21e8",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 8652,
+        "upload_time": "2017-01-05T03:44:48",
+        "url": "https://files.pythonhosted.org/packages/cd/1f/c02d8f32109e6b922c36ff848f8c46846c10a53869cb157d5972f7a218e4/hankel-0.3.1.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "eabdb68c161b79bbcc8b09ea058f3915",
+        "sha256": "5c8b6251459a9dd5093e22e6e771527f808c72fe09d6cf50e277c1d7470676f4"
+      },
+      "downloads": 242,
+      "filename": "hankel-0.3.1-py2-none-any.whl",
+      "has_sig": false,
+      "md5_digest": "eabdb68c161b79bbcc8b09ea058f3915",
+      "packagetype": "bdist_wheel",
+      "python_version": "py2",
+      "size": 15089,
+      "upload_time": "2017-01-05T03:44:46",
+      "url": "https://files.pythonhosted.org/packages/5b/4c/97adb2a6039dc4194f9812c5365fc1e7e176224b79e5a34f3a0d8b53958e/hankel-0.3.1-py2-none-any.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "702db560be6f1bd89f9db8ed6588885b",
+        "sha256": "118047610d70183d55b48860350b60456b1660f99b77fb587da0aeda702d6085"
+      },
+      "downloads": 236,
+      "filename": "hankel-0.3.1-py3-none-any.whl",
+      "has_sig": false,
+      "md5_digest": "702db560be6f1bd89f9db8ed6588885b",
+      "packagetype": "bdist_wheel",
+      "python_version": "py3",
+      "size": 15099,
+      "upload_time": "2017-01-05T03:50:42",
+      "url": "https://files.pythonhosted.org/packages/3c/3b/1bd68db175a77c31bb4b9aff08cc7fd244fb01da9f905eff6f4321300ec8/hankel-0.3.1-py3-none-any.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "494d7543962ac2e22658760dad7e21e8",
+        "sha256": "be7f725833b6e1efefe23f492f4fa7cadde65503a718f28134ba1db3f75af5d3"
+      },
+      "downloads": 242,
+      "filename": "hankel-0.3.1.tar.gz",
+      "has_sig": false,
+      "md5_digest": "494d7543962ac2e22658760dad7e21e8",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 8652,
+      "upload_time": "2017-01-05T03:44:48",
+      "url": "https://files.pythonhosted.org/packages/cd/1f/c02d8f32109e6b922c36ff848f8c46846c10a53869cb157d5972f7a218e4/hankel-0.3.1.tar.gz"
+    }
+  ]
+}

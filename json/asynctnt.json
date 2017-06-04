@@ -1,0 +1,327 @@
+{
+  "info": {
+    "author": "igorcoding",
+    "author_email": "igorcoding@gmail.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: Apache Software License",
+      "Programming Language :: Python :: 3.5",
+      "Programming Language :: Python :: 3.6",
+      "Programming Language :: Python :: 3 :: Only",
+      "Topic :: Database :: Front-Ends",
+      "Topic :: Software Development :: Libraries :: Python Modules"
+    ],
+    "description": "asynctnt\n========\n\n|Build Status| |PyPI|\n\nasynctnt is a high-performance `Tarantool <https://tarantool.org/>`__\ndatabase connector library for Python/asyncio. It was highly inspired by\n`asyncpg <https://github.com/MagicStack/asyncpg>`__ module.\n\nasynctnt requires Python 3.5 or later and is supported for Tarantool\nversions 1.6+.\n\nDocumentation\n-------------\n\nDocumentation is available\n`here <https://igorcoding.github.io/asynctnt>`__.\n\nKey features\n------------\n\n-  Support for all of the basic requests that Tarantool supports. This\n   includes: ``insert``, ``select``, ``update``, ``upsert``, ``eval``,\n   ``call`` and ``call16``. ``call16`` is an old call method of\n   Tarantool 1.6. ``call`` - simplifies return values of Tarantool\n   procedures (please refer to Tarantool documentation for more\n   details).\n-  **Schema fetching** on connection establishment, so you can use\n   spaces and indexes names rather than their ids.\n-  Schema **auto refetching**. Tarantool has an option to check if\n   \"your\" schema is up to date, and if not - returns an error. If such\n   an error occurs on any request - new schema is refetched and the\n   initial request is resent.\n-  **Auto reconnect**. If connection is lost for some reason - asynctnt\n   will start automatic reconnection procedure (with authorization and\n   schema fetching, of course).\n-  Ability to use **dicts for tuples** with field names as keys in DML\n   requests (select, insert, replace, delete, update, upsert). This is\n   possible only if space.format is specified in Tarantool. Field names\n   can also be used in update operations instead of field numbers.\n   Moreover, tuples can be decoded into dicts instead of arrays if\n   ``tuple_as_dict`` is True either in ``Connection`` or a specific\n   request. See below for examples.\n-  All requests support specification of ``timeout`` value, so if\n   request is executed for too long, asyncio.TimeoutError is raised. It\n   drastically simplifies your code, as you don't need to use\n   ``asyncio.wait_for(...)`` stuff anymore.\n\nPerformance\n-----------\n\nOn all of the benchmarks below ``wal_mode = none``\n\nSequential\n~~~~~~~~~~\n\nRPS on running 40k requests (no ``uvloop``):\n\n+-----------+----------------+------------+\n| Request   | aiotarantool   | asynctnt   |\n+===========+================+============+\n| ping      | 5010.60        | 9037.07    |\n+-----------+----------------+------------+\n| call      | 4575.98        | 9113.32    |\n+-----------+----------------+------------+\n| eval      | 4096.32        | 8921.95    |\n+-----------+----------------+------------+\n| select    | 4063.15        | 9681.12    |\n+-----------+----------------+------------+\n| insert    | 4038.04        | 9332.21    |\n+-----------+----------------+------------+\n| update    | 3945.12        | 10532.75   |\n+-----------+----------------+------------+\n\nRPS on running 40k requests (with ``uvloop``):\n\n+-----------+----------------+------------+\n| Request   | aiotarantool   | asynctnt   |\n+===========+================+============+\n| ping      | 7204.31        | 20372.59   |\n+-----------+----------------+------------+\n| call      | 6723.58        | 17279.21   |\n+-----------+----------------+------------+\n| eval      | 7001.27        | 16642.67   |\n+-----------+----------------+------------+\n| select    | 7028.03        | 17730.24   |\n+-----------+----------------+------------+\n| insert    | 7054.06        | 17384.26   |\n+-----------+----------------+------------+\n| update    | 6618.01        | 15990.12   |\n+-----------+----------------+------------+\n\nParallel coroutines\n~~~~~~~~~~~~~~~~~~~\n\nRPS on running 200k requests in 300 parallel coroutines (no ``uvloop``):\n\n+-----------+----------------+------------+\n| Request   | aiotarantool   | asynctnt   |\n+===========+================+============+\n| ping      | 32946.25       | 44090.53   |\n+-----------+----------------+------------+\n| call      | 29005.93       | 41129.16   |\n+-----------+----------------+------------+\n| eval      | 28792.84       | 44097.02   |\n+-----------+----------------+------------+\n| select    | 26929.76       | 35853.33   |\n+-----------+----------------+------------+\n| insert    | 27142.52       | 31329.85   |\n+-----------+----------------+------------+\n| update    | 25330.98       | 36281.59   |\n+-----------+----------------+------------+\n\nLet's enable uvloop. This is where asynctnt shines. RPS on running 200k\nrequests in 300 parallel coroutines (with ``uvloop``):\n\n+-----------+----------------+-------------+\n| Request   | aiotarantool   | asynctnt    |\n+===========+================+=============+\n| ping      | 38962.01       | 134043.41   |\n+-----------+----------------+-------------+\n| call      | 32799.71       | 99866.28    |\n+-----------+----------------+-------------+\n| eval      | 27608.09       | 91056.69    |\n+-----------+----------------+-------------+\n| select    | 27436.98       | 108940.41   |\n+-----------+----------------+-------------+\n| insert    | 33247.57       | 102971.13   |\n+-----------+----------------+-------------+\n| update    | 28544.68       | 98643.46    |\n+-----------+----------------+-------------+\n\nInstallation\n------------\n\nUse pip to install:\n\n.. code:: bash\n\n    $ pip install asynctnt\n\nBasic Usage\n-----------\n\nTarantool config:\n\n.. code:: lua\n\n    box.cfg {\n        listen = '127.0.0.1:3301'\n    }\n\n    box.once('v1', function()\n        box.schema.user.grant('guest', 'read,write,execute', 'universe')\n\n        local s = box.schema.create_space('tester')\n        s:create_index('primary')\n    end)\n\nPython code:\n\n.. code:: python\n\n    import asyncio\n    import asynctnt\n\n\n    async def run():\n        conn = asynctnt.Connection(host='127.0.0.1', port=3301)\n        await conn.connect()\n        \n        for i in range(1, 11):\n            await conn.insert('tester', [i, 'hello{}'.format(i)])\n            \n        values = await conn.select('tester', [])\n        print('Code: {}'.format(values.code))\n        print('Data: {}'.format(values.body))\n        print(values.body2yaml())  # prints as yaml\n        \n        await conn.disconnect()\n\n    loop = asyncio.get_event_loop()\n    loop.run_until_complete(run())\n\nStdout:\n\n::\n\n    Code: 0\n    Data: [[1, 'hello1'], [2, 'hello2'], [3, 'hello3'], [4, 'hello4']]\n    - [1, hello1]\n    - [2, hello2]\n    - [3, hello3]\n    - [4, hello4]\n\nExample of using space format information\n-----------------------------------------\n\nTarantool config:\n\n.. code:: lua\n\n    box.cfg {\n        listen = '127.0.0.1:3301'\n    }\n\n    box.once('v1', function()\n        box.schema.user.grant('guest', 'read,write,execute', 'universe')\n\n        local s = box.schema.create_space('tester')\n        s:create_index('primary')\n        s:format({  --   <--- Note this format() call\n            {name='id', type='unsigned'},\n            {name='text', type='string'},\n        })\n    end)\n\nPython code:\n\n.. code:: python\n\n    import asyncio\n    import asynctnt\n\n\n    async def run():\n        conn = asynctnt.Connection(host='127.0.0.1', port=3301, \n                                   tuple_as_dict=True)  # <--- Note this flag\n        await conn.connect()\n\n        for i in range(1, 5):\n            await conn.insert('tester', {  # <--- Note using dict as a tuple\n                'id': i,\n                'text': 'hello{}'.format(i)\n            })\n\n        values = await conn.select('tester', [])\n        print('Code: {}'.format(values.code))\n        print('Data: {}'.format(values.body))\n        print(values.body2yaml())  # prints as yaml\n\n        await conn.disconnect()\n\n    loop = asyncio.get_event_loop()\n    loop.run_until_complete(run())\n\nStdout (now got dict tuples instead of plain arrays):\n\n::\n\n    Code: 0\n    Data: [{'id': 1, 'text': 'hello1'}, {'id': 2, 'text': 'hello2'}, {'id': 3, 'text': 'hello3'}, {'id': 4, 'text': 'hello4'}]\n    - {id: 1, text: hello1}\n    - {id: 2, text: hello2}\n    - {id: 3, text: hello3}\n    - {id: 4, text: hello4}\n\nLicense\n-------\n\nasynctnt is developed and distributed under the Apache 2.0 license.\n\n.. |Build Status| image:: https://travis-ci.org/igorcoding/asynctnt.svg?branch=master\n   :target: https://travis-ci.org/igorcoding/asynctnt\n.. |PyPI| image:: https://img.shields.io/pypi/v/asynctnt.svg\n   :target: https://pypi.python.org/pypi/asynctnt",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/igorcoding/asynctnt",
+    "keywords": "",
+    "license": "Apache Software License",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "asynctnt",
+    "platform": "",
+    "project_url": "https://pypi.org/project/asynctnt/",
+    "release_url": "https://pypi.org/project/asynctnt/0.1.8/",
+    "requires_python": "",
+    "summary": "A fast Tarantool Database connector for Python/asyncio.",
+    "version": "0.1.8"
+  },
+  "releases": {
+    "0.0.10": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "65d6c68229485d67f6f249653c637b62",
+          "sha256": "711acfefdb833d6fdd3bb4c6f3d2ec2df573601975fe5c2c98ca7328bf16262d"
+        },
+        "downloads": 13,
+        "filename": "asynctnt-0.0.10.tar.gz",
+        "has_sig": false,
+        "md5_digest": "65d6c68229485d67f6f249653c637b62",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 240653,
+        "upload_time": "2017-02-15T21:26:55",
+        "url": "https://files.pythonhosted.org/packages/b9/74/fd9ed27d02d308190f1d9c548b2352a46de5ff3772d779776e88d133c775/asynctnt-0.0.10.tar.gz"
+      }
+    ],
+    "0.0.11": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "227ba7601f2183e3894736c43c816266",
+          "sha256": "6471e003ade4be723d23cd933b91fed187bbafc4725a0620538c69407cc56749"
+        },
+        "downloads": 15,
+        "filename": "asynctnt-0.0.11.tar.gz",
+        "has_sig": false,
+        "md5_digest": "227ba7601f2183e3894736c43c816266",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 241621,
+        "upload_time": "2017-02-17T00:10:14",
+        "url": "https://files.pythonhosted.org/packages/e0/5e/bcb61065409c13f50ce4fed868226b47328a56841a8976eb44e2776036fa/asynctnt-0.0.11.tar.gz"
+      }
+    ],
+    "0.0.5": [],
+    "0.0.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b8e6b9fd64e5e0e3ec45389fccf82dd8",
+          "sha256": "21817cddafdba5b048a11593f922b1b69fd11b5706c6bb0cfc715d3c81426943"
+        },
+        "downloads": 16,
+        "filename": "asynctnt-0.0.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b8e6b9fd64e5e0e3ec45389fccf82dd8",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 238465,
+        "upload_time": "2017-02-14T20:10:01",
+        "url": "https://files.pythonhosted.org/packages/4b/af/3852c0ded675b7b5424a077cf418169bbe5a23737526ef55f5ae7e8ecd6f/asynctnt-0.0.6.tar.gz"
+      }
+    ],
+    "0.0.7": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5d31632cbd289a894b5814875e3ea5a7",
+          "sha256": "de8736275664c5679f1442ac9919640474a3cea1f6285a64f251eac8eaf0f337"
+        },
+        "downloads": 18,
+        "filename": "asynctnt-0.0.7.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5d31632cbd289a894b5814875e3ea5a7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 239521,
+        "upload_time": "2017-02-15T10:56:24",
+        "url": "https://files.pythonhosted.org/packages/73/4d/cc43c773cca0e441cad73bae80e74863a28c1f86ed4c5c7f913907dc7aca/asynctnt-0.0.7.tar.gz"
+      }
+    ],
+    "0.0.8": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "155dca4c5010037c77c2eaf30299ced0",
+          "sha256": "25940d854566e01e935d3f0e6e86e8b9ab07e3c36e759dbffd11fa309e321d2f"
+        },
+        "downloads": 16,
+        "filename": "asynctnt-0.0.8.tar.gz",
+        "has_sig": false,
+        "md5_digest": "155dca4c5010037c77c2eaf30299ced0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 239527,
+        "upload_time": "2017-02-15T16:15:36",
+        "url": "https://files.pythonhosted.org/packages/9f/0b/65a8f665d1f675e650250568b147a354613e13f7190ce27bb6bc158640f5/asynctnt-0.0.8.tar.gz"
+      }
+    ],
+    "0.0.9": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "22af26b9ad88059c86c715932ea22ed4",
+          "sha256": "20b527d0f43d0ba5d3a6ce1e5c7ea4b02dc809343e98f5f89a0ef8b2f8b6c4a1"
+        },
+        "downloads": 14,
+        "filename": "asynctnt-0.0.9.tar.gz",
+        "has_sig": false,
+        "md5_digest": "22af26b9ad88059c86c715932ea22ed4",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 240427,
+        "upload_time": "2017-02-15T18:29:38",
+        "url": "https://files.pythonhosted.org/packages/65/b9/3b51917502d6b9f3a9691a802cf1d1875732c5d9e0fb2e58310bc47af19a/asynctnt-0.0.9.tar.gz"
+      }
+    ],
+    "0.1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "35e0212d52b505cf5232b22e1b47f91e",
+          "sha256": "1bd6de4ad1cabc78c1c93f4d8006c675bd8f71c8785f9e658b54a3b78ec18492"
+        },
+        "downloads": 17,
+        "filename": "asynctnt-0.1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "35e0212d52b505cf5232b22e1b47f91e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 255412,
+        "upload_time": "2017-02-24T23:46:30",
+        "url": "https://files.pythonhosted.org/packages/d5/95/d119720a8219c7db6db3db2aed29c302b8a07538317df44021bb96b00177/asynctnt-0.1.0.tar.gz"
+      }
+    ],
+    "0.1.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "77b39acbf07b3a0b7e74c09a2fdcd2f7",
+          "sha256": "472358248f991cb91df3d6bf8999eb4d557bae07f7c1a0b747d94865b1462c3a"
+        },
+        "downloads": 19,
+        "filename": "asynctnt-0.1.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "77b39acbf07b3a0b7e74c09a2fdcd2f7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 257619,
+        "upload_time": "2017-03-11T10:17:06",
+        "url": "https://files.pythonhosted.org/packages/c1/ea/a980856af4c3bc492702e84309331be892b098cb361b116a6f99b843d600/asynctnt-0.1.1.tar.gz"
+      }
+    ],
+    "0.1.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "284b621a30d42c5af1d247b4a78ec8a0",
+          "sha256": "591ffbe6317b9047d0d6450160707808c1800ef9882ef743ab274b1f7056abd1"
+        },
+        "downloads": 20,
+        "filename": "asynctnt-0.1.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "284b621a30d42c5af1d247b4a78ec8a0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 257615,
+        "upload_time": "2017-03-11T14:58:10",
+        "url": "https://files.pythonhosted.org/packages/34/44/9ce33522482b0462c6fe585913ab9b1b55ec6ff2234235608d5f2ef6de00/asynctnt-0.1.2.tar.gz"
+      }
+    ],
+    "0.1.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d27ffc4db2f05b8bd453c83e79c7ff0c",
+          "sha256": "095138fefa30bdc0fdec6959a51f68473964183410e77bc8b5ed1b18396d5ad4"
+        },
+        "downloads": 24,
+        "filename": "asynctnt-0.1.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d27ffc4db2f05b8bd453c83e79c7ff0c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 258267,
+        "upload_time": "2017-03-12T15:53:15",
+        "url": "https://files.pythonhosted.org/packages/c3/55/c8f74a7c1293b563df67463a78f706bccdcb52ff1c4a7064395162b4a760/asynctnt-0.1.3.tar.gz"
+      }
+    ],
+    "0.1.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e06eb12cdfed86b96c5f394e9ac9d18a",
+          "sha256": "f98ad83761ca3d45976edac0bc8b93565e28b8decd107625378f8cb35e93bd84"
+        },
+        "downloads": 22,
+        "filename": "asynctnt-0.1.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e06eb12cdfed86b96c5f394e9ac9d18a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 260096,
+        "upload_time": "2017-03-12T21:59:49",
+        "url": "https://files.pythonhosted.org/packages/ba/e9/5e86a1731ba67d182b4ee065a5b7a4bb29dc356f037faeb0b149a13338a4/asynctnt-0.1.4.tar.gz"
+      }
+    ],
+    "0.1.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8e23316a56c9fc81e4259e74fe2bcfae",
+          "sha256": "6e8df985bc09f645a3e020fad330ebe950aeea3ed0c3dd560fb6a473418effd9"
+        },
+        "downloads": 26,
+        "filename": "asynctnt-0.1.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8e23316a56c9fc81e4259e74fe2bcfae",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 260515,
+        "upload_time": "2017-03-15T10:55:40",
+        "url": "https://files.pythonhosted.org/packages/c4/10/73fad220a94f93121db2ca064e194b0f94071acc77a6593dbf30cc7e0e39/asynctnt-0.1.5.tar.gz"
+      }
+    ],
+    "0.1.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b713841a4dc975af08e9275e9bd4c2da",
+          "sha256": "2971278683f079db22ae912d6a2bc6972125448c10588439c5c99d253fa0aaa8"
+        },
+        "downloads": 54,
+        "filename": "asynctnt-0.1.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b713841a4dc975af08e9275e9bd4c2da",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 264610,
+        "upload_time": "2017-03-16T19:42:53",
+        "url": "https://files.pythonhosted.org/packages/5c/fb/9c3d4a90e6b40cab6f9634876a7eaa1208f257bdac72ee7b4a0bb5c32511/asynctnt-0.1.6.tar.gz"
+      }
+    ],
+    "0.1.7": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8bade75b453cfa5338f8157037007249",
+          "sha256": "a8c2b75c2a6b79937b830a171a6f3e6b4b1bbf39a6fda65ac5427ebb0b11ccfb"
+        },
+        "downloads": 17,
+        "filename": "asynctnt-0.1.7.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8bade75b453cfa5338f8157037007249",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 264636,
+        "upload_time": "2017-03-29T16:04:58",
+        "url": "https://files.pythonhosted.org/packages/bf/ec/53e2f29172f2bf5ad34a2f64c7342a106ae033bf47c7c6d7eca7ae9770f8/asynctnt-0.1.7.tar.gz"
+      }
+    ],
+    "0.1.8": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9f84f4c5f307e0125b06fc985098ccc9",
+          "sha256": "6de536a3cac0ad86de0bfa16fece7f42446efda66ac5cf57274e8ee1886609bb"
+        },
+        "downloads": 0,
+        "filename": "asynctnt-0.1.8.tar.gz",
+        "has_sig": false,
+        "md5_digest": "9f84f4c5f307e0125b06fc985098ccc9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 264614,
+        "upload_time": "2017-05-04T22:33:11",
+        "url": "https://files.pythonhosted.org/packages/28/26/394220485ebf01f074a694c8422ba8d3ef083f8bb6fc3d000db7ff702e31/asynctnt-0.1.8.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "9f84f4c5f307e0125b06fc985098ccc9",
+        "sha256": "6de536a3cac0ad86de0bfa16fece7f42446efda66ac5cf57274e8ee1886609bb"
+      },
+      "downloads": 0,
+      "filename": "asynctnt-0.1.8.tar.gz",
+      "has_sig": false,
+      "md5_digest": "9f84f4c5f307e0125b06fc985098ccc9",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 264614,
+      "upload_time": "2017-05-04T22:33:11",
+      "url": "https://files.pythonhosted.org/packages/28/26/394220485ebf01f074a694c8422ba8d3ef083f8bb6fc3d000db7ff702e31/asynctnt-0.1.8.tar.gz"
+    }
+  ]
+}

@@ -1,0 +1,114 @@
+{
+  "info": {
+    "author": "Sabricot",
+    "author_email": "",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 3 - Alpha",
+      "Framework :: Django",
+      "Framework :: Django :: 1.10",
+      "Framework :: Django :: 1.11",
+      "Framework :: Django :: 1.8",
+      "Framework :: Django :: 1.9",
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: BSD License",
+      "Natural Language :: English",
+      "Programming Language :: Python :: 2",
+      "Programming Language :: Python :: 2.7",
+      "Programming Language :: Python :: 3",
+      "Programming Language :: Python :: 3.4",
+      "Programming Language :: Python :: 3.5",
+      "Programming Language :: Python :: 3.6"
+    ],
+    "description": "=============================\nDjango Elasticsearch DSL\n=============================\n\n.. image:: https://travis-ci.org/sabricot/django-elasticsearch-dsl.png?branch=master\n    :target: https://travis-ci.org/sabricot/django-elasticsearch-dsl\n.. image:: https://codecov.io/gh/sabricot/django-elasticsearch-dsl/coverage.svg?branch=master\n    :target: https://codecov.io/gh/sabricot/django-elasticsearch-dsl\n\nThis is a package that allows indexing of django models in elasticsearch. It is\nbuilt as a tin wrapper around elasticsearch-dsl-py_ so you can use all the features developed\nby the elasticsearch-dsl-py team.\n\n.. _elasticsearch-dsl-py: https://github.com/elastic/elasticsearch-dsl-py\n\nFeatures\n--------\n\n- Based on elasticsearch-dsl-py_ so you can make query with the Search_ class.\n- Django signal receivers on save and delete for keeping Elasticsearch in sync.\n- Management commands for create, delete, rebuild indices and populate them.\n- Elasticsearch auto mapping from django models fields.\n- Complex field type support (ObjectField, NestedField).\n- Requirements\n   - Django >= 1.8\n   - Python 2.7, 3.4, 3.5, 3.6\n   - Elasticsearch >= 2.0 < 6.0\n\n.. _Search: http://elasticsearch-dsl.readthedocs.io/en/stable/search_dsl.html\n\nQuickstart\n----------\n\nInstall Django Elasticsearch DSL\n\nThen add ``django_elasticsearch_dsl`` to the INSTALLED_APPS\n\nYou must define ``ELASTICSEARCH_DSL`` in your django settings.\n\nFor example\n\n.. code:: python\n\n    ELASTICSEARCH_DSL={\n        'default': {\n            'hosts': 'localhost:9200'\n        },\n    }\n\n``ELASTICSEARCH_DSL`` is then passed to ``elasticsearch-dsl-py.connections.configure`` (see here_).\n\n.. _here: http://elasticsearch-dsl.readthedocs.io/en/stable/configuration.html#multiple-clusters\n\nThen for a model\n\n.. code:: python\n\n    # models.py\n\n    class Car(models.Model):\n        name = models.CharField()\n        color = models.CharField()\n        description = models.TextField()\n        type = models.IntegerField(choices=[\n            (1, \"Sedan\"),\n            (2, \"Truck\"),\n            (4, \"SUV\"),\n        ])\n\nTo make this model work with Elasticsearch, create a subclass of ``django_elasticsearch_dsl.DocType``.\nAnd create a ``django_elasticsearch_dsl.Index`` to define your Elasticsearch indices names and settings. This classes must be\ndefine in a ``documents.py`` file.\n\n.. code:: python\n\n    # documents.py\n\n    from django_elasticsearch_dsl import DocType, Index\n    from .models import Car\n\n    # Name of the Elasticsearch index\n    car = Index('cars')\n    # See Elasticsearch Indices API reference for available settings\n    car.settings(\n        number_of_shards=1,\n        number_of_replicas=0\n    )\n\n\n    @car.doc_type\n    class CarDocument(DocType):\n        class Meta:\n            model = Car # The model associate with this DocType\n            fields = [\n                'name',\n                'color',\n                'description',\n                'type',\n            ] # the fields of the model you want to be indexed in Elasticsearch\n\n            # ignore_signals = True # To ignore auto updating of Elasticsearch when a model is save or delete\n\n\nTo create and populate the Elasticsearch index and mapping use the search_index command::\n\n    $ ./manage.py search_index --rebuild\n\nNow, when you do something like:\n\n.. code:: python\n\n    car = Car(name=\"Car one\", color=\"red\", type=1, description=\"A beautiful car\")\n    car.save()\n\nThe object will be saved in Elasticsearch too (using a signal handler). To get a\nelasticsearch-dsl-py Search_ instance, use:\n\n.. code:: python\n\n    s = CarDocument.search().filter(\"term\", color=\"red\")\n\n    # or\n\n    s = CarDocument.search().query(\"match\", description=\"beautiful\")\n\n    for hit in s:\n        print(\"Car name : {}, description {}\".format(hit.name, hit.description))\n\nFields\n------\n\nOnce again the ``django_elasticsearch_dsl.fields`` are subclasses of elasticsearch-dsl-py\nfields_. They just add support for retrieving data from django models.\n\n\n.. _fields: http://elasticsearch-dsl.readthedocs.io/en/stable/persistence.html#mappings\n\nUsing Different Attributes for Model Fields\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nLet's say you don't want to store the type of the car as an integer, but as the\ncorresponding string instead. You need some way to convert the type field on\nthe model to a string, so we'll just add a method for it:\n\n.. code:: python\n\n    # models.py\n\n    class Car(models.Model):\n        # ... #\n        def type_to_string(self):\n            \"\"\"Convert the type field to its string representation (the boneheaded way)\"\"\"\n            if self.type == 1:\n                return \"Sedan\"\n            elif self.type == 2:\n                return \"Truck\"\n            else:\n                return \"SUV\"\n\nNow we need to tell our ``DocType`` subclass to use that method instead of just\naccessing the ``type`` field on the model directly. Change the CarDocument to look\nlike this:\n\n.. code:: python\n\n    # documents.py\n\n    from django_elasticsearch_dsl import DocType, fields\n\n    # ... #\n\n    @car.doc_type\n    class CarDocument(DocType):\n        # add a string field to the Elasticsearch mapping called type, the value of\n        # which is derived from the model's type_to_string attribute\n        type = fields.StringField(attr=\"type_to_string\")\n\n        class Meta:\n            model = Car\n            # we removed the type field from here\n            fields = [\n                'name',\n                'color',\n                'description',\n            ]\n\nAfter a change like this we need to rebuild the index with::\n\n    $ ./manage.py search_index --rebuild\n\nUsing prepare_field\n~~~~~~~~~~~~~~~~~~~\n\nSometimes, you need to do some extra prepping before a field should be saved to\nelasticsearch. You can add a ``prepare_foo(self, instance)`` method to a DocType\n(where foo is the name of the field), and that will be called when the field\nneeds to be saved.\n\n.. code:: python\n\n    # documents.py\n\n    # ... #\n\n    class CarDocument(DocType):\n        # ... #\n\n        foo = StringField()\n\n        def prepare_foo(self, instance):\n            return \" \".join(instance.foos)\n\nHandle relationship with NestedField/ObjecField\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nFor example for a model with ForeignKey relationships.\n\n.. code:: python\n\n    # models.py\n\n    class Car(models.Model):\n        name = models.CharField()\n        color = models.CharField()\n        manufacturer = models.ForeignKey('Manufacturer')\n\n    class Manufacturer(models.Model):\n        name = models.CharField()\n        country_code = models.CharField(max_length=2)\n        created = models.DateField()\n\n    class Ad(models.Model):\n        title = models.CharField()\n        description = models.TextField()\n        created = models.DateField(auto_now_add=True)\n        modified = models.DateField(auto_now=True)\n        url = models.URLField()\n        car = models.ForeignKey('Car')\n\n        # This function will be called by the ads NestedField from the CarDocument\n        def ads(self):\n            return self.ad_set.all()\n\n\nYou can use an ObjecField or NestedField.\n\n.. code:: python\n\n    # documents.py\n\n    from django_elasticsearch_dsl import DocType, Index\n    from .models import Car\n\n    car = Index('cars')\n    car.settings(\n        number_of_shards=1,\n        number_of_replicas=0\n    )\n\n\n    @car.doc_type\n    class CarDocument(DocType):\n        manufacturer = fields.ObjectField(properties={\n            'name': fields.StringField(),\n            'country_code': fields.StringField(),\n        })\n        ads = fields.NestedField(properties={\n            'description': fields.StringField(analyzer=html_strip),\n            'title': fields.StringField(),\n            'pk': fields.IntegerField(),\n        })\n\n        class Meta:\n            model = Car\n            fields = [\n                'name',\n                'color',\n            ]\n\n        # Not mandadory but to improve performance we can select related in one sql request\n        def get_queryset(self):\n            return super(CarDocument, self).get_queryset().select_related(\n                'manufacturer')\n\nField Classes\n~~~~~~~~~~~~~\nMost elasticsearch field types_ are supported. The ``attr`` argument is a dotted\n\"attribute path\" which will be looked up on the model using Django template\nsemantics (dict lookup, attribute lookup, list index lookup). By default the attr\nargument is set to the field name.\n\nFor the rest, the field properties are the same as elasticsearch-dsl-py\nfields_.\n\nSo for example you can use a custom analyzer_:\n\n.. _analyzer: http://elasticsearch-dsl.readthedocs.io/en/stable/persistence.html#analysis\n.. _types: https://www.elastic.co/guide/en/elasticsearch/reference/2.3/mapping-types.html\n\n.. code:: python\n\n    # documents.py\n\n    # ... #\n\n    html_strip = analyzer(\n        'html_strip',\n        tokenizer=\"standard\",\n        filter=[\"standard\", \"lowercase\", \"stop\", \"snowball\"],\n        char_filter=[\"html_strip\"]\n    )\n\n    @car.doc_type\n    class CarDocument(DocType):\n        description = fields.StringField(\n            analyzer=html_strip,\n            fields={'raw': fields.StringField(index='not_analyzed')}\n        )\n\n        class Meta:\n            model = Car\n            fields = [\n                'name',\n                'color',\n            ]\n\n\nAvailable Fields\n~~~~~~~~~~~~~~~~\n\n- Simple Fields\n\n    - StringField(attr=None, \\*\\*elasticsearch_properties)\n    - FloatField(attr=None, \\*\\*elasticsearch_properties)\n    - DoubleField(attr=None, \\*\\*elasticsearch_properties)\n    - ByteField(attr=None, \\*\\*elasticsearch_properties)\n    - ShortField(attr=None, \\*\\*elasticsearch_properties)\n    - IntegerField(attr=None, \\*\\*elasticsearch_properties)\n    - DateField(attr=None, \\*\\*elasticsearch_properties)\n    - BooleanField(attr=None, \\*\\*elasticsearch_properties)\n    - GeoPointField(attr=None, \\*\\*elasticsearch_properties)\n    - GeoShapField(attr=None, \\*\\*elasticsearch_properties)\n    - IpField(attr=None, \\*\\*elasticsearch_properties)\n    - CompletionField(attr=None, \\*\\*elasticsearch_properties)\n\n- Complex Fields\n\n    - ObjectField(properties, attr=None, \\*\\*elasticsearch_properties)\n    - NestedField(properties, attr=None, \\*\\*elasticsearch_properties)\n\n- Elasticsearch 5 Fields\n\n    - TextField(attr=None, \\*\\*elasticsearch_properties)\n    - KeywordField(attr=None, \\*\\*elasticsearch_properties)\n\n``properties`` is a dict where the key is a field name, and the value is a field\ninstance.\n\n\nIndex\n-----\n\nTo define an Elasticsearch index you must instantiate a ``django_elasticsearch_dsl.Index`` class for set the name\nand settings of the index. This class inherit form elasticsearch-dsl-py Index_.\nAfter you instantiate your class you need to associate it with the DocType you\nwant to put in this Elasticsearch index.\n\n\n.. _Index: http://elasticsearch-dsl.readthedocs.io/en/stable/persistence.html#index\n\n.. code:: python\n\n    # documents.py\n\n    from django_elasticsearch_dsl import DocType, Index\n    from .models import Car, Manufacturer\n\n    # The name of your index\n    car = Index('cars')\n    # See Elasticsearch Indices API reference for available settings\n    car.settings(\n        number_of_shards=1,\n        number_of_replicas=0\n    )\n\n\n    @car.doc_type\n    class CarDocument(DocType):\n        class Meta:\n            model = Car\n            fields = [\n                'name',\n                'color',\n            ]\n\n    @car.doc_type\n    class ManufacturerDocument(DocType):\n        class Meta:\n            model = Car\n            fields = [\n                'name', # If a field as the same name in multiple DocType of the same Index,\n                        # the field type must be identical (here fields.StringField)\n                'country_code',\n            ]\n\nWhen you execute the command::\n\n    $ ./manage.py search_index --rebuild\n\nThis will create an index named ``cars`` in elasticsearch with two mapping\n``manufacturer_document`` and ``car_document``.\n\n\nManagement Commands\n-------------------\n\nTo delete all indices in Elasticsearch or only the indices associate with a model (--models):\n\n::\n\n    $ search_index --delete [-f] [--models [app[.model] app[.model] ...]]\n\n\nTo create the indices and their mapping in Elasticsearch\n\n::\n\n    $ search_index --create [--models [app[.model] app[.model] ...]]\n\nTo populate the Elasticsearch mappings with the django models data (index need to be existing)\n\n::\n\n    $ search_index --populate [--models [app[.model] app[.model] ...]]\n\nTo recreate and repopulate the indices you can use:\n\n::\n\n    $ search_index --rebuild [-f] [--models [app[.model] app[.model] ...]]\n\n\nSettings\n--------\n\nELASTICSEARCH_DSL_AUTOSYNC\n~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nDefault: ``True``\n\nSet to ``False`` to globally disable autosyncing.\n\n\nTesting\n-------\n\nYou can run the tests by creating a Python virtual environment, installing\nthe requirements from ``requirements_test.txt`` (``pip install -r requirements_test``)::\n\n    $ python runtests.py\n\n    # or\n\n    $ make test\n\n    $ make test-all # for tox testing\n\nFor integration testing with a running Elasticsearch server::\n\n    $ python runtests.py --elasticsearch [localhost:9200]\n\n\nTODO\n----\n\n- Add support for --using (use another elasticsearch cluster) in management commands.\n- Add management commands for mapping level operations (like update_mapping....).\n- Dedicated documentation.\n- Generate ObjecField/NestField propeties from a DocType class.\n- Add possibility to set a default index in ``class DocType: class Meta index = 'cars'``.\n- More examples.\n- Better ``ESTestCase`` and documentation for testing\n\n\n\n\n\nHistory\n-------\n\n0.1.0 (2017-26-05)\n++++++++++++++++++\n\n* First release on PyPI.\n\n\n",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/sabricot/django-elasticsearch-dsl",
+    "keywords": "django elasticsearch elasticsearch-dsl",
+    "license": "Apache Software License 2.0",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "django-elasticsearch-dsl",
+    "platform": "",
+    "project_url": "https://pypi.org/project/django-elasticsearch-dsl/",
+    "release_url": "https://pypi.org/project/django-elasticsearch-dsl/0.1.0/",
+    "requires_python": "",
+    "summary": "Wrapper around elasticsearch-dsl-py for django models",
+    "version": "0.1.0"
+  },
+  "releases": {
+    "0.1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1dc7216d5a0b4b3069dc25f4f0d5bdae",
+          "sha256": "526ac1107f3cc60a7decde49a97b23fe5887e79b047f48e530ad563dde645a69"
+        },
+        "downloads": 0,
+        "filename": "django_elasticsearch_dsl-0.1.0-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "1dc7216d5a0b4b3069dc25f4f0d5bdae",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 19100,
+        "upload_time": "2017-05-26T22:11:48",
+        "url": "https://files.pythonhosted.org/packages/15/d9/f9f48f13a2f34dd398bd1fe5581bed9fc29a9ea8f8f5df1bc57eb4c24470/django_elasticsearch_dsl-0.1.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ca4b508cb91b245cff7dffc040af3f85",
+          "sha256": "0777a542cf872f0467d034ff3ed158092c6c8bd66926c5a8d4c0d78a1d4d70e6"
+        },
+        "downloads": 0,
+        "filename": "django-elasticsearch-dsl-0.1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ca4b508cb91b245cff7dffc040af3f85",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 15344,
+        "upload_time": "2017-05-26T22:11:50",
+        "url": "https://files.pythonhosted.org/packages/31/84/1a7bc10df33116b9eb424a9cc79ffbf70aaa4dffe653c17a270533bc5741/django-elasticsearch-dsl-0.1.0.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "1dc7216d5a0b4b3069dc25f4f0d5bdae",
+        "sha256": "526ac1107f3cc60a7decde49a97b23fe5887e79b047f48e530ad563dde645a69"
+      },
+      "downloads": 0,
+      "filename": "django_elasticsearch_dsl-0.1.0-py2.py3-none-any.whl",
+      "has_sig": false,
+      "md5_digest": "1dc7216d5a0b4b3069dc25f4f0d5bdae",
+      "packagetype": "bdist_wheel",
+      "python_version": "py2.py3",
+      "size": 19100,
+      "upload_time": "2017-05-26T22:11:48",
+      "url": "https://files.pythonhosted.org/packages/15/d9/f9f48f13a2f34dd398bd1fe5581bed9fc29a9ea8f8f5df1bc57eb4c24470/django_elasticsearch_dsl-0.1.0-py2.py3-none-any.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "ca4b508cb91b245cff7dffc040af3f85",
+        "sha256": "0777a542cf872f0467d034ff3ed158092c6c8bd66926c5a8d4c0d78a1d4d70e6"
+      },
+      "downloads": 0,
+      "filename": "django-elasticsearch-dsl-0.1.0.tar.gz",
+      "has_sig": false,
+      "md5_digest": "ca4b508cb91b245cff7dffc040af3f85",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 15344,
+      "upload_time": "2017-05-26T22:11:50",
+      "url": "https://files.pythonhosted.org/packages/31/84/1a7bc10df33116b9eb424a9cc79ffbf70aaa4dffe653c17a270533bc5741/django-elasticsearch-dsl-0.1.0.tar.gz"
+    }
+  ]
+}

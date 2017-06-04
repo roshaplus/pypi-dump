@@ -1,0 +1,1823 @@
+{
+  "info": {
+    "author": "Hans Roh",
+    "author_email": "hansroh@gmail.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 3 - Alpha",
+      "Environment :: Console",
+      "Intended Audience :: Developers",
+      "Intended Audience :: Science/Research",
+      "License :: OSI Approved :: MIT License",
+      "Programming Language :: Python",
+      "Programming Language :: Python :: 3",
+      "Topic :: Database :: Front-Ends",
+      "Topic :: Internet :: WWW/HTTP",
+      "Topic :: Software Development :: Libraries :: Python Modules"
+    ],
+    "description": "====================================\nAsynchronous Multiplexing Requests\n====================================\n\nAquests is generating asynchronous requests and fetching data from HTTP2, REST API, Websocket, RPCs and several Database engines. This project was originally started for testing `Skitai App Engine`_ and seperated for efficient developing eaches on Jan 2017.\n\nSupported requests are:\n\n- HTTP/1.1\n- HTTP/2.0 if target server provides\n- Websocket\n- XML-RPC\n- gRPC\n- PostgreSQL\n- MongoDB\n- Redis\n\n.. _`Skitai App Engine`: https://pypi.python.org/pypi/skitai\n\n.. contents:: Table of Contents\n\n\nQuickstart\n=============\n\nFor fetching single web page:\n\n.. code-block:: python\n\n  import aquests\n  \n  aquests.get (\"http://127.0.0.1:5000/\")\n  aquests.fetchall ()\n\nIts result is:\n\n.. code-block:: bash\n\n  user$ REQID 0. HTTP/2.0 200 OK 4210 bytes received\n  \nLet's add more pages:\n\n.. code-block:: python\n  \n  for i in range (3):\n    aquests.get (\"http://127.0.0.1:5000/\")     \n  aquests.fetchall ()\n  \nIts result is:\n\n.. code-block:: bash\n\n  REQID 0. HTTP/2.0 200 OK 4210 bytes received\n  REQID 1. HTTP/2.0 200 OK 4210 bytes received\n  REQID 2. HTTP/2.0 200 OK 4210 bytes received\n\nNow increase fetching workers,\n\n.. code-block:: python\n\n  aquests.configure (3)  # 3 workers\n  for i in range (3):\n    aquests.get (\"http://127.0.0.1:5000/\")     \n  aquests.fetchall ()\n\nResult is same as above but somewhat faster and REQID is not ordered.\n\nNow increase workers and pages for making load,\n\n.. code-block:: python\n  \n  aquests.configure (100) # 100 workers\n  for i in range (10000):\n    aquests.get (\"http://127.0.0.1:5000/\")      \n  aquests.fetchall ()\n  \nNow result is,\n\n.. code-block:: bash\n\n  REQID 3635. HTTP/2.0 200 OK 4210 bytes received\n  REQID 3627. HTTP/2.0 200 OK 4210 bytes received\n  REQID 3594. HTTP/2.0 200 OK 4210 bytes received\n  REQID 3702. HTTP/2.0 200 OK 4210 bytes received\n  REQID 3685. HTTP/2.0 200 OK 4210 bytes received\n  REQID 3637. HTTP/2.0 200 OK 4210 bytes received\n  REQID 3591. HTTP/2.0 200 OK 4210 bytes received\n  REQID 3586. HTTP/2.0 200 OK 4210 bytes received\n  (and scrolled fast...)\n\nInstallation\n===============\n\n.. code-block:: bash\n\n  pip install aquests\n\n\nUsage\n======\n\nBinding Callback\n-------------------\n\n.. code-block:: python\n  \n  def finish_request (response):\n    print (response.status_code)\n    print (response.content)\n  \t\n  aquests.configure (workers = 10, callback = finish_request)\n  for i in range (10):\n    aquests.get (\"http://127.0.0.1:5000/\")    \n  aquests.fetchall ()\n\n\nMaking Traffic Load With Generator Style\n------------------------------------------\n\n.. code-block:: python\n  \n  numreq = 0\n  limit = 1000000\n  workers = 100\n  \n  def finish_request (response):\n    global numreq, limit     \n    if numreq < limit:\n      aquests.get (\"http://127.0.0.1:5000/\")\n      numreq += 1\n  \t\n  aquests.configure (workers, callback = finish_request)\n  for i in range (workers):\n    aquests.get (\"http://127.0.0.1:5000/\")  \n    numreq += 1\n  aquests.fetchall ()  \n\n\nSet/Get Request Meta Information\n------------------------------------\n\n.. code-block:: python\n  \n  def finish_request (response):\n    print (response.meta ['req_id'])\n    print (response.meta ['req_method'])\n    print (response.meta ['job_name'])\n  \t\n  aquests.configure (workers = 10, callback = finish_request)\n  aquests.get (\"http://127.0.0.1:5000/\", meta = {'job_name': 'test1'})  \n  aquests.get (\"http://127.0.0.1:5000/\", meta = {'job_name': 'test2'})\n\nNote: meta ['req_id'], meta ['req_method'] and meta ['req_callback'] are reserved keys and automatically added by aquests. You SHOULDN'T use theses keys and actually it is better do not use key starts with 'req\\_'.\n\n\nTimeout Setting\n----------------\n\n.. code-block:: python\n  \n  aquests.configure (20, timeout = 10) # 10 seconds\n  aquests.get (\"https://www.google.co.kr/?gfe_rd=cr&ei=3y14WPCTG4XR8gfSjoK4DQ\")  \n  aquests.fetchall ()\n\nIf timeout occured, response status_code will be 702. Also note above 700 codes mostly indicates network related error.\n\n\n**Caution**\n\n1. You can't specify timout for each task\n2. Cause of aquests' single thread coroutine feature, timeout will not work with exactly timeout seconds.\n\n\nMixed Requests\n----------------\n\n.. code-block:: python\n\n  dbo = aquests.mongodb (\"127.0.0.1:27017\", \"test_database\")\n  aquests.configure (20)\n  for i in range (1000): \n    aquests.get (\"http://127.0.0.1:5000/\")\n    dbo.findone (\"posts\", {\"author\": \"James Milton\"})\n  aquests.fetchall ()\n\n\nAuthorization\n-----------------\n\nFor requesting with basic/digest authorization:\n\n.. code:: python\n\n  stub = aquests.rpc (url, auth = (username, password))\n  stub.get_prime_number_gt (10000)\n  aquests.fetchall ()\n  \nIf you provide both (username, password), aquests try basic/digest authorization. But if just (username,) aquests handle username as bearer token like API Key.\n\n\nRedirection\n------------\n\nFor automatically redireting by http status 301, 302, 307, 308:\n\n.. code:: python\n  \n  def finish_request (response):\n    print (response.history)\n    \n  aquests.configure (callback = finish_request)\n  aquests.get ('http://pypi.python.org')\n  aquests.fetchall ()\n  \nresponse.history is like,\n\n.. code:: python\n\n  [<Response [301]>, <Response [302]>]\n\nAlso for disabling redirect,\n\n.. code:: python\n\n  aquests.configure (callback = finish_request, allow_redirects = False)\n  \n\nEnabling Cookie\n------------------\n\n.. code-block:: python\n  \n  def finish_request (response):\n    print (response.cookies)\n    \n  aquests.configure (20, callback = finish_request, cookie = True)\n  aquests.get (\"https://www.google.co.kr/?gfe_rd=cr&ei=3y14WPCTG4XR8gfSjoK4DQ\")  \n  aquests.fetchall ()\n\n**Caution**\n\nThis cookie feature shouldn't handle as different sessions per worker. All workers (connections) of aquests share same cookie values per domain. It means a worker sign in a website, so are the others. Imagine lots of FireFox windows on a desktop computer. If you really need session control, use requests_.\n\n\nChange Logger\n--------------\n\n.. code-block:: python\n  \n  from aquests.lib import logger\n  \n  aquests.configure (\n    workers = 10, \n    logger = logger.file_logger ('/tmp/logs', 'aquests')\n  )\n\n\nResponse\n---------\n\nI make similar naming with requests_' attribute and method names as possible.\n\nResponse has these attributes and method:\n\n- meta: user added meta data including 'req_id' and 'req_method'\n- status_code: HTTP status code or DBO query success (200) or failure (500) code\n- reason: status text like OK, Not Found...\n- content: bytes content or original db result\n- data: usally same as content but on RPC, DB query or json response situation, it returns result object.\n- logger: logger.log (msg, type ='info'), logger.trace ()\n- method: POST, GET, PUT etc for HTTP/RPC and execute, get, set or lrange etc for DBO\n- raise_for_status (): raise exception when HTTP status code >= 300 or DBO command excution failure\n- reraise (): shortcut for raise_for_status ()\n\nBelow thing is available only on Websocket response.\n\n- opcode: websocket opcode of received message\n\nBelow things are available only on DBO responses.\n\n- server: database server address\n- dbname: database object name\n- params: database command parameters\n\nBelow things aren't available on DBO and Websocket responses.\n\n- url: requested url\n- history: redirected history by http code 301, 302, 307 and 308 like *[<Response [302]>, <Response [302]>]*\n- version: HTTP protocol version\n- headers: Response headers\n- text: charset encoded string (unicode)\n- raw: file like object for bytes stream has raw.read (), raw.readline (),... methods\n- cookies: if configure (cookie = True), returns dictionary\n- encoding: extracted from content-type header\n- request.headers\n- request.payload: request body bytes, not available at upload and grpc\n- json (): load JSON data, but if response content-type is application/json, automatically loaded into response.data then you can just use it.\n- get_header (key, default = None): returns header value, if not exists return default\n- get_header_with_attr (key, default = None): returns header value and attr dict like 'text/html', {'charset': 'utf-8'}\n- set_cookie (key, val, domain = None, path = \"/\")\n- get_cookie (key)\n\n.. _requests: https://pypi.python.org/pypi/requests\n\n\nConfiguration Parameters\n==========================\n\n.. code-block:: python\n\n  import aquests\n  \n  aquests.configure (\n    workers = 1, \n    logger = None, \n    callback = None, \n    timeout = 10, \n    cookie = False,\n    force_http1 = False, \n    http2_constreams = 1,\n    allow_redirects = True,\n    qrandom = False\n  )\n  \n- workers: number of fetching workers, it'not threads\n- logger: logger shoukd have 2 method - log (msg, type = 'info') and trace () for exception logging. if not provided, aquests uses aquests.ib.logger.screen_logger\n- callback: global default callback function has receiving response arg\n- timeout: request timeout seconds\n- cookie: enable/disable using cookie for request\n- force_http1: enforce http 1.1 not 2.0\n- http2_constreams: if you making requests to single http2 server, how many concurrent streams per channel. BE CAREFUL, it might be useful for generating traffic load for testing your http2 web servers. and if your server doesn't provide http2, your workers will be increased to number of http2_constreams times than you really want.\n- allow_redirects: if set True, in case HTTP status code is in 301, 302, 307, 308 then redirect automatically\n- qrandom: requests will be selected by random, this is useful for load distributing to request multiple hosts.\n\n\nList of Methods\n==================\n\n\nGET, DELETE and etc.\n---------------------\n\n.. code-block:: python\n\n  aquests.get (\"http://127.0.0.1:5000/\")\n  aquests.delete (\"http://127.0.0.1:5000/models/ak-40\")\n  aquests.get (\"https://www.google.co.kr/search?q=aquests\")\n\nAlso aquests.head (), options () and trace () are available.\n\n\nPOST, PUT\n---------------\n\n.. code-block:: python\n\n  aquests.post (\n    \"http://127.0.0.1:5000/\", \n    {'author': 'James Milton'}, \n    {'Content-Type': 'application/x-www-form-urlencoded'}\n   )\n   \n  # is equal to:\n   \n  aquests.postform (\n    \"http://127.0.0.1:5000/\", \n    {'author': 'James Milton'}    \n  )\n\nPut example,\n\n.. code-block:: python\n  \n  aquest.put (\n    \"http://127.0.0.1:5000/users/jamesmilton\",\n    {'fullnamer': 'James Milton'},\n    {'Content-Type': 'application/json'}\n    )\n  )\n  \n  # is equal to:\n   \n  aquests.putjson (\n    \"http://127.0.0.1:5000/users/jamesmilton\",\n    {'fullnamer': 'James Milton'}\n  )\n  \nThere're some shorter ways ratehr than specifing content type:\n\n- postform: application/x-www-form-urlencoded, data value should be dictionary\n- postjson: application/json, data value should be json dumpable\n- postxml: text/xml, data value should be xml string or utf-8 encoded bytes\n- postnvp: text/namevalue, data value should be dictionary \n\nAnd putform (), putjson ()... is also available.\n\n  \nFile Upload\n------------\n\n.. code-block:: python\n\n  aquests.upload (\n    \"http://127.0.0.1:5000/\", \n    {\n      'author': 'James Milton',\n      'file': open ('/tmp/mycar.jpg', 'rb')\n    }\n  )\n\nYou should open file with 'rb' mode.\n\nWebsocket\n-----------\n\n.. code-block:: python\n\n  aquests.ws (\"ws://127.0.0.1:5000/websocket/echo\", \"Hello World\")\n  # secure websocket channel, use wss\n  aquests.ws (\"wss://127.0.0.1:5000/websocket/echo\", \"Hello World\")\n  aquests.fetchall ()\n\nResponse is like this,\n  \n- response.status_code: 200\n- response.reason: \"OK\"\n- response.content: (1, \"Hello World\") # (opcode, message)\n- response.opcode: 1 # OPCODE_TEXT\n- response.data: \"Hello World\"\n\nNote: Sometimes status_code is 200, opcode is -1. It is NOT official websocket spec. but means websocket is successfully connected but disconnected before receving a message by some reasons.\n\nIf you want to send specify message type.\n\n.. code-block:: python\n  \n  from aquests.protocols.ws import OPCODE_TEXT, OPCODE_BINARY\n    \n  aquests.ws (\"ws://127.0.0.1:5000/websocket/echo\", (OPCODE_BINARY, b\"Hello World\"))\n  aquests.fetchall ()\n\n\nXML-RPC\n----------\n\n.. code-block:: python\n\n  stub = aquests.rpc (\"https://pypi.python.org/pypi\")\n  stub.package_releases('roundup')\n  stub.prelease_urls('roundup', '1.4.10')\n  aquests.fetchall ()\n\nReturns,\n\n.. code-block:: bash\n\n  ['1.5.1']\n  <class 'xmlrpc.client.Fault'> <Fault 1:...>\n\n\ngRPC\n----------\n\n.. code-block:: python\n  \n  import route_guide_pb2\n  \n  stub = aquests.grpc (\"http://127.0.0.1:5000/routeguide.RouteGuide\")\n  point = route_guide_pb2.Point (latitude=409146138, longitude=-746188906)\n  for i in range (3):\n    stub.GetFeature (point)\n  aquests.fetchall ()\n\n\nReturns,\n\n.. code-block:: python\n\n  name: \"Berkshire Valley Management Area Trail, Jefferson, NJ, USA\"\n  location {\n    latitude: 409146138\n    longitude: -746188906\n  }\n\nFor more about gRPC and route_guide_pb2, go to `gRPC Basics - Python`_.\n\n.. _`gRPC Basics - Python`: http://www.grpc.io/docs/tutorials/basic/python.html\n\n\nPostgreSQL\n-------------\n\n.. code-block:: python\n  \n  def finish_request (response):\n    print (response.data)  \t\n  \n  aquests.configure (3, callback = finish_request)\t\n  dbo = aquests.postgresql (\"127.0.0.1:5432\", \"mydb\", (\"test\", \"1111\"))\n  for i in range (10):\n    dbo.execute (\"SELECT city, prcp, temp_hi, temp_low FROM weather;\")\n\nReturns,\n\n.. code-block:: bash\n\n  [\n    {'prcp': 0.25, 'temp_hi': 50, 'city': 'San  Francisco', 'temp_lo': 46}, \n    {'prcp': 0.0, 'temp_hi': 54, 'city': 'Hayward', 'temp_lo': 37}\n  ]  \n\nMongoDB\n---------\n\n.. code-block:: python\n\n  dbo = aquests.mongodb (\"127.0.0.1:27017\", \"test_database\")\n  for i in range (3):\n    dbo.findone (\"posts\", {\"author\": \"Steve Newman\"})  \n    dbo.findall (\"posts\", {\"author\": \"Hans Roh\"})\n  aquests.fetchall ()\n\nReturns,\n\n.. code-block:: bash\n\n  {\n    'starting_from': 0, \n    'number_returned': 1, \n    'cursor_id': 0, \n    'data': [\n      {\n        '_id': ObjectId('586a11f80d23915c7ec76f01'), \n        'author': 'Steve Newman', \n        'title': 'How to swim'\n      }\n    ]\n  }\n  \n\n**Available Functions**\n\n- find (colname, spec, offset = 0, limit = 1)\n- findone (colname, spec): equivalent with find (colname, spec, 0, 1)\n- findall (colname, spec): equivalent with find (colname, spec, 0, -1)\n- insert (colname, docs, continue_on_error = 0)\n- update (colname, spec, doc)\n- updateone (colname, spec, doc)\n- upsert (colname, spec, doc)\n- upsertone (colname, spec, doc)\n- delete (colname, spec, flag = 0)\n- findkc (colname, spec, offset = 0, limit = 1): after finidhing search, it keeps cursor alive. then you can use 'get_more()'\n- get_more (colname, cursor_id, num_to_return): cursor_id can be got from (findkc()'s result).data [\"cursor_id\"]\n- kill_cursors (cursor_ids): if you use findkc() and stop fetching documents, you should mannually call this.\n\nNote: User authorization is not supported yet.\n\n\nRedis\n---------\n\n.. code-block:: python\n\n  dbo = aquests.redis (\"127.0.0.1:6379\")\n  dbo.get (\"session-5ae675bc\")\n  dbo.lrange (\"user-saved-docs\", 0, 3)\n  aquests.fetchall ()\n\nReturns,\n\n.. code-block:: bash\n  \n  response-of-session-5ae675bc\n  \n  [32534, 3453, 6786]\n\nPossibly you can use all `Redis commands`_.\n\n.. _`Redis commands`: https://redis.io/commands\n\n\nNote: User authorization is not supported yet.\n\n\nSQLite3 For Fast App Prototyping\n---------------------------------\n\nUsage is almost same with PostgreSQL. This service IS NOT asynchronous BUT just emulating.\n\n.. code:: python\n  \n  dbo = aquests.sqlite3 (\"sqlite3.db\")\n  dbo.execute (\"\"\"\n    drop table if exists people;\n    create table people (name_last, age);\n    insert into people values ('Cho', 42);\n  \"\"\")\n  aquests.fetchall ()\n  \n  \nRequests Parameters\n========================\n\nFor get, post*, put*, upload, delete, options, trace parameters are the same.\n\n.. code-block:: python\n\n  aquests.get (url, params = None, headers = None, auth = None, meta = {})\n  \n- url: request url string\n- params: None or dictionary, if it provide with get method, it will be attached on tail of url with '?'\n- headers: None or dictionary\n- auth: None or tuple (username, password)\n- callback: substitude defaul callback\n- meta: dictionary\n\nFor Websocket,\n\n.. code-block:: python\n\n  aquests.ws (url, params = None, headers = None, auth = None, meta = {})\n  \n- url: request url string, should start with 'ws://' or 'wss://'(SSL Websocket)\n- params: string, bytes or tuple. if messages is not string you specify message type code using tuple like (ws.OPCODE_PING, b\"hello\"), you can find OPCODE list, 'from aquests.protocols import ws'. CAUTION. if your params type is bytes type, opcode will automatically be OPCODE_BINARY and string type, be OPCODE_TEXT. and opcode is inffluent to receiver. if you avoid auto opcode, specify opcode with tuple.\n  \n    * ws.OPCODE_TEXT\n    * ws.OPCODE_BINARY\n    * ws.OPCODE_CONTINUATION\n    * ws.OPCODE_PING\n    * ws.OPCODE_PONG\n    * ws.OPCODE_CLOSE\n    \n- headers: None or dictionary\n- auth: None or tuple (username, password)\n- callback: substitude defaul callback\n- meta: dictionary\n\nFor rpc, grpc stub creation:\n\n.. code-block:: python\n\n  stub = aquests.rpc (url, headers = None, auth = None, meta = {})\n  stub = aquests.grpc (url, headers = None, auth = None, meta = {})\n  \n- url: request url string\n- headers: None or dictionary\n- auth: None or tuple (username, password)\n- callback: substitude defaul callback\n- meta: dictionary\n\nNote: stub's methods and parameters are defined by RPC service providers\n\nFor postgresql, mongodb, redis dbo creation:\n\n.. code-block:: python\n\n  dbo = aquests.postgresql (server, dbname = None, auth = None, meta = {})\n  dbo = aquests.mongodb (server, dbname = None, auth = None, meta = {})  \n  dbo = aquests.redis (server, dbname = None, auth = None, meta = {})\n  \n- server: address:port formated string\n- dbname: None or string\n- auth: None or tuple (username, password)\n- callback: substitude defaul callback\n- meta: dictionary\n\nNote: stub's methods and parameters are defined by database engines. Please read above related chapters But SQL based postgresql has only 1 method and parameters - execute(sql) or do(sql) just for your convinience.\n\n\nHistory\n=========\n\n- 0.7.5\n\n   - retry once if database is disconnected by keep-live timeout\n   - change screen_logger for easy to read traceback information\n\n- 0.7.4: \n  \n  - fix incomplete sending when resuested with connection: close header\n  \n- 0.7.3: \n  \n  - fix early termination when single worker\n  - add PATCH method\n  - use google public DNS for default\n  - fix early termination in case of single worker\n\n- 0.7.2: \n  \n  - accept header validation with response content-type\n  - change qrandom parameter's default value to False of aquests.configure ()\n\n- 0.7.1: fix dns cache case sensitivity\n\n- 0.7: \n  \n  - fix redirecting and reauthorizing\n  - dns query instacnt loop before being called fetchall ()\n  - add callback arg for each request\n  - fix redirect, improve asyndns, error codes related network error\n  - redefine workers, workers mean nummber of connections\n  - fix finish_request, and shutdown entering\n  - fix FailedResponse's contents\n\n- 0.6.14: add qrandom option for aquests.configure\n\n- 0.6.13: fix response.json ()\n\n- 0.6.11 \n\n  - request & response.headers is NocaseDict\n  - fix sqlite bugs, add response.uuid & rfc\n  - fix sqlite.del_channel\n  - add auqests.suspend\n\n- 0.6.10: add response.lxml\n\n- 0.6.8: add protocols.__init__.py\n\n- 0.6.7: change socket closing log message\n\n- 0.6.6: fix asyncon active\n\n- 0.6.4.2: license changed from BSD to MIT\n\n- 0.6.4.1: fix await_fifo bug\n\n- 0.6.3: fix lifetime,  tmap\n\n- 0.6.2: change queue list -> deque\n\n- 0.6.1: fix websocket text data encoding\n\n- 0.6: \n  \n  * add configure option: allow_redirects\n  * new response.history\n  * fix 30x redirection\n  * fix 401 unauthorized\n  \n- 0.5.2: remove ready_producer_fifo, this will be used only serverside\n- 0.5.1: change from list to deque on producer_fifo\n- 0.4.33: force_http1 applied to https\n- 0.4.32: fix http.buffer.list_buffer class\n- 0.4.30: add websocket message type detection\n- 0.4.28: remove aquests.wss, use aquests.ws with url wss://...\n- 0.4.25: fix select.select () divide and conquer\n- 0.4.22: fix http2_constreams\n- 0.4.21: fix http2 flow control window\n- 0.4.20: add configure options: force_http1, http2_constreams\n- 0.4.18: url / trailing\n- 0.4.17: fix finding end of data on http2\n- 0.4.16: fix http2 disconnecting behavior\n- 0.4.10: fix xmlrpc stub url / trailing\n- 0.4.9: changed response properties - request.method -> method, request.server -> server, request.dbname -> dbname and request.params -> params\n- 0.4.4: add lib.athreads\n- 0.4.2: fix http2 large content download\n- 0.4.1: add a few examples\n- 0.4: add timeout feature\n- 0.3.10: fix http2 frame length validation, add cookie feature\n- 0.3.8: fix dbo request shutdown behavior\n- 0.3.1: add HEAD, OPTIONS, TRACE\n- 0.3: fix installation error\n- 0.2.13: change default display callback\n- 0.2.10: fix xmlrpc\n\n",
+    "docs_url": null,
+    "download_url": "https://pypi.python.org/pypi/aquests",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://gitlab.com/hansroh/aquests",
+    "keywords": "",
+    "license": "MIT",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "aquests",
+    "platform": "posix",
+    "project_url": "https://pypi.org/project/aquests/",
+    "release_url": "https://pypi.org/project/aquests/0.7.5.1/",
+    "requires_python": "",
+    "summary": "Asynchronous Multiplexing HTTP2/DBO Requests",
+    "version": "0.7.5.1"
+  },
+  "releases": {
+    "0.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "881519d03b27120ce43cdeb90347daac",
+          "sha256": "c3ac1d7eb8ba8536b6efcf247e5e85020d67d4952a929ceab24c4548bfebd632"
+        },
+        "downloads": 13,
+        "filename": "aquests-0.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "881519d03b27120ce43cdeb90347daac",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 102420,
+        "upload_time": "2017-01-12T11:18:28",
+        "url": "https://files.pythonhosted.org/packages/23/ae/a71814a4b6c59424ec58a4f95d475507120e60835df03d4d9a4d097aaabc/aquests-0.3.tar.gz"
+      }
+    ],
+    "0.3.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "72cc3b787a6dc6087894146a42fc8f45",
+          "sha256": "c909610ce4cb24ee07b9184e46d9045faced00b9115e5bb164845dab489caf00"
+        },
+        "downloads": 12,
+        "filename": "aquests-0.3.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "72cc3b787a6dc6087894146a42fc8f45",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 102476,
+        "upload_time": "2017-01-12T11:22:27",
+        "url": "https://files.pythonhosted.org/packages/cf/2c/d9f3be804072cfb1d52c249086ece82833a31471a4a5aafc4d1e1900f2e9/aquests-0.3.1.tar.gz"
+      }
+    ],
+    "0.3.10": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f3a1dec6b310cd736e9fc424d793ccde",
+          "sha256": "6a2f5b4ed7947efb29a3db959afec45ab426e12f6d1e37efd000541ac59fbd05"
+        },
+        "downloads": 12,
+        "filename": "aquests-0.3.10.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f3a1dec6b310cd736e9fc424d793ccde",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 103854,
+        "upload_time": "2017-01-13T02:22:59",
+        "url": "https://files.pythonhosted.org/packages/3c/5f/265e10866e3977dc398feae98a04c5b1521e63ad67b5bb9028fcf33a8b61/aquests-0.3.10.tar.gz"
+      }
+    ],
+    "0.3.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "40e90e2d30a0ab489bac3fdc09657faf",
+          "sha256": "a58840d4179897f5600f644f378487af7d67c814f0a382f5b4c0521846c10ce0"
+        },
+        "downloads": 12,
+        "filename": "aquests-0.3.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "40e90e2d30a0ab489bac3fdc09657faf",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 102479,
+        "upload_time": "2017-01-12T11:31:35",
+        "url": "https://files.pythonhosted.org/packages/05/12/c9b2d824636d2343599076973c94c9125e415e4db4707dbe93c0d63193fc/aquests-0.3.2.tar.gz"
+      }
+    ],
+    "0.3.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "98c341b8df012f6f603c7eae00c44ad6",
+          "sha256": "c4ea94cf874512b628b2b0cefc64d3753e0090b554f725777927140e4dc2d943"
+        },
+        "downloads": 13,
+        "filename": "aquests-0.3.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "98c341b8df012f6f603c7eae00c44ad6",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 102574,
+        "upload_time": "2017-01-12T11:48:24",
+        "url": "https://files.pythonhosted.org/packages/6c/0a/cab01b7322472d582484b66eb72f3b44b6e8718fbf0526359646faa188c4/aquests-0.3.3.tar.gz"
+      }
+    ],
+    "0.3.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0555d920964a6e2a150d436a3bfd49c9",
+          "sha256": "9ebe805348ddd327b0bc4f6b88a7dd98f42c12092116cadfa3dbfca0a600ad05"
+        },
+        "downloads": 14,
+        "filename": "aquests-0.3.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0555d920964a6e2a150d436a3bfd49c9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 102771,
+        "upload_time": "2017-01-12T12:10:34",
+        "url": "https://files.pythonhosted.org/packages/05/46/b09c1ec67e475b6b4d4d96593e4e75a774b8749a796d7aa1aec0f5cc6396/aquests-0.3.4.tar.gz"
+      }
+    ],
+    "0.3.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "32fb852d7633ad88c79b0088e0b9a4ba",
+          "sha256": "20056a470b1bccfe1d933651d510f205fc50f952562df23d5b81f18229f48dd5"
+        },
+        "downloads": 15,
+        "filename": "aquests-0.3.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "32fb852d7633ad88c79b0088e0b9a4ba",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 102823,
+        "upload_time": "2017-01-12T12:22:57",
+        "url": "https://files.pythonhosted.org/packages/2f/4f/9a2d49ba377d724beb2ec329eb66c7374cb1cd46501977b8b0d2c0c830af/aquests-0.3.5.tar.gz"
+      }
+    ],
+    "0.3.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "863d6a989ff9202912ca0c833203b989",
+          "sha256": "9d53de083d38f8e7dba843aac4e1c9c072989c228bbc78a06537d99d5d27360a"
+        },
+        "downloads": 10,
+        "filename": "aquests-0.3.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "863d6a989ff9202912ca0c833203b989",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 102981,
+        "upload_time": "2017-01-12T12:32:59",
+        "url": "https://files.pythonhosted.org/packages/01/c8/fe07369a35c0e6648c530aac1f76a686ec0d88a4271c8a6e4dca307c5247/aquests-0.3.6.tar.gz"
+      }
+    ],
+    "0.3.7": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "65ad50899d8e5f516181e5e678116372",
+          "sha256": "1e0d1833e3fc120b283bb622401154f5520a9bf42b358056198dddfbdcd034e7"
+        },
+        "downloads": 13,
+        "filename": "aquests-0.3.7.tar.gz",
+        "has_sig": false,
+        "md5_digest": "65ad50899d8e5f516181e5e678116372",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 103020,
+        "upload_time": "2017-01-12T12:36:18",
+        "url": "https://files.pythonhosted.org/packages/13/aa/dca40d7a064fc12dd3b3eb432bdcf66fd8e4e64f9d9fdf5f8742004ac0ef/aquests-0.3.7.tar.gz"
+      }
+    ],
+    "0.3.8": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7c643519aad38b9f4219914687c339d3",
+          "sha256": "c7922babbbe63f66bfc41302e064a21910a75fafc8dede66fb8d92967deb2566"
+        },
+        "downloads": 12,
+        "filename": "aquests-0.3.8.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7c643519aad38b9f4219914687c339d3",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 103149,
+        "upload_time": "2017-01-12T12:56:26",
+        "url": "https://files.pythonhosted.org/packages/6a/d6/604d58d034af46cb4b2f576cf374c0fc161563e023f54e9d3908a00f67ed/aquests-0.3.8.tar.gz"
+      }
+    ],
+    "0.3.9": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2460ab667597bbff4daf11ac8c7430b3",
+          "sha256": "e9e40208b41eca3f5ddba757ebb7a736fddb7e77818e2f2e9de11edcf2e12cdc"
+        },
+        "downloads": 16,
+        "filename": "aquests-0.3.9.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2460ab667597bbff4daf11ac8c7430b3",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 103148,
+        "upload_time": "2017-01-12T12:59:32",
+        "url": "https://files.pythonhosted.org/packages/25/b3/05e8be80958789ca97efb27a4f3fe6a9996f5fe24ba9cd43289c640e9af9/aquests-0.3.9.tar.gz"
+      }
+    ],
+    "0.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "71810b88a3c199a617c6f6dc44db4eed",
+          "sha256": "3d068b8b5fa27bbacaa370abb6f48dbffe62cb2b73a51f7c21074bfcb29e1e46"
+        },
+        "downloads": 14,
+        "filename": "aquests-0.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "71810b88a3c199a617c6f6dc44db4eed",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 104401,
+        "upload_time": "2017-01-13T04:25:29",
+        "url": "https://files.pythonhosted.org/packages/41/0a/6eac9cf6a25820073359ea9bd8583684ebc48e4b28d5913e15e6d44bd28d/aquests-0.4.tar.gz"
+      }
+    ],
+    "0.4.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4a1eea0a3ebc678cd65e5689d361de44",
+          "sha256": "22a14c91a993bb636e74e9f3b96b12b14f90e0d4de90b69b276a47bd4c4bafa8"
+        },
+        "downloads": 15,
+        "filename": "aquests-0.4.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4a1eea0a3ebc678cd65e5689d361de44",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 104851,
+        "upload_time": "2017-01-13T05:52:45",
+        "url": "https://files.pythonhosted.org/packages/ef/21/5e2938ad20b6abc14c38915488c1600a7088adf58036e7a26a63d85875c4/aquests-0.4.1.tar.gz"
+      }
+    ],
+    "0.4.10": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "63f2eecdcf2278120917f84161e30a38",
+          "sha256": "c4097c60331b8b57550d8624fe3347cfa368eb898e3831cd5f8849c363421819"
+        },
+        "downloads": 12,
+        "filename": "aquests-0.4.10.tar.gz",
+        "has_sig": false,
+        "md5_digest": "63f2eecdcf2278120917f84161e30a38",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 104360,
+        "upload_time": "2017-01-15T10:37:51",
+        "url": "https://files.pythonhosted.org/packages/cd/50/6b0dcb6463e96bc2abe28def63250a11d3742899ac6d8848200bc648914f/aquests-0.4.10.tar.gz"
+      }
+    ],
+    "0.4.12": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "09744fdd32eefb9625078691f726ffe2",
+          "sha256": "47997f3d347f71f9292cdb3a287ebeced6da9ec79798967f8a8a57b62f9a9f63"
+        },
+        "downloads": 13,
+        "filename": "aquests-0.4.12.tar.gz",
+        "has_sig": false,
+        "md5_digest": "09744fdd32eefb9625078691f726ffe2",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 104340,
+        "upload_time": "2017-01-15T13:13:01",
+        "url": "https://files.pythonhosted.org/packages/1a/8a/fe20092943b7e0b7564130c19b961d8e2d04c9aca0d94eef7b535363e371/aquests-0.4.12.tar.gz"
+      }
+    ],
+    "0.4.13": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "65ef46a0aef01ff3535147ec3ebecd15",
+          "sha256": "fbe869e83170a8a45800a99e983cf166d2beacb7fd4b4e34d6811098349640be"
+        },
+        "downloads": 14,
+        "filename": "aquests-0.4.13.tar.gz",
+        "has_sig": false,
+        "md5_digest": "65ef46a0aef01ff3535147ec3ebecd15",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 104313,
+        "upload_time": "2017-01-15T13:38:54",
+        "url": "https://files.pythonhosted.org/packages/8c/7b/f2d5703b7e04fcefe2860eeb9c67f9f153d9188b37ce838f1a76060b8a11/aquests-0.4.13.tar.gz"
+      }
+    ],
+    "0.4.14": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f90e3c9cc1fea760d3b06641cd87f963",
+          "sha256": "9f46232d5af57a807f5418daeda456cb48b1be4a299a62dd267174c0205f1c25"
+        },
+        "downloads": 14,
+        "filename": "aquests-0.4.14.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f90e3c9cc1fea760d3b06641cd87f963",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 104367,
+        "upload_time": "2017-01-15T23:24:13",
+        "url": "https://files.pythonhosted.org/packages/6b/79/208758a40844037130a9294af77d3398b90a2915d3cafaa980249d9db75c/aquests-0.4.14.tar.gz"
+      }
+    ],
+    "0.4.15": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "99bcf615c253b16a10b020af0bde2b4c",
+          "sha256": "a6bad944723b2ee35ab277b593aa8ed80fba4748d443e5999379a4b74ea0a361"
+        },
+        "downloads": 12,
+        "filename": "aquests-0.4.15.tar.gz",
+        "has_sig": false,
+        "md5_digest": "99bcf615c253b16a10b020af0bde2b4c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 104347,
+        "upload_time": "2017-01-15T23:27:45",
+        "url": "https://files.pythonhosted.org/packages/77/c5/f3d7c051bc6499b42e98b85b12f084648a93be1abde6080ae82f1e1f9de8/aquests-0.4.15.tar.gz"
+      }
+    ],
+    "0.4.16": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1fe09b43d8bb16b351525b4a0e68e6d4",
+          "sha256": "4552b5c3e22c8a9dfacf70337d226c53fa0e415832d69837b5910f14077823a4"
+        },
+        "downloads": 15,
+        "filename": "aquests-0.4.16.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1fe09b43d8bb16b351525b4a0e68e6d4",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 104391,
+        "upload_time": "2017-01-16T05:07:08",
+        "url": "https://files.pythonhosted.org/packages/87/87/7b39c5e753104a2413aca356d9ded0c72f3b05a7f2971c5be3d949fdb8c4/aquests-0.4.16.tar.gz"
+      }
+    ],
+    "0.4.18": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d07eff3db5ef18b51d492231c287929e",
+          "sha256": "2d29f97bd4dca3dcf99416a8ede7c6381ead2a7e1988367e1b14aad58d127f19"
+        },
+        "downloads": 15,
+        "filename": "aquests-0.4.18.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d07eff3db5ef18b51d492231c287929e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 104636,
+        "upload_time": "2017-01-16T11:11:52",
+        "url": "https://files.pythonhosted.org/packages/8f/65/5517e2f0706dc60a0cbdddcc72757dd889d37a1f78e27cdbae7c2f7cff42/aquests-0.4.18.tar.gz"
+      }
+    ],
+    "0.4.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e69b6bcb213f949d6f3847e53fa9de42",
+          "sha256": "cceef5e9af774610379d6c65a701835d0a3d0721a80e5eec6471321245309e9a"
+        },
+        "downloads": 13,
+        "filename": "aquests-0.4.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e69b6bcb213f949d6f3847e53fa9de42",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 105141,
+        "upload_time": "2017-01-13T08:13:33",
+        "url": "https://files.pythonhosted.org/packages/bf/95/716b2c264e4c8471c684ac6aee3607e693baf914faa8f3dab9d3515d55e9/aquests-0.4.2.tar.gz"
+      }
+    ],
+    "0.4.20": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "609b3854109d699527742f5781aaec6c",
+          "sha256": "8ca2bee3a2352557e4949a1c5bba142b0b6b936b1dc6ed17d93990f6aef54c4d"
+        },
+        "downloads": 13,
+        "filename": "aquests-0.4.20.tar.gz",
+        "has_sig": false,
+        "md5_digest": "609b3854109d699527742f5781aaec6c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 104963,
+        "upload_time": "2017-01-16T13:56:50",
+        "url": "https://files.pythonhosted.org/packages/43/7c/635dd8cc0b36f1ed5112cddbed5c70533794a40850e1662e92a69920f0e0/aquests-0.4.20.tar.gz"
+      }
+    ],
+    "0.4.21": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a59dead5c1295707dba8b29377c02b56",
+          "sha256": "95714f0c5b92bdd0339203c95d30b0ee2942e5246a9c64c8b92902857bb2b569"
+        },
+        "downloads": 16,
+        "filename": "aquests-0.4.21.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a59dead5c1295707dba8b29377c02b56",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 105128,
+        "upload_time": "2017-01-17T04:06:08",
+        "url": "https://files.pythonhosted.org/packages/4c/b5/e7fdda41f105db590f1ff983dafd6c47bb147deba8bcd5aad4f3a114bdb9/aquests-0.4.21.tar.gz"
+      }
+    ],
+    "0.4.22": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "233cb8250e85d720ae4805760806d825",
+          "sha256": "5ab91708f71edd5ff433be11f0717cea455d809ff07d94a4cf09bbc22f40f419"
+        },
+        "downloads": 18,
+        "filename": "aquests-0.4.22.tar.gz",
+        "has_sig": false,
+        "md5_digest": "233cb8250e85d720ae4805760806d825",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 105198,
+        "upload_time": "2017-01-17T07:40:39",
+        "url": "https://files.pythonhosted.org/packages/8f/49/743e2d094307c7fce4ad684ac007eb2f83a5f3c52146a70443a9f1a762d0/aquests-0.4.22.tar.gz"
+      }
+    ],
+    "0.4.23": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "de29c53bda917a00810c7baadd097f04",
+          "sha256": "d617cd54ac69d84eee2e4c42768f0c9f76f0b6646d17950e379d1d3ad0dcd54a"
+        },
+        "downloads": 15,
+        "filename": "aquests-0.4.23.tar.gz",
+        "has_sig": false,
+        "md5_digest": "de29c53bda917a00810c7baadd097f04",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 105197,
+        "upload_time": "2017-01-17T07:45:45",
+        "url": "https://files.pythonhosted.org/packages/b3/13/7befa396a655ae5b98735f7def4aafb1d59b4f684c072dbaef9fedeef3c8/aquests-0.4.23.tar.gz"
+      }
+    ],
+    "0.4.24": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e29817902260fa58690a14a484133f77",
+          "sha256": "98ed501e35ad82a3607796696f512d45cd1d8b573f9a277b0f2c5d9865e74fab"
+        },
+        "downloads": 15,
+        "filename": "aquests-0.4.24.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e29817902260fa58690a14a484133f77",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 105206,
+        "upload_time": "2017-01-17T07:47:44",
+        "url": "https://files.pythonhosted.org/packages/e8/ea/3ba8512f80762f1a2e769dc9f986ea9b0fb78f3b9ad336e0c1582851f0ab/aquests-0.4.24.tar.gz"
+      }
+    ],
+    "0.4.25": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "feb7cade8d822c9a1cc4f2ec6045a7e9",
+          "sha256": "eb30abd27ef681fe0aa1149fa0839c37c51e5d0d15f4e0458525a0a9013d7973"
+        },
+        "downloads": 17,
+        "filename": "aquests-0.4.25.tar.gz",
+        "has_sig": false,
+        "md5_digest": "feb7cade8d822c9a1cc4f2ec6045a7e9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 105186,
+        "upload_time": "2017-01-17T11:00:54",
+        "url": "https://files.pythonhosted.org/packages/3b/9e/0f13d6c4fbd13cac111413057cffdf37ce794bf3c96b0259f9ca3a8c5cad/aquests-0.4.25.tar.gz"
+      }
+    ],
+    "0.4.26": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "98207b3ef6849e0b3a1dbfae83c001de",
+          "sha256": "0459e7323993ba313c5c20c6a0b53f74d21acdc138ae6cff24059849dfd789dd"
+        },
+        "downloads": 14,
+        "filename": "aquests-0.4.26.tar.gz",
+        "has_sig": false,
+        "md5_digest": "98207b3ef6849e0b3a1dbfae83c001de",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 105150,
+        "upload_time": "2017-01-17T11:18:05",
+        "url": "https://files.pythonhosted.org/packages/9d/8e/c6ef500a2e012d70e1cb108100f02907ff4ea4df06819b3b49b809210f07/aquests-0.4.26.tar.gz"
+      }
+    ],
+    "0.4.27": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "358137e5e71eebdb2972c51e4638ae3b",
+          "sha256": "7e23d889d692181d5ac69f3968f4d4b1f9c31ae6bf081a801980cc9e9b80c428"
+        },
+        "downloads": 14,
+        "filename": "aquests-0.4.27.tar.gz",
+        "has_sig": false,
+        "md5_digest": "358137e5e71eebdb2972c51e4638ae3b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 105136,
+        "upload_time": "2017-01-17T11:20:57",
+        "url": "https://files.pythonhosted.org/packages/c5/5f/226a48a6b0e7df90fa708ed4a7265bd4472cf91bae8443b25b569af45909/aquests-0.4.27.tar.gz"
+      }
+    ],
+    "0.4.28": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b8da63dae43cf6e88d536ef7fe3ab963",
+          "sha256": "3e242fbbfc768f34c6800f247e7a536a4ab474637f90d6a3cbe1f1540446b793"
+        },
+        "downloads": 17,
+        "filename": "aquests-0.4.28.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b8da63dae43cf6e88d536ef7fe3ab963",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 105287,
+        "upload_time": "2017-01-17T21:25:38",
+        "url": "https://files.pythonhosted.org/packages/00/10/3ffbb6cc84c23c562ecf9b2986fa2c67c999e69cf48bf5a90b34f1b03128/aquests-0.4.28.tar.gz"
+      }
+    ],
+    "0.4.29": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c6d555ab145bfc8bdb342ba4ce782647",
+          "sha256": "b25cb2194c309c517831f69103038941a206ff3671e00077e6c497244d914b46"
+        },
+        "downloads": 14,
+        "filename": "aquests-0.4.29.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c6d555ab145bfc8bdb342ba4ce782647",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 105300,
+        "upload_time": "2017-01-17T21:28:30",
+        "url": "https://files.pythonhosted.org/packages/8e/25/599c0343e8da3c0cabcc532d1b02ed567f54fbe5728671d70eca93517c99/aquests-0.4.29.tar.gz"
+      }
+    ],
+    "0.4.30": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "418796be1938ccd57a46b7b96970c7a9",
+          "sha256": "d0630c93f4d4cc1a9636e55f2302322d968e20e784ec7907b81ab9ef301ddf9f"
+        },
+        "downloads": 16,
+        "filename": "aquests-0.4.30.tar.gz",
+        "has_sig": false,
+        "md5_digest": "418796be1938ccd57a46b7b96970c7a9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 105436,
+        "upload_time": "2017-01-17T21:43:04",
+        "url": "https://files.pythonhosted.org/packages/d7/6f/616cbc7d187518fe6e7f05977ba165e75f4a33ea95550903252b0f0ebae9/aquests-0.4.30.tar.gz"
+      }
+    ],
+    "0.4.31": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c7580e2e35b7bda48e6821856940954e",
+          "sha256": "934d1f75f7017278f0cbc575e6bd48c981a4a066d613ad56549dcf96e41e336c"
+        },
+        "downloads": 13,
+        "filename": "aquests-0.4.31.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c7580e2e35b7bda48e6821856940954e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 105443,
+        "upload_time": "2017-01-18T05:11:40",
+        "url": "https://files.pythonhosted.org/packages/d8/c5/107ac2022ba0f3e6b523398aefabd1941a6699d28684a94d3c4964a0006a/aquests-0.4.31.tar.gz"
+      }
+    ],
+    "0.4.32": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c8e03d05aedd105712ac0612110c8694",
+          "sha256": "bd3c2f7e905ab6bdfbd7ffa068b2ed9a479d6e23304d8053849df4ffbf0b8ebb"
+        },
+        "downloads": 15,
+        "filename": "aquests-0.4.32.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c8e03d05aedd105712ac0612110c8694",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 105477,
+        "upload_time": "2017-01-18T07:07:58",
+        "url": "https://files.pythonhosted.org/packages/10/45/cf4e75b123ae4e19ab4c9331cfff42fc099f61add7344f67712cb991fb65/aquests-0.4.32.tar.gz"
+      }
+    ],
+    "0.4.33": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "fa9a7552eb27765f1941ab13690b128f",
+          "sha256": "24df28f77331dd16111fb68feaea0914b1711bfafdb434cfae37163f6d7dd499"
+        },
+        "downloads": 14,
+        "filename": "aquests-0.4.33.tar.gz",
+        "has_sig": false,
+        "md5_digest": "fa9a7552eb27765f1941ab13690b128f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 105541,
+        "upload_time": "2017-01-18T10:31:08",
+        "url": "https://files.pythonhosted.org/packages/cf/02/ab53d62f9ab89c8d0dc96cc0f43ae0b00c0e379eafbe388709487f382c39/aquests-0.4.33.tar.gz"
+      }
+    ],
+    "0.4.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "32e17dfe51d5f48e49fdb699bf1d32dd",
+          "sha256": "104f012e628367f661aca1fdfa55dd94db951b43ebbafc986b8614b4b341fed6"
+        },
+        "downloads": 14,
+        "filename": "aquests-0.4.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "32e17dfe51d5f48e49fdb699bf1d32dd",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 109735,
+        "upload_time": "2017-01-13T12:08:09",
+        "url": "https://files.pythonhosted.org/packages/23/75/517b744ecb754c67cfcda6134887c402b87fa45d108618b8f01b4ddc6252/aquests-0.4.4.tar.gz"
+      }
+    ],
+    "0.4.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "06cfd792b6a1496cc37b8bd66e482b4b",
+          "sha256": "04b8c4c127b5eb92f598000a90904ef026d54c17e29e7585f9f399b007362042"
+        },
+        "downloads": 14,
+        "filename": "aquests-0.4.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "06cfd792b6a1496cc37b8bd66e482b4b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 110357,
+        "upload_time": "2017-01-14T09:00:43",
+        "url": "https://files.pythonhosted.org/packages/40/54/bf1207cc5fd4a6d5e6fb391088c0539aa2beef76e492d4271691e5ff9060/aquests-0.4.5.tar.gz"
+      }
+    ],
+    "0.4.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0fa38740abd1989ce4ff39b38a5d8e5a",
+          "sha256": "508d7151bf62726f343bdbcb9f14c4f3e4389e5cb1501abf89a8f512570de272"
+        },
+        "downloads": 13,
+        "filename": "aquests-0.4.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0fa38740abd1989ce4ff39b38a5d8e5a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 110404,
+        "upload_time": "2017-01-14T09:33:58",
+        "url": "https://files.pythonhosted.org/packages/f0/6e/6859fa61d868f816529963d16caae4ed8da0a34dff2dea5ebd7f0f477c6c/aquests-0.4.6.tar.gz"
+      }
+    ],
+    "0.4.7": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e2aefad8dbe67fbfaef0effceb609109",
+          "sha256": "355272b9dcfaa42fe4707b8ce99772e79c76b2f82a1619a0835de70a38cb4684"
+        },
+        "downloads": 12,
+        "filename": "aquests-0.4.7.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e2aefad8dbe67fbfaef0effceb609109",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 110414,
+        "upload_time": "2017-01-14T09:35:07",
+        "url": "https://files.pythonhosted.org/packages/6f/f1/199d5744fb6d0c5bae16d44929c0acf16aaa56b9c984f4dd7a2a776dee44/aquests-0.4.7.tar.gz"
+      }
+    ],
+    "0.4.8": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9f20eb6776b7ae9b3cce024a5b892e05",
+          "sha256": "207c029e54e8711292099602bf419a89daaa29d4d39bc70afe30e9b64905d10c"
+        },
+        "downloads": 15,
+        "filename": "aquests-0.4.8.tar.gz",
+        "has_sig": false,
+        "md5_digest": "9f20eb6776b7ae9b3cce024a5b892e05",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 110335,
+        "upload_time": "2017-01-14T11:19:08",
+        "url": "https://files.pythonhosted.org/packages/98/23/300b93d8ffa1f7fe81dece3912e3165de8427d8b1a32a3974938cd7759c3/aquests-0.4.8.tar.gz"
+      }
+    ],
+    "0.4.9": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0479453df013592451293c761b712ed9",
+          "sha256": "ef0eb4c7fda35d6a81dbdd512ef37aba13248f1184e8184bffb1e82e55e4c9f0"
+        },
+        "downloads": 13,
+        "filename": "aquests-0.4.9.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0479453df013592451293c761b712ed9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 110070,
+        "upload_time": "2017-01-15T03:38:13",
+        "url": "https://files.pythonhosted.org/packages/98/f0/924d1bc7122133196422e2eb83e64a6bb3a3f89509ec2b49c6a18673e748/aquests-0.4.9.tar.gz"
+      }
+    ],
+    "0.4b1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "94120ba9021587f6b7150e7c312a2775",
+          "sha256": "eb2ea232177989e915233b9f7ecb6ed321eba36bec3252a7f4eda986041a12c2"
+        },
+        "downloads": 16,
+        "filename": "aquests-0.4b1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "94120ba9021587f6b7150e7c312a2775",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 104395,
+        "upload_time": "2017-01-13T04:21:51",
+        "url": "https://files.pythonhosted.org/packages/7d/ea/dfbaf2a30b322eb55112bf3124badf2ace2f1f90e251d98b2766c4e7ea53/aquests-0.4b1.tar.gz"
+      }
+    ],
+    "0.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "725e1a3ced368f13c63c0e71637b79c9",
+          "sha256": "b6d0069cb6100934b841fd754dcd0da8ed5f5beba737bd317ea14e881a9fb4ea"
+        },
+        "downloads": 17,
+        "filename": "aquests-0.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "725e1a3ced368f13c63c0e71637b79c9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 105604,
+        "upload_time": "2017-01-18T23:48:40",
+        "url": "https://files.pythonhosted.org/packages/14/29/72d1639b304683a4c9025cbfd5e31f845853884e3cdee63dc374cd3f761f/aquests-0.5.tar.gz"
+      }
+    ],
+    "0.5.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4674d821a203fa088060c30964745ebb",
+          "sha256": "096fdc1de2a15cd4c1169f9f546bee5940f4770d0fe11a4d7904b54e5c612820"
+        },
+        "downloads": 12,
+        "filename": "aquests-0.5.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4674d821a203fa088060c30964745ebb",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 106563,
+        "upload_time": "2017-01-19T11:03:11",
+        "url": "https://files.pythonhosted.org/packages/ae/27/d9eee078443e74d590ca519fcdee16f3950fe37bec60dea23e1dd86bc656/aquests-0.5.1.tar.gz"
+      }
+    ],
+    "0.5.1b1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f08c69fa47ece4adc1df8361761a3595",
+          "sha256": "3dc7a23dfb4f653b1ed6ae18f13c7927908c42c217d3060ef743c719cb17ef38"
+        },
+        "downloads": 13,
+        "filename": "aquests-0.5.1b1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f08c69fa47ece4adc1df8361761a3595",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 106570,
+        "upload_time": "2017-01-19T10:48:55",
+        "url": "https://files.pythonhosted.org/packages/b2/e4/747c013b6277e70b795443e687647fa23bfd2f99a6d8f6e768cb18708dd3/aquests-0.5.1b1.tar.gz"
+      }
+    ],
+    "0.5.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2c7c27ef3212fd819b2f410db02018e6",
+          "sha256": "7748ae164af8511d73fbe6adf6ad8eddc932f41597e07c7d5456a5e32cd660b7"
+        },
+        "downloads": 14,
+        "filename": "aquests-0.5.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2c7c27ef3212fd819b2f410db02018e6",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 106592,
+        "upload_time": "2017-01-20T12:08:54",
+        "url": "https://files.pythonhosted.org/packages/bf/e0/1bd4564963e2b3fc9a6e2d7f907928067a75f3830fab88092aa5d2d7aa6e/aquests-0.5.2.tar.gz"
+      }
+    ],
+    "0.5.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d7ce179abb1a600a7c9895e34b96b631",
+          "sha256": "7648cb69543a23ca248fae41e6925f449f0ac8e22d90cd1b1e636e5a31cacaad"
+        },
+        "downloads": 17,
+        "filename": "aquests-0.5.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d7ce179abb1a600a7c9895e34b96b631",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 106626,
+        "upload_time": "2017-01-21T04:21:42",
+        "url": "https://files.pythonhosted.org/packages/31/d1/acb104a55b04ea06cc14f18289ee3df2e86ceb8a36138d92115c98b96c12/aquests-0.5.3.tar.gz"
+      }
+    ],
+    "0.5.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "174cc82a8ed3fadcd583fc8c713cd329",
+          "sha256": "f51ffd16b9edbe0fce9d4bdd876f32a07bc87c9d94bc24441991a266a6475a69"
+        },
+        "downloads": 14,
+        "filename": "aquests-0.5.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "174cc82a8ed3fadcd583fc8c713cd329",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 106629,
+        "upload_time": "2017-01-21T04:23:39",
+        "url": "https://files.pythonhosted.org/packages/d7/22/866b8772db53bf55a5241709c4641132a01f0f0158abf6c7c3fa20074d43/aquests-0.5.4.tar.gz"
+      }
+    ],
+    "0.5.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "272bb6f9b3dae19582b76e3f0932d13a",
+          "sha256": "ee41f2b5056c051d2c5de5b6ca355fcbb4790e9f8332cc49b6214d664090d574"
+        },
+        "downloads": 13,
+        "filename": "aquests-0.5.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "272bb6f9b3dae19582b76e3f0932d13a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 106665,
+        "upload_time": "2017-01-22T01:02:11",
+        "url": "https://files.pythonhosted.org/packages/d9/1e/323728b585bc326f94e34537e46effe96a14c009d2e4a241104d19ab5afe/aquests-0.5.5.tar.gz"
+      }
+    ],
+    "0.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6a4e9017bc903e26c3ce42caf15ac263",
+          "sha256": "db9590f99d14b5be15464498bb27c81f9b970eec1306477bd28ee47a94f5bc27"
+        },
+        "downloads": 15,
+        "filename": "aquests-0.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6a4e9017bc903e26c3ce42caf15ac263",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 107740,
+        "upload_time": "2017-01-23T07:51:35",
+        "url": "https://files.pythonhosted.org/packages/c4/56/1a84a382c4e941b70443b46460ba1d9d5227a6d7fa474ccb0ac41c373ae5/aquests-0.6.tar.gz"
+      }
+    ],
+    "0.6.0.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f6e67ecad26415a98a1009da4b6c7aa7",
+          "sha256": "5fd818fde068df8d63c3a1f3b09e9c1acc8101de354de9e6d4fda3f573bf8305"
+        },
+        "downloads": 13,
+        "filename": "aquests-0.6.0.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f6e67ecad26415a98a1009da4b6c7aa7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 107831,
+        "upload_time": "2017-01-23T08:09:57",
+        "url": "https://files.pythonhosted.org/packages/f4/3c/c70ec61801fd302652e69a3ec258b72fa785978101e266710eed47fb3c5d/aquests-0.6.0.1.tar.gz"
+      }
+    ],
+    "0.6.0.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1b243e96b0a948dac15612d18e257e70",
+          "sha256": "cb9b57981fe22cf536a2a4beda411c29630cb0b58f97f3ed4df4cf47267afe19"
+        },
+        "downloads": 14,
+        "filename": "aquests-0.6.0.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1b243e96b0a948dac15612d18e257e70",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 108619,
+        "upload_time": "2017-01-25T13:48:48",
+        "url": "https://files.pythonhosted.org/packages/d4/c7/50f36dc93df37a0a2395609f29ade23bd8c3c3cefd71c95e923cbbd05736/aquests-0.6.0.2.tar.gz"
+      }
+    ],
+    "0.6.0.2b1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "cd09e6ca61fb5fef7fec7b3b4482590c",
+          "sha256": "7e555f16e1d7d600a1c7ffbe61495ce6218866f553fc6ffaf873e0bd43bced94"
+        },
+        "downloads": 15,
+        "filename": "aquests-0.6.0.2b1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "cd09e6ca61fb5fef7fec7b3b4482590c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 108574,
+        "upload_time": "2017-01-25T13:15:15",
+        "url": "https://files.pythonhosted.org/packages/fb/9c/1095ec4604371e11e93b6cbe9206a390af3d0b8563406e81b6cdb03dcece/aquests-0.6.0.2b1.tar.gz"
+      }
+    ],
+    "0.6.0.2b2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0ad4fdfb65c481f99b063c9ee7263336",
+          "sha256": "a9f7da67a843fce9217c948b0c9875ec86ca71ea2a7fc43a9d190a547d868838"
+        },
+        "downloads": 14,
+        "filename": "aquests-0.6.0.2b2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0ad4fdfb65c481f99b063c9ee7263336",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 108625,
+        "upload_time": "2017-01-25T13:47:46",
+        "url": "https://files.pythonhosted.org/packages/0e/49/5928ca02c4610fbf32ab64260d57b37b408a0f9006cae799013132fedc20/aquests-0.6.0.2b2.tar.gz"
+      }
+    ],
+    "0.6.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f432c6a2d7abb3dc6d83e5f37b8ccce6",
+          "sha256": "4ebf9be7a0540d433fdce306cbc0d1c88801a71047798bc01953b0b071d588f8"
+        },
+        "downloads": 13,
+        "filename": "aquests-0.6.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f432c6a2d7abb3dc6d83e5f37b8ccce6",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 108624,
+        "upload_time": "2017-01-25T14:05:53",
+        "url": "https://files.pythonhosted.org/packages/c9/26/490495a64805f2a6fc4def0f3c55907ec37f488dd8aa71556497a1872634/aquests-0.6.1.tar.gz"
+      }
+    ],
+    "0.6.10": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ac0d4693e91afee2961f5a3fb79d40d8",
+          "sha256": "f4a7cb51609343903e110ffdfafc2c4d7cf517d46c504f6e8983b73709512c1b"
+        },
+        "downloads": 195,
+        "filename": "aquests-0.6.10.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ac0d4693e91afee2961f5a3fb79d40d8",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 106096,
+        "upload_time": "2017-03-18T11:28:03",
+        "url": "https://files.pythonhosted.org/packages/fa/3b/220c52f43370c94a60d2e0dc60ecd060e487ce6a5450a6f5275ff6367da7/aquests-0.6.10.tar.gz"
+      }
+    ],
+    "0.6.11": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1bc774630652acd71380a2d9b473e1c3",
+          "sha256": "0c311eed1a09cf3cb5dbcaa1111abe18afa70f0aa5b97fc2dff99f9d2f70f30b"
+        },
+        "downloads": 172,
+        "filename": "aquests-0.6.11.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1bc774630652acd71380a2d9b473e1c3",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 107120,
+        "upload_time": "2017-04-06T03:25:42",
+        "url": "https://files.pythonhosted.org/packages/a2/85/4eb6224f05c72741bcfb6583c81b21f04ef898579dd4e5a5d15516535db8/aquests-0.6.11.tar.gz"
+      }
+    ],
+    "0.6.12": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a0b2b3d9f8d861d409b8affa5206b759",
+          "sha256": "369b3a54ddfdf7a15fb3f3cb138195ccc6587d97040af33b8951bdb9f55a6e7f"
+        },
+        "downloads": 250,
+        "filename": "aquests-0.6.12.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a0b2b3d9f8d861d409b8affa5206b759",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 107229,
+        "upload_time": "2017-04-06T04:51:27",
+        "url": "https://files.pythonhosted.org/packages/4b/b1/95088197dae33580b5739e0d80e188faee7c012ff735e829e752ae6c6233/aquests-0.6.12.tar.gz"
+      }
+    ],
+    "0.6.13": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0f812f37d5547615a25f4c77107a3c09",
+          "sha256": "5d96579cb0af08b0e336b5d4dab68e4680da5146796085fdb74e150ea7c1e31a"
+        },
+        "downloads": 250,
+        "filename": "aquests-0.6.13.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0f812f37d5547615a25f4c77107a3c09",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 107139,
+        "upload_time": "2017-04-06T06:37:25",
+        "url": "https://files.pythonhosted.org/packages/d3/25/12b4512444bc1f1a7fe5f409c112c00a67479ba44cc1d30cdd98053433a2/aquests-0.6.13.tar.gz"
+      }
+    ],
+    "0.6.14": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4a6a69797bb8d13dc2606d14d5607d0b",
+          "sha256": "18c39e6baf4db2ef65958af104738a953511d40d0dcca9ca8e44c56f1aa35185"
+        },
+        "downloads": 250,
+        "filename": "aquests-0.6.14.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4a6a69797bb8d13dc2606d14d5607d0b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 107435,
+        "upload_time": "2017-04-06T11:20:57",
+        "url": "https://files.pythonhosted.org/packages/73/99/06290acb26d76cbc6c0a47c176cba5a42d9840cb5d0578a5a5871821395e/aquests-0.6.14.tar.gz"
+      }
+    ],
+    "0.6.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0f96e4638be032f7121c7c3e65889899",
+          "sha256": "2d979a5a659016b5837ed02d897bd8ca6658ab82be963f33baf61735ccbd2da8"
+        },
+        "downloads": 16,
+        "filename": "aquests-0.6.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0f96e4638be032f7121c7c3e65889899",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 108570,
+        "upload_time": "2017-01-31T05:46:08",
+        "url": "https://files.pythonhosted.org/packages/80/b0/1e421fba8b89a6f67ce6799ea4b7df710b703d75c477c023bd3d1bbcfdac/aquests-0.6.2.tar.gz"
+      }
+    ],
+    "0.6.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6b9a8a9e7627e6f914ebc7b982e595a6",
+          "sha256": "90b88939467b206fc133c3cbb81e4af0cf1ac492ec0c0209586ea9654e6c40eb"
+        },
+        "downloads": 12,
+        "filename": "aquests-0.6.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6b9a8a9e7627e6f914ebc7b982e595a6",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 108593,
+        "upload_time": "2017-01-31T08:35:41",
+        "url": "https://files.pythonhosted.org/packages/c8/65/2e5005c37693ffc0017d8f09cdda364f3e9d8d9b1d8c8ccbfb771d4599c4/aquests-0.6.3.tar.gz"
+      }
+    ],
+    "0.6.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b76684e7c9067e232b1df9a53bc29fff",
+          "sha256": "de2afbf1257ec89c70477aab08f05586363b4d3d987aa994fe51980382939799"
+        },
+        "downloads": 17,
+        "filename": "aquests-0.6.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b76684e7c9067e232b1df9a53bc29fff",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 108590,
+        "upload_time": "2017-02-03T07:12:14",
+        "url": "https://files.pythonhosted.org/packages/b2/61/ec249d7eb50aa924ce6e8636d51f799960eb4f7305159545b25515dea661/aquests-0.6.4.tar.gz"
+      }
+    ],
+    "0.6.4.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "669726950d29b63ac60bbc284e2453e1",
+          "sha256": "1afb41627083085a0fa6c2578ad6b3c082a26f5239db4d979ff5d63540b029ed"
+        },
+        "downloads": 14,
+        "filename": "aquests-0.6.4.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "669726950d29b63ac60bbc284e2453e1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 108549,
+        "upload_time": "2017-02-03T07:15:27",
+        "url": "https://files.pythonhosted.org/packages/4e/46/a5e47f35fcf10e79dd1a4c0f1f6071c28922ed10e566c0d515d968560369/aquests-0.6.4.1.tar.gz"
+      }
+    ],
+    "0.6.4.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0ad00051d2cccf5703837ccfd1e854c1",
+          "sha256": "56a20444628e89964c4bd1fbb12ed9405d1562d7adadc4a3296acd6548ecc929"
+        },
+        "downloads": 13,
+        "filename": "aquests-0.6.4.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0ad00051d2cccf5703837ccfd1e854c1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 108572,
+        "upload_time": "2017-02-06T01:59:52",
+        "url": "https://files.pythonhosted.org/packages/ff/27/5444fa98ecd0cfa5a1aed32bcf75c9d46d680697605914f6290ff272159e/aquests-0.6.4.2.tar.gz"
+      }
+    ],
+    "0.6.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e3f528d37ce2ee7fb332834f753b2d6e",
+          "sha256": "20b251c444d7d54832f9306400baca9222b5658fbdec1c31f7c9deeb02a28071"
+        },
+        "downloads": 14,
+        "filename": "aquests-0.6.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e3f528d37ce2ee7fb332834f753b2d6e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 108792,
+        "upload_time": "2017-02-07T02:14:46",
+        "url": "https://files.pythonhosted.org/packages/53/d8/84759610ccef4e6655d6eeecf1513d23612c8a2fe65e5886e0906a3eb4ee/aquests-0.6.5.tar.gz"
+      }
+    ],
+    "0.6.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b1f75ce838ce6f4757855e541ae640f4",
+          "sha256": "4cc83d46ce848dcbf4705218b4f40a4dbf9662710acc1c4a0cc16ac1b27fb371"
+        },
+        "downloads": 16,
+        "filename": "aquests-0.6.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b1f75ce838ce6f4757855e541ae640f4",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 108946,
+        "upload_time": "2017-02-10T11:46:07",
+        "url": "https://files.pythonhosted.org/packages/e5/c9/7edc2174f8c1116f8daeaded25fd3cf2b2edcae7d76124604936d852ca23/aquests-0.6.6.tar.gz"
+      }
+    ],
+    "0.6.6.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0363b3d96d5e9e26e6e0e94182a6d3f7",
+          "sha256": "4666287138f594587aa8c2a6a5564d2adf807cb82611461d180208266c52e7c2"
+        },
+        "downloads": 14,
+        "filename": "aquests-0.6.6.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0363b3d96d5e9e26e6e0e94182a6d3f7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 108971,
+        "upload_time": "2017-02-10T12:47:41",
+        "url": "https://files.pythonhosted.org/packages/15/b1/c0cde388de934ca2abc024fe3b5eeb190eaed64fc413c3f470acb7b06e60/aquests-0.6.6.1.tar.gz"
+      }
+    ],
+    "0.6.6.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e438a626fdb2b72cf77031b0947b7f86",
+          "sha256": "aba4103aae34be579f2953ad0022a5428814145833d6957ca4bf93a259da1d76"
+        },
+        "downloads": 12,
+        "filename": "aquests-0.6.6.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e438a626fdb2b72cf77031b0947b7f86",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 109001,
+        "upload_time": "2017-02-10T13:00:29",
+        "url": "https://files.pythonhosted.org/packages/43/2e/fff896a1d5412316f8f7a041b4ccbf1cae37e134551f5b803b0fdaf5408c/aquests-0.6.6.3.tar.gz"
+      }
+    ],
+    "0.6.6.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b5612a7b32b43e3ef8c64535262a0bc4",
+          "sha256": "86f7bb0d9f0b77ed94e46e5c7c45d0d8936b6f1c9f79505ed3a0fb939d05ac5a"
+        },
+        "downloads": 12,
+        "filename": "aquests-0.6.6.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b5612a7b32b43e3ef8c64535262a0bc4",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 109045,
+        "upload_time": "2017-02-11T06:20:56",
+        "url": "https://files.pythonhosted.org/packages/66/0a/335179287094c868ed7e7da4ed5b18e2f736a92b9a8033b677f642c8b0ff/aquests-0.6.6.4.tar.gz"
+      }
+    ],
+    "0.6.6.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "89904ecbbc9b2cde88ebde52a747e4bd",
+          "sha256": "3da95b429fc1006db2d9258def4a8d8a5ab1a5c92cd8e9f68946f15f6bfbd86e"
+        },
+        "downloads": 19,
+        "filename": "aquests-0.6.6.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "89904ecbbc9b2cde88ebde52a747e4bd",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 108947,
+        "upload_time": "2017-02-11T14:05:54",
+        "url": "https://files.pythonhosted.org/packages/e7/21/ecda1deb32d2e3a292fc9983460911607c2f6b9f671d81115017384e46a7/aquests-0.6.6.5.tar.gz"
+      }
+    ],
+    "0.6.7": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "029f9c4051d5538a2fb72de8add70636",
+          "sha256": "353234199f9c7d2d54d6ee6c137d32f9d749ca572404ac51042f60899039ccaa"
+        },
+        "downloads": 12,
+        "filename": "aquests-0.6.7.tar.gz",
+        "has_sig": false,
+        "md5_digest": "029f9c4051d5538a2fb72de8add70636",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 108969,
+        "upload_time": "2017-02-14T01:39:41",
+        "url": "https://files.pythonhosted.org/packages/e2/38/735c39600b1e3909adac13086d7a9c50641b9af26e8ee0c559975f90180f/aquests-0.6.7.tar.gz"
+      }
+    ],
+    "0.6.7.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "65292d19a6a1aca73844eae9240fc927",
+          "sha256": "704726c81d89c8b2edabf683be5a9ae705ce0e0b7f33cd6d6c7d197341bc721c"
+        },
+        "downloads": 12,
+        "filename": "aquests-0.6.7.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "65292d19a6a1aca73844eae9240fc927",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 109002,
+        "upload_time": "2017-02-14T11:45:40",
+        "url": "https://files.pythonhosted.org/packages/62/41/1404f08acad90f69ed8bdebab89adb3e4415a1099cc9c0d4623cdc0463b4/aquests-0.6.7.1.tar.gz"
+      }
+    ],
+    "0.6.8": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3be74e986da3ad8e0942f524ba78af53",
+          "sha256": "3133a78856fe7d54f9e727019facafa14289808ec078dc8c6d263d305b15ef8a"
+        },
+        "downloads": 17,
+        "filename": "aquests-0.6.8.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3be74e986da3ad8e0942f524ba78af53",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 108851,
+        "upload_time": "2017-02-25T04:08:13",
+        "url": "https://files.pythonhosted.org/packages/92/a6/574a24b1e0a6f6702767764a72ca2017745ca83d4d0223aebdbea65252bb/aquests-0.6.8.tar.gz"
+      }
+    ],
+    "0.6.8b1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1000cc0db37953d1fb6c91dad4baa356",
+          "sha256": "78106f261121ad4aeabf1c188d218940c39c978961c6f3c1b8d7e7026f8b0b6e"
+        },
+        "downloads": 16,
+        "filename": "aquests-0.6.8b1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1000cc0db37953d1fb6c91dad4baa356",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 108927,
+        "upload_time": "2017-02-25T03:46:04",
+        "url": "https://files.pythonhosted.org/packages/e8/95/4983095ec3b2a8a450b2a6c09934f7950b586c06325432da73d0fef82cd2/aquests-0.6.8b1.tar.gz"
+      }
+    ],
+    "0.6.8b2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f42511b477df5d7db5425dc669925f54",
+          "sha256": "c4dc32a0298f444723db9c9479f6559c485d64dca04741ae5fd1a6672c5dd39c"
+        },
+        "downloads": 18,
+        "filename": "aquests-0.6.8b2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f42511b477df5d7db5425dc669925f54",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 108972,
+        "upload_time": "2017-02-25T03:54:15",
+        "url": "https://files.pythonhosted.org/packages/c5/b2/d2aa6149be5db2d9edd357a22b92a0e4f43e8fc219f9a17d8053dd2993ee/aquests-0.6.8b2.tar.gz"
+      }
+    ],
+    "0.6.9": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f56edcbcbe2ae92faa58fbba43d4e18b",
+          "sha256": "e1ed6ac9a12444b36bfdd3084e288b54b942dafdb79a65c1cffae6470767c004"
+        },
+        "downloads": 19,
+        "filename": "aquests-0.6.9.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f56edcbcbe2ae92faa58fbba43d4e18b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 108889,
+        "upload_time": "2017-03-10T11:46:33",
+        "url": "https://files.pythonhosted.org/packages/2f/d2/9ef71379104eb8a34b5e33bb21006de10fd7ce19140ba90a21461b47a14d/aquests-0.6.9.tar.gz"
+      }
+    ],
+    "0.6b1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "74110173fc24543fe45ea74b86511b0e",
+          "sha256": "7ea9187c324ad2ca723ab49b28859e6d91940afcdfd559db65104f4a4fbce046"
+        },
+        "downloads": 11,
+        "filename": "aquests-0.6b1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "74110173fc24543fe45ea74b86511b0e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 107745,
+        "upload_time": "2017-01-23T07:49:52",
+        "url": "https://files.pythonhosted.org/packages/30/f6/41a76a7466f2e9739986cf981ae0b6d31c6380cfe5daa7f9e12505112ea5/aquests-0.6b1.tar.gz"
+      }
+    ],
+    "0.7": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "568385976d32d7cd5536ca623aac2931",
+          "sha256": "d732bce217aecc29bd477ce6fad27fa52032930d83055abd339fbc6a67a8e0db"
+        },
+        "downloads": 0,
+        "filename": "aquests-0.7.tar.gz",
+        "has_sig": false,
+        "md5_digest": "568385976d32d7cd5536ca623aac2931",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 109618,
+        "upload_time": "2017-04-14T03:18:40",
+        "url": "https://files.pythonhosted.org/packages/6f/b4/fa3fa824867aedf2f46cc4c469a22b23420b66e5a0742e4b841105f59f5f/aquests-0.7.tar.gz"
+      }
+    ],
+    "0.7.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c5da2c04c99574c93187e17f98a285c3",
+          "sha256": "4954219c714c762ef9046e7c26100fb07573358080c18f95a2bc2cb8568ebf34"
+        },
+        "downloads": 0,
+        "filename": "aquests-0.7.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c5da2c04c99574c93187e17f98a285c3",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 109635,
+        "upload_time": "2017-04-14T19:50:23",
+        "url": "https://files.pythonhosted.org/packages/65/df/0741d3fd4b25d33b530688076f45621c513fb41c0a24d6284f79e809db62/aquests-0.7.1.tar.gz"
+      }
+    ],
+    "0.7.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "113594c6fc104a5633fa2330ba5f7579",
+          "sha256": "fda7a9d909f8e290fca0bb7c4cf04bfe708b70d7331eb912e898cf72ee26f035"
+        },
+        "downloads": 0,
+        "filename": "aquests-0.7.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "113594c6fc104a5633fa2330ba5f7579",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 109957,
+        "upload_time": "2017-04-16T11:51:12",
+        "url": "https://files.pythonhosted.org/packages/55/8c/af64a0ec64e91fc58e170e09848b493ef94347ba6224934c1525e0fdfb48/aquests-0.7.2.tar.gz"
+      }
+    ],
+    "0.7.2.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c3ff9a6a86576f26e3149936f2e7ee37",
+          "sha256": "48f37a139e3a908ef513b69a3436d0f38e252d1ab1d5cd660920e18bf9be2d37"
+        },
+        "downloads": 0,
+        "filename": "aquests-0.7.2.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c3ff9a6a86576f26e3149936f2e7ee37",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 109960,
+        "upload_time": "2017-04-16T11:55:07",
+        "url": "https://files.pythonhosted.org/packages/ab/0a/d783e48090793756760f6b1c41d71ee4b20793ec1240bc2ac16fe0c294d8/aquests-0.7.2.1.tar.gz"
+      }
+    ],
+    "0.7.2.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7574b9045a55541546319393be44c34d",
+          "sha256": "9cfae94db68335d2bb82123eea5c7a882e94f9210b4e0585fc0746e5008f9513"
+        },
+        "downloads": 0,
+        "filename": "aquests-0.7.2.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7574b9045a55541546319393be44c34d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 110011,
+        "upload_time": "2017-04-16T14:10:33",
+        "url": "https://files.pythonhosted.org/packages/ef/79/1a0cf7b6ee4324a8f94b02e2e74ee452f1cb8329fd76dc3f14fe740c3fea/aquests-0.7.2.2.tar.gz"
+      }
+    ],
+    "0.7.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4e027201e5fe1db43085682cc4788643",
+          "sha256": "224d46d16ef16c8404fb21abfbacd798e582b3a52f7f632341ff4ef0de73eea7"
+        },
+        "downloads": 0,
+        "filename": "aquests-0.7.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4e027201e5fe1db43085682cc4788643",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 110061,
+        "upload_time": "2017-04-18T13:49:59",
+        "url": "https://files.pythonhosted.org/packages/51/ab/ee9d932615cf1a15c133fc7f9378536b63914f3dfd0b22aa77906bd60e8a/aquests-0.7.3.tar.gz"
+      }
+    ],
+    "0.7.3.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ffe68c6da06b007b0113ec1becca08f4",
+          "sha256": "82af2a0cf1cbd40aeb78207300da45f942125ea8817af881a8376b512d30b493"
+        },
+        "downloads": 0,
+        "filename": "aquests-0.7.3.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ffe68c6da06b007b0113ec1becca08f4",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 110094,
+        "upload_time": "2017-04-18T21:21:11",
+        "url": "https://files.pythonhosted.org/packages/0a/80/e8685272a705b3a7aaff1059d368b9b64b35d6ddd835f0958d8bcfd9a531/aquests-0.7.3.1.tar.gz"
+      }
+    ],
+    "0.7.3.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "be606e0d953122f81242cf992e8b91eb",
+          "sha256": "756c20956a07c835231ef7b079da0cae4df2c60cd75ce1351b15a21d1a69f013"
+        },
+        "downloads": 0,
+        "filename": "aquests-0.7.3.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "be606e0d953122f81242cf992e8b91eb",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 110134,
+        "upload_time": "2017-04-23T04:01:34",
+        "url": "https://files.pythonhosted.org/packages/87/52/b7f2ec279efc9ebca1de7ef76accf66046efe1d975ac997c40249e95a837/aquests-0.7.3.2.tar.gz"
+      }
+    ],
+    "0.7.3.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0b393a25e5e81e9d0571a4df9483669f",
+          "sha256": "a26ef5328635677a51179cf5399c601044343e36a2b9291f6b80d5a60db8ac13"
+        },
+        "downloads": 0,
+        "filename": "aquests-0.7.3.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0b393a25e5e81e9d0571a4df9483669f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 110254,
+        "upload_time": "2017-05-02T01:15:15",
+        "url": "https://files.pythonhosted.org/packages/d2/b8/b92d1417de4f7841740a9e1783f0de29d8020836fb4aa554678b4ba339b8/aquests-0.7.3.3.tar.gz"
+      }
+    ],
+    "0.7.3.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "706cb94a3ef639c6bd560c11fcf41647",
+          "sha256": "962f7590fc8cac66b1574cff86b9c604a96ff2102012f5daaed110053c4cef15"
+        },
+        "downloads": 0,
+        "filename": "aquests-0.7.3.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "706cb94a3ef639c6bd560c11fcf41647",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 118836,
+        "upload_time": "2017-05-09T05:33:00",
+        "url": "https://files.pythonhosted.org/packages/06/0e/70f1eab310f005dce77cca420ff49cfe3d49af12c1da5e235b578371d826/aquests-0.7.3.4.tar.gz"
+      }
+    ],
+    "0.7.3.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0be473fba60b9ec4a8afe6aea0abf942",
+          "sha256": "ca7dd16bf8cc239b56e20ce8013afbccb14b9977dc9cfbce48624a513f05c86f"
+        },
+        "downloads": 0,
+        "filename": "aquests-0.7.3.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0be473fba60b9ec4a8afe6aea0abf942",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 118868,
+        "upload_time": "2017-05-11T08:45:34",
+        "url": "https://files.pythonhosted.org/packages/31/f4/458956d6708829f3a67fa194ce2281275099377774a99916c6e5fad8b1cc/aquests-0.7.3.5.tar.gz"
+      }
+    ],
+    "0.7.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a3eee21bfc1abe945242883f2852be76",
+          "sha256": "9eb514e54f0ca1ac841d1f2f79c4965c65bcd077bd24f98b3271c96225339eeb"
+        },
+        "downloads": 0,
+        "filename": "aquests-0.7.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a3eee21bfc1abe945242883f2852be76",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 119047,
+        "upload_time": "2017-05-27T00:46:16",
+        "url": "https://files.pythonhosted.org/packages/fc/91/4d44fe29c85bd7f13b681ebb3c9263539205905ec89b4bfb0d725c8a0113/aquests-0.7.4.tar.gz"
+      }
+    ],
+    "0.7.4.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a2402dc5d9810567e780a9d043d16794",
+          "sha256": "e99c27775d04dc57552165301393a7466fd224ad46f5fd22b6e82a7dbdc7996a"
+        },
+        "downloads": 0,
+        "filename": "aquests-0.7.4.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a2402dc5d9810567e780a9d043d16794",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 119062,
+        "upload_time": "2017-05-27T23:45:58",
+        "url": "https://files.pythonhosted.org/packages/19/87/97f3281bb344215baa3afb8f1f05534074de48efa820f61303e2d86e675a/aquests-0.7.4.1.tar.gz"
+      }
+    ],
+    "0.7.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "229dcadae0a09fb606375d3d1902921b",
+          "sha256": "68b899ae824f5f1eb7aab2f5e1befb96b13694d92e5fa2d6de175b6862360b0d"
+        },
+        "downloads": 0,
+        "filename": "aquests-0.7.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "229dcadae0a09fb606375d3d1902921b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 119469,
+        "upload_time": "2017-06-02T08:31:24",
+        "url": "https://files.pythonhosted.org/packages/77/a7/d790b60d1312a2ceef04b7055ece77327ed7dfd58089b0fd69dfcb0a3f6d/aquests-0.7.5.tar.gz"
+      }
+    ],
+    "0.7.5.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "52f35943ca2d0b7276ae5f7470e0bffa",
+          "sha256": "2da1f2afe2c25e85e7de7bcd4f88c7166d01454a10d6493f8b5f53efb654f3a8"
+        },
+        "downloads": 0,
+        "filename": "aquests-0.7.5.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "52f35943ca2d0b7276ae5f7470e0bffa",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 119472,
+        "upload_time": "2017-06-02T09:44:54",
+        "url": "https://files.pythonhosted.org/packages/26/ca/a139d80cdcfc737f2f4c15c4666aaf35918b661115ed105dda2d5a484ea5/aquests-0.7.5.1.tar.gz"
+      }
+    ],
+    "0.7b1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ba07d1d9ebc119ed4cbbb0b007a7c3eb",
+          "sha256": "1323139bd72fbfd823370fa41ce9c780cfe9166b917c822063cb85043d770d06"
+        },
+        "downloads": 0,
+        "filename": "aquests-0.7b1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ba07d1d9ebc119ed4cbbb0b007a7c3eb",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 108384,
+        "upload_time": "2017-04-10T14:36:16",
+        "url": "https://files.pythonhosted.org/packages/7b/99/5fa87db4e675bbda171254a49397f3b6d4d535f1ab0273484368f50435d5/aquests-0.7b1.tar.gz"
+      }
+    ],
+    "0.7b3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ddcde32d1e304b638aa40b54f25ed7e1",
+          "sha256": "1d672031c75314be6ada26425edd7012acc29fcce2e4b107b02ff6234352bdd8"
+        },
+        "downloads": 0,
+        "filename": "aquests-0.7b3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ddcde32d1e304b638aa40b54f25ed7e1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 109029,
+        "upload_time": "2017-04-12T08:42:15",
+        "url": "https://files.pythonhosted.org/packages/98/ef/0a329a4d660481ce680545b7411fd3ab7c75c7ceaa4f5b6f6300076ed8b0/aquests-0.7b3.tar.gz"
+      }
+    ],
+    "0.7b4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6117f71b0c2a8a4094668bb3aed41255",
+          "sha256": "9647639e8381de9d216581230b2fdc71bf8dfe6e30588555dad434688ba4f051"
+        },
+        "downloads": 0,
+        "filename": "aquests-0.7b4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6117f71b0c2a8a4094668bb3aed41255",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 109487,
+        "upload_time": "2017-04-13T10:57:23",
+        "url": "https://files.pythonhosted.org/packages/7a/d9/2d8e9bfbbfd161865f9fdcab46b8ec3b6f1c2b62dd46a99b5afb1ab279cb/aquests-0.7b4.tar.gz"
+      }
+    ],
+    "0.7b6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c3cb0aea09f2b94cb65e7561011c5646",
+          "sha256": "bfd6d70689190b04e740b20dadf81f01eab1ca8fb419a5487f953c60e057cdcf"
+        },
+        "downloads": 0,
+        "filename": "aquests-0.7b6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c3cb0aea09f2b94cb65e7561011c5646",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 109542,
+        "upload_time": "2017-04-13T13:35:42",
+        "url": "https://files.pythonhosted.org/packages/2a/d3/2f607e06c56f0877407f5ac5846ac83947bf0309e8ce295654f5b08617e0/aquests-0.7b6.tar.gz"
+      }
+    ],
+    "0.7b7": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8b5e520b8b735a88b4ed7b6d1744968f",
+          "sha256": "9f728441afa1d83ca563a7737f2c31f12dd46838d3e5d5558a08e5d5aa5f5e9a"
+        },
+        "downloads": 0,
+        "filename": "aquests-0.7b7.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8b5e520b8b735a88b4ed7b6d1744968f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 109543,
+        "upload_time": "2017-04-14T01:27:01",
+        "url": "https://files.pythonhosted.org/packages/da/f7/097d98a5043ff85c67b7e2647fc82c31a8851e65c80532fa91b5c4702106/aquests-0.7b7.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "52f35943ca2d0b7276ae5f7470e0bffa",
+        "sha256": "2da1f2afe2c25e85e7de7bcd4f88c7166d01454a10d6493f8b5f53efb654f3a8"
+      },
+      "downloads": 0,
+      "filename": "aquests-0.7.5.1.tar.gz",
+      "has_sig": false,
+      "md5_digest": "52f35943ca2d0b7276ae5f7470e0bffa",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 119472,
+      "upload_time": "2017-06-02T09:44:54",
+      "url": "https://files.pythonhosted.org/packages/26/ca/a139d80cdcfc737f2f4c15c4666aaf35918b661115ed105dda2d5a484ea5/aquests-0.7.5.1.tar.gz"
+    }
+  ]
+}

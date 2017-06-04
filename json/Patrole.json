@@ -1,0 +1,112 @@
+{
+  "info": {
+    "author": "OpenStack",
+    "author_email": "openstack-dev@lists.openstack.org",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Environment :: OpenStack",
+      "Intended Audience :: Information Technology",
+      "Intended Audience :: System Administrators",
+      "License :: OSI Approved :: Apache Software License",
+      "Operating System :: POSIX :: Linux",
+      "Programming Language :: Python",
+      "Programming Language :: Python :: 2",
+      "Programming Language :: Python :: 2.7",
+      "Programming Language :: Python :: 3",
+      "Programming Language :: Python :: 3.3",
+      "Programming Language :: Python :: 3.4",
+      "Programming Language :: Python :: 3.5"
+    ],
+    "description": "========\nOverview\n========\n\nPatrole is a tool for verifying that Role-Based Access Control is being\ncorrectly enforced.\n\nPatrole allows users to run API tests using specified RBAC roles. This allows\ndeployments to verify that only intended roles have access to those APIs.\nThis is critical to ensure security, especially in large deployments with\ncustom roles.\n\n* Free software: Apache license\n* Documentation: http://docs.openstack.org/developer/patrole\n* Source: http://git.openstack.org/cgit/openstack/patrole\n* Bugs: http://bugs.launchpad.net/patrole\n\nFeatures\n========\nPatrole offers RBAC testing for various OpenStack RBAC policies. It includes\na decorator that wraps around tests which verifies that when the test calls the\ncorresponding API endpoint, access is only granted for correct roles.\n\nCurrently, Patrole supports policies contained in code and in policy.json files.\nIf both exist, the policy actions in the policy.json are prioritized.\n\nStable Interface\n----------------\nPatrole offers a stable interface that is guaranteed to be backwards compatible and\ncan be directly consumed by other projects. Currently, rbac_exceptions.py and\nrbac_policy_parser.py are guaranteed to be stable.\n\nRelease Versioning\n------------------\n`Patrole Release Notes <https://docs.openstack.org/releasenotes/patrole/>`_ show\nwhat changes have been released.\n\n.. _test-flows:\n\nTest Flows\n----------\nThere are several possible test flows.\n\nIf the ``rbac_test_role`` is allowed to access the endpoint:\n\n* The test passes if no 403 ``Forbidden`` or ``RbacActionFailed`` exception is raised.\n\nIf the ``rbac_test_role`` is not allowed to access the endpoint:\n\n* If the endpoint returns a 403 `Forbidden` exception the test will pass.\n* If the endpoint returns successfully, then the test will fail with an\n  ``RbacOverPermission`` exception.\n* If the endpoint returns something other than a 403 ``Forbidden`` to indicate\n  that the role is not allowed, the test will raise an ``RbacActionFailed`` exception.\n\n.. note::\n\n    Certain services like Neutron *intentionally* raise a 404 instead of a 403\n    for security concerns. Patrole accomodates this behavior by anticipating\n    a 404 instead of a 403, using the ``expected_exception`` argument. For more\n    information about Neutron's policy enforcement, see:\n    `<https://docs.openstack.org/developer/neutron/devref/policy.html#request-authorization>`__.\n\nHow It Works\n============\nPatrole leverages oslo_policy (OpenStack's policy enforcement engine) to\ndetermine whether a given role is allowed to perform a policy action given a\nspecific rule and OpenStack service. This is done before test execution inside\nthe ``rbac_rule_validation.action`` decorator. Then, inside the test, the API\nthat does policy enforcement for the same rule is called. The outcome is\ncompared against the result from oslo_policy and a pass or fail is determined\nas outlined above: :ref:`test-flows`.\n\n.. note::\n\n    Currently, Patrole does not support checking multiple rules against a single\n    API call. Even though some APIs enforce multiple rules (some indirectly),\n    it is increasingly difficult to maintain the tests if multiple policy\n    actions are expected to be called.\n\nTest Execution Workflow\n-----------------------\nThe workflow is as follows:\n\n#. Each test uses the ``rbac_rule_validation.action`` decorator, like below: ::\n\n    @rbac_rule_validation.action(\n        service=\"nova\",\n        rule=\"os_compute_api:servers:stop\")\n    @decorators.idempotent_id('ab4a17d2-166f-4a6d-9944-f17baa576cf2')\n    def test_stop_server(self):\n        # Set the primary credential's role to \"rbac_test_role\".\n        self.rbac_utils.switch_role(self, toggle_rbac_role=True)\n        # Call the API that enforces the policy action specified by \"rule\".\n        self._test_stop_server()\n\n   The ``service`` attribute accepts an OpenStack service and the ``rule`` attribute\n   accepts a valid OpenStack policy action, like \"os_compute_api:servers:stop\".\n\n#. The ``rbac_rule_validation.action`` decorator passes these attributes,\n   along with user_id and project_id information derived from the primary\n   Tempest credential (``self.os.credentials.user_id`` and ``self.os.credentials.project_id``),\n   to the ``rbac_policy_parser``.\n\n#. The logic in ``rbac_policy_parser`` then passes all this information along\n   and the role in ``CONF.rbac.rbac_test_role`` to oslo_policy to determine whether\n   the ``rbac_test_role`` is authorized to perform the policy action for the given\n   service.\n\n#. After all of the logic above has executed inside the rbac decorator, the\n   test is executed. The test then sets up test-level resources, if necessary,\n   with **admin** credentials implicitly. This is accomplished through\n   ``rbac_utils.switch_role(toggle_rbac_role=False)``: ::\n\n    @classmethod\n    def setup_clients(cls):\n        super(BaseV2ComputeRbacTest, cls).setup_clients()\n        cls.auth_provider = cls.os.auth_provider\n        cls.rbac_utils = rbac_utils()\n        cls.rbac_utils.switch_role(cls, toggle_rbac_role=False)\n\n   This code has *already* executed when the test class is instantiated, because\n   it is located in the base rbac test class. Whenever ``cls.rbac_utils.switch_role``\n   is called, one of two behaviors are possible:\n\n    #. The primary credential's role is changed to admin if ``toggle_rbac_role=False``\n    #. The primary credential's role is changed to ``rbac_test_role`` if\n       ``toggle_rbac_role=True``\n\n   Thus, at the *beginning* of every test and during ``resource_setup`` and\n   ``resource_cleanup``, the primary credential has the admin role.\n\n#. After preliminary test-level setup is performed, like creating a server, a\n   second call to ``self.rbac_utils.switch_role`` is done: ::\n\n    self.rbac_utils.switch_role(cls, toggle_rbac_role=True)\n\n   Now the primary credential has the role specified by ``rbac_test_role``.\n\n#. The API endpoint in which  policy enforcement of \"os_compute_api:servers:stop\"\n   is performed can now be called.\n\n   .. note:\n\n        To determine whether a policy action is enforced, refer to the relevant\n        controller code to make sure that the policy action is indeed enforced.\n\n#. Now that a call is made to \"stop_server\" with the primary credentials having\n   the role specified by ``rbac_test_role``, either the nova contoller will allow\n   or disallow the action to be performed. Since the \"stop_server\" policy action in\n   nova is defined as \"base.RULE_ADMIN_OR_OWNER\", the API will most likely\n   return a successful status code. For more information about this policy action,\n   see `<https://github.com/openstack/nova/blob/master/nova/policies/servers.py>`__.\n\n#. As mentioned above, the result from the API call and the result from oslo_policy\n   are compared for consistency.\n\n#. Finally, after the test has executed, but before ``tearDown`` or ``resource_cleanup``\n   is called, ``self.rbac_utils.switch_role(cls, toggle_rbac_role=False)`` is\n   called, so that the primary credential yet again has admin permissions for\n   test clean up. This call is always performed in the \"finally\" block inside\n   the ``rbac_rule_validation`` decorator.\n\n.. warning::\n\n    Failure to call ``self.rbac_utils.switch_role(cls, toggle_rbac_role=True)``\n    inside a test with the ``rbac_rule_validation`` decorator applied results\n    in a ``RbacResourceSetupFailed`` being raised, causing the test to fail.\n\n\n\n",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "http://docs.openstack.org/developer/patrole/",
+    "keywords": "",
+    "license": "",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "Patrole",
+    "platform": "",
+    "project_url": "https://pypi.org/project/Patrole/",
+    "release_url": "https://pypi.org/project/Patrole/0.1.0/",
+    "requires_python": "",
+    "summary": "Patrole is a tool for verifying that Role-Based Access Control is being enforced across OpenStack deployments.",
+    "version": "0.1.0"
+  },
+  "releases": {
+    "0.0.1.dev15": [],
+    "0.1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ff5ecd80335b6050101419433e4b2b4d",
+          "sha256": "5ea835e158ca318d5c7a9d46df539ac0c212965efe256fbf2c34327625b360d6"
+        },
+        "downloads": 0,
+        "filename": "patrole-0.1.0-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "ff5ecd80335b6050101419433e4b2b4d",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2",
+        "size": 193005,
+        "upload_time": "2017-05-30T15:59:40",
+        "url": "https://files.pythonhosted.org/packages/d9/55/d020cfe3a9cd5b84a7b93ce55431e2b69029d5f9309fe906451185aa15cd/patrole-0.1.0-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "18b1619cbec217dc5334f532d04a4ac4",
+          "sha256": "8becafc7fa56ea1735b42d3ab6dfa758fe2ce21b2615cf02818de2d54d69a01d"
+        },
+        "downloads": 0,
+        "filename": "patrole-0.1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "18b1619cbec217dc5334f532d04a4ac4",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 96055,
+        "upload_time": "2017-05-30T15:59:43",
+        "url": "https://files.pythonhosted.org/packages/76/f1/0997bef171556422b9683590b5bc234862a7e5c4024f936904c92c04d080/patrole-0.1.0.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "ff5ecd80335b6050101419433e4b2b4d",
+        "sha256": "5ea835e158ca318d5c7a9d46df539ac0c212965efe256fbf2c34327625b360d6"
+      },
+      "downloads": 0,
+      "filename": "patrole-0.1.0-py2-none-any.whl",
+      "has_sig": false,
+      "md5_digest": "ff5ecd80335b6050101419433e4b2b4d",
+      "packagetype": "bdist_wheel",
+      "python_version": "py2",
+      "size": 193005,
+      "upload_time": "2017-05-30T15:59:40",
+      "url": "https://files.pythonhosted.org/packages/d9/55/d020cfe3a9cd5b84a7b93ce55431e2b69029d5f9309fe906451185aa15cd/patrole-0.1.0-py2-none-any.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "18b1619cbec217dc5334f532d04a4ac4",
+        "sha256": "8becafc7fa56ea1735b42d3ab6dfa758fe2ce21b2615cf02818de2d54d69a01d"
+      },
+      "downloads": 0,
+      "filename": "patrole-0.1.0.tar.gz",
+      "has_sig": false,
+      "md5_digest": "18b1619cbec217dc5334f532d04a4ac4",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 96055,
+      "upload_time": "2017-05-30T15:59:43",
+      "url": "https://files.pythonhosted.org/packages/76/f1/0997bef171556422b9683590b5bc234862a7e5c4024f936904c92c04d080/patrole-0.1.0.tar.gz"
+    }
+  ]
+}

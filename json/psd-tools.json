@@ -1,0 +1,653 @@
+{
+  "info": {
+    "author": "Mikhail Korobov",
+    "author_email": "kmike84@gmail.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 4 - Beta",
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: MIT License",
+      "Programming Language :: Python",
+      "Programming Language :: Python :: 2",
+      "Programming Language :: Python :: 2.7",
+      "Programming Language :: Python :: 3",
+      "Programming Language :: Python :: 3.3",
+      "Programming Language :: Python :: 3.4",
+      "Programming Language :: Python :: 3.5",
+      "Programming Language :: Python :: Implementation :: CPython",
+      "Programming Language :: Python :: Implementation :: PyPy",
+      "Topic :: Multimedia :: Graphics",
+      "Topic :: Multimedia :: Graphics :: Graphics Conversion",
+      "Topic :: Multimedia :: Graphics :: Viewers",
+      "Topic :: Software Development :: Libraries :: Python Modules"
+    ],
+    "description": "psd-tools\n=========\n\n``psd-tools`` is a package for reading Adobe Photoshop PSD files\n(as described in specification_) to Python data structures.\n\n.. _specification: https://www.adobe.com/devnet-apps/photoshop/fileformatashtml/PhotoshopFileFormats.htm\n\n.. image:: https://img.shields.io/pypi/v/psd-tools.svg\n   :target: https://pypi.python.org/pypi/psd-tools\n   :alt: PyPI Version\n\n.. image:: https://img.shields.io/travis/psd-tools/psd-tools/master.svg\n   :alt: Build Status\n   :target: https://travis-ci.org/psd-tools/psd-tools\n\nInstallation\n------------\n\n::\n\n    pip install psd-tools\n\nPillow_ should be installed if you want work with PSD image and layer data:\nexport images to PNG, process them. PIL_ library should also work.\n\n::\n\n   pip install Pillow\n\n.. note::\n\n    In order to extract images from 32bit PSD files PIL/Pillow must be built\n    with LITTLECMS or LITTLECMS2 support.\n\npsd-tools also has a rudimentary support for Pymaging_.\n`Pymaging installation instructions`_ are available in pymaging docs.\nIf you want to use Pymaging instead of Pillow you'll also need packbits_\nlibrary::\n\n      pip install packbits\n\n.. _PIL: http://www.pythonware.com/products/pil/\n.. _Pillow: https://github.com/python-imaging/Pillow\n.. _packbits: http://pypi.python.org/pypi/packbits/\n.. _Pymaging: https://github.com/ojii/pymaging\n.. _Pymaging installation instructions: http://pymaging.readthedocs.org/en/latest/usr/installation.html\n\nUsage\n-----\n\nLoad an image::\n\n    >>> from psd_tools import PSDImage\n    >>> psd = PSDImage.load('my_image.psd')\n\nRead image header::\n\n    >>> psd.header\n    PsdHeader(number_of_channels=3, height=200, width=100, depth=8, color_mode=RGB)\n\nAccess its layers::\n\n    >>> psd.layers\n    [<psd_tools.Group: 'Group 2', layer_count=1>,\n     <psd_tools.Group: 'Group 1', layer_count=1>,\n     <psd_tools.Layer: 'Background', size=100x200, x=0, y=0>]\n\nWork with a layer group::\n\n    >>> group2 = psd.layers[0]\n    >>> group2.name\n    Group 2\n\n    >>> group2.visible\n    True\n\n    >>> group2.closed\n    False\n\n    >>> group2.opacity\n    255\n\n    >>> from psd_tools.constants import BlendMode\n    >>> group2.blend_mode == BlendMode.NORMAL\n    True\n\n    >>> group2.layers\n    [<psd_tools.Layer: 'Shape 2', size=43x62, x=40, y=72)>]\n\nWork with a layer::\n\n    >>> layer = group2.layers[0]\n    >>> layer.name\n    Shape 2\n\n    >>> layer.bbox\n    BBox(x1=40, y1=72, x2=83, y2=134)\n\n    >>> layer.bbox.width, layer.bbox.height\n    (43, 62)\n\n    >>> layer.visible, layer.opacity, layer.blend_mode\n    (True, 255, u'norm')\n\n    >>> layer.text_data.text\n    'Text inside a text box'\n\n    >>> layer.as_PIL()\n    <PIL.Image.Image image mode=RGBA size=43x62 at ...>\n\n\nExport a single layer::\n\n    >>> layer_image = layer.as_PIL()\n    >>> layer_image.save('layer.png')\n\nExport the merged image::\n\n    >>> merged_image = psd.as_PIL()\n    >>> merged_image.save('my_image.png')\n\nThe same using Pymaging_::\n\n    >>> merged_image = psd.as_pymaging()\n    >>> merged_image.save_to_path('my_image.png')\n    >>> layer_image = layer.as_pymaging()\n    >>> layer_image.save_to_path('layer.png')\n\nExport layer group (experimental)::\n\n    >>> group_image = group2.as_PIL()\n    >>> group_image.save('group.png')\n\n\nWhy yet another PSD reader?\n---------------------------\n\nThere are existing PSD readers for Python:\n\n* psdparse_;\n* pypsd_;\n* there is a PSD reader in PIL_ library;\n* it is possible to write Python plugins for GIMP_.\n\nPSD reader in PIL is incomplete and contributing to PIL\nis complicated because of the slow release process, but the main issue\nwith PIL for me is that PIL doesn't have an API for layer groups.\n\nGIMP is cool, but it is a huge dependency, its PSD parser\nis not perfect and it is not easy to use GIMP Python plugin\nfrom *your* code.\n\nI also considered contributing to pypsd or psdparse, but they are\nGPL and I was not totally satisfied with the interface and the code\n(they are really fine, that's me having specific style requirements).\n\nSo I finally decided to roll out yet another implementation\nthat should be MIT-licensed, systematically based on the specification_\n(it turns out the specs are incomplete and sometimes incorrect though);\nparser should be implemented as a set of functions; the package should\nhave tests and support both Python 2.x and Python 3.x.\n\n.. _GIMP: http://www.gimp.org/\n.. _psdparse: https://github.com/jerem/psdparse\n.. _pypsd: https://code.google.com/p/pypsd\n\n\nDesign overview\n---------------\n\nThe process of handling a PSD file is split into 3 stages:\n\n1) \"Reading\": the file is read and parsed to low-level data\n   structures that closely match the specification. No user-accessible\n   images are constructed; image resources blocks and additional layer\n   information are extracted but not parsed (they remain just keys\n   with a binary data). The goal is to extract all information\n   from a PSD file.\n\n2) \"Decoding\": image resource blocks and additional layer\n   information blocks are parsed to a more detailed data structures\n   (that are still based on a specification). There are a lot of PSD\n   data types and the library currently doesn't handle them all, but\n   it should be easy to add the parsing code for the missing PSD data\n   structures if needed.\n\nAfter (1) and (2) we have an in-memory data structure that closely\nresembles PSD file; it should be fairly complete but very low-level\nand not easy to use. So there is a third stage:\n\n3) \"User-facing API\": PSD image is converted to an user-friendly object\n   that supports layer groups, exporting data as ``PIL.Image`` or\n   ``pymaging.Image``, etc.\n\nStage separation also means user-facing API may be opinionated:\nif somebody doesn't like it then it should possible to build an\nanother API based on lower-level decoded PSD file.\n\n``psd-tools`` tries not to throw away information from the original\nPSD file; even if the library can't parse some info, this info\nwill be likely available somewhere as raw bytes (open a bug if this is\nnot the case). This should make it possible to modify and write PSD\nfiles (currently not implemented; contributions are welcome).\n\nFeatures\n--------\n\nSupported:\n\n* reading of RGB, RGBA, CMYK, CMYKA and Grayscale images;\n* 8bit, 16bit and 32bit channels;\n* all PSD compression methods are supported (not only the most\n  common RAW and RLE);\n* image ICC profile is taken into account;\n* many image resource types and tagged block types are decoded;\n* layer effects information is decoded;\n* Descriptor structures are decoded;\n* there is an optional Cython extension to make the parsing fast;\n* very basic & experimental layer merging.\n\nNot implemented:\n\n* reading of Duotone, LAB, etc. images;\n* many image resource types and tagged blocks are not decoded\n  (they are attached to the result as raw bytes);\n* some of the raw Descriptor values (like EngineData) are not decoded;\n* this library can't reliably blend layers together: it is possible to export\n  a single layer and to export a final image, but rendering of\n  e.g. layer group may produce incorrect results;\n* the writing of PSD images is not implemented;\n* Pymaging_ support is limited: it only supports 8bit RGB/RGBA\n  images, ICC profiles are not applied, layer merging doesn't work, etc.\n\nIf you need some of unimplemented features then please fire an issue\nor implement it yourself (pull requests are welcome in this case).\n\n\nContributing\n------------\n\nDevelopment happens at github: `source code <https://github.com/psd-tools/psd-tools>`__,\n`bug tracker <https://github.com/psd-tools/psd-tools/issues>`__.\nFeel free to submit ideas, bugs or pull requests.\n\nIn case of bugs it would be helpful to provide a small PSD file\ndemonstrating the issue; this file may be added to a test suite.\n\n.. note::\n\n    Unfortunately I don't have a license for Adobe Photoshop and use GIMP for\n    testing; PNG screenshots may be necessary in cases where GIMP fails.\n\nIn order to run tests, make sure PIL/Pillow is built with LittleCMS\nor LittleCMS2 support, install `tox <http://tox.testrun.org>`_ and type\n\n::\n\n    tox\n\nfrom the source checkout.\n\nThe license is MIT.\n\nAcknowledgments\n---------------\n\nA full list of contributors can be found here:\nhttps://github.com/psd-tools/psd-tools/blob/master/AUTHORS.txt\n\nThanks to all guys who write PSD parsers: I learned a lot about PSD\nfile structure from the source code of psdparse_, GIMP_, libpsd_\nand `psdparse C library`_; special thanks to `Paint.NET PSD Plugin`_ authors\nfor deciphering the \"32bit layer + zip-with-prediction compression\" case.\n\nSponsors:\n\n* Leonid Gluzman;\n* https://marvelapp.com/.\n\n.. _libpsd: http://sourceforge.net/projects/libpsd/\n.. _psdparse C library: http://telegraphics.com.au/svn/psdparse/trunk/\n.. _Paint.NET PSD Plugin: http://psdplugin.codeplex.com/\n\n\n\n1.4 (2017-01-02)\n----------------\n\n- Fixed reading of layer mask data (thanks Evgeny Kopylov);\n- Python 2.6 support is dropped;\n- Python 3.6 support is added (thanks Leendert Brouwer);\n- extension is rebuilt with Cython 0.25.2.\n\n1.3 (2016-01-25)\n----------------\n\n- fixed references decoding (thanks Josh Drake);\n- fixed PIL support for CMYK files (thanks Michael Wu);\n- optional C extension is rebuilt with Cython 0.23.4;\n- Python 3.2 support is dropped; the package still works in Python 3.2,\n  but the compatibility is no longer checked by tests, and so it can break\n  in future.\n- declare Python 3.5 as supported.\n\n1.2 (2015-01-27)\n----------------\n\n- implemented extraction of embedded files (embedded smart objects) -\n  thanks Volker Braun;\n- optional C extension is rebuilt with Cython 0.21.2.\n- hg mirror on bitbucket is dropped, sorry!\n\n1.1 (2014-11-17)\n----------------\n\n- improved METADATA_SETTING decoding (thanks Evgeny Kopylov);\n- layer comps decoding (thanks Evgeny Kopylov);\n- improved smart objects decoding (thanks Joey Gentry);\n- user API for getting layer transforms and placed layer size\n  (thanks Joey Gentry);\n- IPython import is deferred to speedup ``psd-tools.py`` command-line utility;\n- ``_RootGroup.__repr__`` is fixed;\n- warning message building is more robust;\n- optional C extension is rebuilt with Cython 0.21.1.\n\n1.0 (2014-07-24)\n----------------\n\n- Fixed reading of images with layer masks (thanks Evgeny Kopylov);\n- improved mask data decoding (thanks Evgeny Kopylov);\n- fixed syncronization in case of ``8B64`` signatures (thanks Evgeny Kopylov);\n- fixed reading of layers with zero length (thanks Evgeny Kopylov);\n- fixed Descriptor parsing (thanks Evgeny Kopylov);\n- some of the descriptor structures and tagged block constants are renamed (thanks Evgeny Kopylov);\n- PATH_SELECTION_STATE decoding (thanks Evgeny Kopylov);\n- the library is switched to setuptools; docopt is now installed automatically.\n\n0.10 (2014-06-15)\n-----------------\n\n- Layer effects parsing (thanks Evgeny Kopylov);\n- trailing null bytes are stripped from descriptor strings\n  (thanks Evgeny Kopylov);\n- \"Reference\" and \"List\" descriptor parsing is fixed\n  (thanks Evgeny Kopylov);\n- scalar descriptor values (doubles, floats, booleans) are now returned\n  as scalars, not as lists of size 1 (thanks Evgeny Kopylov);\n- fixed reading of EngineData past declared length\n  (thanks Carlton P. Taylor);\n- \"background color\" Image Resource parsing (thanks Evgeny Kopylov);\n- `psd_tools.decoder.actions.Enum.enum` field is renamed to\n  `psd_tools.decoder.actions.Enum.value` (thanks Evgeny Kopylov);\n- code simplification - constants are now bytestrings as they should be\n  (thanks Evgeny Kopylov);\n- Python 3.4 is supported.\n\n0.9.1 (2014-03-26)\n------------------\n\n- Improved merging of transparent layers (thanks Vladimir Timofeev);\n- fixed layer merging and bounding box calculations for empty layers\n  (thanks Vladimir Timofeev);\n- C extension is rebuilt with Cython 0.20.1.\n\n0.9 (2013-12-03)\n----------------\n\n- `psd-tools.py` command-line interface is changed, 'debug' command is added;\n- pretty-printing of internal structures;\n- pymaging support is fixed;\n- allow 'MeSa' to be a signature for image resource blocks\n  (thanks Alexey Buzanov);\n- `psd_tools.debug.debug_view` utility function is fixed;\n- Photoshop CC constants are added;\n- Photoshop CC vector origination data is decoded;\n- binary data is preserved if descriptor parsing fails;\n- more verbose logging for PSD reader;\n- channel data reader became more robust - now it doesn't read past\n  declared channel length;\n- `psd-tools.py --version` command is fixed;\n- `lsdk` tagged blocks parsing: this fixes some issues with layer grouping\n  (thanks Ivan Maradzhyiski for the bug report and the patch);\n- CMYK images support is added (thanks Alexey Buzanov, Guillermo Rauch and\n  https://github.com/a-e-m for the help);\n- Grayscale images support is added (thanks https://github.com/a-e-m);\n- LittleCMS is now optional (but it is still required to get proper colors).\n\n0.8.4 (2013-06-12)\n------------------\n\n- Point and Millimeter types are added to UnitFloatType (thanks Doug Ellwanger).\n\n0.8.3 (2013-06-01)\n------------------\n\n- Some issues with descriptor parsing are fixed (thanks Luke Petre).\n\n0.8.2 (2013-04-12)\n------------------\n\n- Python 2.x: reading data from file-like objects is fixed\n  (thanks Pavel Zinovkin).\n\n0.8.1 (2013-03-02)\n------------------\n\n- Fixed parsing of layer groups without explicit OPEN_FOLDER mark;\n- Cython extension is rebuilt with Cython 0.18.\n\n0.8 (2013-02-26)\n----------------\n\n- Descriptor parsing (thanks Oliver Zheng);\n- text (as string) is extracted from text layers (thanks Oliver Zheng);\n- improved support for optional building of Cython extension.\n\n0.7.1 (2012-12-27)\n------------------\n\n- Typo is fixed: ``LayerRecord.cilpping`` should be ``LayerRecord.clipping``.\n  Thanks Oliver Zheng.\n\n0.7 (2012-11-08)\n----------------\n\n- Highly experimental: basic layer merging is implemented\n  (e.g. it is now possible to export layer group to a PIL image);\n- ``Layer.visible`` no longer takes group visibility in account;\n- ``Layer.visible_global`` is the old ``Layer.visible``;\n- ``psd_tools.user_api.combined_bbox`` made public;\n- ``Layer.width`` and ``Layer.height`` are removed (use ``layer.bbox.width``\n  and ``layer.bbox.height`` instead);\n- ``pil_support.composite_image_to_PIL`` is renamed to ``pil_support.extract_composite_image`` and\n  ``pil_support.layer_to_PIL`` is renamed to ``pil_support.extract_layer_image``\n  in order to have the same API for ``pil_support`` and ``pymaging_support``.\n\n0.6 (2012-11-06)\n----------------\n\n- ``psd.composite_image()`` is renamed to ``psd.as_PIL()``;\n- Pymaging support: ``psd.as_pymaging()`` and ``layer.as_pymaging()`` methods.\n\n\n0.5 (2012-11-05)\n----------------\n\n- Support for zip and zip-with-prediction compression methods is added;\n- support for 16/32bit layers is added;\n- optional Cython extension for faster zip-with-prediction decompression;\n- other speed improvements.\n\n0.2 (2012-11-04)\n----------------\n\n- Initial support for 16bit and 32bit PSD files: ``psd-tools`` v0.2 can\n  read composite (merged) images for such files and extract information\n  (names, dimensions, hierarchy, etc.) about layers and groups of 16/32bit PSD;\n  extracting image data for distinct layers in 16/32bit PSD files is not\n  suported yet;\n- better ``Layer.__repr__``;\n- ``bbox`` property for ``Group``.\n\n0.1.4 (2012-11-01)\n------------------\n\nPackaging is fixed in this release.\n\n0.1.3 (2012-11-01)\n------------------\n\n- Better support for 32bit images (still incomplete);\n- reader is able to handle \"global\" tagged layer info blocks that\n  was previously discarded.\n\n0.1.2 (2012-10-30)\n------------------\n\n- warn about 32bit images;\n- transparency support for composite images.\n\n0.1.1 (2012-10-29)\n------------------\n\nInitial release (v0.1 had packaging issues).\n",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/kmike/psd-tools",
+    "keywords": "pymaging psd imaging pil pillow",
+    "license": "MIT License",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "psd-tools",
+    "platform": "",
+    "project_url": "https://pypi.org/project/psd-tools/",
+    "release_url": "https://pypi.org/project/psd-tools/1.4/",
+    "requires_python": "",
+    "summary": "Python package for working with Adobe Photoshop PSD files",
+    "version": "1.4"
+  },
+  "releases": {
+    "0.1.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "70e013bc6432da08b2a14ca3de129195",
+          "sha256": "9e3b73ad678a57a8c171d82fb5a2bb7b84027a33458200a01a37f9d34f52fc4b"
+        },
+        "downloads": 2604,
+        "filename": "psd-tools-0.1.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "70e013bc6432da08b2a14ca3de129195",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 15267,
+        "upload_time": "2012-10-30T01:19:16",
+        "url": "https://files.pythonhosted.org/packages/ea/a4/f87c7692a1f8367f16ed4b2eb0dda166e01b144c0369256de2cb53fdf017/psd-tools-0.1.1.tar.gz"
+      }
+    ],
+    "0.1.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b3ecb011ac0cb8c26b34d6ad1327611c",
+          "sha256": "b311bfb5a18ae5753c76243090a18ca6f6e1db5651a7b90c441fefa5fbcc597c"
+        },
+        "downloads": 2559,
+        "filename": "psd-tools-0.1.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b3ecb011ac0cb8c26b34d6ad1327611c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 15546,
+        "upload_time": "2012-10-30T15:56:16",
+        "url": "https://files.pythonhosted.org/packages/c2/59/41e8b6f4b572e0a6e87a1640ab86d74079b6afe6360c661d241e83f0add5/psd-tools-0.1.2.tar.gz"
+      }
+    ],
+    "0.1.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f4c51744ecde5e46869ac037c398693d",
+          "sha256": "e4cfd26b72c8ea0c566d5e90d6c536130400184a62b7da70bbab33772145bbb2"
+        },
+        "downloads": 2525,
+        "filename": "psd-tools-0.1.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f4c51744ecde5e46869ac037c398693d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 15992,
+        "upload_time": "2012-10-31T18:56:32",
+        "url": "https://files.pythonhosted.org/packages/ee/25/11a0a377bba54ab67f3b920db00285d0e3ebaa9fb234340fff22f3717ddb/psd-tools-0.1.3.tar.gz"
+      }
+    ],
+    "0.1.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d3a0c4d88fc56c6ab130a05f6bb5595f",
+          "sha256": "9338936a902d7f405b1f1a34356504c91d1355e6d3848642e42efd5d4cec5e68"
+        },
+        "downloads": 2561,
+        "filename": "psd-tools-0.1.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d3a0c4d88fc56c6ab130a05f6bb5595f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 18709,
+        "upload_time": "2012-10-31T19:06:46",
+        "url": "https://files.pythonhosted.org/packages/ba/94/8ba5fbefa828f698dec427a93917e737dc875dab7e468e5a2781ae75f3b7/psd-tools-0.1.4.tar.gz"
+      }
+    ],
+    "0.10": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c8ddd442e192f3af12f6c3436f569f04",
+          "sha256": "dd48bc270b0a5a1909d57506ba208652534c5e19929c44895e92595bc5a78c31"
+        },
+        "downloads": 1775,
+        "filename": "psd-tools-0.10.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c8ddd442e192f3af12f6c3436f569f04",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 118373,
+        "upload_time": "2014-06-15T11:11:43",
+        "url": "https://files.pythonhosted.org/packages/ec/5b/a0160cebc933ffd425762ad73867f5f216900b1925f5751afa7cd24dee1c/psd-tools-0.10.tar.gz"
+      }
+    ],
+    "0.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c64c9543464d0f201f7e574640c08357",
+          "sha256": "cc78b6194d769e73f0af1a7d7d6eec1dadd7e2bb13714d94c94b78ee464c58ce"
+        },
+        "downloads": 2488,
+        "filename": "psd-tools-0.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c64c9543464d0f201f7e574640c08357",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 20884,
+        "upload_time": "2012-11-03T18:50:57",
+        "url": "https://files.pythonhosted.org/packages/e7/1f/88eaa732258837035018860389202072d7b9ac6644ad9e434091a9ea7531/psd-tools-0.2.tar.gz"
+      }
+    ],
+    "0.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "08e474dbb3363ee9222b6103c6f9bd15",
+          "sha256": "bc8b6b9ce9c38fef373aebf46f4cffa850676db53cc9617414a643b5f088fd20"
+        },
+        "downloads": 2520,
+        "filename": "psd-tools-0.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "08e474dbb3363ee9222b6103c6f9bd15",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 100696,
+        "upload_time": "2012-11-04T22:40:03",
+        "url": "https://files.pythonhosted.org/packages/22/18/80ff5474c19079849fa5ce50118a331ec08d67c23f80515ad884e58391a1/psd-tools-0.5.tar.gz"
+      }
+    ],
+    "0.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c7faeeaf7c28a24275a4108f68876c94",
+          "sha256": "61ff31d3efb80ee7f84be824c175d69a235f20d5395ce4f3aed2a7e613660a76"
+        },
+        "downloads": 2403,
+        "filename": "psd-tools-0.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c7faeeaf7c28a24275a4108f68876c94",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 102458,
+        "upload_time": "2012-11-06T16:25:35",
+        "url": "https://files.pythonhosted.org/packages/81/77/81e785c3638534072a9c2ce9ab15fac80c98806c3ed475c399a0f1c4c5d3/psd-tools-0.6.tar.gz"
+      }
+    ],
+    "0.7": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9f4bc2f5106515be5637e79baf54c6c7",
+          "sha256": "6a987cbeb341f6ff03ee9fc535216ca98d2e13b5ab370c17bc95dab676bf7895"
+        },
+        "downloads": 2429,
+        "filename": "psd-tools-0.7.tar.gz",
+        "has_sig": false,
+        "md5_digest": "9f4bc2f5106515be5637e79baf54c6c7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 103819,
+        "upload_time": "2012-11-07T23:29:11",
+        "url": "https://files.pythonhosted.org/packages/93/f8/7b729ca5db20ed38aeffe61e80c2e0f3e42743aae2349049e8bb0166447b/psd-tools-0.7.tar.gz"
+      }
+    ],
+    "0.7.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7dc4830fd2bc2265ae14f33d1fa4f0af",
+          "sha256": "44bc8832ed7c57f78d9d80480452328316aa987ec3cd6f9ecdbb9fb6b8f98626"
+        },
+        "downloads": 2347,
+        "filename": "psd-tools-0.7.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7dc4830fd2bc2265ae14f33d1fa4f0af",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 103910,
+        "upload_time": "2012-12-27T08:30:18",
+        "url": "https://files.pythonhosted.org/packages/e5/63/7074f546ca72a1339381744c71efc3b3b577ed411064bd977d770cec2dbd/psd-tools-0.7.1.tar.gz"
+      }
+    ],
+    "0.8": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c0ac079d4e3ee094a97337e493863486",
+          "sha256": "fcd34970c84bcfffbdf15bf26a7b9f8ea1c89f366f28d69b05ef33956d83b1e5"
+        },
+        "downloads": 2161,
+        "filename": "psd-tools-0.8.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c0ac079d4e3ee094a97337e493863486",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 106669,
+        "upload_time": "2013-02-26T07:17:46",
+        "url": "https://files.pythonhosted.org/packages/60/9c/351b3c682a823ab9e04b54cdc53ef5dac86fbdf804bd6c2fa154d1ad7181/psd-tools-0.8.tar.gz"
+      }
+    ],
+    "0.8.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6202f1eb9d2499c723f7469be83affb2",
+          "sha256": "9334653e3646b80e614b98b79f8a71e576cb8a99b5da0be45655301d3a9538b4"
+        },
+        "downloads": 2540,
+        "filename": "psd-tools-0.8.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6202f1eb9d2499c723f7469be83affb2",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 107053,
+        "upload_time": "2013-03-02T07:51:21",
+        "url": "https://files.pythonhosted.org/packages/1b/71/04c61bb7872f3cda613751a7171edc3fd3d4ba4be17ac1cd24ee72632248/psd-tools-0.8.1.tar.gz"
+      }
+    ],
+    "0.8.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "245d3b15648179ecd7e04a99d91a221c",
+          "sha256": "e7fa91c55189f95dec3e73d8ce80d79a20c8195891dae612614b8d48090392cf"
+        },
+        "downloads": 2114,
+        "filename": "psd-tools-0.8.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "245d3b15648179ecd7e04a99d91a221c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 107126,
+        "upload_time": "2013-04-12T10:15:07",
+        "url": "https://files.pythonhosted.org/packages/d3/41/457d89e1ad30c24349d00865beb3e945a388c8bbce6ee3bf29c77c5d9b41/psd-tools-0.8.2.tar.gz"
+      }
+    ],
+    "0.8.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "fd922f33415e82da597721b6556de4b0",
+          "sha256": "8d82ac7a7fec721407ffe7368e8482b9d69016a6cc25a410ad14737ba3263729"
+        },
+        "downloads": 1954,
+        "filename": "psd-tools-0.8.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "fd922f33415e82da597721b6556de4b0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 107166,
+        "upload_time": "2013-05-31T22:01:04",
+        "url": "https://files.pythonhosted.org/packages/69/b2/9341e28ffa76fc347c3ca8747d726544b23eaef3652fa027ede6a1610b43/psd-tools-0.8.3.tar.gz"
+      }
+    ],
+    "0.8.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5555dd471c9c4763c6b6b080e000af05",
+          "sha256": "1102705efd446304a894e8bc0fce31b26460a75bd3b86a5d63e148d7c1454497"
+        },
+        "downloads": 2752,
+        "filename": "psd-tools-0.8.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5555dd471c9c4763c6b6b080e000af05",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 107244,
+        "upload_time": "2013-06-12T01:01:21",
+        "url": "https://files.pythonhosted.org/packages/07/66/88338eb505bf4ae78f4f3da7f20fb29593bb88015c2555b8eed608179363/psd-tools-0.8.4.tar.gz"
+      }
+    ],
+    "0.9": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "763bc66edc9c482f932babe3d3a476a3",
+          "sha256": "ba95f716aed392e1af91272c5bfe2fab38520035c13f160f20a7c3adc5eee447"
+        },
+        "downloads": 2894,
+        "filename": "psd-tools-0.9.tar.gz",
+        "has_sig": false,
+        "md5_digest": "763bc66edc9c482f932babe3d3a476a3",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 110862,
+        "upload_time": "2013-12-02T08:50:33",
+        "url": "https://files.pythonhosted.org/packages/98/6e/3e2512b97d6b94e74c1fbfc2adf0bb0911e0ea25bc9f0d5d06648867fe49/psd-tools-0.9.tar.gz"
+      }
+    ],
+    "0.9.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e9909edf28185b436fdc252ad7fa5a02",
+          "sha256": "ab8f418ea2a3e8c4f93db785478b4cff66a6fe0e2cf94657ea7f07a0aa4f92c9"
+        },
+        "downloads": 2166,
+        "filename": "psd-tools-0.9.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e9909edf28185b436fdc252ad7fa5a02",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 116595,
+        "upload_time": "2014-03-25T21:10:03",
+        "url": "https://files.pythonhosted.org/packages/2c/40/392c8dcb7d19851ef86cbaf26520c056566fa9eea6ed3476d7b80fad05e9/psd-tools-0.9.1.tar.gz"
+      }
+    ],
+    "1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d9d1f7e28509d847450be961198e3d5f",
+          "sha256": "480163693c9c8e90ac77a58133f7779ead26f021013e0b9e7afcec6aa3ec0e09"
+        },
+        "downloads": 1420,
+        "filename": "psd_tools-1.0-cp27-none-macosx_10_9_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "d9d1f7e28509d847450be961198e3d5f",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 101310,
+        "upload_time": "2014-07-26T08:04:59",
+        "url": "https://files.pythonhosted.org/packages/43/17/81c3a7e96e73ddc79a7bd57ca54f2f9eed458a222df242646bd42cc93f80/psd_tools-1.0-cp27-none-macosx_10_9_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "fdc1cb499e8588160f9bff94cc5e03bb",
+          "sha256": "f13d6d76474839d0f52c61ea535cf4956a910a8411190023b287049f016d6838"
+        },
+        "downloads": 1430,
+        "filename": "psd_tools-1.0-cp34-cp34m-macosx_10_9_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "fdc1cb499e8588160f9bff94cc5e03bb",
+        "packagetype": "bdist_wheel",
+        "python_version": "3.4",
+        "size": 101074,
+        "upload_time": "2014-07-26T08:05:13",
+        "url": "https://files.pythonhosted.org/packages/1b/2a/4c05d9b2010901ab0fbd4fcffb1f2d56099cbfc7bfa0b148dc912ff51777/psd_tools-1.0-cp34-cp34m-macosx_10_9_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a6c6775b48c8fea858286cf701464989",
+          "sha256": "ac9ec9cadc4f989d9761e19387a0d5247cf74d7c7908c30eb62cc2e99b5d89b9"
+        },
+        "downloads": 1995,
+        "filename": "psd-tools-1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a6c6775b48c8fea858286cf701464989",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 124932,
+        "upload_time": "2014-07-23T22:49:39",
+        "url": "https://files.pythonhosted.org/packages/85/e2/545f444b166fa082053b488c26d0bf6788e24f88ee2e31fa8491db47c312/psd-tools-1.0.tar.gz"
+      }
+    ],
+    "1.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e4151c90b60ee525e7fcd1a90f7fb7c2",
+          "sha256": "b345be723b4bf2cdd9eab71955c6606169356c66868d17d0ee3d6c9fadd04714"
+        },
+        "downloads": 1179,
+        "filename": "psd_tools-1.1-cp27-none-macosx_10_9_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "e4151c90b60ee525e7fcd1a90f7fb7c2",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 101991,
+        "upload_time": "2014-11-16T22:41:37",
+        "url": "https://files.pythonhosted.org/packages/fb/85/db54b51093c9603681694985ec790964d7073dc47d3d401d190983be580e/psd_tools-1.1-cp27-none-macosx_10_9_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5c1e51856dbcb2121eb8fd3346e02e60",
+          "sha256": "5614d7f69050a3d7b54cc21791782caa7154232973f9dc3d7484c95fe537cb92"
+        },
+        "downloads": 1192,
+        "filename": "psd_tools-1.1-cp34-cp34m-macosx_10_9_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "5c1e51856dbcb2121eb8fd3346e02e60",
+        "packagetype": "bdist_wheel",
+        "python_version": "3.4",
+        "size": 101571,
+        "upload_time": "2014-11-16T22:42:05",
+        "url": "https://files.pythonhosted.org/packages/74/93/51389cda20a2aecca2df802c7c5d2b8fb45ea46e0692e464b08cc9e481c9/psd_tools-1.1-cp34-cp34m-macosx_10_9_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "10e066c14ac97e409bd47a44afeb0f7d",
+          "sha256": "8a0af6e5eb34315868b16af8651077e928a621344e85044536f6d475af560a9c"
+        },
+        "downloads": 2815,
+        "filename": "psd-tools-1.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "10e066c14ac97e409bd47a44afeb0f7d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 125047,
+        "upload_time": "2014-11-16T22:41:20",
+        "url": "https://files.pythonhosted.org/packages/ce/a5/0efe0b052670efe7638f620343650ca4e0f94d3771aed1be045c8babe5c3/psd-tools-1.1.tar.gz"
+      }
+    ],
+    "1.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "792e1ff6827832a1c9b0e671cdebcdaf",
+          "sha256": "8bee59e63dd4cd166df0c200b65d33b25b3bbe22d8856892c9beee66aaebd487"
+        },
+        "downloads": 1121,
+        "filename": "psd_tools-1.2-cp27-none-macosx_10_9_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "792e1ff6827832a1c9b0e671cdebcdaf",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 104593,
+        "upload_time": "2015-01-27T09:09:43",
+        "url": "https://files.pythonhosted.org/packages/7d/8c/1359f6205ae95f1aafa1c620df4d7c3cd368908eed5daf34bf1375a37682/psd_tools-1.2-cp27-none-macosx_10_9_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "818f99b8b44eb0358feceb7c15454412",
+          "sha256": "8e4dbe7dc616d916dac366b129e6970664f09fe854beb0e7983bc0f2da1d2e37"
+        },
+        "downloads": 1060,
+        "filename": "psd_tools-1.2-cp34-cp34m-macosx_10_10_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "818f99b8b44eb0358feceb7c15454412",
+        "packagetype": "bdist_wheel",
+        "python_version": "3.4",
+        "size": 104172,
+        "upload_time": "2015-01-27T09:09:58",
+        "url": "https://files.pythonhosted.org/packages/fe/43/69ce87f137be69cc6b231c97a61a682e014d31e096ad9466304b878afd00/psd_tools-1.2-cp34-cp34m-macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "223704b3b4fcbdbf81c1195ca9d87081",
+          "sha256": "d09d44e20fab0f217cf2a661bd39370233a92f964bd9c8ca24f2dcff435dbc4f"
+        },
+        "downloads": 6908,
+        "filename": "psd-tools-1.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "223704b3b4fcbdbf81c1195ca9d87081",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 126859,
+        "upload_time": "2015-01-27T09:09:32",
+        "url": "https://files.pythonhosted.org/packages/b4/6f/f078f6765def1bb00d22a76ad52d32487856d95e216aff2fb3d12fd2ddd7/psd-tools-1.2.tar.gz"
+      }
+    ],
+    "1.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e81c0062c9e6232c89727fc50e19a378",
+          "sha256": "80a4e3b2616ddc19e2a75a56a937e29c1818c21e4462c0860615c88d653a4eb3"
+        },
+        "downloads": 359,
+        "filename": "psd_tools-1.3-cp27-none-macosx_10_10_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "e81c0062c9e6232c89727fc50e19a378",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 106778,
+        "upload_time": "2016-01-25T11:11:49",
+        "url": "https://files.pythonhosted.org/packages/63/6b/fad0d5ffe455dfd2808beb6f0841bdbfcc05c1e9c695ea6e3cb8b8df41d3/psd_tools-1.3-cp27-none-macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ccf5c985505b306b16f2012d3b34520f",
+          "sha256": "94687141851f10917efd640fbdcd298a355faffddf403c9e3b9cf7827498c9dd"
+        },
+        "downloads": 285,
+        "filename": "psd_tools-1.3-cp35-cp35m-macosx_10_11_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "ccf5c985505b306b16f2012d3b34520f",
+        "packagetype": "bdist_wheel",
+        "python_version": "3.5",
+        "size": 106267,
+        "upload_time": "2016-01-25T11:10:13",
+        "url": "https://files.pythonhosted.org/packages/a2/56/d07900dc0b44b7f12a700475ad3c90d0d62ee8417140e2b2d4b4a62c5c45/psd_tools-1.3-cp35-cp35m-macosx_10_11_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "60240dcf28bbb53010b8d40504d48016",
+          "sha256": "371da0166cee50b192845f4f254f81a5b928e5e21e0837afd84c68e12f2d8ff0"
+        },
+        "downloads": 1140,
+        "filename": "psd-tools-1.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "60240dcf28bbb53010b8d40504d48016",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 130609,
+        "upload_time": "2016-01-25T11:09:43",
+        "url": "https://files.pythonhosted.org/packages/25/7e/dedb82b6831f6b958cc9df43101b36e5ae08fffbbca6dd0cf0c55fe85738/psd-tools-1.3.tar.gz"
+      }
+    ],
+    "1.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d00bc6cfbb83129cbfb5be9ffc7156a9",
+          "sha256": "f519a08049c19b3ef37ccc2b39af11ac5ded59d2674fc4c28103e4db57a9aa99"
+        },
+        "downloads": 70,
+        "filename": "psd_tools-1.4-cp27-cp27m-macosx_10_9_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "d00bc6cfbb83129cbfb5be9ffc7156a9",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 114502,
+        "upload_time": "2017-01-02T19:13:52",
+        "url": "https://files.pythonhosted.org/packages/1c/68/31fbf81a9b58161383d34dcfcc37ff293884ca4c86f0d0720c8aa22dd648/psd_tools-1.4-cp27-cp27m-macosx_10_9_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e8e02f317422e2c8178fc992c2095fff",
+          "sha256": "7f3fd8577fb627405a204a65d4ccea48299f95338a71fbd9709bdb9d7789cc4e"
+        },
+        "downloads": 56,
+        "filename": "psd_tools-1.4-cp35-cp35m-macosx_10_11_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "e8e02f317422e2c8178fc992c2095fff",
+        "packagetype": "bdist_wheel",
+        "python_version": "3.5",
+        "size": 111474,
+        "upload_time": "2017-01-02T19:13:39",
+        "url": "https://files.pythonhosted.org/packages/2b/89/ba55ec982d2b8b100e4d9399aaa4f67537ac6048ceb7ca150d0f3987aa48/psd_tools-1.4-cp35-cp35m-macosx_10_11_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2759e3ee41777e857e5414461eafcf7c",
+          "sha256": "1a8dd69783c84217f3a25938916c289e5653543c5610e9013769520e8bd65b3c"
+        },
+        "downloads": 369,
+        "filename": "psd-tools-1.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2759e3ee41777e857e5414461eafcf7c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 135652,
+        "upload_time": "2017-01-02T19:12:46",
+        "url": "https://files.pythonhosted.org/packages/21/b2/cba69da51d30d2228ae1efbc9ed1d9f22e1bfaa7125dca20c0b66855f776/psd-tools-1.4.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "d00bc6cfbb83129cbfb5be9ffc7156a9",
+        "sha256": "f519a08049c19b3ef37ccc2b39af11ac5ded59d2674fc4c28103e4db57a9aa99"
+      },
+      "downloads": 70,
+      "filename": "psd_tools-1.4-cp27-cp27m-macosx_10_9_x86_64.whl",
+      "has_sig": false,
+      "md5_digest": "d00bc6cfbb83129cbfb5be9ffc7156a9",
+      "packagetype": "bdist_wheel",
+      "python_version": "2.7",
+      "size": 114502,
+      "upload_time": "2017-01-02T19:13:52",
+      "url": "https://files.pythonhosted.org/packages/1c/68/31fbf81a9b58161383d34dcfcc37ff293884ca4c86f0d0720c8aa22dd648/psd_tools-1.4-cp27-cp27m-macosx_10_9_x86_64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "e8e02f317422e2c8178fc992c2095fff",
+        "sha256": "7f3fd8577fb627405a204a65d4ccea48299f95338a71fbd9709bdb9d7789cc4e"
+      },
+      "downloads": 56,
+      "filename": "psd_tools-1.4-cp35-cp35m-macosx_10_11_x86_64.whl",
+      "has_sig": false,
+      "md5_digest": "e8e02f317422e2c8178fc992c2095fff",
+      "packagetype": "bdist_wheel",
+      "python_version": "3.5",
+      "size": 111474,
+      "upload_time": "2017-01-02T19:13:39",
+      "url": "https://files.pythonhosted.org/packages/2b/89/ba55ec982d2b8b100e4d9399aaa4f67537ac6048ceb7ca150d0f3987aa48/psd_tools-1.4-cp35-cp35m-macosx_10_11_x86_64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "2759e3ee41777e857e5414461eafcf7c",
+        "sha256": "1a8dd69783c84217f3a25938916c289e5653543c5610e9013769520e8bd65b3c"
+      },
+      "downloads": 369,
+      "filename": "psd-tools-1.4.tar.gz",
+      "has_sig": false,
+      "md5_digest": "2759e3ee41777e857e5414461eafcf7c",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 135652,
+      "upload_time": "2017-01-02T19:12:46",
+      "url": "https://files.pythonhosted.org/packages/21/b2/cba69da51d30d2228ae1efbc9ed1d9f22e1bfaa7125dca20c0b66855f776/psd-tools-1.4.tar.gz"
+    }
+  ]
+}

@@ -1,0 +1,314 @@
+{
+  "info": {
+    "author": "Adam Johnson",
+    "author_email": "me@adamj.eu",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 5 - Production/Stable",
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: BSD License",
+      "Natural Language :: English",
+      "Operating System :: OS Independent",
+      "Programming Language :: Python :: 2",
+      "Programming Language :: Python :: 2.7",
+      "Programming Language :: Python :: 3",
+      "Programming Language :: Python :: 3.4",
+      "Programming Language :: Python :: 3.5",
+      "Programming Language :: Python :: 3.6"
+    ],
+    "description": "======\nPatchy\n======\n\n.. image:: https://img.shields.io/travis/adamchainz/patchy/master.svg\n        :target: https://travis-ci.org/adamchainz/patchy\n\n.. image:: https://img.shields.io/pypi/v/patchy.svg\n        :target: https://pypi.python.org/pypi/patchy\n\n.. figure:: https://raw.github.com/adamchainz/patchy/master/pirate.png\n   :alt: A patchy pirate.\n\n..\n\nPatch the inner source of python functions at runtime.\n\nA quick example, making a function that returns 1 instead return 9001:\n\n.. code-block:: python\n\n    >>> def sample():\n    ...    return 1\n    >>> patchy.patch(sample, \"\"\"\\\n    ...     @@ -1,2 +1,2 @@\n    ...      def sample():\n    ...     -    return 1\n    ...     +    return 9001\n    ...     \"\"\")\n    >>> sample()\n    9001\n\nPatchy works by replacing the code attribute of the function, leaving the\nfunction object itself the same. It's thus more versatile than monkey patching,\nsince if the function has been imported in multiple places they'll also call\nthe new behaviour.\n\n\nInstallation\n============\n\nUse **pip**:\n\n.. code-block:: bash\n\n    pip install patchy\n\nTested on Python 2.7 and 3.6.\n\n\nWhy?\n====\n\nIf you\u2019re monkey-patching an external library to add or fix some functionality,\nyou will probably forget to check the monkey patch when you upgrade it. By\nusing a patch against its source code, you can specify some context that you\nexpect to remain the same in the function that will be checked before the\nsource is applied.\n\nI found this with some small but important patches to Django for a project.\nSince it takes a lot of energy to maintain a fork, writing monkey patches was\nthe chosen quick solution, but then writing actual patches would be better.\n\nThe patches are applied with the standard ``patch`` commandline utility.\n\n\nWhy not?\n========\n\nThere are of course a lot of reasons against:\n\n* It\u2019s (relatively) slow (since it writes the source to disk and calls the\n  ``patch`` command)\n* If you have a patch file, why not just fork the library and apply it?\n* At least with monkey-patching you know what end up with, rather than having\n  the changes being done at runtime to source that may have changed.\n\nAll are valid arguments. However once in a while this might be the right\nsolution.\n\n\nHow?\n====\n\nThe standard library function ``inspect.getsource()`` is used to retrieve the\nsource code of the function, the patch is applied with the commandline utility\n``patch``, the code is recompiled, and the function\u2019s code object is replaced\nthe new one. Because nothing tends to poke around at code objects apart from\ndodgy hacks like this, you don\u2019t need to worry about chasing any references\nthat may exist to the function, unlike ``mock.patch``.\n\nA little special treatment is given to ``instancemethod``, ``classmethod``, and\n``staticmethod`` objects to make sure the underlying function is what gets\npatched and that you don't have to worry about the details.\n\n\nAPI\n===\n\n``patch(func, patch_text)``\n---------------------------\n\nApply the patch ``patch_text`` to the source of function ``func``.\n\nIf the patch is invalid, for example the context lines don\u2019t match,\n``ValueError`` will be raised, with a message that includes all the output from\nthe ``patch`` utility.\n\nNote that ``patch_text`` will be ``textwrap.dedent()``\u2019ed, but leading\nwhitespace will not be removed. Therefore the correct way to include the patch\nis with a triple-quoted string with a backslash - ``\"\"\"\\`` - which starts the\nstring and avoids including the first newline. A final newline is not required\nand will be automatically added if not present.\n\nExample:\n\n.. code-block:: python\n\n    import patchy\n\n    def sample():\n        return 1\n\n    patchy.patch(sample, \"\"\"\\\n        @@ -2,2 +2,2 @@\n        -    return 1\n        +    return 2\"\"\")\n\n    print(sample())  # prints 2\n\n\n``mc_patchface(func, patch_text)``\n----------------------------------\n\nAn alias for ``patch``, so you can meme it up by calling\n``patchy.mc_patchface()``.\n\n\n``unpatch(func, patch_text)``\n-----------------------------\n\nUnapply the patch ``patch_text`` from the source of function ``func``. This is\nthe reverse of ``patch()``\\ing it, and calls ``patch --reverse``.\n\nThe same error and formatting rules apply as in ``patch()``.\n\nExample:\n\n.. code-block:: python\n\n    import patchy\n\n    def sample():\n        return 2\n\n    patchy.unpatch(sample, \"\"\"\\\n        @@ -2,2 +2,2 @@\n        -    return 1\n        +    return 2\"\"\")\n\n    print(sample())  # prints 1\n\n\n``temp_patch(func, patch_text)``\n--------------------------------\n\nUsable as a context manager or function decorator to wrap code with a call to\n``patch`` before and ``unpatch`` after.\n\nContext manager example:\n\n.. code-block:: python\n\n    def sample():\n        return 1234\n\n    patch_text = \"\"\"\\\n        @@ -1,2 +1,2 @@\n         def sample():\n        -    return 1234\n        +    return 5678\n        \"\"\"\n\n    with patchy.temp_patch(sample, patch_text):\n        print(sample())  # prints 5678\n\nDecorator example, using the same ``sample`` and ``patch_text``:\n\n.. code-block:: python\n\n    @patchy.temp_patch(sample, patch_text)\n    def my_func():\n        return sample() == 5678\n\n    print(my_func())  # prints True\n\n\n``replace(func, expected_source, new_source)``\n----------------------------------------------\n\nCheck that ``func`` has an AST matching ``expected_source``, then replace its\ninner code object with source compiled from ``new_source``. If the AST check\nfails, ``ValueError`` will be raised with current/expected source code in the\nmessage. In the author's opinion it's preferable to call ``patch()`` so your\ncall makes it clear to see what is being changed about ``func``, but using\n``replace()`` is simpler as you don't have to make a patch and there is no\nsubprocess call to the ``patch`` utility.\n\nNote both ``expected_source`` and ``new_source`` will be\n``textwrap.dedent()``\u2019ed, so the best way to include their source is with a\ntriple quoted string with a backslash escape on the first line, as per the\nexample below.\n\nIf you want, you can pass ``expected_source=None`` to avoid the guard against\nyour target changing, but this is highly unrecommended as it means if the\noriginal function changes, the call to ``replace()`` will continue to silently\nsucceed.\n\nExample:\n\n.. code-block:: python\n\n    import patchy\n\n    def sample():\n        return 1\n\n    patchy.replace(\n        sample,\n        \"\"\"\\\n        def sample():\n            return 1\n        \"\"\",\n        \"\"\"\\\n        def sample():\n            return 42\n        \"\"\"\n    )\n\n    print(sample())  # prints 42\n\n\nHow to Create a Patch\n=====================\n\n1. Save the source of the function of interest (and nothing else) in a ``.py``\n   file, e.g. ``before.py``:\n\n   .. code-block:: python\n\n       def foo():\n           print(\"Change me\")\n\n   Make sure you dedent it so there is no whitespace before the ``def``, i.e.\n   ``d`` is the first character in the file. For example if you wanted to patch\n   the ``bar()`` method below:\n\n   .. code-block:: python\n\n       class Foo():\n           def bar(self, x):\n               return x * 2\n\n   ...you would put just the method in a file like so:\n\n   .. code-block:: python\n\n       def bar(self, x):\n           return x * 2\n\n   However we'll continue with the first example ``before.py`` since it's\n   simpler.\n\n2. Copy that ``.py`` file, to e.g. ``after.py``, and make the changes you\n   want, such as:\n\n   .. code-block:: python\n\n       def foo():\n           print(\"Changed\")\n\n3. Run ``diff``, e.g. ``diff before.py after.py``. You will get output like:\n\n   .. code-block:: diff\n\n      diff --git a/Users/chainz/tmp/before.py b/Users/chainz/tmp/after.py\n      index e6b32c6..31fe8d9 100644\n      --- a/Users/chainz/tmp/before.py\n      +++ b/Users/chainz/tmp/after.py\n      @@ -1,2 +1,2 @@\n       def foo():\n      -    print(\"Change me\")\n      +    print(\"Changed\")\n\n4. The filenames are not necessary for ``patchy`` to work. Take only from the\n   first ``@@`` line onwards into the multiline string you pass to\n   ``patchy.patch()``:\n\n   .. code-block:: python\n\n      patchy.patch(foo, \"\"\"\\\n          @@ -1,2 +1,2 @@\n           def foo():\n          -    print(\"Change me\")\n          +    print(\"Changed\")\n          \"\"\")\n\n\n\n\nHistory\n-------\n\nPending Release\n---------------\n\n.. Insert new release notes below this line\n\n1.4.0 (2017-05-13)\n------------------\n\n* Added new function ``patchy.replace()``, that can be used to directly assign\n  new source code to a function, without having to make a patch.\n\n1.3.2 (2017-03-13)\n------------------\n\n* Support freevars and methods that call mangled methods.\n\n1.3.1 (2016-05-24)\n------------------\n\n* Fixed ``setup.py`` to not fix the version of ``six`` required.\n* Fixed install instruction in README.\n* Added ``patchy.mc_patchface()`` as an alias for ``patchy.patch()`` because\n  memes.\n\n1.3.0 (2015-12-09)\n------------------\n\n* Remove dependency on ``pylru`` by using a simpler caching strategy\n\n1.2.0 (2015-07-23)\n------------------\n\n* Pirate mascot!\n* Patching caches the patched and unpatched versions, so unpatching and repeat\n  patching/unpatching are both faster\n* Patching doesn't attach an attribute to the function object any more\n\n1.1.0 (2015-06-16)\n------------------\n\n* Fixed code compilation to use the ``__future__`` flags from the function that\n  is being patched\n* Added ``unpatch`` method\n* Added ``temp_patch`` context manager/decorator\n\n1.0.0 (2015-06-09)\n---------------------\n\n* First release on PyPI, featuring ``patch`` function.\n",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/adamchainz/patchy",
+    "keywords": "patchy",
+    "license": "BSD",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "patchy",
+    "platform": "",
+    "project_url": "https://pypi.org/project/patchy/",
+    "release_url": "https://pypi.org/project/patchy/1.4.0/",
+    "requires_python": "",
+    "summary": "Patch the inner source of python functions at runtime.",
+    "version": "1.4.0"
+  },
+  "releases": {
+    "1.0.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1e0afde2418caada33d6196f8eb717af",
+          "sha256": "a723d9dbc46c4399af7d742cdaf6db686bf395e82c8eac3f7e45076bd2b2a977"
+        },
+        "downloads": 863,
+        "filename": "patchy-1.0.0-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "1e0afde2418caada33d6196f8eb717af",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 7383,
+        "upload_time": "2015-06-09T15:46:53",
+        "url": "https://files.pythonhosted.org/packages/2b/54/730f0de260334bc04f4147b2fd857a80b6be7d33cb94ebd8bc549ef2ce49/patchy-1.0.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "294e8b84a561470b6a24fcc2d76de4ae",
+          "sha256": "8e9125001b32e6ebd35a5c78b69b2ef8a22626f7825e51a238848737b341a594"
+        },
+        "downloads": 810,
+        "filename": "patchy-1.0.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "294e8b84a561470b6a24fcc2d76de4ae",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 15408,
+        "upload_time": "2015-06-09T15:46:56",
+        "url": "https://files.pythonhosted.org/packages/cc/8b/b7661e4834ced7627ffb4145613a6e4a72a88a0cd01ffe79f327c33d36a1/patchy-1.0.0.tar.gz"
+      }
+    ],
+    "1.1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "bb5bb3e8bd29179bdb6d57e0186c8de9",
+          "sha256": "ee2e8aa3e0c4da81554c6992d0e13275aebaa77a20eb852b99d65a67565341b4"
+        },
+        "downloads": 2130,
+        "filename": "patchy-1.1.0-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "bb5bb3e8bd29179bdb6d57e0186c8de9",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 8294,
+        "upload_time": "2015-06-16T11:54:39",
+        "url": "https://files.pythonhosted.org/packages/aa/dc/7892db71d766cca5b10bc384a05e0d07c5576a83052365db7b1247b51b8e/patchy-1.1.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c0841a0ce1830080d4b769f542b8fae6",
+          "sha256": "9d8def5d542b836ebe3257837ff59756e9c321ee00dccca9950a39d14dc77ad7"
+        },
+        "downloads": 814,
+        "filename": "patchy-1.1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c0841a0ce1830080d4b769f542b8fae6",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16604,
+        "upload_time": "2015-06-16T11:54:42",
+        "url": "https://files.pythonhosted.org/packages/36/d1/0fa7df856a5a5398c3d910a971547f935cf00f2c28fc9a9c52937405fc4f/patchy-1.1.0.tar.gz"
+      }
+    ],
+    "1.2.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "527f6f67a3e76e99f387322028fff46e",
+          "sha256": "dca6d5fdeb9cea069b3f9f990845f60c1f94a9d7303405e6db4cfa9bad35b6ab"
+        },
+        "downloads": 939,
+        "filename": "patchy-1.2.0-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "527f6f67a3e76e99f387322028fff46e",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 8884,
+        "upload_time": "2015-07-23T19:22:51",
+        "url": "https://files.pythonhosted.org/packages/c4/f8/0046e9db282fe73b1a03d5c6d2f2b23347ae31c2891a9b6322012a46af73/patchy-1.2.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "17134462f5bc51f26a96f100f565c0ec",
+          "sha256": "fc82ac028a18055051dba00cbba15c92fd4fbc82fbc3d0c1de03a815d828de91"
+        },
+        "downloads": 779,
+        "filename": "patchy-1.2.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "17134462f5bc51f26a96f100f565c0ec",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 17239,
+        "upload_time": "2015-07-23T19:22:57",
+        "url": "https://files.pythonhosted.org/packages/c7/81/7843a7ad4991b875b1c7974cc01f8b57a0d96d4d4f54b3e37818ed188907/patchy-1.2.0.tar.gz"
+      }
+    ],
+    "1.3.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3b46f810c37360205d1a3eff62c709a2",
+          "sha256": "2da330cb603fa23bcb0d31b0e27af5364b49bd3a142801414cee32a67952a32f"
+        },
+        "downloads": 429,
+        "filename": "patchy-1.3.0-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "3b46f810c37360205d1a3eff62c709a2",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 9670,
+        "upload_time": "2015-12-09T22:53:44",
+        "url": "https://files.pythonhosted.org/packages/ed/8f/bae803d29ee550de3ed9f9686422e6d1951b897134c2e870e0d2b76afd1d/patchy-1.3.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "817883fc185ed2ef73437ab2af27f246",
+          "sha256": "8ec6ef78e6410ac9688f2ea8f26a77c0b8db454e8f30c5c0778c5d5d7d4aa7fa"
+        },
+        "downloads": 355,
+        "filename": "patchy-1.3.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "817883fc185ed2ef73437ab2af27f246",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 11623,
+        "upload_time": "2015-12-09T22:54:12",
+        "url": "https://files.pythonhosted.org/packages/3e/80/5017a58fc72268eee92ad0b0b731b204cc0088cd75556b091377aaad3c68/patchy-1.3.0.tar.gz"
+      }
+    ],
+    "1.3.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "29ef81e5cff21135592db4882ef7a586",
+          "sha256": "092b98e9f1a1a97b18407abbd7d940fd289da5056ee974e8897b4758f844bbfb"
+        },
+        "downloads": 503,
+        "filename": "patchy-1.3.1-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "29ef81e5cff21135592db4882ef7a586",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 10355,
+        "upload_time": "2016-05-24T12:01:51",
+        "url": "https://files.pythonhosted.org/packages/ec/a8/623dbe6687f68bdf6fd0005c6ec3e51f26b355a454e9aa2e40e4e753830d/patchy-1.3.1-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8afc582f040cf961d23107747ee8f662",
+          "sha256": "25bac20199224a1b1b4135762c51b384245b151d2523a6cd3f9e10e428eab795"
+        },
+        "downloads": 126,
+        "filename": "patchy-1.3.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8afc582f040cf961d23107747ee8f662",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 12129,
+        "upload_time": "2016-05-24T12:03:13",
+        "url": "https://files.pythonhosted.org/packages/ec/51/b5ea05965b5b05e2e7b959f95406dc202b03540cf648ca7781674a147442/patchy-1.3.1.tar.gz"
+      }
+    ],
+    "1.3.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e0b153c277efd009e40e5c55605368a5",
+          "sha256": "9872b5b931fd6eb2bee8c17ec0a8186497c3bbb5a94c8f1e52704a24a4dfc54d"
+        },
+        "downloads": 100,
+        "filename": "patchy-1.3.2-py2.py3-none-any.whl",
+        "has_sig": true,
+        "md5_digest": "e0b153c277efd009e40e5c55605368a5",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 11634,
+        "upload_time": "2017-03-13T15:33:17",
+        "url": "https://files.pythonhosted.org/packages/58/be/0a699d4e9df42b420a377268a2ba81091479b666479561b0b163f373b19f/patchy-1.3.2-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "070763843f82633532b5cdcfc40d7abd",
+          "sha256": "dd7a120832cf7ee4768f505c3a0b52f165e1fc4c104d842e50f2858e29817330"
+        },
+        "downloads": 30,
+        "filename": "patchy-1.3.2.tar.gz",
+        "has_sig": true,
+        "md5_digest": "070763843f82633532b5cdcfc40d7abd",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 14016,
+        "upload_time": "2017-03-13T15:33:14",
+        "url": "https://files.pythonhosted.org/packages/08/8f/3c639a68c6afcc30526b2e778224fe079cb307d5633750d661e87a581f01/patchy-1.3.2.tar.gz"
+      }
+    ],
+    "1.4.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5a76d3daa13c8e07c043424222854b3b",
+          "sha256": "e7fbd8257b1a1b262364349e8b8acc409d8011e0b2dfb3e4e62be67552bff21a"
+        },
+        "downloads": 0,
+        "filename": "patchy-1.4.0-py2.py3-none-any.whl",
+        "has_sig": true,
+        "md5_digest": "5a76d3daa13c8e07c043424222854b3b",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 12755,
+        "upload_time": "2017-05-13T18:13:14",
+        "url": "https://files.pythonhosted.org/packages/0b/e2/61a87f2a90225b585e30df4a7f433e461bbe89673dffa7eeadbe476a66eb/patchy-1.4.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5e55dd5ea49b81b3dedda2d3893a9c1a",
+          "sha256": "cbd58ef77d0d441c25fb9b854a15b4aaa670dda5799e364eb4c44c0a2f11a6ba"
+        },
+        "downloads": 0,
+        "filename": "patchy-1.4.0.tar.gz",
+        "has_sig": true,
+        "md5_digest": "5e55dd5ea49b81b3dedda2d3893a9c1a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 14830,
+        "upload_time": "2017-05-13T18:13:12",
+        "url": "https://files.pythonhosted.org/packages/68/be/aa5316e1cd3427d077b75671bb5ee94792f068e1eaeb6cf0c82aca89ba3c/patchy-1.4.0.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "5a76d3daa13c8e07c043424222854b3b",
+        "sha256": "e7fbd8257b1a1b262364349e8b8acc409d8011e0b2dfb3e4e62be67552bff21a"
+      },
+      "downloads": 0,
+      "filename": "patchy-1.4.0-py2.py3-none-any.whl",
+      "has_sig": true,
+      "md5_digest": "5a76d3daa13c8e07c043424222854b3b",
+      "packagetype": "bdist_wheel",
+      "python_version": "2.7",
+      "size": 12755,
+      "upload_time": "2017-05-13T18:13:14",
+      "url": "https://files.pythonhosted.org/packages/0b/e2/61a87f2a90225b585e30df4a7f433e461bbe89673dffa7eeadbe476a66eb/patchy-1.4.0-py2.py3-none-any.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "5e55dd5ea49b81b3dedda2d3893a9c1a",
+        "sha256": "cbd58ef77d0d441c25fb9b854a15b4aaa670dda5799e364eb4c44c0a2f11a6ba"
+      },
+      "downloads": 0,
+      "filename": "patchy-1.4.0.tar.gz",
+      "has_sig": true,
+      "md5_digest": "5e55dd5ea49b81b3dedda2d3893a9c1a",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 14830,
+      "upload_time": "2017-05-13T18:13:12",
+      "url": "https://files.pythonhosted.org/packages/68/be/aa5316e1cd3427d077b75671bb5ee94792f068e1eaeb6cf0c82aca89ba3c/patchy-1.4.0.tar.gz"
+    }
+  ]
+}

@@ -1,0 +1,131 @@
+{
+  "info": {
+    "author": "Tim Pagurets",
+    "author_email": "tim@preply.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 4 - Beta",
+      "Environment :: Console",
+      "Environment :: Web Environment",
+      "Framework :: Django",
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: MIT License",
+      "Programming Language :: Python",
+      "Programming Language :: Python :: 2.6",
+      "Programming Language :: Python :: 2.7",
+      "Topic :: Database"
+    ],
+    "description": "dj_anonymizer\n==================================\ndj_anonymizer requires Django 1.8 or greater and Python 2.7 (not support Python 3).\nThis project helps anonymize production database with fake data of any kind.\n\ndj_anonymizer uses [django-bulk-update](https://github.com/aykut/django-bulk-update) lib to be able to process huge massive of data.\n\nInstallation\n==================================\n`$ pip install dj_anonymizer`\n\nAdd `dj_anonymizer` to `INSTALLED_APPS` in settings:\n\n```\nINSTALLED_APPS = [\n    # ...\n    \"dj_anonymizer\",\n    # ...\n]\n```\n\nBasic example\n==================================\nFor example you have django project with app `my_app` and `models.py` file:\n```\nclass Author(models.Model):\n    name = models.CharField(max_length=100)\n    birth_date = models.DateField(blank=True, null=True)\n\n\nclass Book(models.Model):\n    name = models.CharField(max_length=100)\n    authors = models.ManyToManyField(Author)\n```\nYou want to anonymize authors' names.\nSo you can set all names as \"Jon Dou (n)\".\n\nTo anonymize your models go through the following steps:\n\n* Create file e.g. `anonymization.py` in `my_app`.\n* Add `ANONYMIZER_IMPORTS` to project settings and set path to `anonymization.py` file:\n```\nANONYMIZER_IMPORTS = [\n    \"my_app.anonymization\"\n]\n```\n* In `anonymization.py` file:\n```\nfrom dj_anonymizer import register_anonym, register_skip, AnonymBase, anonym_field\nfrom my_app import Author, Book\n\n\nclass AuthorAnonym(AnonymBase):\n   name = anonym_field.string(\"Jon Dou {seq}\")\n   \n   class Meta:\n       exclude_fields = [\"birth_date\"]\n\n\nregister_anonym(Author, AuthorAnonym)\n\nregister_skip(Book)\n```\n\n* Run `$ manage.py anonymize_db`\n\nUsage\n===============\nYou must specify all models and all their fields in dj_anonymizer. This helps you to avoid the situation when something has changed in your project models (e.g. some fields with sensitive data were added) and you forget to clean or fake them.\n\n## Model registration\n`from dj_anonymizer import register_anonym, register_skip, register_clean`\n* `register_anonym(model, cls_anonym)` - register models for anonymization\n    * `model` - model class\n    * `cls_anonym` - anonymization class, inherited form `AnonymBase`\n* `register_clean(model, cls_anonym=None)` - register models which should be cleaned\n    * `model` - model class\n    * `cls_anonym` - anonymization class, specified queryset of data which must be deleted. If `cls_anonym=None`, all model data will be deleted.\n* `register_skip(*args)` - list of models which dj_anonymizer will skip.\n\n## Data anonymization\nAnonymization class must be inherited from AnonymBase. Anonymization class contains attributes mapped to model fields. Also anonymization class may contain `class Meta` where you can specify queryset and excluded fields.\n\nExample:\n ```\nfrom datetime import datetime\n\nfrom django.contrib.auth.models import User\nfrom django.contrib.auth.hashers import make_password\n\nfrom dj_anonymizer import register_anonym, AnonymBase, anonym_field\nfrom faker import Factory\n\n\n# using faker lib for generating nice names\nfake = Factory.create()\n\n\n# create anonymizer class\nclass UserAnonym(AnonymBase):\n    last_name = anonym_field.function(fake.last_name)\n    first_name = anonym_field.function(fake.first_name)\n    email = anonym_field.string(\"test_email_{seq}@preply.com\", seq_callback=datetime.now)\n    username = anonym_field.string(\"user_name{seq}\")\n    is_staff = False\n    password = make_password(\"some_test_password\", hasher=\"sha1\")\n\n    class Meta:\n        queryset = User.objects.exclude(id=1)  # queryset, anonymize all users except the first one\n        exclude_fields = [\"groups\", \"user_permissions\", \"is_active\", \"is_superuser\",\n                          \"last_login\", \"date_joined\"]  # list of fields which will not be changed\n\n\nregister_anonym(User, UserAnonym)\n```\n\nIn `class Meta` you can specify `queryset` and `exclude_fields`:\n * `queryset` - model queryset to which anonymization will be applied. If you don't specify this attribute, anonymization will be applied to all rows of model (like `MyModel.objects.all()`)\n * `exclude_fields` - list of model fields which should not be anonymized\n\ndj_anonymizer provides certain helpful field types for anonymization classes:\n \n* `anonym_field.function(callback, args=(), kwargs=None)` - result of execution of `callback` function will be set to the model field. `callback` function will be called for every record of your model.\n    * `callback` - function which will generate data for the model\n    * `args` - tuple of args for `callback`\n    * `kwargs` - dict of args for `callback`\n\n* `anonym_field.string(field_value, seq_start=0, seq_step=1, seq_callback=None, seq_args=(), seq_kwargs=None, seq_slugify=True)` - generate string for every record of the model.\n    * `field_value` - string which will be set to field. It may contain `{seq}` parameter which will be replaced by sequence value (e.g. `\"username_{seq}\"` will generate username_1, username_2 etc.)\n    * `seq_start` - value of sequence start\n    * `seq_step` - step of sequence\n    * `seq_callback` - function which will generate data for `{seq}` parameter in string (e.g. `(\"test_email_{seq}@preply.com\", seq_callback=datetime.now)`)\n    * `seq_args` - tuple of args for `seq_callback`\n    * `seq_kwargs` - dict of kwargs for `seq_callback`\n    * `seq_slugify` - flag, slugify or not result of execution of `seq_callback`\n\n## Clean data\nRegister your model with `register_clean`.\n\n**Example 1** - delete all data from model `User`\n```\nfrom django.contrib.auth.models import User\n\nfrom dj_anonymizer import register_clean\n\n\nregister_clean(User)\n```\n\n**Example 2** - delete all data from model `User`, except user with id=1:\n```\nfrom django.contrib.auth.models import User\n\nfrom dj_anonymizer import AnonymBase, register_clean\n\n\nclass UserAnonym(AnonymBase):\n    class Meta:\n        queryset = User.objects.exclude(id=1)\n\n\nregister_clean(User, UserAnonym)\n\n```\n\n# Run dj_anonymizer\n* `$ manage.py dj_anonymizer`\n\n    run anonymization and clean models which have been registered.\n\n* `$ manage.py dj_anonymizer --soft_mode`\n\n    run anonymization and clean models. Exception (not all project models are registered) will not be raised that. \n\n* `$ manage.py dj_anonymizer --action clean`\n\n    run only delete data\n\n* `$ manage.py dj_anonymizer --action anonymize`\n\n    run only anonymization data\n\n# Settings\n\n* `ANONYMIZER_IMPORTS` - list of path to *.py files where you register models for anomymization.\n\n* `ANONYMIZER_SKIP_APPS` - list of apps of your django project that you don't want to anonymize.\n\n* `ANONYMIZER_SELECT_BATCH_SIZE` - default value is 20000. \n\n* `ANONYMIZER_UPDATE_BATCH_SIZE` - default value is 500.",
+    "docs_url": null,
+    "download_url": "https://github.com/knowledge-point/dj_anonymizer/archive/0.1.3.tar.gz",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/knowledge-point/dj_anonymizer",
+    "keywords": "django,data,database,anonymization,dj-anonymizer",
+    "license": "MIT",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "dj_anonymizer",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/dj_anonymizer/",
+    "release_url": "https://pypi.org/project/dj_anonymizer/0.1.3/",
+    "requires_python": null,
+    "summary": "This project helps anonymize production database with fake data of any kind.",
+    "version": "0.1.3"
+  },
+  "releases": {
+    "0.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "114adb91dab2d02b36d4f1f98501dfd1",
+          "sha256": "ba7103392cf25275199155036bb500d97206a2d16ffed0801677e2353c8bedae"
+        },
+        "downloads": 0,
+        "filename": "dj_anonymizer-0.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "114adb91dab2d02b36d4f1f98501dfd1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 2771,
+        "upload_time": "2017-05-05T15:57:37",
+        "url": "https://files.pythonhosted.org/packages/70/74/35812dac3952e9578105caf0e58416277de5e1807f5108e73b52568d6c8c/dj_anonymizer-0.1.tar.gz"
+      }
+    ],
+    "0.1.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9298c8814c55198a05c672873eb476da",
+          "sha256": "13c72cffafab75e1483f73dd9d94344f07b0ed633f0824abc0e6b75f2f4b66af"
+        },
+        "downloads": 0,
+        "filename": "dj_anonymizer-0.1.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "9298c8814c55198a05c672873eb476da",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 2796,
+        "upload_time": "2017-05-08T08:15:26",
+        "url": "https://files.pythonhosted.org/packages/cf/66/12e1785d4a9b920a59191fd02c69458e54f2268046e75d22f8f4f691ce80/dj_anonymizer-0.1.1.tar.gz"
+      }
+    ],
+    "0.1.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "fa54888b61e24774d9da2a1e7eb5d753",
+          "sha256": "5a6d27d8fbf294b6678ab0f1ac9a35e5218d016a45d0294fab7374d7f7bb3906"
+        },
+        "downloads": 0,
+        "filename": "dj_anonymizer-0.1.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "fa54888b61e24774d9da2a1e7eb5d753",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 3363,
+        "upload_time": "2017-05-22T12:49:08",
+        "url": "https://files.pythonhosted.org/packages/45/71/d6b0c536a9bad7f3a821f56a3e1040f090163c4a2a8a898edb7b370cc9d3/dj_anonymizer-0.1.2.tar.gz"
+      }
+    ],
+    "0.1.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5adecc6b58a8f3a685caace148e4c44b",
+          "sha256": "3cebb8f1506cad355ba402fa3955ab75963cbcae33e7bb9c7cdb63ca3d88d9d3"
+        },
+        "downloads": 0,
+        "filename": "dj_anonymizer-0.1.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5adecc6b58a8f3a685caace148e4c44b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 5519,
+        "upload_time": "2017-05-22T13:08:54",
+        "url": "https://files.pythonhosted.org/packages/ff/73/3db55d8cc2c781f8c24a637e9fe1c695c0624bada97284ca63b782ce4031/dj_anonymizer-0.1.3.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "5adecc6b58a8f3a685caace148e4c44b",
+        "sha256": "3cebb8f1506cad355ba402fa3955ab75963cbcae33e7bb9c7cdb63ca3d88d9d3"
+      },
+      "downloads": 0,
+      "filename": "dj_anonymizer-0.1.3.tar.gz",
+      "has_sig": false,
+      "md5_digest": "5adecc6b58a8f3a685caace148e4c44b",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 5519,
+      "upload_time": "2017-05-22T13:08:54",
+      "url": "https://files.pythonhosted.org/packages/ff/73/3db55d8cc2c781f8c24a637e9fe1c695c0624bada97284ca63b782ce4031/dj_anonymizer-0.1.3.tar.gz"
+    }
+  ]
+}

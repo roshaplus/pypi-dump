@@ -1,0 +1,666 @@
+{
+  "info": {
+    "author": "Jonathan Vanasco",
+    "author_email": "jonathan@findmeon.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: MIT License",
+      "Programming Language :: Python",
+      "Topic :: Software Development :: Libraries :: Python Modules",
+      "Topic :: Text Processing :: Markup :: HTML"
+    ],
+    "description": "MetadataParser is a python module for pulling metadata out of web documents.\n\nIt requires BeautifulSoup , and was largely based on Erik River's opengraph module ( https://github.com/erikriver/opengraph ).\n\nI needed something more aggressive than Erik's module , so had to fork.\n\n\nInstallation\n=============\n\npip install metadata_parser\n\n\nInstallation Recommendation\n===========================\n\nI strongly suggest you use the `requests` library version 2.4.3 or newer\n\nThis is not required, but it is better.  On earlier versions it is possible to have an uncaught DecodeError exception when there is an underlying redirect/404.  Recent fixes to `requests` improve redirect handling, urllib3 and urllib3 errors.\n\n\nFeatures\n=============\n\n* it pulls as much metadata out of a document as possible\n* you can set a 'strategy' for finding metadata ( ie, only accept opengraph or page attributes )\n* lightweight BUT FUNCTIONAL url validation\n* logging is verbose, but nested under `__debug__` statements, so it is compiled away when PYTHONOPTIMIZE is set\n\nNotes\n=============\n1. This requires BeautifulSoup 4.\n2. For speed, it will instantiate a BeautifulSoup parser with lxml , and fall back to 'none' (the internal pure python) if it can't load lxml\n3. URL Validation is not RFC compliant, but tries to be \"Real World\" compliant\n\n* It is HIGHLY recommended that you install lxml for usage.  It is considerably faster.  Considerably faster. *\n\nYou should also use a very recent version of lxml.  I've had problems with segfaults on some versions < 2.3.x ; i would suggest using the most recent 3.x if possible.\n\nThe default 'strategy' is to look in this order:\n\n    og,dc,meta,page\n    og = OpenGraph\n    dc = DublinCore\n    meta = metadata\n    page = page elements\n\nYou can specify a strategy as a comma-separated list of the above.\n\nThe only 2 page elements currently supported are:\n\n    <title>VALUE</title> -> metadata['page']['title']\n    <link rel=\"canonical\" href=\"VALUE\"> -> metadata['page']['link']\n\n'metadata' elements are supported by `name` and `property`.\n\nThe MetadataParser object also wraps some convenience functions , which can be used otherwise , that are designed to turn alleged urls into well formed urls.\n\nFor example, you may pull a page:\n\n    http://www.example.com/path/to/file.html\n\nand that file indicates a canonical url which is simple \"/file.html\".\n\nThis package will try to 'remount' the canonical url to the absolute url of \"http://www.example.com/file.html\" .  It will return None if the end result is not a valid url.\n\nThis all happens under-the-hood, and is honestly really useful when dealing with indexers and spiders.\n\n\n\nURL Validation\n=================\n\n\"Real World\" URL validation is enabled by default.  This is not RFC compliant.\n\nThere are a few gaps in the RFCs that allow for \"odd behavior\".  Just about any use-case for this package will desire/expect rules that parse URLs \"in the wild\", not theoretical.\n\nThe differences:\n\n* If an entirely numeric ip address is encountered, it is assumed to be a dot-notation IPV4 and it is checked to have the right amount of valid octets.\n    The default behavior is to invalidate these hosts:\n        http://256.256.256.256\n        http://999.999.999.999.999\n    According to RFCs those are valid hostnames that would fail as \"IP Addresses\" but pass as \"Domain Names\".  However in the real world, one would never encounter domain names like those.\n\n* The only non-domain hostname that is allowed, is \"localhost\"\n    The default behavior is to invalidate  these hosts :\n        http://example\n        http://examplecom\n    Those are considered to be valid hosts, and might exist on a local network or custom hosts file.  However, they are not part of the public internet.\n\nAlthough this behavior breaks RFCs, it greatly reduces the number of \"False Positives\" generated when analyzing internet pages.  If you want to include bad data, you can submit a kwarg to `MetadataParser.__init__`\n\n\nHandling Bad URLs and Encoded URIs\n==================================\n\nThis library tries to safeguard against a few common situations.\n\n# Encoded URIs and relative urls\n\nMost website publishers will define an image as a URL\n\n    <meta property=\"og:image\" content=\"http://example.com/image.jpg\" />\n\nSome will define an image as an encoded URI\n\n    <meta property=\"og:image\" content=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNM+Q8AAc0BZX6f84gAAAAASUVORK5CYII=\" />\n\nBy default, the `get_metadata_link()` method can be used to ensure a valid link is extracted from the metadata payload\n\n    >>> import metadata_parser\n    >>> page = metadata_parser.MetadataParser(url=\"http://www.example.com\")\n    >>> print page.get_metadata_link('image')\n\nThis method accepts a kwarg `allow_encoded_uri` (default False) which will return the image without further processing:\n\n    >>> print page.get_metadata_link('image', allow_encoded_uri=True)\n    \nSimilarly, if a url is local...\n\n    <meta property=\"og:image\" content=\"/image.jpg\" />\n\n\nThe `get_metadata_link` method will automatically upgrade it onto the domain:\n\n    >>> print page.get_metadata_link('image')\n    http://example.com/image.jpg\n\n\n\n# Poorly Constructed Canonical URLs\n\nMany website publishers implement canonical URLs incorrectly.  This package tries to fix that.\n\nBy default `MetadataParser` is constructed with `require_public_netloc=True` and `allow_localhosts=True`.\n\nThis will require somewhat valid 'public' network locations in the url.  \n\nFor example, these will all be valid URLs:\n\n    http://example.com\n    http://1.2.3.4\n    http://localhost\n    http://127.0.0.1\n    http://0.0.0.0\n\nIf these known 'localhost' urls are not wanted, they can be filtered out with `allow_localhosts=False`\n\n    http://localhost\n    http://127.0.0.1\n    http://0.0.0.0\n\nThere are two convenience methods that can be used to get a canonical url or calculate the effective url:\n\n* MetadataParser.get_discrete_url\n* MetadataParser.get_metadata_link\n\nThese both accept an argument `require_public_global`, which defaults to `True`.\n\nAssuming we have the following content on the url `http://example.com/path/to/foo`\n\n    <link rel=\"canonical\" href=\"http://localhost:8000/alt-path/to/foo\">\n\nBy default, versions 0.9.0 and later will detect 'localhost:8000' as an improper canonical url, and remount the local part \"/alt-path/to/foo\" onto the domain that served the file.  The vast majority of times this 'behavior' has been encountered, this is the intended canonical.\n\n    print page.get_discrete_url()\n    >>> http://example.com/alt-path/to/foo\n\nIn contrast, versions 0.8.3 and earlier will not catch this situation.\n\n    print page.get_discrete_url()\n    >>> http://localhost:8000/alt-path/to/foo\n\nIn order to preserve the earlier behavior, just submit `require_public_global=False`\n\n    print page.get_discrete_url(require_public_global=False)\n    >>> http://localhost:8000/alt-path/to/foo\n\nWARNING\n=============\n\n1.0 will be a complete API overhaul.  pin your releases to avoid sadness.\n\n\nUsage\n==============\n\n**From an URL**\n\n    >>> import metadata_parser\n    >>> page = metadata_parser.MetadataParser(url=\"http://www.example.com\")\n    >>> print page.metadata\n    >>> print page.get_metadata('title')\n    >>> print page.get_metadata('title', strategy=['og',])\n    >>> print page.get_metadata('title', strategy=['page', 'og', 'dc',])\n\n**From HTML**\n\n    >>> HTML = \"\"\"<here>\"\"\"\n    >>> page = metadata_parser.MetadataParser(html=HTML)\n    >>> print page.metadata\n    >>> print page.get_metadata('title')\n    >>> print page.get_metadata('title', strategy=['og',])\n    >>> print page.get_metadata('title', strategy=['page', 'og', 'dc',])",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/jvanasco/metadata_parser",
+    "keywords": "opengraph protocol facebook",
+    "license": "MIT",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "metadata_parser",
+    "platform": "",
+    "project_url": "https://pypi.org/project/metadata_parser/",
+    "release_url": "https://pypi.org/project/metadata_parser/0.9.8/",
+    "requires_python": "",
+    "summary": "A module to parse metadata out of urls and html documents",
+    "version": "0.9.8"
+  },
+  "releases": {
+    "0.4.13": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2aa9836c623a395f9a4ba9fcd7fbccf8",
+          "sha256": "62b0ca29e5f7d83a79544834f276eef7357b67c46489391367a418844bab7e39"
+        },
+        "downloads": 1958,
+        "filename": "metadata_parser-0.4.13.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2aa9836c623a395f9a4ba9fcd7fbccf8",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 6306,
+        "upload_time": "2013-05-18T00:55:30",
+        "url": "https://files.pythonhosted.org/packages/66/28/ab5cd10f9922118d32e1b89980a55858483f0232fc788cd84c6f1342a358/metadata_parser-0.4.13.tar.gz"
+      }
+    ],
+    "0.5.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5ca99ed7837ce72eca46eeb4d0f03161",
+          "sha256": "5869203c036980ceff8e982b55bc83a97ed0adbe4f1b587ec1e04e73c60360bc"
+        },
+        "downloads": 1968,
+        "filename": "metadata_parser-0.5.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5ca99ed7837ce72eca46eeb4d0f03161",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 5578,
+        "upload_time": "2013-11-04T17:09:51",
+        "url": "https://files.pythonhosted.org/packages/15/53/ff57efebb77478d6e309304ce855daffb8ea22238ec4e9e2be5f196c6429/metadata_parser-0.5.4.tar.gz"
+      }
+    ],
+    "0.5.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "14733990e3c75dc0c2323d02fceb6319",
+          "sha256": "e80b2c2a45b168f8c2ebd4092bdbb4696a4af2209f1437962377767646ab0a39"
+        },
+        "downloads": 1805,
+        "filename": "metadata_parser-0.5.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "14733990e3c75dc0c2323d02fceb6319",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 5884,
+        "upload_time": "2014-01-17T00:28:38",
+        "url": "https://files.pythonhosted.org/packages/70/75/3f48ab786d027050ca1a8fbcffa904266e742534a1c0a27c7462bfda7cdd/metadata_parser-0.5.6.tar.gz"
+      }
+    ],
+    "0.5.8": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7c79f99b43e2b7a78f2baa6baee679f2",
+          "sha256": "6df73e1700cb28638b10e61b74c75e85f1c604279a76318eeaab60e92c75d4c5"
+        },
+        "downloads": 2016,
+        "filename": "metadata_parser-0.5.8.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7c79f99b43e2b7a78f2baa6baee679f2",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 7335,
+        "upload_time": "2014-01-20T00:13:07",
+        "url": "https://files.pythonhosted.org/packages/0b/7c/7d5aae1ab0d8a117fe8340ba2cf744403a7a187d1b26227aed13f923ab8a/metadata_parser-0.5.8.tar.gz"
+      }
+    ],
+    "0.6.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ee168887989a70b7306574e32c02e90f",
+          "sha256": "4d256ac8c2429b744c29385bbe9ae18f0ad80a4b59beb378d5d54b2823b0bf4b"
+        },
+        "downloads": 1598,
+        "filename": "metadata_parser-0.6.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ee168887989a70b7306574e32c02e90f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 8083,
+        "upload_time": "2014-06-06T17:57:11",
+        "url": "https://files.pythonhosted.org/packages/b0/56/a3e328438335e01673d29238437dc7e1a8c9c2f8d37b3d7c4e6a83c2f80e/metadata_parser-0.6.0.tar.gz"
+      }
+    ],
+    "0.6.10": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "749b99578e36d070828468c149bd0b94",
+          "sha256": "6748068c0f6c230f60a44fde65fd4fbec78fc12e5b834560fcb2839cf4072539"
+        },
+        "downloads": 1050,
+        "filename": "metadata_parser-0.6.10.tar.gz",
+        "has_sig": false,
+        "md5_digest": "749b99578e36d070828468c149bd0b94",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9795,
+        "upload_time": "2014-11-06T00:31:17",
+        "url": "https://files.pythonhosted.org/packages/0d/6b/5b39e774a06cb1a67a8cae855a29abc0d6f3b396522b83dee3cbbd6be978/metadata_parser-0.6.10.tar.gz"
+      }
+    ],
+    "0.6.11": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "82705878c8762a81bf1e4c205d023870",
+          "sha256": "5e2d8996ebd9ad351ce4b92bee441858e7a15271122ce68b875dbdef0d8aeb31"
+        },
+        "downloads": 1287,
+        "filename": "metadata_parser-0.6.11.tar.gz",
+        "has_sig": false,
+        "md5_digest": "82705878c8762a81bf1e4c205d023870",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10133,
+        "upload_time": "2014-11-06T21:20:39",
+        "url": "https://files.pythonhosted.org/packages/6f/2b/06f2252cd496cac3f83f2a64b6610f0184b541a886dcb51319c2dbfdb419/metadata_parser-0.6.11.tar.gz"
+      }
+    ],
+    "0.6.14": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2c3cd08a393cd7fefce7e9c65cb4c664",
+          "sha256": "b2d1e8582d7a8d5250cd53ed07439e3f6f782f33d8123f0d407e289bd55cdb17"
+        },
+        "downloads": 1630,
+        "filename": "metadata_parser-0.6.14.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2c3cd08a393cd7fefce7e9c65cb4c664",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10956,
+        "upload_time": "2015-03-31T01:37:01",
+        "url": "https://files.pythonhosted.org/packages/51/e8/9aec8aae03da342ac7b817633a3177ec3cf3d364ed6df1ace93f86a0991c/metadata_parser-0.6.14.tar.gz"
+      }
+    ],
+    "0.6.15": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b880ff7a138e8974b9b5935dc14701be",
+          "sha256": "431084d08749822c7313e6439dda90591d08bf5e0be490ef1e86819b6ecf01cd"
+        },
+        "downloads": 1501,
+        "filename": "metadata_parser-0.6.15.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b880ff7a138e8974b9b5935dc14701be",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10948,
+        "upload_time": "2015-08-03T15:44:32",
+        "url": "https://files.pythonhosted.org/packages/4e/54/0ac1b5f15deb3ee3987d56c80548d9b113be9fc81c2b011db1b0e8da7d52/metadata_parser-0.6.15.tar.gz"
+      }
+    ],
+    "0.6.16": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6e830905445b18e87058ba39cb637e62",
+          "sha256": "e5646953052645d2aeb1c2b40a0f33fde7ed86714506782e847e34ff80fdcfa5"
+        },
+        "downloads": 995,
+        "filename": "metadata_parser-0.6.16.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6e830905445b18e87058ba39cb637e62",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 11000,
+        "upload_time": "2015-10-01T15:45:46",
+        "url": "https://files.pythonhosted.org/packages/67/2b/6d93a27d62eb72179af680871e789a8ebedc2dc55455d1a0a62be1fc2fbd/metadata_parser-0.6.16.tar.gz"
+      }
+    ],
+    "0.6.17": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b36db287dd99e575e727b84367c1c903",
+          "sha256": "20eef3c7ee547ee8380c346688d6de25e34cd8a1587ceb89fe138baf55478351"
+        },
+        "downloads": 254,
+        "filename": "metadata_parser-0.6.17.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b36db287dd99e575e727b84367c1c903",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 11231,
+        "upload_time": "2016-05-05T21:02:41",
+        "url": "https://files.pythonhosted.org/packages/7c/b9/6a926e05c65ca26983c3b69da47f800ec2af4eb697200c6640e0ae32e8ff/metadata_parser-0.6.17.tar.gz"
+      }
+    ],
+    "0.6.18": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "bfe500dc21fb6854bc9ca3ae1ebee4c5",
+          "sha256": "b2526a8e1a7c5bb7678e5bdb118775ba29d776d876cdf2ae4205c2221fb0ab69"
+        },
+        "downloads": 250,
+        "filename": "metadata_parser-0.6.18.tar.gz",
+        "has_sig": false,
+        "md5_digest": "bfe500dc21fb6854bc9ca3ae1ebee4c5",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 11447,
+        "upload_time": "2016-09-01T18:19:08",
+        "url": "https://files.pythonhosted.org/packages/05/f9/2067fbfd4c8d13d24f8c580d069eb6e909fba3e109a5ef511b12ff3df0b1/metadata_parser-0.6.18.tar.gz"
+      }
+    ],
+    "0.6.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e57144404baf1a320ecd4cfdf5f2dccd",
+          "sha256": "48ffa80ddbb6fedf760adfdbfef6b4cc02adb290529ae0ffe06fec801183a41a"
+        },
+        "downloads": 1479,
+        "filename": "metadata_parser-0.6.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e57144404baf1a320ecd4cfdf5f2dccd",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 8894,
+        "upload_time": "2014-07-14T19:16:33",
+        "url": "https://files.pythonhosted.org/packages/b3/9b/19beda7da12c0d707ac8d2f0274b210bbe2baa3fe17c7b3dfce570a39de9/metadata_parser-0.6.3.tar.gz"
+      }
+    ],
+    "0.6.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "92f5bb9a971c83e723a102087bf5d59d",
+          "sha256": "4d2482bf79a10d9454254d0aa0b94399c72011beececfd3b4a1c61af6f642714"
+        },
+        "downloads": 1429,
+        "filename": "metadata_parser-0.6.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "92f5bb9a971c83e723a102087bf5d59d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 8978,
+        "upload_time": "2014-07-30T16:32:51",
+        "url": "https://files.pythonhosted.org/packages/06/b2/61bba3a47964ef3c0bde762b8ab1e2cf9c8e0933daac109d1e383ea6ecc7/metadata_parser-0.6.5.tar.gz"
+      }
+    ],
+    "0.6.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5288012fc3b96850439326e3e9ea04c4",
+          "sha256": "b706a5a3fb20cab5603cfb4c16b66ab714b2a766bb5c9edc2a95badbac383eb8"
+        },
+        "downloads": 1405,
+        "filename": "metadata_parser-0.6.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5288012fc3b96850439326e3e9ea04c4",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9185,
+        "upload_time": "2014-08-06T00:50:34",
+        "url": "https://files.pythonhosted.org/packages/ab/99/fbb1466d6ea9bc7e832c12480f266bf327769e5aea3445313598855908cb/metadata_parser-0.6.6.tar.gz"
+      }
+    ],
+    "0.6.7": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "61f30248873e0c23747a09679ec3d7ae",
+          "sha256": "6efda9ee22023d48d80635809ae82f4fb41cb40f8bbed1b279f515202f188e95"
+        },
+        "downloads": 1339,
+        "filename": "metadata_parser-0.6.7.tar.gz",
+        "has_sig": false,
+        "md5_digest": "61f30248873e0c23747a09679ec3d7ae",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9235,
+        "upload_time": "2014-08-14T16:20:43",
+        "url": "https://files.pythonhosted.org/packages/d7/7c/ab724b44784a158e72f97a338e667cffb6faa5c60970db706599dfee4c86/metadata_parser-0.6.7.tar.gz"
+      }
+    ],
+    "0.6.8": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "209bbd88dd0fe5c59b427275553ab651",
+          "sha256": "31d695f0bc53553e9e6b33e1c696a06970e29318154180f5c3d258b7542fcd91"
+        },
+        "downloads": 1541,
+        "filename": "metadata_parser-0.6.8.tar.gz",
+        "has_sig": false,
+        "md5_digest": "209bbd88dd0fe5c59b427275553ab651",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9295,
+        "upload_time": "2014-08-14T17:58:10",
+        "url": "https://files.pythonhosted.org/packages/15/4b/56dfbb583a7acb4c8d3a3e3e8501b62020f7ba10a5f09988826795b8a628/metadata_parser-0.6.8.tar.gz"
+      }
+    ],
+    "0.6.9": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a69b8a231b294c8dbea4d07db4bd67c7",
+          "sha256": "e07632d1d75b44baa1c6931c36fb673932077aef81119e5f7e916a32be71c4e7"
+        },
+        "downloads": 1413,
+        "filename": "metadata_parser-0.6.9.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a69b8a231b294c8dbea4d07db4bd67c7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9557,
+        "upload_time": "2014-11-05T20:33:56",
+        "url": "https://files.pythonhosted.org/packages/73/9d/fa83554244f202e61431c597262f38a98491b5a8bcd4599f4997c81713db/metadata_parser-0.6.9.tar.gz"
+      }
+    ],
+    "0.7.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "97a51b87268e350a080e0d9ba6ac723e",
+          "sha256": "aad15953bbdc0c39f2065c36063dfb49e1c51099d3dcb24914681b9d03395603"
+        },
+        "downloads": 48,
+        "filename": "metadata_parser-0.7.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "97a51b87268e350a080e0d9ba6ac723e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 11545,
+        "upload_time": "2016-11-03T16:23:57",
+        "url": "https://files.pythonhosted.org/packages/8d/54/efe1990180f251a119a37ae69ab75e83c02986ac4385eca8bcc837364335/metadata_parser-0.7.0.tar.gz"
+      }
+    ],
+    "0.7.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c8a1cb63adc89790fd04fa7e26209244",
+          "sha256": "41263bcaf7382fabde342cb76ca5230b0a73082c8d41cd7fd10f4c1e238c95e6"
+        },
+        "downloads": 54,
+        "filename": "metadata_parser-0.7.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c8a1cb63adc89790fd04fa7e26209244",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 11719,
+        "upload_time": "2016-11-16T21:05:54",
+        "url": "https://files.pythonhosted.org/packages/d3/e0/9da1b7cd18ab4a5962d2d46820a93a946b8bd26a9c78b4243ff37b0501e2/metadata_parser-0.7.1.tar.gz"
+      }
+    ],
+    "0.7.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1291a064d9553cb7d89f89bb422b4c43",
+          "sha256": "1acaa93a17fc6e15fe3b33d10b13d5d2fc5ae044a7c10a28f5163858baa143c6"
+        },
+        "downloads": 72,
+        "filename": "metadata_parser-0.7.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1291a064d9553cb7d89f89bb422b4c43",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 11737,
+        "upload_time": "2016-11-16T21:31:08",
+        "url": "https://files.pythonhosted.org/packages/77/2f/2f23d00b6665b8a73032bb084e8f0e3f2b35bbd1f243bd8bd56ffdefebc2/metadata_parser-0.7.2.tar.gz"
+      }
+    ],
+    "0.7.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1575b9a6e25b765f4839dc1dbe3c699c",
+          "sha256": "8ac5c13b09918b608871772c8a59d8872766dc2e39074bcbdfd82308ed6bbf0f"
+        },
+        "downloads": 66,
+        "filename": "metadata_parser-0.7.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1575b9a6e25b765f4839dc1dbe3c699c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 11812,
+        "upload_time": "2016-12-14T00:09:17",
+        "url": "https://files.pythonhosted.org/packages/66/22/1ba3227c56b402dd7ea675ceb986e50640636215b7e3583a306b7b42d291/metadata_parser-0.7.3.tar.gz"
+      }
+    ],
+    "0.7.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "850d47119b5a8be2599124ab61b73006",
+          "sha256": "0e2916d2a7aeb8e093de0b9921c425d80858caf76e4f171e646e4f36c948b867"
+        },
+        "downloads": 90,
+        "filename": "metadata_parser-0.7.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "850d47119b5a8be2599124ab61b73006",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 12053,
+        "upload_time": "2016-12-14T21:22:30",
+        "url": "https://files.pythonhosted.org/packages/1e/79/252a9f908b78390eb643700bdeaee8c88174b4e0cd6154dbca547b3867cd/metadata_parser-0.7.4.tar.gz"
+      }
+    ],
+    "0.8.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "35c60dba1c25de07ca11750a2beefdf2",
+          "sha256": "fe1938e801d5574c8c05b9d212c669c2496f860ca1170a7da2714229a5a0faf1"
+        },
+        "downloads": 68,
+        "filename": "metadata_parser-0.8.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "35c60dba1c25de07ca11750a2beefdf2",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 12458,
+        "upload_time": "2016-12-20T18:01:12",
+        "url": "https://files.pythonhosted.org/packages/61/ab/022939cb2f652552e603f7a36116c2870a1b48e2265fc16f477478063bb4/metadata_parser-0.8.0.tar.gz"
+      }
+    ],
+    "0.8.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2623c21eb1c2c43efdfa78872c7c2cd0",
+          "sha256": "71e4c0ff37f529c4c093dd9f3773fbc5a8bdb9f51b602278318808c9908770ed"
+        },
+        "downloads": 328,
+        "filename": "metadata_parser-0.8.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2623c21eb1c2c43efdfa78872c7c2cd0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 12607,
+        "upload_time": "2016-12-22T23:39:00",
+        "url": "https://files.pythonhosted.org/packages/21/2f/59d7f499e37c8b84797892fe50966e8d741cf60fc73e108648f3bd078c82/metadata_parser-0.8.1.tar.gz"
+      }
+    ],
+    "0.8.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c1662e4f98cb99eb98fa6d7f4ccf86ff",
+          "sha256": "bc2fc0b3ba85b4659a41609effc8bf22c6f47ac07f3e0bb8c06030b25fd2a915"
+        },
+        "downloads": 166,
+        "filename": "metadata_parser-0.8.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c1662e4f98cb99eb98fa6d7f4ccf86ff",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 15488,
+        "upload_time": "2017-01-06T20:03:23",
+        "url": "https://files.pythonhosted.org/packages/d8/9c/c4bc169fb3ea120bfc94af5e2bdd0f2e1a5889e804fe6106bf71f01cadf3/metadata_parser-0.8.3.tar.gz"
+      }
+    ],
+    "0.9.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "eb30fb421a299a18870ef006c55382db",
+          "sha256": "9be79cb225cfc1eb6dc55f4f067dbedc7b5ea70cd5fedfc513523a0b8ef525b9"
+        },
+        "downloads": 11,
+        "filename": "metadata_parser-0.9.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "eb30fb421a299a18870ef006c55382db",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 19063,
+        "upload_time": "2017-01-16T21:44:37",
+        "url": "https://files.pythonhosted.org/packages/03/5e/c777c0d09907f74fe872e789d78516dd8f6b29567216bdf3cde51977e6f3/metadata_parser-0.9.0.tar.gz"
+      }
+    ],
+    "0.9.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8db4a00f97389003771ae5e76536f5fc",
+          "sha256": "158f0906f42692ca0c7a651bf00f6a8790cab9c899a2e1223531171c44e72c83"
+        },
+        "downloads": 11,
+        "filename": "metadata_parser-0.9.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8db4a00f97389003771ae5e76536f5fc",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 19363,
+        "upload_time": "2017-01-17T19:02:37",
+        "url": "https://files.pythonhosted.org/packages/ef/53/74c5b0d81e41b266a877bf7d20a385f68006dfceb2e344e579bd7b2bff36/metadata_parser-0.9.1.tar.gz"
+      }
+    ],
+    "0.9.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "73f6f037aca5da6591612f3111153ef2",
+          "sha256": "4f539678ad0110c1f32d40e67352329b42e93f57ea2ae29c19ada53843f055bb"
+        },
+        "downloads": 12,
+        "filename": "metadata_parser-0.9.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "73f6f037aca5da6591612f3111153ef2",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 19596,
+        "upload_time": "2017-01-18T20:58:50",
+        "url": "https://files.pythonhosted.org/packages/b7/35/8704eddffad80556c2614d1c8b273341c96e389fdb42bb970d0049c2a552/metadata_parser-0.9.3.tar.gz"
+      }
+    ],
+    "0.9.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d7a88a6bd77eec3188075b940bbcca8c",
+          "sha256": "e7430d01b17313c060b73522ffe811317d8ecfaf3ec362441ddbf0e3b08e2839"
+        },
+        "downloads": 14,
+        "filename": "metadata_parser-0.9.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d7a88a6bd77eec3188075b940bbcca8c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 19960,
+        "upload_time": "2017-01-19T01:55:52",
+        "url": "https://files.pythonhosted.org/packages/5d/26/8f53ca357c37103cafc1469ba216b23fdeae2c7511d2e6d8a155994bb66d/metadata_parser-0.9.4.tar.gz"
+      }
+    ],
+    "0.9.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d11761051fae2d425e5812d83ac4d4e6",
+          "sha256": "d9501bbcce7c6459e1c243ec3ed5e6727670c7eb8f5948a67ea6622da0f55a18"
+        },
+        "downloads": 15,
+        "filename": "metadata_parser-0.9.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d11761051fae2d425e5812d83ac4d4e6",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 19978,
+        "upload_time": "2017-01-26T19:11:38",
+        "url": "https://files.pythonhosted.org/packages/cc/1e/54d4eea789a9b987237d3866c0f3c691f064d1e8059de4b1df7ac44b4729/metadata_parser-0.9.5.tar.gz"
+      }
+    ],
+    "0.9.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "78960cae927b76d9ab47012e76bb1b9a",
+          "sha256": "11796af24e2af6a75d1afa528a4ca794c72c69ad0de808faa11f774d7030dd37"
+        },
+        "downloads": 0,
+        "filename": "metadata_parser-0.9.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "78960cae927b76d9ab47012e76bb1b9a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 22116,
+        "upload_time": "2017-05-09T18:13:45",
+        "url": "https://files.pythonhosted.org/packages/2d/7b/22aa0c081d1b722f044e06f0da0bd7c75ea8a17246e697dd059b31f5d15c/metadata_parser-0.9.6.tar.gz"
+      }
+    ],
+    "0.9.7": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "aa295ae9406471ec5fb5c499f5e0f3c7",
+          "sha256": "87b4fa3a1b9cb2d3d69fdfc6d47b9b2ac4d28b9ec4eaff1ed3cbc8fc85327728"
+        },
+        "downloads": 0,
+        "filename": "metadata_parser-0.9.7.tar.gz",
+        "has_sig": false,
+        "md5_digest": "aa295ae9406471ec5fb5c499f5e0f3c7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 22945,
+        "upload_time": "2017-05-19T00:40:26",
+        "url": "https://files.pythonhosted.org/packages/80/35/77109c514be265e2ac140e6a4910dfc4773a651264ddae984464b3ea2b93/metadata_parser-0.9.7.tar.gz"
+      }
+    ],
+    "0.9.8": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0abc6e50cc9fff9724ad9c4fc60d505d",
+          "sha256": "a012086a8c7cc7112012f548e6147968154b1667d59183ff7878f4cd3c24c5b4"
+        },
+        "downloads": 0,
+        "filename": "metadata_parser-0.9.8.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0abc6e50cc9fff9724ad9c4fc60d505d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 22958,
+        "upload_time": "2017-06-02T00:51:55",
+        "url": "https://files.pythonhosted.org/packages/29/75/98d23be92673abf5f799be11b81323593224d354d9c58c4e3bfaf500e372/metadata_parser-0.9.8.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "0abc6e50cc9fff9724ad9c4fc60d505d",
+        "sha256": "a012086a8c7cc7112012f548e6147968154b1667d59183ff7878f4cd3c24c5b4"
+      },
+      "downloads": 0,
+      "filename": "metadata_parser-0.9.8.tar.gz",
+      "has_sig": false,
+      "md5_digest": "0abc6e50cc9fff9724ad9c4fc60d505d",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 22958,
+      "upload_time": "2017-06-02T00:51:55",
+      "url": "https://files.pythonhosted.org/packages/29/75/98d23be92673abf5f799be11b81323593224d354d9c58c4e3bfaf500e372/metadata_parser-0.9.8.tar.gz"
+    }
+  ]
+}

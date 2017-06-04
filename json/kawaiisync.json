@@ -1,0 +1,276 @@
+{
+  "info": {
+    "author": "Pr Feurisson",
+    "author_email": "kaname.madoka@protonmail.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 3 - Alpha",
+      "Framework :: AsyncIO",
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: MIT License",
+      "Programming Language :: Python :: 3.5",
+      "Programming Language :: Python :: 3.6"
+    ],
+    "description": "|Build Status| |codecov| |PyPi|\n\n**Caution, this is a 0.x.y version, the public interfaces might break at\nany time.**\n\nKawaiisync o(\u2267\u25bd\u2266)o\n==================\n\nA collection of simple functions, decorators and classes to make your\nasynchronous python code cuter. \u0669(\u25d5\u203f\u25d5\uff61)\u06f6\n\n* only compatible with 3.5.3+ and 3.6+\n* use `Semantic Versioning <http://semver.org>`__\n* the `documentation`_ is extracted with sphinx from the\n  source's docstrings: ``sphinx-build ./ doc``\n* to run the test suite, use (adapt accordingly to your installation of\n  python): ``python3.6 setup.py test``\n\nExamples\n========\n\nHere are examples of features that might interest you; for the full\nlist, read the `documentation`_.\n\nAiter\n-----\n\nTurn long loops into small chuncks so that the event loop can schedule\nother tasks while it completes. It can help make a service feel more\nresponsive.\n\n.. code:: python\n\n    from asyncio import get_event_loop, gather\n    from kawaiisync import aiter, yield_to_event_loop\n\n    async def print_numbers():\n        async for i in aiter(range(10)):\n            print(\"%d \" % i, end=\"\")\n\n    loop = get_event_loop()\n    # You should get\n    # 0 0 1 1 2 2 3 3 4 4 5 5 6 6 7 7 8 8 9 9\n    # Instead of\n    # 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9\n    loop.run_until_complete(gather(print_numbers(), print_numbers()))\n    print(\"\")\n\nAIOContext\n----------\n\n``aiocontext`` is a context manager and a decorator which removes the\nboilerplate that comes with running asynchronous code from a synchronous\ncontext. An async function decorated with ``aiocontext`` (or its short\nform ``sync`` with implicit defaults) can be called as a sync function.\nAs a context manager, ``aiocontext`` returns a context object with a\n``run`` function that gathers and waits for the completion of awaitables\n(such as what is returned by a non-awaited coroutine function), with an\noptionnal timeout. If asked for, it will also open and close a new loop.\n\n.. code:: python\n\n    from asyncio import sleep, TimeoutError\n    import random\n    from kawaiisync import aiocontext\n\n    # Set a global timeout of 2 seconds and create a new loop that\n    # will be closed after leaving the context.\n    with aiocontext(timeout=2, new_loop=True) as aioctx:\n\n        async def long_operation():\n            random.seed()\n            await sleep(random.randrange(1, 4))\n            return \"result\"\n\n        try:\n            print(aioctx.run(long_operation()))\n        except TimeoutError:\n            print(\"Operation took too long.\")\n\nIt also manages exceptions raised by the tasks added while in the with\nblock and cancels those that couldn't finish.\n\nEventEmitter\n------------\n\nThe event emitter's goal is to launch several loosely-coupled listeners.\nIf you need more coupling, you should use another abstraction.\n\nThis example defines functions and attaches them to an event emitter for\nasynchronous processing so that each function doesn't need to know about\nwho to call, but only needs to provide a service and, eventually, ask\nfor another service. Keyword arguments are used to pass an arbitrary\nfunction which takes two arguments and produces a third. In this case,\nwe'll pass the ``pow`` function.\n\n.. code:: python\n\n    from asyncio import sleep\n    from kawaiisync import EventEmitter, sync\n\n    # We'll use the default event loop.\n    @sync\n    async def run_example():\n        events = EventEmitter()\n\n        # You can trigger any functions on an event, even built-ins...\n        events.on(\"print\", print)\n\n        # ...or use a decorator on your own functions...\n        @events.on(\"compute\", kwargs=True)\n        def log_compute(values, **kwargs):\n            print(\"Operation %s was run on %s\" % (kwargs[\"operator\"], values))\n\n        # ...even if they are asynchronous.\n        @events.on(\"compute\", kwargs=True)\n        async def compute(two_values, operator=None):\n            a, b = two_values\n            result = operator(a, b)\n            # Imagine this is doing I/O.\n            await sleep(1)\n            events.emit(\"print\", result)\n\n        # This blocks until all listeners have completed.\n        await events.emit(\"compute\", (12, 43), operator=pow)\n\n        # This is just a trick to leave enough time for the listeners to finish.\n        # It would have been possible to await the tasks returned by event.emit,\n        # but this example's goal is to show a typical use.\n        await sleep(2)\n\n    # This will print first what operation is run, then its result.\n    run_example()\n\nChannels\n--------\n\nChannels \u00e0 la Go. Call somewhere a channel instance on a value, and\nawait the same instance somewhere else to get the value.\nThere's also a ``BufferedChannel`` which enques a certain number\nof messages before blocking.\n\n.. code:: python\n\n    from kawaiisync import Channel, aiocontext\n\n    async def listener(chan):\n        print(\"before receiving data\")\n        print(await chan)\n        print(\"after receiving data\")\n        await chan.close()\n\n    with aiocontext() as aioctx:\n        chan = Channel()\n        aioctx.run(chan(\"this is the data\"), listener(chan))\n\nYou can also iterate on them asynchronously. The iteration stops when\nthe channel is closed and every message in the buffer has been\nconsummed.\n\n.. code:: python\n\n    from kawaiisync import Channel, aiocontext\n\n    async def listener(chan):\n        print(\"before iteration\")\n        async for msg in chan:\n            print(msg)\n        print(\"after iteration\")\n\n    async def sender(chan):\n        for i in range(10):\n            await chan(i)\n        await chan.close()\n\n    with aiocontext() as aioctx:\n        chan = Channel()\n        aioctx.run(sender(chan), listener(chan))\n\n*NB*: if you get strange behavior like getting only half of the messages,\nverify that you aren't unknowingly awaiting the channel in multiple\nplaces. Conversely, this behavior is useful when you want to dispatch\ndata among multiple listeners with no need to control tightly who gets\nwhat.\n\n.. |Build Status| image:: https://travis-ci.org/PrFeurisson/kawaiisync.svg?branch=master\n   :target: https://travis-ci.org/PrFeurisson/kawaiisync\n.. |codecov| image:: https://codecov.io/gh/PrFeurisson/kawaiisync/branch/master/graph/badge.svg\n   :target: https://codecov.io/gh/PrFeurisson/kawaiisync\n.. |PyPi| image:: https://badge.fury.io/py/kawaiisync.svg\n    :target: https://badge.fury.io/py/kawaiisync\n.. _documentation:  https://prfeurisson.github.io/kawaiisync/doc/",
+    "docs_url": null,
+    "download_url": "https://github.com/PrFeurisson/kawaiisync/archive/v0.3.2.tar.gz",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/PrFeurisson/kawaiisync",
+    "keywords": "asyncio decorators utils uguu",
+    "license": "MIT",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "kawaiisync",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/kawaiisync/",
+    "release_url": "https://pypi.org/project/kawaiisync/0.3.2/",
+    "requires_python": "",
+    "summary": "Make your async code cuter.",
+    "version": "0.3.2"
+  },
+  "releases": {
+    "0.1.0": [],
+    "0.1.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "dc29207d782f6ff61a05ef47f1d55edf",
+          "sha256": "3e29222b888ba3833f39060606e46a3ee1a3821dd108866168bbdd655e6ad349"
+        },
+        "downloads": 0,
+        "filename": "kawaiisync-0.1.1-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "dc29207d782f6ff61a05ef47f1d55edf",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "size": 13396,
+        "upload_time": "2017-05-13T23:00:16",
+        "url": "https://files.pythonhosted.org/packages/94/93/221993e80cd5d2e721cccc56b744e97e3411ab5a25541fd6ca19a8f2d167/kawaiisync-0.1.1-py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "be7070100005cfca2697a00c639255e1",
+          "sha256": "94ee16b0032f59d1513f9b60441af472c146e0e7f39fbb5a9bbf6ee786d26e23"
+        },
+        "downloads": 0,
+        "filename": "kawaiisync-0.1.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "be7070100005cfca2697a00c639255e1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 8754,
+        "upload_time": "2017-05-13T23:00:18",
+        "url": "https://files.pythonhosted.org/packages/30/e5/460183027e96216e1c133f317af6194db185345e412db1a9e80dce8dacce/kawaiisync-0.1.1.tar.gz"
+      }
+    ],
+    "0.2.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3642d6e8ef14db37b398a7a5ad29e26c",
+          "sha256": "afe67f4c531fb4e51357e0311f76b6c7c0dd66041ae1241a0cc24c4c4a74240f"
+        },
+        "downloads": 0,
+        "filename": "kawaiisync-0.2.0-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "3642d6e8ef14db37b398a7a5ad29e26c",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "size": 14832,
+        "upload_time": "2017-05-22T18:45:08",
+        "url": "https://files.pythonhosted.org/packages/40/03/bd7fa50ebab943dbbc37d5abbaf8f63419cc1c71c98e589fbb894a2cc6e5/kawaiisync-0.2.0-py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b76584066f81198e25a70ab5c8acc7c0",
+          "sha256": "7a60232b767b4df14511610379edfb591222b0526c27f878106ffc3987024c25"
+        },
+        "downloads": 0,
+        "filename": "kawaiisync-0.2.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b76584066f81198e25a70ab5c8acc7c0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9895,
+        "upload_time": "2017-05-22T18:45:14",
+        "url": "https://files.pythonhosted.org/packages/e9/ad/8d5d44c4b63181882db93540763bf303e1f2e06e412a58bd1d8b62c2c9c1/kawaiisync-0.2.0.tar.gz"
+      }
+    ],
+    "0.2.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "135345e1a719c667d2e1de100602616a",
+          "sha256": "78c0c29aecd81472728f335a557290716c058b15c79832bbc7e649fb44d8cdf2"
+        },
+        "downloads": 0,
+        "filename": "kawaiisync-0.2.1-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "135345e1a719c667d2e1de100602616a",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "size": 14877,
+        "upload_time": "2017-05-22T18:45:11",
+        "url": "https://files.pythonhosted.org/packages/21/3e/297080dd7e1096ced50a1aa91415a855fd0ad2657d31788d7859710bcaf4/kawaiisync-0.2.1-py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b1bc8575b0df851951d0b6d8518cf3f6",
+          "sha256": "0b55ca7afd62fc4896d026f8be1c0612d0745098e0f58255698844a2064d6412"
+        },
+        "downloads": 0,
+        "filename": "kawaiisync-0.2.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b1bc8575b0df851951d0b6d8518cf3f6",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9927,
+        "upload_time": "2017-05-22T18:45:15",
+        "url": "https://files.pythonhosted.org/packages/b5/9b/cca9904a2d9306cdbc6e9002aa54b817c0d592342ff22558d7782c75ce4c/kawaiisync-0.2.1.tar.gz"
+      }
+    ],
+    "0.3.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "437be5f1df00c5ea2a603045a77a937b",
+          "sha256": "2eee72aa228adaeee132a6773e42a371b26714d4a354247be1be14e884fe7efa"
+        },
+        "downloads": 0,
+        "filename": "kawaiisync-0.3.0-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "437be5f1df00c5ea2a603045a77a937b",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "size": 15401,
+        "upload_time": "2017-05-23T02:28:47",
+        "url": "https://files.pythonhosted.org/packages/39/06/d25ea0a2834c9b3d9ed1a59bd31044fa5e5a89a0f63eb9b810fe0da9e92d/kawaiisync-0.3.0-py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b286b998e54d493ba3e709aee8e744cf",
+          "sha256": "5208667b277b0a73af9b32ea2971b9b334e96a495ea375fa6d03dfe50fa3aff1"
+        },
+        "downloads": 0,
+        "filename": "kawaiisync-0.3.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b286b998e54d493ba3e709aee8e744cf",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10403,
+        "upload_time": "2017-05-23T02:28:48",
+        "url": "https://files.pythonhosted.org/packages/fa/94/a9b4543800d324b401f4156aa5d86a19ea46dc8bd2be958eb13bcc929594/kawaiisync-0.3.0.tar.gz"
+      }
+    ],
+    "0.3.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0e231ba10f5ac980982954c8855a90df",
+          "sha256": "674615eff1ff3b6c5da2dd5a5466cbb4c44e68c744df81664fd2c948959459c3"
+        },
+        "downloads": 0,
+        "filename": "kawaiisync-0.3.1-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "0e231ba10f5ac980982954c8855a90df",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "size": 15447,
+        "upload_time": "2017-05-23T03:03:26",
+        "url": "https://files.pythonhosted.org/packages/87/42/e4f6aa9166fcc5ebc80848ee633540aec54fbe644575caae1afca1757e32/kawaiisync-0.3.1-py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8d81fb68c6fbe90f1b8d8c2929f6b230",
+          "sha256": "33de0ddbf1b529c0c249050b0540b4fedd18f4699e3e8f5ac5f780f0ce146059"
+        },
+        "downloads": 0,
+        "filename": "kawaiisync-0.3.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8d81fb68c6fbe90f1b8d8c2929f6b230",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10423,
+        "upload_time": "2017-05-23T03:03:28",
+        "url": "https://files.pythonhosted.org/packages/cd/88/780ba27e8d367a8a521cf95fb1f0e2c84df5e7212bd3dff43a08bfcaa0f5/kawaiisync-0.3.1.tar.gz"
+      }
+    ],
+    "0.3.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c91dec3efdabf2b77537da0258cc31eb",
+          "sha256": "9753688b6fdc141b4b514359939cf46113ee943ac17532c9f9ce462fde46bc73"
+        },
+        "downloads": 0,
+        "filename": "kawaiisync-0.3.2-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "c91dec3efdabf2b77537da0258cc31eb",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "size": 15945,
+        "upload_time": "2017-05-30T03:34:14",
+        "url": "https://files.pythonhosted.org/packages/d1/50/a5bedfa24b725deb62983c94e98760d4cb3282bfb1e02f91b5ff40977016/kawaiisync-0.3.2-py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ed98bfc611f5b35982bc44cc1a2521ee",
+          "sha256": "2a6656ebe68832828f212caec868838628cc4776224a878d666ee681958ba808"
+        },
+        "downloads": 0,
+        "filename": "kawaiisync-0.3.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ed98bfc611f5b35982bc44cc1a2521ee",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10840,
+        "upload_time": "2017-05-30T03:34:16",
+        "url": "https://files.pythonhosted.org/packages/b0/1b/aa3db10413924db3ff05b0602f96b311914afd0be31f499303ab1e247122/kawaiisync-0.3.2.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "c91dec3efdabf2b77537da0258cc31eb",
+        "sha256": "9753688b6fdc141b4b514359939cf46113ee943ac17532c9f9ce462fde46bc73"
+      },
+      "downloads": 0,
+      "filename": "kawaiisync-0.3.2-py3-none-any.whl",
+      "has_sig": false,
+      "md5_digest": "c91dec3efdabf2b77537da0258cc31eb",
+      "packagetype": "bdist_wheel",
+      "python_version": "py3",
+      "size": 15945,
+      "upload_time": "2017-05-30T03:34:14",
+      "url": "https://files.pythonhosted.org/packages/d1/50/a5bedfa24b725deb62983c94e98760d4cb3282bfb1e02f91b5ff40977016/kawaiisync-0.3.2-py3-none-any.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "ed98bfc611f5b35982bc44cc1a2521ee",
+        "sha256": "2a6656ebe68832828f212caec868838628cc4776224a878d666ee681958ba808"
+      },
+      "downloads": 0,
+      "filename": "kawaiisync-0.3.2.tar.gz",
+      "has_sig": false,
+      "md5_digest": "ed98bfc611f5b35982bc44cc1a2521ee",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 10840,
+      "upload_time": "2017-05-30T03:34:16",
+      "url": "https://files.pythonhosted.org/packages/b0/1b/aa3db10413924db3ff05b0602f96b311914afd0be31f499303ab1e247122/kawaiisync-0.3.2.tar.gz"
+    }
+  ]
+}

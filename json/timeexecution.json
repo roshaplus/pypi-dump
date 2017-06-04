@@ -1,0 +1,385 @@
+{
+  "info": {
+    "author": "Niels Lensink",
+    "author_email": "niels@elements.nl",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 5 - Production/Stable",
+      "Environment :: Web Environment",
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: Apache Software License",
+      "Operating System :: OS Independent",
+      "Programming Language :: Python",
+      "Programming Language :: Python :: 2",
+      "Programming Language :: Python :: 2.7",
+      "Programming Language :: Python :: 3",
+      "Programming Language :: Python :: 3.5",
+      "Topic :: Internet :: WWW/HTTP",
+      "Topic :: Software Development :: Libraries :: Python Modules"
+    ],
+    "description": "Time Execution\n==============\n\n.. image:: https://secure.travis-ci.org/kpn-digital/py-timeexecution.svg?branch=master\n    :target:  http://travis-ci.org/kpn-digital/py-timeexecution?branch=master\n\n.. image:: https://img.shields.io/codecov/c/github/kpn-digital/py-timeexecution/master.svg\n    :target: http://codecov.io/github/kpn-digital/py-timeexecution?branch=master\n\n.. image:: https://img.shields.io/pypi/v/timeexecution.svg\n    :target: https://pypi.python.org/pypi/timeexecution\n\n.. image:: https://readthedocs.org/projects/py-timeexecution/badge/?version=latest\n    :target: http://py-timeexecution.readthedocs.org/en/latest/?badge=latest\n\n\nThis package is designed to record metrics of the application into a backend.\nWith the help of grafana_ you can easily create dashboards with them\n\n\nFeatures\n--------\n\n- Sending data to multiple backends\n- Custom backends\n- Hooks\n\nBackends\n--------\n\n- InfluxDB 0.8\n- Elasticsearch 5\n\n\nInstallation\n------------\n\n.. code-block:: bash\n\n    $ pip install timeexecution\n\nUsage\n-----\n\nTo use this package you decorate the functions you want to time its execution.\nEvery wrapped function will create a metric consisting of 3 default values:\n\n- `name` - The name of the series the metric will be stored in\n- `value` - The time it took in ms for the wrapped function to complete\n- `hostname` - The hostname of the machine the code is running on\n\nSee the following example\n\n.. code-block:: python\n\n    from time_execution import settings, time_execution\n    from time_execution.backends.influxdb import InfluxBackend\n    from time_execution.backends.elasticsearch import ElasticsearchBackend\n\n    # Setup the desired backend\n    influx = InfluxBackend(host='influx', database='metrics', use_udp=False)\n    elasticsearch = ElasticsearchBackend('elasticsearch', index='metrics')\n\n    # Configure the time_execution decorator\n    settings.configure(backends=[influx, elasticsearch])\n\n    # Wrap the methods where u want the metrics\n    @time_execution\n    def hello():\n        return 'World'\n\n    # Now when we call hello() and we will get metrics in our backends\n    hello()\n\nThis will result in an entry in the influxdb\n\n.. code-block:: json\n\n    [\n        {\n            \"name\": \"__main__.hello\",\n            \"columns\": [\n                \"time\",\n                \"sequence_number\",\n                \"value\",\n                \"hostname\",\n            ],\n            \"points\": [\n                [\n                    1449739813939,\n                    1111950001,\n                    312,\n                    \"machine.name\",\n                ]\n            ]\n        }\n    ]\n\nAnd the following in Elasticsearch\n\n.. code-block:: json\n\n    [\n        {\n            \"_index\": \"metrics-2016.01.28\",\n            \"_type\": \"metric\",\n            \"_id\": \"AVKIp9DpnPWamvqEzFB3\",\n            \"_score\": null,\n            \"_source\": {\n                \"timestamp\": \"2016-01-28T14:34:05.416968\",\n                \"hostname\": \"dfaa4928109f\",\n                \"name\": \"__main__.hello\",\n                \"value\": 312\n            },\n            \"sort\": [\n                1453991645416\n            ]\n        }\n    ]\n\n\nHooks\n-----\n\n`time_execution` supports hooks where you can change the metric before its\nbeing sent to the backend.\n\nWith a hook you can add additional and change existing fields. This can be\nuseful for cases where you would like to add a column to the metric based on\nthe response of the wrapped function.\n\nA hook will always get 3 arguments:\n\n- `response` - The returned value of the wrapped function\n- `exception` - The raised exception of the wrapped function\n- `metric` - A dict containing the data to be send to the backend\n- `func_args` - Original args received by the wrapped function.\n- `func_kwargs` - Original kwargs received by the wrapped function.\n\nFrom within a hook you can change the `name` if you want the metrics to be split\ninto multiple series.\n\nSee the following example how to setup hooks.\n\n.. code-block:: python\n\n    # Now lets create a hook\n    def my_hook(response, exception, metric, func_args, func_kwargs):\n        status_code = getattr(response, 'status_code', None)\n        if status_code:\n            return dict(\n                name='{}.{}'.format(metric['name'], status_code),\n                extra_field='foo bar'\n            )\n\n    # Configure the time_execution decorator, but now with hooks\n    settings.configure(backends=[backend], hooks=[my_hook])\n\nManually sending metrics\n------------------------\n\nYou can also send any metric you have manually to the backend. These will not\nadd the default values and will not hit the hooks.\n\nSee the following example.\n\n.. code-block:: python\n\n    loadavg = os.getloadavg()\n    write_metric('cpu.load.1m', value=loadavg[0])\n    write_metric('cpu.load.5m', value=loadavg[1])\n    write_metric('cpu.load.15m', value=loadavg[2])\n\n.. _grafana: http://grafana.org/\n\n\nCustom Backend\n--------------\n\nWriting a custom backend is very simple, all you need to do is create a class\nwith a `write` method. It is not required to extend `BaseMetricsBackend`\nbut in order to easily upgrade I recommend u do.\n\n.. code-block:: python\n\n    from time_execution.backends.base import BaseMetricsBackend\n\n\n    class MetricsPrinter(BaseMetricsBackend):\n        def write(self, name, **data):\n            print(name, data)\n\n\nContribute\n----------\n\nYou have something to contribute ? Great !\nA few things that may come in handy.\n\nTesting in this project is done via docker. There is a docker-compose to easily\nget all the required containers up and running.\n\nThere is a Makefile with a few targets that we use often:\n\n- `make test`\n- `make isort`\n- `make lint`\n- `make build`\n- `make setup.py`\n\nAll of these make targets can be prefixed by `docker/`. This will execute\nthe target inside the docker container instead of on your local machine.\nFor example `make docker/build`.",
+    "docs_url": "https://pythonhosted.org/timeexecution/",
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/kpn-digital/py-timeexecution",
+    "keywords": "",
+    "license": "",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "timeexecution",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/timeexecution/",
+    "release_url": "https://pypi.org/project/timeexecution/3.0/",
+    "requires_python": "",
+    "summary": "Python project",
+    "version": "3.0"
+  },
+  "releases": {
+    "0.0.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1a8499dc8db29de1347da219c0a7cec8",
+          "sha256": "87b7e4e0267d103e4a86baad4fcd2b24bef5c8a9d7da13cc46510ef64b037029"
+        },
+        "downloads": 92,
+        "filename": "timeexecution-0.0.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1a8499dc8db29de1347da219c0a7cec8",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 17646,
+        "upload_time": "2016-07-19T21:20:03",
+        "url": "https://files.pythonhosted.org/packages/7a/3c/f6bf49519a751aa22ea7007edc33b5e1966638c4159738236c97bdaafa7f/timeexecution-0.0.0.tar.gz"
+      }
+    ],
+    "1.10.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "fa4d2f1a16703f4107cf6ae829b2378b",
+          "sha256": "2ee6fa77f86edd27ab77b64556fbe3e7410627a620f5f2a724fb88bdc9116dfa"
+        },
+        "downloads": 144,
+        "filename": "timeexecution-1.10.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "fa4d2f1a16703f4107cf6ae829b2378b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 20958,
+        "upload_time": "2016-09-07T14:54:18",
+        "url": "https://files.pythonhosted.org/packages/c4/24/211ff082807c585e2ca5c7963e26a22fb13e79eb7b7825699149e2df3908/timeexecution-1.10.1.tar.gz"
+      }
+    ],
+    "1.10.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f7ec3bcc8e7dcb8e202ac0380036aea5",
+          "sha256": "d768c1426f3513004282801ff87fe9b3b385cd69ec0903ab9cb5d88f143eb9cd"
+        },
+        "downloads": 535,
+        "filename": "timeexecution-1.10.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f7ec3bcc8e7dcb8e202ac0380036aea5",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 20975,
+        "upload_time": "2016-09-09T12:12:33",
+        "url": "https://files.pythonhosted.org/packages/37/f4/96c844ff6414947066138582d5d2a9728333eb8ae050674369303ac0fec0/timeexecution-1.10.2.tar.gz"
+      }
+    ],
+    "1.10.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f46d2b455ec0c79ab088778149a9873d",
+          "sha256": "376d01a703ea09970b98f98828beaac10cec0c30fc19bc16efb38cf4303f998e"
+        },
+        "downloads": 99,
+        "filename": "timeexecution-1.10.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f46d2b455ec0c79ab088778149a9873d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 21103,
+        "upload_time": "2016-09-29T12:30:46",
+        "url": "https://files.pythonhosted.org/packages/34/34/4aebe115bde58743cf917621be72929e1b0b771bf2535f71073410562842/timeexecution-1.10.3.tar.gz"
+      }
+    ],
+    "1.10.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e1a30208437f2bcd5bad8b19b07d2fde",
+          "sha256": "7d1c63393d6b5f3c907bf0f2fc276294eba1ea66f747db59eb3ddcc7249441f3"
+        },
+        "downloads": 607,
+        "filename": "timeexecution-1.10.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e1a30208437f2bcd5bad8b19b07d2fde",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 21147,
+        "upload_time": "2016-10-04T04:25:49",
+        "url": "https://files.pythonhosted.org/packages/e8/8b/0b8982d1f8d2588fa0a9d3d3cc01f307e06be96069692cdbc9b1f39e5451/timeexecution-1.10.4.tar.gz"
+      }
+    ],
+    "1.11": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b9a958b4178b9d84192eac4085cc6856",
+          "sha256": "88661746582ef8602241c06267923b2603aad70baa53f6b372d8e06a961f59c6"
+        },
+        "downloads": 99,
+        "filename": "timeexecution-1.11.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b9a958b4178b9d84192eac4085cc6856",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 17480,
+        "upload_time": "2017-01-02T12:04:11",
+        "url": "https://files.pythonhosted.org/packages/c2/d9/f2c9911d8e2a6fdf462cf39d4616ef30fb884cf6fd7db441cff9ce5882b9/timeexecution-1.11.tar.gz"
+      }
+    ],
+    "1.12": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ddfd3450ef2bcc0a49273a31af07b7b0",
+          "sha256": "2d9bfb3d7e1ace7beaa0e1b087b77588d027fe52bbdb103298b24391920acb77"
+        },
+        "downloads": 0,
+        "filename": "timeexecution-1.12.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ddfd3450ef2bcc0a49273a31af07b7b0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 17520,
+        "upload_time": "2017-04-18T08:52:16",
+        "url": "https://files.pythonhosted.org/packages/ea/44/b842876a3ed7cb61542008d242307c5ca0418af71c2c21a677599c234b2c/timeexecution-1.12.tar.gz"
+      }
+    ],
+    "1.4.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3dec8441830528c03cac81b558636823",
+          "sha256": "99bf0f8e5f87d766248bb3b55d3918e2cf29413b9ad87948fcfc6ac1f4b6f7f9"
+        },
+        "downloads": 370,
+        "filename": "timeexecution-1.4.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3dec8441830528c03cac81b558636823",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 17116,
+        "upload_time": "2016-03-12T13:37:33",
+        "url": "https://files.pythonhosted.org/packages/bd/4b/4946c62a0afc9d4502e1cc5973094df3974e1fd4797e4de4d7af3d7236eb/timeexecution-1.4.0.tar.gz"
+      }
+    ],
+    "1.5.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9c4c00019b50713faea7ab550dca6971",
+          "sha256": "bf99984e6b030b14a8b8c89104cf1ec56611b930c9ff6a71415dbf6213060fe5"
+        },
+        "downloads": 110,
+        "filename": "timeexecution-1.5.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "9c4c00019b50713faea7ab550dca6971",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 17140,
+        "upload_time": "2016-05-10T10:16:13",
+        "url": "https://files.pythonhosted.org/packages/dc/05/7284699cf8e166d772b4fa1d768e83beeace17ae6c371c84d95e161f96f9/timeexecution-1.5.0.tar.gz"
+      }
+    ],
+    "1.6.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "376aa2194da1ddc9a195aa314c1058a0",
+          "sha256": "91db5a15df2ef2b8444e6740e0843a496fdc7b1056a4ab189087ef53b8d94fbc"
+        },
+        "downloads": 106,
+        "filename": "timeexecution-1.6.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "376aa2194da1ddc9a195aa314c1058a0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16880,
+        "upload_time": "2016-05-12T15:33:23",
+        "url": "https://files.pythonhosted.org/packages/fe/a7/c45bf01bc1fb25f362bf1847fff25fdebfba5a8da063da22e22f88d11215/timeexecution-1.6.0.tar.gz"
+      }
+    ],
+    "1.6.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "91a4fbc130c71c23c5dc465ab3f3a936",
+          "sha256": "1beb2b43e5e4015398b4b5c23e776a80eef31e267028aa6b742208957d89531f"
+        },
+        "downloads": 500,
+        "filename": "timeexecution-1.6.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "91a4fbc130c71c23c5dc465ab3f3a936",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16957,
+        "upload_time": "2016-05-13T11:59:09",
+        "url": "https://files.pythonhosted.org/packages/53/c3/d8356d390809aff1952b5645a768bc1af0830e40bad75c75b4c30a83e657/timeexecution-1.6.1.tar.gz"
+      }
+    ],
+    "1.7.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6003c8d49c7a4efe2316af8b600d095b",
+          "sha256": "ca1104bcefeddabcc37ec66c0d2e002ce5aab42953755ce9b3b9617c7e758d6e"
+        },
+        "downloads": 108,
+        "filename": "timeexecution-1.7.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6003c8d49c7a4efe2316af8b600d095b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16954,
+        "upload_time": "2016-06-29T14:06:48",
+        "url": "https://files.pythonhosted.org/packages/b9/a1/b655596242715cbd68d5ed87138f9781231189c40e3210daf0bec40ef602/timeexecution-1.7.0.tar.gz"
+      }
+    ],
+    "1.7.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "482fb94a76fd9d5e245120b9ab063200",
+          "sha256": "019d0f9491a7b0d6c957347814737404bd302a9fef5242591d2dc38911854d34"
+        },
+        "downloads": 122,
+        "filename": "timeexecution-1.7.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "482fb94a76fd9d5e245120b9ab063200",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16961,
+        "upload_time": "2016-06-29T15:01:39",
+        "url": "https://files.pythonhosted.org/packages/30/ad/48a9d1411af1539f2f00b0441c378f85ee338de7fa5f5b100c23a749484f/timeexecution-1.7.1.tar.gz"
+      }
+    ],
+    "1.8.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9acd3ba90f87f30cb64c654855e1ae38",
+          "sha256": "b443ccc12de792cc03b09d7bce5b9a2c06b6ac357569538f94c7eade74d57a93"
+        },
+        "downloads": 321,
+        "filename": "timeexecution-1.8.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "9acd3ba90f87f30cb64c654855e1ae38",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 17492,
+        "upload_time": "2016-07-14T09:01:20",
+        "url": "https://files.pythonhosted.org/packages/0a/8d/77d235f8bae860307dacd23178d230b52c28b8aad1713cdc5ff5e5582c44/timeexecution-1.8.0.tar.gz"
+      }
+    ],
+    "1.9.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "37837908fc901e12c33be6e51960b4b8",
+          "sha256": "26fef3fe12c94ad947c2d59b61dee6f17f3c583373c5e28a5d568ee9acffc704"
+        },
+        "downloads": 167,
+        "filename": "timeexecution-1.9.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "37837908fc901e12c33be6e51960b4b8",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 17650,
+        "upload_time": "2016-07-19T21:35:10",
+        "url": "https://files.pythonhosted.org/packages/5a/c5/07890deed45f898fab6f248ccfe46cbffea8ee153ff01614b03e4f646799/timeexecution-1.9.0.tar.gz"
+      }
+    ],
+    "2.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2ce72f2967898d9b11f0c1c1eb29f00f",
+          "sha256": "b577790814e0a015714e8d15941fb4b633a8c0d5d6ccd03403bf6438f08cd34c"
+        },
+        "downloads": 0,
+        "filename": "timeexecution-2.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2ce72f2967898d9b11f0c1c1eb29f00f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 17924,
+        "upload_time": "2017-05-04T14:44:30",
+        "url": "https://files.pythonhosted.org/packages/dc/49/da58ab4e984698a924c23476561388911f5547360ced755b4f30d7cf70ef/timeexecution-2.0.tar.gz"
+      }
+    ],
+    "2.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b1999fceed55228c62d9885271a4bfce",
+          "sha256": "bddd5b69a1cd486129c88365d61f6584a081b752175394cf6db92e781fb677c7"
+        },
+        "downloads": 0,
+        "filename": "timeexecution-2.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b1999fceed55228c62d9885271a4bfce",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 17918,
+        "upload_time": "2017-05-29T16:13:52",
+        "url": "https://files.pythonhosted.org/packages/b4/9e/8f4ce96003b16a75e1ec4c3a55e1e4d47e35fde67911e72c5c77f4357691/timeexecution-2.1.tar.gz"
+      }
+    ],
+    "3.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "000314aeee16d22970a0281fd3e59360",
+          "sha256": "e83a05bc85f587edb4598566692b1f1aad45dd4c859e89e36b1808158f811e47"
+        },
+        "downloads": 0,
+        "filename": "timeexecution-3.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "000314aeee16d22970a0281fd3e59360",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 17881,
+        "upload_time": "2017-06-02T10:21:49",
+        "url": "https://files.pythonhosted.org/packages/de/86/fbde410f212089aeff917d6aa9fde191249bccb506156b93a248d17236a3/timeexecution-3.0.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "000314aeee16d22970a0281fd3e59360",
+        "sha256": "e83a05bc85f587edb4598566692b1f1aad45dd4c859e89e36b1808158f811e47"
+      },
+      "downloads": 0,
+      "filename": "timeexecution-3.0.tar.gz",
+      "has_sig": false,
+      "md5_digest": "000314aeee16d22970a0281fd3e59360",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 17881,
+      "upload_time": "2017-06-02T10:21:49",
+      "url": "https://files.pythonhosted.org/packages/de/86/fbde410f212089aeff917d6aa9fde191249bccb506156b93a248d17236a3/timeexecution-3.0.tar.gz"
+    }
+  ]
+}

@@ -1,0 +1,502 @@
+{
+  "info": {
+    "author": "Paul Chakravarti",
+    "author_email": "paul.chakravarti@gmail.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Programming Language :: Python :: 2",
+      "Programming Language :: Python :: 3",
+      "Topic :: Internet :: Name Service (DNS)"
+    ],
+    "description": "dnslib\n------\n\nA library to encode/decode DNS wire-format packets supporting both \nPython 2.7 and Python 3.2+.\n\nThe library provides:\n\n * Support for encoding/decoding DNS packets between wire format,\n   python objects, and Zone/DiG textual representation (dnslib.dns)\n\n * A server framework allowing the simple creation of custom DNS \n   resolvers (dnslib.server) and a number of example servers \n   created using this framework\n\n * A number of utilities for testing (dnslib.client, dnslib.proxy,\n   dnslib.intercept)\n\nPython 3 support was added in Version 0.9.0 which represented a fairly\nmajor update to the library - the key changes include:\n\n * Python 2.7/3.2+ support (the last version supporting Python 2.6 \n   or earlier was version 0.8.3)\n\n * The 'Bimap' interface was changed significantly to explicitly \n   split forward (value->text) lookups via __getitem__ and \n   reverse (text->value) lookups via __getattr__. Applications\n   using the old interface will need to be updated.\n\n * Hostnames are now returned with a trailing dot by default (in\n   line with RFC)\n\n * Most object attributes are now typed in line with the record\n   definitions to make it harder to generate invalid packets \n\n * Support for encoding/decoding resource records in 'Zone' (BIND) \n   file format \n\n * Support for encoding/decoding packets in 'DiG' format\n\n * Server framework allowing (in most cases) custom resolvers to\n   be created by just subclassing the DNSResolver class and \n   overriding the 'resolve' method\n\n * A lot of fixes to error detection/handling which should make \n   the library much more robust to invalid/unsupported data. The\n   library should now either return a valid DNSRecord instance\n   when parsing a packet or raise DNSError (tested via fuzzing)\n\n * Improved utilities (dnslib.client, dnslib.proxy, dnslib.intercept)\n\n * Improvements to encoding/decoding tests including the ability\n   to generate test data automatically in test_decode.py (comparing\n   outputs against DiG)\n\n * Ability to compare and diff DNSRecords\n\nClasses\n-------\n\nThe key DNS packet handling classes are in dnslib.dns and map to the \nstandard DNS packet sections:\n\n * DNSRecord - container for DNS packet. Contains:\n    - DNSHeader \n    - Question section containing zero or more DNSQuestion objects \n    - Answer section containing zero or more RR objects \n    - Authority section containing zero or more RR objects \n    - Additional section containing zero or more RR objects \n * DNS RRs (resource records) contain an RR header and an RD object)\n * Specific RD types are implemented as subclasses of RD\n * DNS labels are represented by a DNSLabel class - in most cases\n   this handles conversion to/from textual representation however\n   does support arbitatry labels via a tuple of bytes objects\n\nUsage\n-----\n\nTo decode a DNS packet:\n\n    >>> packet = binascii.unhexlify(b'd5ad818000010005000000000377777706676f6f676c6503636f6d0000010001c00c0005000100000005000803777777016cc010c02c0001000100000005000442f95b68c02c0001000100000005000442f95b63c02c0001000100000005000442f95b67c02c0001000100000005000442f95b93')\n    >>> d = DNSRecord.parse(packet)\n    >>> d\n    <DNS Header: id=0xd5ad type=RESPONSE opcode=QUERY flags=RD,RA rcode='NOERROR' q=1 a=5 ns=0 ar=0>\n    <DNS Question: 'www.google.com.' qtype=A qclass=IN>\n    <DNS RR: 'www.google.com.' rtype=CNAME rclass=IN ttl=5 rdata='www.l.google.com.'>\n    <DNS RR: 'www.l.google.com.' rtype=A rclass=IN ttl=5 rdata='66.249.91.104'>\n    <DNS RR: 'www.l.google.com.' rtype=A rclass=IN ttl=5 rdata='66.249.91.99'>\n    <DNS RR: 'www.l.google.com.' rtype=A rclass=IN ttl=5 rdata='66.249.91.103'>\n    <DNS RR: 'www.l.google.com.' rtype=A rclass=IN ttl=5 rdata='66.249.91.147'>\n\nThe default text representation of the DNSRecord is in zone file format:\n\n    >>> print(d)\n    ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 54701\n    ;; flags: qr rd ra; QUERY: 1, ANSWER: 5, AUTHORITY: 0, ADDITIONAL: 0\n    ;; QUESTION SECTION:\n    ;www.google.com.                IN      A\n    ;; ANSWER SECTION:\n    www.google.com.         5       IN      CNAME   www.l.google.com.\n    www.l.google.com.       5       IN      A       66.249.91.104\n    www.l.google.com.       5       IN      A       66.249.91.99\n    www.l.google.com.       5       IN      A       66.249.91.103\n    www.l.google.com.       5       IN      A       66.249.91.147\n\nTo create a DNS Request Packet:\n\n    >>> d = DNSRecord.question(\"google.com\")\n\n(This is equivalent to: d = DNSRecord(q=DNSQuestion(\"google.com\") )\n\n    >>> d\n    <DNS Header: id=... type=QUERY opcode=QUERY flags=RD rcode='NOERROR' q=1 a=0 ns=0 ar=0>\n    <DNS Question: 'google.com.' qtype=A qclass=IN>\n\n    >>> str(DNSRecord.parse(d.pack())) == str(d)\n    True\n\n    >>> print(d)\n    ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: ...\n    ;; flags: rd; QUERY: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 0\n    ;; QUESTION SECTION:\n    ;google.com.                    IN      A\n\n    >>> d = DNSRecord.question(\"google.com\",\"MX\")\n\n(This is equivalent to: d = DNSRecord(q=DNSQuestion(\"google.com\",QTYPE.MX) )\n\n    >>> str(DNSRecord.parse(d.pack())) == str(d)\n    True\n\n    >>> print(d)\n    ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: ...\n    ;; flags: rd; QUERY: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 0\n    ;; QUESTION SECTION:\n    ;google.com.                    IN      MX\n\nTo create a DNS Response Packet:\n\n    >>> d = DNSRecord(DNSHeader(qr=1,aa=1,ra=1),\n    ...               q=DNSQuestion(\"abc.com\"),\n    ...               a=RR(\"abc.com\",rdata=A(\"1.2.3.4\")))\n    >>> d\n    <DNS Header: id=... type=RESPONSE opcode=QUERY flags=AA,RD,RA rcode='NOERROR' q=1 a=1 ns=0 ar=0>\n    <DNS Question: 'abc.com.' qtype=A qclass=IN>\n    <DNS RR: 'abc.com.' rtype=A rclass=IN ttl=0 rdata='1.2.3.4'>\n    >>> str(DNSRecord.parse(d.pack())) == str(d)\n    True\n\n    >>> print(d)\n    ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: ...\n    ;; flags: qr aa rd ra; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 0\n    ;; QUESTION SECTION:\n    ;abc.com.                       IN      A\n    ;; ANSWER SECTION:\n    abc.com.                0       IN      A       1.2.3.4\n\nIt is also possible to create RRs from a string in zone file format\n\n    >>> RR.fromZone(\"abc.com IN A 1.2.3.4\")\n    [<DNS RR: 'abc.com.' rtype=A rclass=IN ttl=0 rdata='1.2.3.4'>]\n\n(Note: this produces a list of RRs which should be unpacked if being\n    passed to add_answer/add_auth/add_ar etc)\n\n    >>> q = DNSRecord.question(\"abc.com\")\n    >>> a = q.reply()\n    >>> a.add_answer(*RR.fromZone(\"abc.com 60 A 1.2.3.4\"))\n    >>> print(a)\n    ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: ...\n    ;; flags: qr aa rd ra; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 0\n    ;; QUESTION SECTION:\n    ;abc.com.                       IN      A\n    ;; ANSWER SECTION:\n    abc.com.                60      IN      A       1.2.3.4\n\nThe zone file can contain multiple entries and supports most of the normal\nformat defined in RFC1035 (specifically not $INCLUDE)\n\n    >>> z = '''\n    ...         $TTL 300\n    ...         $ORIGIN abc.com\n    ...\n    ...         @       IN      MX      10  mail.abc.com.\n    ...         www     IN      A       1.2.3.4\n    ...                 IN      TXT     \"Some Text\"\n    ...         mail    IN      CNAME   www.abc.com.\n    ... '''\n    >>> for rr in RR.fromZone(textwrap.dedent(z)):\n    ...     print(rr)\n    abc.com.                300     IN      MX      10 mail.abc.com.\n    www.abc.com.            300     IN      A       1.2.3.4\n    www.abc.com.            300     IN      TXT     \"Some Text\"\n    mail.abc.com.           300     IN      CNAME   www.abc.com.\n\nTo create a skeleton reply to a DNS query:\n\n    >>> q = DNSRecord(q=DNSQuestion(\"abc.com\",QTYPE.ANY)) \n    >>> a = q.reply()\n    >>> a.add_answer(RR(\"abc.com\",QTYPE.A,rdata=A(\"1.2.3.4\"),ttl=60))\n    >>> str(DNSRecord.parse(a.pack())) == str(a)\n    True\n    >>> print(a)\n    ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: ...\n    ;; flags: qr aa rd ra; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 0\n    ;; QUESTION SECTION:\n    ;abc.com.                       IN      ANY\n    ;; ANSWER SECTION:\n    abc.com.                60      IN      A       1.2.3.4\n\nAdd additional RRs:\n\n    >>> a.add_answer(RR(\"xxx.abc.com\",QTYPE.A,rdata=A(\"1.2.3.4\")))\n    >>> a.add_answer(RR(\"xxx.abc.com\",QTYPE.AAAA,rdata=AAAA(\"1234:5678::1\")))\n    >>> str(DNSRecord.parse(a.pack())) == str(a)\n    True\n    >>> print(a)\n    ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: ...\n    ;; flags: qr aa rd ra; QUERY: 1, ANSWER: 3, AUTHORITY: 0, ADDITIONAL: 0\n    ;; QUESTION SECTION:\n    ;abc.com.                       IN      ANY\n    ;; ANSWER SECTION:\n    abc.com.                60      IN      A       1.2.3.4\n    xxx.abc.com.            0       IN      A       1.2.3.4\n    xxx.abc.com.            0       IN      AAAA    1234:5678::1\n\n\nIt is also possible to create a reply from a string in zone file format:\n\n    >>> q = DNSRecord(q=DNSQuestion(\"abc.com\",QTYPE.ANY)) \n    >>> a = q.replyZone(\"abc.com 60 IN CNAME xxx.abc.com\")\n    >>> print(a)\n    ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: ...\n    ;; flags: qr aa rd ra; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 0\n    ;; QUESTION SECTION:\n    ;abc.com.                       IN      ANY\n    ;; ANSWER SECTION:\n    abc.com.                60      IN      CNAME   xxx.abc.com.\n\n    >>> str(DNSRecord.parse(a.pack())) == str(a)\n    True\n\n    >>> q = DNSRecord(q=DNSQuestion(\"abc.com\",QTYPE.ANY)) \n    >>> a = q.replyZone(textwrap.dedent(z))\n    >>> print(a)\n    ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: ...\n    ;; flags: qr aa rd ra; QUERY: 1, ANSWER: 4, AUTHORITY: 0, ADDITIONAL: 0\n    ;; QUESTION SECTION:\n    ;abc.com.                       IN      ANY\n    ;; ANSWER SECTION:\n    abc.com.                300     IN      MX      10 mail.abc.com.\n    www.abc.com.            300     IN      A       1.2.3.4\n    www.abc.com.            300     IN      TXT     \"Some Text\"\n    mail.abc.com.           300     IN      CNAME   www.abc.com.\n\n\nThe library also includes a simple framework for generating custom DNS\nresolvers in dnslib.server (see module docs). In post cases this just \nrequires implementing a custom 'resolve' method which receives a question \nobject and returns a response.\n\nA number of sample resolvers are provided as examples (see CLI --help):\n\n * dnslib.fixedresolver    - Respond to all requests with fixed response\n * dnslib.zoneresolver     - Respond from Zone file \n * dnslib.shellresolver    - Call shell script to generate response\n\nThe library includes a number of client utilities:\n\n * DiG like client library \n\n        # python -m dnslib.client --help\n\n * DNS Proxy Server\n\n        # python -m dnslib.proxy --help\n\n * Intercepting DNS Proxy Server (replace proxy responses for specified domains)\n\n        # python -m dnslib.intercept --help\n\n\nChangelog:\n----------\n\n *   0.1     2010-09-19  Initial Release\n *   0.2     2010-09-22  Minor fixes\n *   0.3     2010-10-02  Add DNSLabel class to support arbitrary labels (embedded '.')\n *   0.4     2012-02-26  Merge with dbslib-circuits\n *   0.5     2012-09-13  Add support for RFC2136 DDNS updates\n                         Patch provided by Wesley Shields <wxs@FreeBSD.org> - thanks\n *   0.6     2012-10-20  Basic AAAA support\n *   0.7     2012-10-20  Add initial EDNS0 support (untested)\n *   0.8     2012-11-04  Add support for NAPTR, Authority RR and additional RR\n                         Patch provided by Stefan Andersson (https://bitbucket.org/norox) - thanks\n *   0.8.1   2012-11-05  Added NAPTR test case and fixed logic error\n                         Patch provided by Stefan Andersson (https://bitbucket.org/norox) - thanks\n *   0.8.2   2012-11-11  Patch to fix IPv6 formatting\n                         Patch provided by Torbj\u00f6rn L\u00f6nnemark (https://bitbucket.org/tobbezz) - thanks\n *   0.8.3   2013-04-27  Don't parse rdata if rdlength is 0\n                         Patch provided by Wesley Shields <wxs@FreeBSD.org> - thanks\n *   0.9.0   2014-05-05  Major update including Py3 support (see docs)\n *   0.9.1   2014-05-05  Minor fixes\n *   0.9.2   2014-08-26  Fix Bimap handling of unknown mappings to avoid exception in printing\n                         Add typed attributes to classes\n                         Misc fixes from James Mills - thanks\n *   0.9.3   2014-08-26  Workaround for argparse bug which raises AssertionError if [] is\n                         present in option text (really?)\n *   0.9.4   2015-04-10  Fix to support multiple strings in TXT record \n                         Patch provided by James Cherry (https://bitbucket.org/james_cherry) - thanks\n                         NOTE: For consistency this patch changes the 'repr' output for\n                               TXT records to always be quoted\n *   0.9.5   2015-10-27  Add threading & timeout handling to DNSServer\n *   0.9.6   2015-10-28  Replace strftime in RRSIG formatting to avoid possible locale issues\n                         Identified by Bryan Everly - thanks\n *   0.9.7   2017-01-15  Sort out CAA/TYPE257 DiG parsing mismatch \n\n\nLicense:\n--------\n\nBSD\n\nAuthor:\n-------\n\n *   Paul Chakravarti (paul.chakravarti@gmail.com)\n\nMaster Repository/Issues:\n-------------------------\n\n *   https://bitbucket.org/paulc/dnslib\n     (Cloned on GitHub: https://github.com/paulchakravarti/dnslib)",
+    "docs_url": null,
+    "download_url": "UNKNOWN",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "http://bitbucket.org/paulc/dnslib/",
+    "keywords": null,
+    "license": "BSD",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "dnslib",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/dnslib/",
+    "release_url": "https://pypi.org/project/dnslib/0.9.7/",
+    "requires_python": null,
+    "summary": "Simple library to encode/decode DNS wire-format packets",
+    "version": "0.9.7"
+  },
+  "releases": {
+    "0.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "da9d804327b8104a102d93846c4d9c45",
+          "sha256": "5d4e72bcc54fc40b93d9b51a181b6a9b36ebb5a0f42c25e4f6bb97793e8bc6da"
+        },
+        "downloads": 3153,
+        "filename": "dnslib-0.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "da9d804327b8104a102d93846c4d9c45",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 6617,
+        "upload_time": "2010-09-19T17:31:45",
+        "url": "https://files.pythonhosted.org/packages/55/a6/2282644b1dae563dbe6929ba22eb8ffd673ca8a72071100fab9432c93e3b/dnslib-0.1.tar.gz"
+      }
+    ],
+    "0.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8554cc437ebce8fdc79390e83bab859a",
+          "sha256": "541a645576cf34f98e5ed94826406b789a38d8b8cc4ec2a73ea7b316742ecbdb"
+        },
+        "downloads": 7596,
+        "filename": "dnslib-0.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8554cc437ebce8fdc79390e83bab859a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 6673,
+        "upload_time": "2010-09-22T00:10:11",
+        "url": "https://files.pythonhosted.org/packages/73/6b/607904f15412e8000ca4dd33241877338ed3afca5b8fd904832830ac338f/dnslib-0.2.tar.gz"
+      }
+    ],
+    "0.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7bedb4336e0c5a01a247f8bfd8719a1b",
+          "sha256": "6a59b70ba5d0288aebfadf145e547abe988c01ee97fd0ef2c57723ac0ab5a577"
+        },
+        "downloads": 3149,
+        "filename": "dnslib-0.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7bedb4336e0c5a01a247f8bfd8719a1b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 6735,
+        "upload_time": "2010-10-02T10:10:09",
+        "url": "https://files.pythonhosted.org/packages/27/80/14baa3a19f40644309f4483156db2bd9ae1b6990237c6a8d20673dab8572/dnslib-0.3.tar.gz"
+      }
+    ],
+    "0.3.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a6e107bb2bcf3ef276e1b49a714a0f5d",
+          "sha256": "c3735f9ec4da7ddabd5be4d0dfc6446a2a8595803e1615344a1f75ba492ea5ca"
+        },
+        "downloads": 3159,
+        "filename": "dnslib-0.3.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a6e107bb2bcf3ef276e1b49a714a0f5d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 7075,
+        "upload_time": "2010-10-02T10:30:42",
+        "url": "https://files.pythonhosted.org/packages/e1/25/8ee21206044f02f33e004231b738c72d8c9f3edd1ad146782efc63f4f2df/dnslib-0.3.1.tar.gz"
+      }
+    ],
+    "0.3.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2b705404a930f1c5ca32a21553bef222",
+          "sha256": "2b6c0e069cd30deb3a09b0470774b0f200380cbdb38fccd1880877f79fd5183f"
+        },
+        "downloads": 3145,
+        "filename": "dnslib-0.3.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2b705404a930f1c5ca32a21553bef222",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 7899,
+        "upload_time": "2010-10-02T11:20:13",
+        "url": "https://files.pythonhosted.org/packages/55/26/0fd8857a7cdf5bb395bed12e15f8dfef70719d35a0c2effab9a0976cd4d4/dnslib-0.3.2.tar.gz"
+      }
+    ],
+    "0.3.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0b3dc18ec8139b35dc1624278b925a3f",
+          "sha256": "c932734ff1ebde1a7d2db4b0a38ecf23545fac77d24360ca6b25f31a3ef82fea"
+        },
+        "downloads": 3454,
+        "filename": "dnslib-0.3.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0b3dc18ec8139b35dc1624278b925a3f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 8630,
+        "upload_time": "2010-10-05T23:27:11",
+        "url": "https://files.pythonhosted.org/packages/9b/c2/8f0679aed900c1e30d1605a8d9ce598bbd57753130beb67e6197175ba937/dnslib-0.3.3.tar.gz"
+      }
+    ],
+    "0.4.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1eef41ea230bf0d428af80ebec829b12",
+          "sha256": "dc3e50a67f7ce02f9d993e1493ab2606305c6e5e6f561cf9e4547ff6cf29730f"
+        },
+        "downloads": 3143,
+        "filename": "dnslib-0.4.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1eef41ea230bf0d428af80ebec829b12",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 8767,
+        "upload_time": "2011-10-31T23:15:45",
+        "url": "https://files.pythonhosted.org/packages/f5/c9/15ef95b68b74c320c35b0ba2fa107f37c4d91513e2cc096b9f1568901e5a/dnslib-0.4.0.tar.gz"
+      }
+    ],
+    "0.4.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "cba0acda7ad2e767134b4522584d12c3",
+          "sha256": "49df1a695787729c001b3e115b657f818c36e768ff648a4802000be5fb28e9a4"
+        },
+        "downloads": 2944,
+        "filename": "dnslib-0.4.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "cba0acda7ad2e767134b4522584d12c3",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9415,
+        "upload_time": "2012-02-27T00:05:45",
+        "url": "https://files.pythonhosted.org/packages/a9/4c/ee7ac4055946a5347c683b289f5c35b83c3de988c05c1a5150ddc4244afe/dnslib-0.4.1.tar.gz"
+      }
+    ],
+    "0.4.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6f3ad439a3fcd5f84d3917e8ac7a5bc0",
+          "sha256": "15ad6b5f240a3d02cecd8b9c39f01f5e01c11dfa9cf8bd49b489ea15c2663d0a"
+        },
+        "downloads": 3236,
+        "filename": "dnslib-0.4.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6f3ad439a3fcd5f84d3917e8ac7a5bc0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9419,
+        "upload_time": "2012-02-27T00:09:07",
+        "url": "https://files.pythonhosted.org/packages/61/51/eceb01683a0e3cc9598fd4bdb89463eb938ce4100709e7d802d0fb605db5/dnslib-0.4.2.tar.gz"
+      }
+    ],
+    "0.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f63b903d759aea56b1fe09537d4f0532",
+          "sha256": "66d09ab5a4a1b796e052cea2b2ab622e06e72c0fe3d938a5da0fec34f10fe7d3"
+        },
+        "downloads": 9627,
+        "filename": "dnslib-0.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f63b903d759aea56b1fe09537d4f0532",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9622,
+        "upload_time": "2012-09-13T19:59:06",
+        "url": "https://files.pythonhosted.org/packages/34/b2/76d2d636440003cb097ffb58e572c522b0dca9004df1151a9b1b02018220/dnslib-0.5.tar.gz"
+      }
+    ],
+    "0.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0f3e503706ee1ef2dc8ff9fb8c7dc9be",
+          "sha256": "8f5b8bf42c2d76dde78f55d1f5b020b2de82c7bb0ba371adf78ab8f2f64cea10"
+        },
+        "downloads": 2652,
+        "filename": "dnslib-0.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0f3e503706ee1ef2dc8ff9fb8c7dc9be",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9734,
+        "upload_time": "2012-10-20T00:12:26",
+        "url": "https://files.pythonhosted.org/packages/e6/be/1c8081f7d883422bd752ea8ad58df5368ad3e796808abbbfc14ec1b970ca/dnslib-0.6.tar.gz"
+      }
+    ],
+    "0.6.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8da9fb083ae63e3e08ea33e52ff8b0e9",
+          "sha256": "780d220c692cd6e090e87c6bdc1b09779e3d87c16fdc74cf8dd148098515bdeb"
+        },
+        "downloads": 3258,
+        "filename": "dnslib-0.6.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8da9fb083ae63e3e08ea33e52ff8b0e9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9749,
+        "upload_time": "2012-10-20T00:29:46",
+        "url": "https://files.pythonhosted.org/packages/17/a1/cf7d89b224d967cef9f10d39a77aabdbb4f9a6e3890f9a3729667cf07baa/dnslib-0.6.1.tar.gz"
+      }
+    ],
+    "0.6.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "142cf01505baccf89aefd959fdfd0a37",
+          "sha256": "b79f77497db844fd639286d488c9a3479c23e6cfc172d948aea2293e30dc9d1c"
+        },
+        "downloads": 2643,
+        "filename": "dnslib-0.6.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "142cf01505baccf89aefd959fdfd0a37",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 11153,
+        "upload_time": "2012-10-20T00:33:20",
+        "url": "https://files.pythonhosted.org/packages/db/69/ecbcd97780dda49279b136f1e4d7ee175efb2d7ba2de527f23712cf704e4/dnslib-0.6.2.tar.gz"
+      }
+    ],
+    "0.7": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b64d5f2c36c25ecf7a2c133589fedf8d",
+          "sha256": "43a334d759d869cc32f5d0018995a9679d98f0ecafb487118dd07f47866bac2e"
+        },
+        "downloads": 2754,
+        "filename": "dnslib-0.7.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b64d5f2c36c25ecf7a2c133589fedf8d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 11520,
+        "upload_time": "2012-10-20T09:38:06",
+        "url": "https://files.pythonhosted.org/packages/1a/16/6f6fd1ce7c2ec3f4e34cbdfcc03e2de3923089f6316606c5c41e4cf33a95/dnslib-0.7.tar.gz"
+      }
+    ],
+    "0.8": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8b0a073a61035c2293c398143d9c8045",
+          "sha256": "62d2ae2710a07a61e61db0f85340e942e0d88ac6cde48ecee00b7b8c4e8cb4f1"
+        },
+        "downloads": 2988,
+        "filename": "dnslib-0.8.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8b0a073a61035c2293c398143d9c8045",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 12069,
+        "upload_time": "2012-11-04T15:57:11",
+        "url": "https://files.pythonhosted.org/packages/9d/7c/cbfb3d91f189328ca142799c09822877915c1761a63a2c357e0fd57e73f8/dnslib-0.8.tar.gz"
+      }
+    ],
+    "0.8.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4c3e8f6f065b201d77da8c1b958cb2e6",
+          "sha256": "ca19ca50c53123e1283848b08a0f34d511f533f4f627648c229ed7a51052960f"
+        },
+        "downloads": 2547,
+        "filename": "dnslib-0.8.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4c3e8f6f065b201d77da8c1b958cb2e6",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 12557,
+        "upload_time": "2012-11-05T16:49:14",
+        "url": "https://files.pythonhosted.org/packages/b1/e4/06d734a91ee6f46ce86d605a9c4461d3287cb1c70d4b51b80ad356ee2375/dnslib-0.8.1.tar.gz"
+      }
+    ],
+    "0.8.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a946382e38d382b92cf3a5f253827441",
+          "sha256": "ae63e795b299286db12df7de443873fe91da6f4195a0cb164f2fc2f9b881f964"
+        },
+        "downloads": 2985,
+        "filename": "dnslib-0.8.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a946382e38d382b92cf3a5f253827441",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 13649,
+        "upload_time": "2012-11-11T11:54:52",
+        "url": "https://files.pythonhosted.org/packages/ef/9b/c896d65affdee9fd1cc3f96c54ef275cd83d8575dbd9ff523e4c29b0e9d2/dnslib-0.8.2.tar.gz"
+      }
+    ],
+    "0.8.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0a09a407ae5239e8d53e3115510e7107",
+          "sha256": "ea25f607be8c92a118f09976eedb9baa75f298df66957352cf1b2898df50541b"
+        },
+        "downloads": 9610,
+        "filename": "dnslib-0.8.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0a09a407ae5239e8d53e3115510e7107",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 13724,
+        "upload_time": "2013-04-27T15:37:22",
+        "url": "https://files.pythonhosted.org/packages/3e/18/fccfae27da99b25c316f4d8878280d1b2b9782aa4b0380f689b899d91fe3/dnslib-0.8.3.tar.gz"
+      }
+    ],
+    "0.9.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0d7b6434f00a2411e2e8cc15878ac4ba",
+          "sha256": "60a75ce1ccbac64b9e0137b2a542b35df19491fcf66d18a0d8eb06757ae11f56"
+        },
+        "downloads": 5566,
+        "filename": "dnslib-0.9.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0d7b6434f00a2411e2e8cc15878ac4ba",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 54180,
+        "upload_time": "2014-05-05T12:58:54",
+        "url": "https://files.pythonhosted.org/packages/b1/15/c0285570fc213b8e3c773d2dcffaff6489cb28e1ca1064476567989f1cb0/dnslib-0.9.0.tar.gz"
+      }
+    ],
+    "0.9.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "611133553b4dc243e82c981e08f70af3",
+          "sha256": "862a1d703b938e8982736ff20be54b53e4243a33e86b31c9474c8830821fa79f"
+        },
+        "downloads": 1461,
+        "filename": "dnslib-0.9.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "611133553b4dc243e82c981e08f70af3",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 60660,
+        "upload_time": "2014-08-26T22:37:53",
+        "url": "https://files.pythonhosted.org/packages/c4/c8/45eff3668310d67a8b36854eb7ee65cb6a7dd892bf3e9fd2c460691465d3/dnslib-0.9.2.tar.gz"
+      }
+    ],
+    "0.9.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ff526858e05d615c01944563bce65df4",
+          "sha256": "c8d9d8f13389088196159d0280c565fc731b90fad414453d0e33195f5a1c91fd"
+        },
+        "downloads": 10510,
+        "filename": "dnslib-0.9.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ff526858e05d615c01944563bce65df4",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 60854,
+        "upload_time": "2014-08-26T23:02:10",
+        "url": "https://files.pythonhosted.org/packages/c3/10/2756af87b4e7ee01c245b43d504d25e225eec4abb93f08dc24564ed79650/dnslib-0.9.3.tar.gz"
+      }
+    ],
+    "0.9.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8a8fb0a228dc1b6e3d058e8396d02430",
+          "sha256": "41b3698a88fe0d0f52a007032f4983fdbbf79578e251685d4aa87896cb29b545"
+        },
+        "downloads": 26701,
+        "filename": "dnslib-0.9.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8a8fb0a228dc1b6e3d058e8396d02430",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 59732,
+        "upload_time": "2015-04-10T22:54:25",
+        "url": "https://files.pythonhosted.org/packages/a2/ac/2fba823fed33dcc384a8c02e6236150c70731a275d0712782b87a7cf4dc4/dnslib-0.9.4.tar.gz"
+      }
+    ],
+    "0.9.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ab26665b468a74b01d0882bc6b67f12a",
+          "sha256": "2421b7f1b61d2c357e1cb59baa71a07cc60b4d9b8077f3d84174861d8cf96f50"
+        },
+        "downloads": 911,
+        "filename": "dnslib-0.9.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ab26665b468a74b01d0882bc6b67f12a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 60082,
+        "upload_time": "2015-10-27T22:23:53",
+        "url": "https://files.pythonhosted.org/packages/4a/5c/560b51770ac0d18427557e49e3d916fcfc11f39be12df13b9c0220a5b8f8/dnslib-0.9.5.tar.gz"
+      }
+    ],
+    "0.9.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "794028e9b92b8fad9712ac6655b7fb1d",
+          "sha256": "6ba31ae2014644901a301727cc4e22844eb19295a959c362568f08aee9b3bfa8"
+        },
+        "downloads": 18572,
+        "filename": "dnslib-0.9.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "794028e9b92b8fad9712ac6655b7fb1d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 60079,
+        "upload_time": "2015-10-30T13:12:29",
+        "url": "https://files.pythonhosted.org/packages/d2/49/d9430826e6678cab9675e343c795e3e0c3ca568b9dfcc145b5d5490c3b17/dnslib-0.9.6.tar.gz"
+      }
+    ],
+    "0.9.7": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a0d616a2866ba5b6c7625b2e8d37695e",
+          "sha256": "2973fefc1527cd77d07f140b9dc46221384542c233c6013a0ca779b8e07f1c8a"
+        },
+        "downloads": 640,
+        "filename": "dnslib-0.9.7.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a0d616a2866ba5b6c7625b2e8d37695e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 60363,
+        "upload_time": "2017-01-15T20:14:08",
+        "url": "https://files.pythonhosted.org/packages/3a/c0/ee8fe42363b7402c97ddbe468fe2d0a72d93e24d8a264dc72b8963cc5bc0/dnslib-0.9.7.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "a0d616a2866ba5b6c7625b2e8d37695e",
+        "sha256": "2973fefc1527cd77d07f140b9dc46221384542c233c6013a0ca779b8e07f1c8a"
+      },
+      "downloads": 640,
+      "filename": "dnslib-0.9.7.tar.gz",
+      "has_sig": false,
+      "md5_digest": "a0d616a2866ba5b6c7625b2e8d37695e",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 60363,
+      "upload_time": "2017-01-15T20:14:08",
+      "url": "https://files.pythonhosted.org/packages/3a/c0/ee8fe42363b7402c97ddbe468fe2d0a72d93e24d8a264dc72b8963cc5bc0/dnslib-0.9.7.tar.gz"
+    }
+  ]
+}

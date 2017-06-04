@@ -1,0 +1,462 @@
+{
+  "info": {
+    "author": "Oliver Cope",
+    "author_email": "oliver@redgecko.org",
+    "bugtrack_url": "",
+    "classifiers": [],
+    "description": "Yoyo database migrations\n========================\n\nYoyo is a database schema migration tool using plain SQL and python's builtin\nDB-API.\n\n.. image:: https://drone.io/bitbucket.org/ollyc/yoyo/status.png\n\n\nWhat does yoyo-migrations do?\n-----------------------------\n\nAs database applications evolve, changes to the database schema are often\nrequired. These can usually be written as one-off SQL scripts containing\nCREATE/ALTER table statements (although any SQL or python script may be used\nwith yoyo).\n\nYoyo provides a command line tool for reading a directory of such\nscripts and applying them to your database as required.\n\nInstallation\n------------\n\nInstall from the PyPI with the command::\n\n  pip install yoyo-migrations\n\nDatabase support\n----------------\n\nPostgreSQL, MySQL and SQLite databases are supported.\nAn ODBC backend is also available, but is unsupported (patches welcome!)\n\n\nUsage\n-----\n\nYoyo is usually invoked as a command line script.\n\nStart a new migration::\n\n  yoyo new ./migrations -m \"Add column to foo\"\n\n\nApply migrations from directory ``migrations`` to a PostgreSQL database::\n\n   yoyo apply --database postgresql://scott:tiger@localhost/db ./migrations\n\nRollback migrations previously applied to a MySQL database::\n\n   yoyo rollback --database mysql://scott:tiger@localhost/database ./migrations\n\nReapply (ie rollback then apply again) migrations to a SQLite database at\nlocation ``/home/sheila/important.db``::\n\n    yoyo reapply --database sqlite:////home/sheila/important.db ./migrations\n\nBy default, yoyo-migrations starts in an interactive mode, prompting you for\neach migration file before applying it, making it easy to preview which\nmigrations to apply and rollback.\n\nThe migrations directory should contain a series of migration scripts. Each\nmigration script is a python file (``.py``) containing a series of steps. Each\nstep should comprise a migration query and (optionally) a rollback query. For\nexample::\n\n    #\n    # file: migrations/0001.create-foo.py\n    #\n    from yoyo import step\n    step(\n        \"CREATE TABLE foo (id INT, bar VARCHAR(20), PRIMARY KEY (id))\",\n        \"DROP TABLE foo\",\n    )\n\nMigrations may also declare dependencies on previous migrations via the\n``__depends__`` attribute::\n\n    #\n    # file: migrations/0002.modify-foo.py\n    #\n    __depends__ = ['0001.create-foo']\n\n    step(\n        \"CREATE TABLE foo (id INT, bar VARCHAR(20), PRIMARY KEY (id))\",\n        \"DROP TABLE foo\",\n    )\n\n\nThe filename of each file (without the .py extension) is used as the identifier\nfor each migration. In the absence of a ``__depends__`` attribute, migrations\nare applied in filename order, so it's useful to\nname your files using a date (eg '20090115-xyz.py') or some other incrementing\nnumber.\n\nyoyo creates a table in your target database, ``_yoyo_migration``, to\ntrack which migrations have been applied.\n\nSteps may also take an optional argument ``ignore_errors``, which must be one\nof ``apply``, ``rollback``, or ``all``. If in the previous example the table\nfoo might have already been created by another means, we could add\n``ignore_errors='apply'`` to the step to allow the migrations to continue\nregardless::\n\n    #\n    # file: migrations/0001.create-foo.py\n    #\n    from yoyo import step\n    step(\n        \"CREATE TABLE foo (id INT, bar VARCHAR(20), PRIMARY KEY (id))\",\n        \"DROP TABLE foo\",\n        ignore_errors='apply',\n    )\n\nSteps can also be python callable objects that take a database connection as\ntheir single argument. For example::\n\n    #\n    # file: migrations/0002.update-keys.py\n    #\n    from yoyo import step\n    def do_step(conn):\n        cursor = conn.cursor()\n        cursor.execute(\n            \"INSERT INTO sysinfo \"\n            \" (osname, hostname, release, version, arch)\"\n            \" VALUES (%s, %s, %s, %s, %s %s)\",\n            os.uname()\n        )\n\n    step(do_step)\n\nConfiguration file\n------------------\n\nYoyo looks for a configuration file named ``yoyo.ini`` in the current working\ndirectory or any ancestor directory. This can contain the following\noptions::\n\n  [DEFAULT]\n\n  # List of migration source directories. \"%(here)s\" is expanded to the\n  # full path of the directory containing this ini file.\n  sources = %(here)s/migrations %(here)s/lib/module/migrations\n\n  # Target database\n  database = postgresql://scott:tiger@localhost/mydb\n\n  # Verbosity level. Goes from 0 (least verbose) to 3 (most verbose)\n  verbosity = 3\n\n  # Disable interactive features\n  batch_mode = on\n\n  # Editor to use when starting new migrations\n  # \"{}\" is expanded to the filename of the new migration\n  editor = /usr/local/bin/vim -f {}\n\n  # An arbitrary command to run after a migration has been created\n  # \"{}\" is expanded to the filename of the new migration\n  post_create_command = hg add {}\n\n  # A prefix to use for generated migration filenames\n  prefix = myproject_\n\n\nConfig file inheritance may be used to customize configuration per site::\n\n  #\n  # file: yoyo-defaults.ini\n  #\n  [DEFAULT]\n  sources = %(here)s/migrations\n\n\n  #\n  # file: yoyo.ini\n  #\n  [DEFAULT]\n\n  ; Inherit settings from yoyo-defaults.ini\n  %inherit = %(here)s/yoyo-defaults.ini\n\n  ; Use '?' to avoid raising an error if the file does not exist\n  %inherit = ?%(here)s/yoyo-defaults.ini\n\n  database = sqlite:///%(here)s/mydb.sqlite\n\n\n\nTransactions\n------------\n\nEach migration is run in a separate transaction and savepoints are used\nto isolate steps within each migration.\n\nIf an error occurs during a step and the step has ``ignore_errors`` set,\nthen that individual step will be rolled back and\nexecution will pick up from the next step.\nIf ``ignore_errors`` is not set then the entire migration will be rolled back\nand execution stopped.\n\nNote that some databases (eg MySQL) do not support rollback on DDL statements\n(eg ``CREATE ...`` and ``ALTER ...`` statements). For these databases\nyou may need to manually intervene to reset the database state\nshould errors occur during your migration.\n\nUsing ``group`` allows you to nest steps, giving you control of where\nrollbacks happen. For example::\n\n    group([\n      step(\"ALTER TABLE employees ADD tax_code TEXT\"),\n      step(\"CREATE INDEX tax_code_idx ON employees (tax_code)\")\n    ], ignore_errors='all')\n    step(\"UPDATE employees SET tax_code='C' WHERE pay_grade < 4\")\n    step(\"UPDATE employees SET tax_code='B' WHERE pay_grade >= 6\")\n    step(\"UPDATE employees SET tax_code='A' WHERE pay_grade >= 8\")\n\nDisabling transactions\n~~~~~~~~~~~~~~~~~~~~~~\n\nIn PostgreSQL it is an error to run certain statements inside a transaction\nblock. These include:\n\n.. code::sql\n\n    CREATE TABLE <foo>\n    ALTER TYPE <enum> ADD ...\n\nMigrations containing such statements should set\n``__transactional__ = False``, eg:\n\n.. code::python\n\n    __transactional__ = False\n\n    step(\"CREATE DATABASE mydb\", \"DROP DATABASE mydb\")\n\nNote that this feature is implemented for the PostgreSQL backend only.\n\nPost-apply hook\n---------------\n\nIt can be useful to have a script that's run after successful migrations. For\nexample you could use this to update database permissions or re-create views.\nTo do this, create a migration file called ``post-apply.py``. This file should\nhave the same format as any other migration file.\n\nPassword security\n-----------------\n\nYou normally specify your database username and password as part of the\ndatabase connection string on the command line. On a multi-user machine, other\nusers could view your database password in the process list.\n\nThe ``-p`` or ``--prompt-password`` flag causes yoyo to prompt\nfor a password, ignoring any password specified in the connection string. This\npassword will not be available to other users via the system's process list.\n\nConfiguration file\n------------------\n\nYoyo looks for a configuration file called ``yoyo.ini``, in\nthe current working directory or any ancestor directory.\n\nIf no configuration file is found ``yoyo`` will prompt you to\ncreate one, popuplated with the current command line args.\n\nUsing a configuration file saves typing,\navoids your database username and password showing in\nprocess listings and lessens the risk of accidentally running ``yoyo``\non the wrong database (ie by re-running an earlier ``yoyo`` entry in\nyour command history when you have moved to a different directory).\n\nIf you do not want this config file to be used, add the ``--no-config``\nparameter to the command line options.\n\nConnections\n-----------\n\nDatabase connections are specified using a URI. Examples:\n\nSQLite\n~~~~~~\n\n::\n\n  # Use 4 slashes for an absolute database path on unix like platforms\n  database = sqlite:////home/user/mydb.sqlite\n\n  # Absolute path on Windows.\n  database = sqlite:///c:\\home\\user\\mydb.sqlite\n\n  # Use 3 slashes for a relative path\n  database = sqlite:///mydb.sqlite\n\n\nMySQL\n~~~~~\n\n::\n\n  # Network database connection\n  database = mysql://scott:tiger@localhost/mydatabase\n\n  # Connect via a unix socket\n  database = mysql://scott:tiger@/mydatabase?unix_socket=/tmp/mysql.sock\n\n\nMySQL with MySQLdb\n~~~~~~~~~~~~~~~~~~\n\n::\n\n  # Use the MySQLdb driver instead of pymysql\n  database = mysql+mysqldb://scott:tiger@localhost/mydatabase\n\nPostgreSQL\n~~~~~~~~~~\n\n::\n\n  # Network database connection\n  database = postgresql://scott:tiger@localhost/mydatabase\n\n  # Omit the host to use a socket connection\n  database = postgresql://scott:tiger@/mydatabase\n\n\nUsing yoyo from python code\n---------------------------\n\nThe following example shows how to apply migrations from inside python code::\n\n    from yoyo import read_migrations, get_backend\n\n    backend = get_backend('postgres://myuser@localhost/mydatabase')\n    migrations = read_migrations('path/to/migrations')\n    backend.apply_migrations(backend.to_apply(migrations))\n\n.. :vim:sw=4:et\n\n\nCHANGELOG\n---------\n\n5.0.5 (released 2017-01-12)\n~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n* Added support for a ``__transactional__ = False`` flag in migration files,\n  allowing migrations to run commands in PostgreSQL that raise errors\n  if run inside a transaction block (eg \"CREATE DATABASE\")\n\n* Bugfix: fix the unix_socket option for mysql connections\n\n5.0.4 (released 2016-09-04)\n~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n* Bugfix: fixed crash when mutliple migrations have the same dependency\n  (thanks to smotko for the report)\n\n5.0.3 (released 2016-07-03)\n~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n* Bugfix: fixed exception when creating a new migration interactively\n  with `yoyo new`\n\n5.0.2 (released 2016-06-21)\n~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n* Added ``DatabaseBackend.apply_migrations_only`` and ``run_post_hooks``\n  methods. This allows python code that interfaces with yoyo to run migrations\n  and post_hooks separately if required (thanks to Robi Wan for reporting this\n  and discussing possible fixes)\n* Bugfix: fix duplicate key error when using post-apply hooks (thanks to Robi\n  Wan for the report)\n* Bugfix: migration steps are no longer loaded multiple times if\n  read_migrations is called more than once (thanks to Kyle McChesney for the\n  report)\n* Bugfix: make sure that the migration_table option is read from the config\n  file (thanks to Frederik Holljen for the report and Manolo Micozzi for the\n  fix)\n\n5.0.1 (released 2015-11-13)\n~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n* Bugfix: migration files are now sequentially named when using the prefix\n  option (thanks to Igor Tsarev)\n\n5.0.0 (released 2015-11-13)\n~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n**This version introduces backwards incompatible changes**. Please read this\nfile carefully before upgrading.\n\n* The configuration file is now stored per-project, not per-migrations source\n  directory. This makes it possible to share a migrations source directory\n  across multiple projects.\n* The api for calling yoyo programmatically has changed. Refer to the\n  README for an up to date example of calling yoyo from python code.\n* Improved url parsing\n* Allow database uris containing usernames with the symbol '@'\n* The command line option ``--no-cache`` has been renamed to\n  ``--no-config-file``. The old name is retained as an alias for backwards\n  compatibility\n* The database must now be supplied using the ``--database/-d`` command line\n  flag. This makes it possible to change the database when calling yoyo without\n  needing to respecify the migration directories.\n* Added a --revision command line option. In the case of apply, this causes\n  the specified migration to be applied, plus any dependencies. In the case\n  of rollback, this removes the specified revision and any other migrations\n  that depend upon it.\n* Added 'mark' and 'unmark' commands to allow migrations to be marked in the\n  database without actually running them\n* Transaction handling has changed. Each migration now always runs in a\n  single transaction, with individual steps running in nested transactions\n  (using savepoints).\n  The ``transaction()`` function is still available\n  for backwards compatibility,\n  but now creates a savepoint rather than a full transaction.\n* The default MySQL driver has been changed to PyMySQL, for Python 3\n  compatbility reasons. MySQLdb can be used by specifying the\n  'mysql+mysqldb://' scheme.\n* Errors encountered while creating the _yoyo_migrations table are now raised\n  rather than being silently ignored (thanks to James Socol).\n\nVersion 4.2.5\n~~~~~~~~~~~~~\n\n* Fix for pyscopg2 driver versions >=2.6\n* Faster loading of migration scripts\n* Dependencies between migrations can be added via the\n  ``__depends__`` attribute\n* Dropped support for python 2.6\n\nVersion 4.2.4\n\n* Fix for mismanaged 4.2.3 release\n\nVersion 4.2.3\n\n* Migrations are now datestamped with a UTC date (thanks to robi wan)\n\n* Fixes for installation and use under python 3\n\nVersion 4.2.2\n\n* Migration scripts can start with ``from yoyo import step, transaction``.\n  This prevents linters (eg flake8) throwing errors over undefined names.\n\n* Bugfix: functions declared in a migration file can access the script's global\n  namespace\n\nVersion 4.2.1\n\n* Bugfix for previous release, which omitted critical files\n\nVersion 4.2.0\n\n* Removed yoyo.migrate namespace package. Any code that uses the yoyo api\n  directly needs have any imports modified, eg this::\n\n    from yoyo.migrate import read_migrations\n    from yoyo.migrate.connections import connect\n\n  Should be changed to this::\n\n    from yoyo import read_migrations\n    from yoyo.connections import connect\n\n* Migrated from darcs to mercurial. Code is now hosted at\n  https://bitbucket.org/ollyc/yoyo\n\n* Bugfix: the migration_table option was not being passed to read_migrations,\n  causing the value to be ignored\n\nVersion 4.1.6\n\n* Added windows support (thanks to Peter Shinners)\n\nVersion 4.1.5\n\n* Configure logging handlers so that the -v switch causes output to go to the\n  console (thanks to Andrew Nelis).\n\n* ``-v`` command line switch no longer takes an argument but may be specified\n  multiple times instead (ie use ``-vvv`` instead of ``-v3``). ``--verbosity``\n  retains the old behaviour.\n\nVersion 4.1.4\n\n* Bugfix for post apply hooks\n\nVersion 4.1.3\n\n* Changed default migration table name back to '_yoyo_migration'\n\nVersion 4.1.2\n\n* Bugfix for error when running in interactive mode\n\nVersion 4.1.1\n\n* Introduced configuration option for migration table name\n\nVersion 4.1.0\n\n* Introduced ability to run steps within a transaction (thanks to Ryan Williams\n  for suggesting this functionality along with assorted bug fixes.)\n\n* \"post-apply\" migrations can be run after every successful upward migration\n\n* Other minor bugfixes and improvements\n\n* Switched to <major>.<minor> version numbering convention\n\nVersion 4\n\n* Fixed problem installing due to missing manifest entry\n\nVersion 3\n\n* Use the console_scripts entry_point in preference to scripts=[] in\n  setup.py, this provides better interoperability with buildout\n\nVersion 2\n\n* Fixed error when reading dburi from config file\n\nVersion 1\n\n* Initial release\n\n",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://bitbucket.org/ollyc/yoyo",
+    "keywords": "migrations",
+    "license": "Apache",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "yoyo-migrations",
+    "platform": "",
+    "project_url": "https://pypi.org/project/yoyo-migrations/",
+    "release_url": "https://pypi.org/project/yoyo-migrations/5.0.5/",
+    "requires_python": "",
+    "summary": "Database schema migration tool using SQL and DB-API",
+    "version": "5.0.5"
+  },
+  "releases": {
+    "1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e1d12a54383fd882108a62a0a71af25a",
+          "sha256": "2e2bdaf90a9634a52486d0fcb8a45c1043ed13563a89ef0a7cb5731f1c226e84"
+        },
+        "downloads": 2429,
+        "filename": "yoyo-migrations-1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e1d12a54383fd882108a62a0a71af25a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 11044,
+        "upload_time": "2010-02-22T11:43:12",
+        "url": "https://files.pythonhosted.org/packages/45/ff/69e53ca2738c4c1a55a16f863ff86088eb6faae1464af668d74fe21eda7d/yoyo-migrations-1.tar.gz"
+      }
+    ],
+    "2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0f304355fb4d0d6d397c84a38d22b9b9",
+          "sha256": "aa0156cd2f3828dee7625c1bb9d8d0673d5d47d0b52acd453c11d8f20bbf4eb4"
+        },
+        "downloads": 2583,
+        "filename": "yoyo-migrations-2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0f304355fb4d0d6d397c84a38d22b9b9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 11045,
+        "upload_time": "2010-02-22T13:33:45",
+        "url": "https://files.pythonhosted.org/packages/a4/95/9ff647032e3015136a847b37d813a88cb9c41c3ff33f21b9e8a3bc6d5ed6/yoyo-migrations-2.tar.gz"
+      }
+    ],
+    "3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "fa92c618dec57a0c6ccabead4b47e89c",
+          "sha256": "83d713db4de000f2029a8e7aa3c0d600792f47d287eadca96d8b24b1b8342f04"
+        },
+        "downloads": 2426,
+        "filename": "yoyo-migrations-3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "fa92c618dec57a0c6ccabead4b47e89c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 13002,
+        "upload_time": "2010-04-27T17:10:31",
+        "url": "https://files.pythonhosted.org/packages/f0/e4/e003d456eccace15a9cbd1a276c934b447c0e15349bb23099694e0042f18/yoyo-migrations-3.tar.gz"
+      }
+    ],
+    "4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ebd6fe74b858666991a0a7063e42c9c3",
+          "sha256": "4dd56624c2c966911ab4dbe1efce32c535c55f2c324aef917e3f457ecc76a649"
+        },
+        "downloads": 2514,
+        "filename": "yoyo-migrations-4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ebd6fe74b858666991a0a7063e42c9c3",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16697,
+        "upload_time": "2010-04-27T17:14:47",
+        "url": "https://files.pythonhosted.org/packages/a5/44/1389bded90720398579e928185a361d2cea399a334273dda7d82af5b90dd/yoyo-migrations-4.tar.gz"
+      }
+    ],
+    "4.1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d3f84d131c89eb10d5e4baef2c864238",
+          "sha256": "53dc2e77299a3cb0a723007bac1f96cd1cb7935843936f72236c77e409cf5acf"
+        },
+        "downloads": 2995,
+        "filename": "yoyo-migrations-4.1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d3f84d131c89eb10d5e4baef2c864238",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 19742,
+        "upload_time": "2010-09-24T19:16:33",
+        "url": "https://files.pythonhosted.org/packages/dd/75/1e40325a856ef8fd471a992eb6a0f24f46592ce606ed015e5b007615312a/yoyo-migrations-4.1.0.tar.gz"
+      }
+    ],
+    "4.1.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d2b783c8bba21208613a780d222e7321",
+          "sha256": "fb07467fc3b12c799a4124bee9ab3f348b01b974b4d9b145bf0ea7fd16ad727f"
+        },
+        "downloads": 2386,
+        "filename": "yoyo-migrations-4.1.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d2b783c8bba21208613a780d222e7321",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 18378,
+        "upload_time": "2011-07-14T18:24:44",
+        "url": "https://files.pythonhosted.org/packages/32/bb/18e2ed484c8a7fa84c3380a64532e2e73e0c733ecdd0a4142c1d2302a4e6/yoyo-migrations-4.1.1.tar.gz"
+      }
+    ],
+    "4.1.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "974154e560b19ab148e76f8817dee782",
+          "sha256": "e1c531473a13d251c0f0fb487ec89e3d965b0d73044a8cf1265a7940a57120ef"
+        },
+        "downloads": 2279,
+        "filename": "yoyo-migrations-4.1.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "974154e560b19ab148e76f8817dee782",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 18436,
+        "upload_time": "2011-08-04T13:04:34",
+        "url": "https://files.pythonhosted.org/packages/0e/89/21fd24c831879f6e6f524ee96618ab1b4eaf176a56ee79cd9f0612130d5f/yoyo-migrations-4.1.2.tar.gz"
+      }
+    ],
+    "4.1.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f08302fc163d84d9dc3c6cddfc917583",
+          "sha256": "09454b9bc46705ddc4bd2dbc86e1bf46da764b7206ab241a0b7983e2a12d1d42"
+        },
+        "downloads": 2399,
+        "filename": "yoyo-migrations-4.1.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f08302fc163d84d9dc3c6cddfc917583",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 18480,
+        "upload_time": "2011-08-04T13:24:27",
+        "url": "https://files.pythonhosted.org/packages/e9/cc/0ef9d0608d8b6113201c27370d9b9d769c291a49fafbf8d44cc2c22ccdbc/yoyo-migrations-4.1.3.tar.gz"
+      }
+    ],
+    "4.1.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "28069b26247d67d6e207e959a54fff58",
+          "sha256": "53c6b9907bea1a1bdaed0950386559cd769ee7c7b5f90485064e38f87cfb1c09"
+        },
+        "downloads": 2586,
+        "filename": "yoyo-migrations-4.1.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "28069b26247d67d6e207e959a54fff58",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 20139,
+        "upload_time": "2011-09-03T17:59:08",
+        "url": "https://files.pythonhosted.org/packages/53/08/7116bc91e03e8a397eddd94a04c47bc8d80bdc69f9d756be1cbf625ab740/yoyo-migrations-4.1.4.tar.gz"
+      }
+    ],
+    "4.1.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "89ebd6738cffa9e090a8f10f994d55b0",
+          "sha256": "8cfaf0320d6ec8c625322a7f174d1bae594ad3628966f74a5d6eb7079fd9ed53"
+        },
+        "downloads": 2420,
+        "filename": "yoyo-migrations-4.1.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "89ebd6738cffa9e090a8f10f994d55b0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 18892,
+        "upload_time": "2011-11-30T17:06:56",
+        "url": "https://files.pythonhosted.org/packages/04/19/5887eaa300b678d70227e19e59c058cf76f612e46923a6d154d33955489a/yoyo-migrations-4.1.5.tar.gz"
+      }
+    ],
+    "4.1.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2df5ec35b9a97bb828d1236d23926ee1",
+          "sha256": "6c7c314ac8537bb8cb4f3ab6e0dfc3f2ce79204f44639dcb4db7308fec9d7de7"
+        },
+        "downloads": 3937,
+        "filename": "yoyo-migrations-4.1.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2df5ec35b9a97bb828d1236d23926ee1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 18955,
+        "upload_time": "2012-05-17T18:51:10",
+        "url": "https://files.pythonhosted.org/packages/75/85/ddd0783f102606e0e9796a97630b687088d4855a174737cede5a476f2599/yoyo-migrations-4.1.6.tar.gz"
+      }
+    ],
+    "4.2.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "817a235d96a068df182ba2b78818e481",
+          "sha256": "87d531079aebdeae8bf72fdced6e4f535c51bc68f690c35b97c5c6d3c018cd8a"
+        },
+        "downloads": 1808,
+        "filename": "yoyo-migrations-4.2.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "817a235d96a068df182ba2b78818e481",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 13201,
+        "upload_time": "2013-06-25T06:21:36",
+        "url": "https://files.pythonhosted.org/packages/6a/12/36bdf12469d7834e373210c2be129e827dab0c82279fc12f93323c3b589f/yoyo-migrations-4.2.0.tar.gz"
+      }
+    ],
+    "4.2.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "46de75e28f8ed1d3be33ea4571603879",
+          "sha256": "b91f3dc78c71f9123c0fd6435b89c4cc9388107114d9ab457c13edce55465335"
+        },
+        "downloads": 2043,
+        "filename": "yoyo-migrations-4.2.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "46de75e28f8ed1d3be33ea4571603879",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 15845,
+        "upload_time": "2013-06-27T09:16:44",
+        "url": "https://files.pythonhosted.org/packages/97/69/9df7cd58652c02b2ce75c382ddd1209d583fde79fe82b086cfe9bf45565e/yoyo-migrations-4.2.1.tar.gz"
+      }
+    ],
+    "4.2.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "beda5d8b02c5743b22e896048e89f225",
+          "sha256": "52679c76a91c76f2046fde6296e5330fffaa57dde7306966c583d7ead1d80596"
+        },
+        "downloads": 2349,
+        "filename": "yoyo-migrations-4.2.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "beda5d8b02c5743b22e896048e89f225",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16422,
+        "upload_time": "2013-09-17T12:13:26",
+        "url": "https://files.pythonhosted.org/packages/bf/7e/33e107da60c8babe444c8b518a666da6d9bd7f68eb086afd9a3a71ce0471/yoyo-migrations-4.2.2.tar.gz"
+      }
+    ],
+    "4.2.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c57a468c554a4965737a5c69e9320b03",
+          "sha256": "694d6805e07f572598e1b7471582c59198c42f60cb7c9bcbbda3a5554b4a8ae9"
+        },
+        "downloads": 1628,
+        "filename": "yoyo-migrations-4.2.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c57a468c554a4965737a5c69e9320b03",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 17214,
+        "upload_time": "2014-02-02T17:39:09",
+        "url": "https://files.pythonhosted.org/packages/1c/c7/8b99a3a9be30d3d224456807b090ae1040285df3dd713123323e771e86d1/yoyo-migrations-4.2.3.tar.gz"
+      }
+    ],
+    "4.2.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d89b345acd9be8fa60cef376333eea62",
+          "sha256": "a5a42fda330aaec02eb5bedd967f1509d579d18513ea6171abb584e1c8491453"
+        },
+        "downloads": 15404,
+        "filename": "yoyo-migrations-4.2.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d89b345acd9be8fa60cef376333eea62",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 17255,
+        "upload_time": "2014-02-02T17:46:06",
+        "url": "https://files.pythonhosted.org/packages/72/2e/1a4183cb3e617a9cd97c3bd5b47215669b8bbd6b24790b0620049990e19a/yoyo-migrations-4.2.4.tar.gz"
+      }
+    ],
+    "4.2.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "01b97d6cb879100986e9f3ee37f63cf3",
+          "sha256": "f28b27272ca71e80be3dd41bb730c79ea346b8f319bfcbce9772e5e6dd493d2f"
+        },
+        "downloads": 21142,
+        "filename": "yoyo-migrations-4.2.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "01b97d6cb879100986e9f3ee37f63cf3",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 19250,
+        "upload_time": "2015-04-16T18:43:43",
+        "url": "https://files.pythonhosted.org/packages/4d/a4/47b80a393973a34bed8785ef82f9da21fa827d13dba6d06eb1b574c92538/yoyo-migrations-4.2.5.tar.gz"
+      }
+    ],
+    "5.0.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "313d146f8fd82210dc163f7d2035c6f0",
+          "sha256": "d1fd8d87eb3bc7d55a8b0ecea45d38a8b425becc213a688191ffc83f147911c2"
+        },
+        "downloads": 889,
+        "filename": "yoyo-migrations-5.0.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "313d146f8fd82210dc163f7d2035c6f0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 39948,
+        "upload_time": "2015-11-13T12:40:53",
+        "url": "https://files.pythonhosted.org/packages/02/81/cb23c18e3e465f7dc2f4a46af0d26285aa4b1d9a5039a1834c528e39537b/yoyo-migrations-5.0.0.tar.gz"
+      }
+    ],
+    "5.0.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "653dd64b57a3271fb10cba21b5931ac4",
+          "sha256": "d458f78443b1db57eda423e86fe8b245561340a394da5dc83f40d6d1ae4237a4"
+        },
+        "downloads": 2578,
+        "filename": "yoyo-migrations-5.0.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "653dd64b57a3271fb10cba21b5931ac4",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 40151,
+        "upload_time": "2015-11-13T15:22:39",
+        "url": "https://files.pythonhosted.org/packages/32/09/f33ddf97b61ae3986bcd0cda1d554edff506d45a766deb34ced8e0837ea6/yoyo-migrations-5.0.1.tar.gz"
+      }
+    ],
+    "5.0.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "034e84be1b954093add33cd7c0d2af72",
+          "sha256": "61c272bd2d6ac9fd0a078eeeb67aafa0b8a55dec88d428fe8ba90548d0c7669f"
+        },
+        "downloads": 274,
+        "filename": "yoyo-migrations-5.0.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "034e84be1b954093add33cd7c0d2af72",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 41549,
+        "upload_time": "2016-06-21T11:06:09",
+        "url": "https://files.pythonhosted.org/packages/58/7e/5be9e39243e05970392d2b24a44f9a0c41489f3e65c39ad9889275e3aa6e/yoyo-migrations-5.0.2.tar.gz"
+      }
+    ],
+    "5.0.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6d5e5807b1daecbddd78fd3e747e8ddc",
+          "sha256": "5f7fa102e956e73882a574226c8c6503ff3408df93f4d2feed789207a73a8935"
+        },
+        "downloads": 9580,
+        "filename": "yoyo-migrations-5.0.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6d5e5807b1daecbddd78fd3e747e8ddc",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 41691,
+        "upload_time": "2016-07-03T07:59:06",
+        "url": "https://files.pythonhosted.org/packages/64/55/97bd1000736023eedddc6c8b6220d7f2425ae9103608a3db8a4d03b32da2/yoyo-migrations-5.0.3.tar.gz"
+      }
+    ],
+    "5.0.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7d18975575c34a291f43083fbc32b2e8",
+          "sha256": "f3aa6cf745208c86135d752a8e5b9c675cda91997f4ffc44f0ef20b5648cdd6c"
+        },
+        "downloads": 1213,
+        "filename": "yoyo-migrations-5.0.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7d18975575c34a291f43083fbc32b2e8",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 41891,
+        "upload_time": "2016-09-04T13:10:39",
+        "url": "https://files.pythonhosted.org/packages/6e/11/07fe9e421dfed991c3eb63dcbee8af712e8daa4f6c08e366033a43d52495/yoyo-migrations-5.0.4.tar.gz"
+      }
+    ],
+    "5.0.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "34d68dd058db37d3334d5257f4908e44",
+          "sha256": "0141541d1738c2a30ca3c4b7e124c09513565c0fbd48d25fb057a09b979e7eeb"
+        },
+        "downloads": 159,
+        "filename": "yoyo-migrations-5.0.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "34d68dd058db37d3334d5257f4908e44",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 40935,
+        "upload_time": "2017-01-12T11:22:52",
+        "url": "https://files.pythonhosted.org/packages/1b/33/7e4866815cc0c722feba5c8f3fb2fa3e6bfbb9d9790c9c5c5d1c9e84cb5b/yoyo-migrations-5.0.5.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "34d68dd058db37d3334d5257f4908e44",
+        "sha256": "0141541d1738c2a30ca3c4b7e124c09513565c0fbd48d25fb057a09b979e7eeb"
+      },
+      "downloads": 159,
+      "filename": "yoyo-migrations-5.0.5.tar.gz",
+      "has_sig": false,
+      "md5_digest": "34d68dd058db37d3334d5257f4908e44",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 40935,
+      "upload_time": "2017-01-12T11:22:52",
+      "url": "https://files.pythonhosted.org/packages/1b/33/7e4866815cc0c722feba5c8f3fb2fa3e6bfbb9d9790c9c5c5d1c9e84cb5b/yoyo-migrations-5.0.5.tar.gz"
+    }
+  ]
+}

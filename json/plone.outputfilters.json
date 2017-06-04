@@ -1,0 +1,666 @@
+{
+  "info": {
+    "author": "David Glick, Plone Foundation",
+    "author_email": "davidglick@groundwire.org",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Framework :: Plone",
+      "Framework :: Plone :: 5.0",
+      "Framework :: Plone :: 5.1",
+      "Programming Language :: Python",
+      "Programming Language :: Python :: 2.7"
+    ],
+    "description": "Introduction\n============\n\n``plone.outputfilters`` provides a framework for registering filters that\nget applied to text as it is rendered.\n\nBy default, these filters are wired up to occur when text is transformed from\nthe text/html mimetype to the text/x-html-safe mimetype via the\nPortalTransforms machinery.\n\nWith both Archetypes TextFields and the RichText field of\n``plone.app.textfield``, this transform is typically applied when the field\nvalue is first accessed. The result of the transform is then cached in a\nvolatile attribute for an hour or until the value is replaced.\n\n\nIncluded Filters\n================\n\nA default filter is included which provides the following features:\n\n* Resolving UID-based links\n* Adding captions to images\n\n(These are implemented as one filter to avoid the overhead of parsing the HTML\ntwice.)\n\nThese features used to be provided by similar transforms in both Products.kupu\nand Products.TinyMCE.  New releases of these editors are being prepared which\ndepend on the transform in plone.outputfilters, so that bugs don't need to be\nfixed in multiple places.\n\n\nResolving UID-based links\n-------------------------\n\nInternal links may be inserted with a UID reference rather than the real path\nof the item being linked.  For example, a link might look like this::\n\n <a href=\"resolveuid/6992f1f6-ae36-11df-9adf-001ec2a8cdf1\">\n\nSuch URLs can be resolved by the ``resolveuid`` view, which resolves the UID to\nan object and then redirects to its URL. However, resolving links in this way\nrequires an extra request after the redirect. The resolveuid filter avoids that\nby replacing such URLs with the object's actual full absolute URL as the link\nis rendered.\n\nUIDs are resolved using ``plone.app.uuid.utils.uuidToURL``, with a fallback to\nthe Archetypes UID catalog for backwards compatibility. LinguaPlone translations\nare supported when LinguaPlone is present.\n\nThe resolveuid filter is enabled if there is at least one\n``plone.outputfilters.filters.resolveuid_and_caption.IResolveUidsEnabler``\nutility whose ``available`` property returns ``True``.  This mechanism exists\nfor compatibility with TinyMCE and kupu, which both provide their own control\npanel setting to enable the link-by-uid feature.\n\n\nImage captioning\n----------------\n\nImage tags with the \"captioned\" class and a ``src`` attribute that resolves to\nan image object within the site will be wrapped in a definition list (DL) tag\nwhich includes a caption based on the value of the image's ``description``\nfield, if any.\n\nFor example, this image tag::\n\n <img src=\"path/to/image\" class=\"captioned\"/>\n\nmight be transformed into::\n\n  <dl class=\"captioned\">\n   <dt><img src=\"path/to/image\"/></dt>\n   <dd class=\"image-caption\">Caption text</dd>\n  </dl>\n\nassuming the image found at \"path/to/image\" has the description \"Caption text\".\n\nThe captioning filter is enabled if there is at least one\n``plone.outputfilters.filters.resolveuid_and_caption.IImageCaptioningEnabler``\nutility whose ``available`` property returns ``True``.  This mechanism exists\nfor compatibility with TinyMCE and kupu, which both provide their own control\npanel setting to enable the captioning feature.\n\nThe captioned version of an image is rendered using the\n``@@plone.outputfilters_captioned_image`` view, which may be overridden to\ncustomize the caption.  This view is passed the following kwargs:\n\nclass\n  The CSS class on the image.\noriginalwidth\n  The ``width`` attribute of the image tag.\noriginalalt\n  The ``alt`` attribute of the image tag.\nurl_path\n  The path of the image, relative to the site root.\ncaption\n  The image's description.\nimage\n  The (possibly scaled) image object.\nfullimage\n  The original unscaled image object.\ntag\n  A full HTML tag which displays the image.\nisfullsize\n  True if ``image`` is ``fullimage``.\nwidth\n  The width of ``image``.\n\nAdding a custom filter\n======================\n\nAs an example, the following filter replaces all doubled hyphens (\"--\") with em\ndashes (\"-\"). (Don't use the example verbatim, because it doesn't parse HTML to\napply itself only to text nodes, so will mangle HTML comments.)\n\nA filter is a callable which accepts a UTF-8-encoded HTML string as input, and\nreturns a modified UTF-8-encoded HTML string. A return value of ``None`` may be\nused to indicate that the input should not be modified.\n\nExample::\n\n    import re\n    from zope.interface import implements\n    from plone.outputfilters.interfaces import IFilter\n\n    class EmDashAdder(object):\n        implements(IFilter)\n        order = 1000\n\n        def __init__(self, context, request):\n            pass\n\n        def is_enabled(self):\n            return True\n\n        pattern = re.compile(r'--')\n\n        def __call__(self, data):\n            return self.pattern.sub('\\xe2\\x80\\x94', data)\n\nThe ``order`` attribute may be used to affect the order in which filters are\napplied (higher values run later). The is_enabled method should return a boolean\nindicating whether the filter should be applied.\n\nFilters are registered in ZCML as a named multi-adapter of the context and\nrequest to IFilter::\n\n    >>> from Zope2.App import zcml\n    >>> import Products.Five\n    >>> configure = \"\"\"\n    ... <configure\n    ...     xmlns=\"http://namespaces.zope.org/zope\">\n    ...\n    ...   <adapter\n    ...     name=\"em_dash_adder\"\n    ...     provides=\"plone.outputfilters.interfaces.IFilter\"\n    ...     for=\"* *\"\n    ...     factory=\"plone.outputfilters.filters.example.EmDashAdder\"\n    ...     />\n    ...\n    ... </configure>\n    ... \"\"\"\n    >>> zcml.load_config(\"configure.zcml\", Products.Five)\n    >>> zcml.load_string(configure)\n\nNow when text is transformed from text/html to text/x-html-safe, the filter will\nbe applied::\n\n    >>> app = layer['app']\n    >>> portal = layer['portal']\n    >>> str(portal.portal_transforms.convertTo('text/x-html-safe',\n    ...     'test--test', mimetype='text/html', context=portal))\n    'test\\xe2\\x80\\x94test'\n\n\nHow it works\n============\n\n``plone.outputfilters`` hooks into the PortalTransforms machinery by installing:\n\n1. a new mimetype (\"text/x-plone-outputfilters-html\")\n2. a transform from text/html to text/x-plone-outputfilters-html\n3. a null transform from text/x-plone-outputfilters-html back to text/html\n4. a \"transform policy\" for the text/x-html-safe mimetype, which says that text\n   being transformed to text/x-html-safe must first be transformed to\n   text/x-plone-outputfilters-html\n\nThe filter adapters are looked up and applied during the execution of the\ntransform from step #2.\n\nThis should be considered an implementation detail and may change at some point\nin the future.\n\n\nChangelog\n=========\n\n3.0.1 (2017-02-05)\n------------------\n\nBug fixes:\n\n- Do not transform a and img tags when inside script tag.\n  [gotcha]\n\n\n3.0.0 (2016-08-19)\n------------------\n\nBreaking changes:\n\n- Give up support of PortalTransforms 1.x with old style interfaces.\n  [jensens]\n\nBug fixes:\n\n- Handle unicode errors in img attributes\n  [vangheem]\n- Cleanup: utf8-headers, isort, pep8\n  [jensens]\n\n- Use zope.interface decorator.\n  [gforcada]\n\n\n2.1.5 (2016-06-07)\n------------------\n\nBug fixes:\n\n- Make tests work with old and new safe HTML transform\n  [tomgross]\n\n\n2.1.4 (2016-05-10)\n------------------\n\nFixes:\n\n- Explicitly exclude ``mailto:`` links from being UID-resolved.\n  [thet]\n\n- Fix test isolation problem.\n  [thet]\n\n\n2.1.3 (2016-03-07)\n------------------\n\nNew:\n\n- Added ``tel:`` to ignored link types.\n  [julianhandl]\n\n\n2.1.2 (2015-12-15)\n------------------\n\nFixes:\n\n- Fixed error when uid resolving if object got didn't have\n  absolute_url method.\n  [Gagaro]\n\n2.1.1 (2015-11-25)\n------------------\n\nFixes:\n\n- Fixed case where unicode ends up getting used when resolving\n  img tags and (un)restrictedTraverse doesn't work with unicode.\n  [vangheem]\n\n\n2.1 (2015-07-18)\n----------------\n\n- Remove kupu BBB code.\n  [gforcada]\n\n\n2.0 (2015-03-13)\n----------------\n\n- For full-size (non-scaled) plone.app.contenttypes images,\n  preserve height/width specified in img tag attributes.\n  [davisagli]\n\n- Convert tests to plone.app.testing\n  [tomgross]\n\n\n1.14 (2014-04-22)\n-----------------\n\n- for plone 5, always resolveuids\n  [vangheem]\n\n\n1.13 (2014-04-13)\n-----------------\n\n- #12783 img tag referencing non existent scales leads to transform error\n  [anthonygerrard]\n\n\n1.12 (2014-01-27)\n-----------------\n\n- Nothing changed yet.\n\n\n1.11.1 (2013-07-19)\n-------------------\n\n- Fix README rst.\n  [gotcha]\n\n\n1.11 (2013-07-19)\n-----------------\n\n- img unicode issue : fix resolve_image to avoid that it returns unicode\n  [gotcha]\n\n- handle possibility of img tag being unicode to prevent unicode errors\n  [vangheem]\n\n\n1.10 (2013-05-23)\n-----------------\n\n- Work around bug in SGMLParser to handle singleton tags correctly.\n  [tom_gross]\n\n\n1.9 (2013-04-06)\n----------------\n\n- If we have an image description it should go into the alt text of the img\n  tag\n  [ale-rt]\n\n\n1.8 (2012-12-10)\n----------------\n\n- Fix packaging issue.\n  [esteele]\n\n\n1.7 (2012-12-09)\n----------------\n\n- When resolving images, only look upward for the full image if the\n  image that was traversed is not a content item (i.e. is a scale).\n  [davisagli, datakurre]\n\n- Also convert \"resolveUid/\" links (big 'U') that FCKeditor used to create.\n  [hacklschorsch]\n\n- Also escape double quotes, fixes #13219\n  [maartenkling]\n\n1.6 (2012-08-16)\n----------------\n\n- Don't break if an @@images scale can't be resolved for some reason.\n  [davisagli]\n\n\n1.5 (2012-08-15)\n----------------\n\n- Restore compatibility with Plone 4.0 when plone.outputfilters is present.\n  [davisagli]\n\n\n1.4 (2012-08-04)\n----------------\n\n- Fix incompatibilities with plone.namedfile\n  [do3cc]\n\n\n1.3 (2012-05-25)\n----------------\n\n- Fixed testing error by moving the part of README.rst to\n  plone/outputfilters/README.txt.\n  [maurits]\n\n- Small pep8 update\n  [pbdiode]\n\n\n1.2 - 2012-04-09\n----------------\n\n- Prevent transformation of links to anchors on the same page.\n  [davisagli]\n\n- Fixed undefined uuid variable in kupu_resolveuid_hook branch\n  in resolveuid view.\n  [vincentfretin]\n\n- Make sure links to expired objects can still be resolved by the resolveuid view.\n  [davisagli]\n\n- alt/title attributes on img tags were not present if tinymce uid linking was not used\n  [iElectric]\n\n- When making relative URIs absolute, use the parent as the relative\n  root when the context is not folderish.  Fixes an issue where\n  relative URLs from Plone 3, for example, had the wrong URLs under\n  Plone 4 when a default page was used for a folder.\n  [rossp]\n\n- Fixed testing error when packaged with a missing README.rst.\n  [maurits]\n\n\n1.1 - 2011-11-21\n----------------\n\n- Fixed resolving of protected objects for AT content\n  [tom_gross]\n\n- Fixed resolving of relative ../resolveuid/... links\n  [tom_gross]\n\n- Respect implementation differences in Python 2.4 and\n  Python 2.6 sgmlparser\n  [tom_gross]\n\n- Fixed resolving of images in protected folders for captioning\n  [mj]\n\n\n1.0 - 2011-05-13\n----------------\n\n- Release 1.0 Final.\n  [esteele]\n\n- Add MANIFEST.in.\n  [WouterVH]\n\n\n1.0b5 - 2011-03-24\n------------------\n\n- Make captioning and linking work with new style image scales.\n  [elro]\n\n- General refactoring of link resolution.\n  [elro]\n\n\n1.0b4 - 2011-03-22\n------------------\n\n- Add alt and title tags to images.\n  [elro]\n\n- Get various image properties from the imaging view to work better with\n  Dexterity.\n  [elro]\n\n- small fix so it is possible to create object without need of REQUEST or\n  without need of mocking it.\n  [garbas]\n\n\n1.0b3 - 2011-02-24\n------------------\n\n- Resolve image paths beginning with a slash relative to the Plone site root.\n  [davisagli]\n\n- Support image captioning for new-style image scales using the @@images view.\n  [davisagli]\n\n\n1.0b2 - 2011-01-11\n------------------\n\n- Fix resolveuid so that uid resolution occurs after authentication.\n  [elro]\n\n- Please remember to run tests before checking in!\n  [elro]\n\n- Fix issue where resolving links with subpaths resulted in a reversed\n  subpath.\n  [elro]\n\n\n1.0b1 - 2011-01-25\n------------------\n\n- Fix issue with resolving resolveuid links with subpaths. This fixes\n  http://dev.plone.org/plone/ticket/11426\n  [davisagli]\n\n\n1.0a1 - 2011-01-03\n------------------\n\n- Initial implementation.\n  [davisagli]",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "http://github.com/plone/plone.outputfilters",
+    "keywords": "plone transform filter uid caption",
+    "license": "GPL",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "plone.outputfilters",
+    "platform": "",
+    "project_url": "https://pypi.org/project/plone.outputfilters/",
+    "release_url": "https://pypi.org/project/plone.outputfilters/3.0.1/",
+    "requires_python": "",
+    "summary": "Transformations applied to HTML in Plone text fields as they are rendered",
+    "version": "3.0.1"
+  },
+  "releases": {
+    "1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "889a0bb112eb2a9a06f0857454bf4d3e",
+          "sha256": "311db2fb2f71072ca52e648addccae4f7061aea21be4d9dc5f422071f180679a"
+        },
+        "downloads": 14495,
+        "filename": "plone.outputfilters-1.0.zip",
+        "has_sig": false,
+        "md5_digest": "889a0bb112eb2a9a06f0857454bf4d3e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 83384,
+        "upload_time": "2011-05-13T17:48:52",
+        "url": "https://files.pythonhosted.org/packages/13/02/1ea84fd84e5f0240d2eee343c33e139ad17ad03766962de44ddda5b41dca/plone.outputfilters-1.0.zip"
+      }
+    ],
+    "1.0a1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c76d87118b9ba8319be473cb1ecdf022",
+          "sha256": "903db630f439597dd32733ebea13a88e508d2519aaaa35bc14fa0372bd046e9b"
+        },
+        "downloads": 3408,
+        "filename": "plone.outputfilters-1.0a1.zip",
+        "has_sig": false,
+        "md5_digest": "c76d87118b9ba8319be473cb1ecdf022",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 56016,
+        "upload_time": "2011-01-03T22:07:26",
+        "url": "https://files.pythonhosted.org/packages/9f/48/d24ef6d108252582af84b31ee0b217fe6dd9ceb3ca662daa58c9fc2ef277/plone.outputfilters-1.0a1.zip"
+      }
+    ],
+    "1.0b1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "494b25c72ff24e9bee5857ee17a78b65",
+          "sha256": "153ec8b1813e9abaa020b7ac32c4db2ae9e1887378ac9dbe8226a5e6576bd173"
+        },
+        "downloads": 3334,
+        "filename": "plone.outputfilters-1.0b1.zip",
+        "has_sig": true,
+        "md5_digest": "494b25c72ff24e9bee5857ee17a78b65",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 56360,
+        "upload_time": "2011-01-26T18:24:49",
+        "url": "https://files.pythonhosted.org/packages/61/1c/ca3533a0fb44e048cbc412b557c7da7655c55168d79c7e42ca4307caca1b/plone.outputfilters-1.0b1.zip"
+      }
+    ],
+    "1.0b2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "38d2445c99b421b5e480671829cdcb57",
+          "sha256": "b6c6a44ee189af022c0b9bd3418f9544e65b3f50155d4dcc0b061ae6edb4eb8f"
+        },
+        "downloads": 3260,
+        "filename": "plone.outputfilters-1.0b2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "38d2445c99b421b5e480671829cdcb57",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 42785,
+        "upload_time": "2011-02-11T21:25:09",
+        "url": "https://files.pythonhosted.org/packages/3c/3b/858cec8c8ab0ce1840c56bce1d6f7fa1ba567b367936103510be97f1e53f/plone.outputfilters-1.0b2.tar.gz"
+      }
+    ],
+    "1.0b3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "257ba96e1201a5abc685898a08490028",
+          "sha256": "e23d3fa58efb468bb0cfdbf46dad8cd69b065e07c10b162a639f0164e0b9cd93"
+        },
+        "downloads": 3625,
+        "filename": "plone.outputfilters-1.0b3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "257ba96e1201a5abc685898a08490028",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 42980,
+        "upload_time": "2011-02-24T13:31:58",
+        "url": "https://files.pythonhosted.org/packages/8b/45/49450fd2379ee282710f4480244f6a9d232ef196925d4c2b1226317f7b51/plone.outputfilters-1.0b3.tar.gz"
+      }
+    ],
+    "1.0b4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6baa4d096d95d12174cdbdb6e3c488c6",
+          "sha256": "abbb5f02bcad70e21f875196a288bca59bb56450eda378d0d0436e4de53feffa"
+        },
+        "downloads": 2890,
+        "filename": "plone.outputfilters-1.0b4.zip",
+        "has_sig": false,
+        "md5_digest": "6baa4d096d95d12174cdbdb6e3c488c6",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 57967,
+        "upload_time": "2011-03-22T20:28:10",
+        "url": "https://files.pythonhosted.org/packages/63/9a/7f22097344179de590de735c73f9081743d147bdeb9b0cd307d32a297c8d/plone.outputfilters-1.0b4.zip"
+      }
+    ],
+    "1.0b5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2237c610794d56df1a78cb0d57d9a997",
+          "sha256": "deb87e6329435b85d984bf0d2b8bbbdc3325aa9797db516a03794cdefb5370f8"
+        },
+        "downloads": 4058,
+        "filename": "plone.outputfilters-1.0b5.zip",
+        "has_sig": false,
+        "md5_digest": "2237c610794d56df1a78cb0d57d9a997",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 58269,
+        "upload_time": "2011-03-24T19:00:17",
+        "url": "https://files.pythonhosted.org/packages/dd/bc/b17d283a6621fa9dc6fbdf9f3dedea77f38200b2b5308c586e05c4b6557c/plone.outputfilters-1.0b5.zip"
+      }
+    ],
+    "1.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "531bf42b242ec960691356e8514f5857",
+          "sha256": "44685e4d6116d31aaa8d02484026f2330fe071f94b4329d6335291601c33f55e"
+        },
+        "downloads": 10769,
+        "filename": "plone.outputfilters-1.1.zip",
+        "has_sig": false,
+        "md5_digest": "531bf42b242ec960691356e8514f5857",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 59430,
+        "upload_time": "2011-11-21T11:20:39",
+        "url": "https://files.pythonhosted.org/packages/c5/8a/8e31b0946f93d8f80513092ff4a7fdc4fa8fa32c75a9900efb6d844f1fb9/plone.outputfilters-1.1.zip"
+      }
+    ],
+    "1.10": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2c8ba3b7fd2bf18406eb49d01b478139",
+          "sha256": "84686769f82ca40b4960c27cfa4f58159dc5dc40d110ed9b1872b6cbb06084f9"
+        },
+        "downloads": 5101,
+        "filename": "plone.outputfilters-1.10.zip",
+        "has_sig": false,
+        "md5_digest": "2c8ba3b7fd2bf18406eb49d01b478139",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 63282,
+        "upload_time": "2013-05-24T02:09:58",
+        "url": "https://files.pythonhosted.org/packages/ae/0d/37936ab8865d6560d95ab7f41060dd404e64ace3bca831bbfc39f1218cb4/plone.outputfilters-1.10.zip"
+      }
+    ],
+    "1.11": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ab54d6fa6ea33156f31130370022ac10",
+          "sha256": "4abaff9f9d1b4a2da571d53404b9340197c54567e1673f49d32bf70af60c409a"
+        },
+        "downloads": 1971,
+        "filename": "plone.outputfilters-1.11.zip",
+        "has_sig": false,
+        "md5_digest": "ab54d6fa6ea33156f31130370022ac10",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 63385,
+        "upload_time": "2013-07-19T07:23:00",
+        "url": "https://files.pythonhosted.org/packages/7a/21/ad7abb3ef15472da67cea64de33fb1ed7720eb76701c7effd069db2e7901/plone.outputfilters-1.11.zip"
+      }
+    ],
+    "1.11.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6b7506f09ad98621f8bb388c55183d6d",
+          "sha256": "5a8f065c39155735845732f2dd05fcdd92f29d24351c7d28399419af5751f96a"
+        },
+        "downloads": 15507,
+        "filename": "plone.outputfilters-1.11.1.zip",
+        "has_sig": false,
+        "md5_digest": "6b7506f09ad98621f8bb388c55183d6d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 63995,
+        "upload_time": "2013-07-19T07:35:28",
+        "url": "https://files.pythonhosted.org/packages/2b/ff/58b1d0fe81ad7825b3e79dd11e1c4f2960257dbd1dda9269575466d77db3/plone.outputfilters-1.11.1.zip"
+      }
+    ],
+    "1.12": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ed76b9cf028cf7e04f3aa408e22b61ca",
+          "sha256": "b8f91a682fd0c3372e07b23496a3abeb05272c7bf5c7c6d4e3e39bf1a7c915c2"
+        },
+        "downloads": 8166,
+        "filename": "plone.outputfilters-1.12.zip",
+        "has_sig": false,
+        "md5_digest": "ed76b9cf028cf7e04f3aa408e22b61ca",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 64096,
+        "upload_time": "2014-01-28T01:50:08",
+        "url": "https://files.pythonhosted.org/packages/70/8e/b43e510e524beba94de0727f052817a58830ec8c415aea98807c45569e67/plone.outputfilters-1.12.zip"
+      }
+    ],
+    "1.13": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f75fc3a4171a0b804d1c7bb2ae68e5f0",
+          "sha256": "358b0dd3e9c63c147fbc9f99fb6c7dd85b7ad61d7a0a447b8525768c0cc6b042"
+        },
+        "downloads": 2289,
+        "filename": "plone.outputfilters-1.13.zip",
+        "has_sig": false,
+        "md5_digest": "f75fc3a4171a0b804d1c7bb2ae68e5f0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 64320,
+        "upload_time": "2014-04-14T02:01:20",
+        "url": "https://files.pythonhosted.org/packages/92/cc/a931889c499bc879e32eec35390553d8727aff3c4658bc899885613433f3/plone.outputfilters-1.13.zip"
+      }
+    ],
+    "1.14": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8d3e6b7f7370f78d1adbf556e2c63224",
+          "sha256": "ee1d3f2516c4870cdb1b6425c7c318b9c7fa9417f9a3069acfe6981ec79ce718"
+        },
+        "downloads": 9753,
+        "filename": "plone.outputfilters-1.14.zip",
+        "has_sig": false,
+        "md5_digest": "8d3e6b7f7370f78d1adbf556e2c63224",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 64317,
+        "upload_time": "2014-04-22T12:11:02",
+        "url": "https://files.pythonhosted.org/packages/ca/cf/2de6a30aec06cff6511a79555ff9fadd2cbea90117d4f024a8647f1c71c3/plone.outputfilters-1.14.zip"
+      }
+    ],
+    "1.15": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5d61761f4f7d802d6d720757e2afb811",
+          "sha256": "7e3e35cfd86a7f5b55b34c7695d8a39b16cc376912c3c4668361a54c1e33ed51"
+        },
+        "downloads": 9783,
+        "filename": "plone.outputfilters-1.15.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5d61761f4f7d802d6d720757e2afb811",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 52460,
+        "upload_time": "2015-05-11T14:10:41",
+        "url": "https://files.pythonhosted.org/packages/6a/44/663c764b00c5374555cfc74662565e197de9ffab38893e4303ef1c207dce/plone.outputfilters-1.15.tar.gz"
+      }
+    ],
+    "1.15.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1bcecfe563eacf5e1bafa732af9d8847",
+          "sha256": "4ce9625d8ea8d597f8c100262450fd2e8f7716a854c750adec5865c664ccc162"
+        },
+        "downloads": 2000,
+        "filename": "plone.outputfilters-1.15.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1bcecfe563eacf5e1bafa732af9d8847",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 52786,
+        "upload_time": "2015-10-27T23:52:59",
+        "url": "https://files.pythonhosted.org/packages/18/59/075131ca9b63467189891731949942825c8cafcdec376fa9498d2b013c9f/plone.outputfilters-1.15.1.tar.gz"
+      }
+    ],
+    "1.15.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1a79ef1c064613c8ccf85acd97e67ffe",
+          "sha256": "968ea77d7d8c9ddec5a47403312c126651fdf9f8449bad5b99c21f9021dbbdd5"
+        },
+        "downloads": 106,
+        "filename": "plone.outputfilters-1.15.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1a79ef1c064613c8ccf85acd97e67ffe",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 53014,
+        "upload_time": "2016-11-09T15:53:37",
+        "url": "https://files.pythonhosted.org/packages/56/cb/22c03f70d4be3c651ed5ea713cf274fb23b8128fc18c0d66b46a9c13ed0c/plone.outputfilters-1.15.2.tar.gz"
+      }
+    ],
+    "1.15.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "dc37d2d6bb75d7695623312554330fa2",
+          "sha256": "9772a70303cdc3001f2172b4ed57a67d0682d29f8aaa2e8ba5eb931d701f5641"
+        },
+        "downloads": 81,
+        "filename": "plone.outputfilters-1.15.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "dc37d2d6bb75d7695623312554330fa2",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 53217,
+        "upload_time": "2017-01-31T15:38:23",
+        "url": "https://files.pythonhosted.org/packages/44/f9/edb0a460356d8e605128a12574324b8980155ee1c4e5c3603c6190530fde/plone.outputfilters-1.15.3.tar.gz"
+      }
+    ],
+    "1.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "052ec24783b6ca7b5e55e50c7b57d3a2",
+          "sha256": "09938f916119e5b24f08a11ddd417234895a605ad0491953d9aaddb94932d453"
+        },
+        "downloads": 10882,
+        "filename": "plone.outputfilters-1.2.zip",
+        "has_sig": false,
+        "md5_digest": "052ec24783b6ca7b5e55e50c7b57d3a2",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 60329,
+        "upload_time": "2012-04-09T21:21:38",
+        "url": "https://files.pythonhosted.org/packages/7a/d4/27c76fc742efd6bd52e7bf18c57d37dd057be544ccaabfc2d5d7467eabe4/plone.outputfilters-1.2.zip"
+      }
+    ],
+    "1.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a8b392474171c6278772ea660d44ba12",
+          "sha256": "cbc7d41f49ea8a87a742fef1ffb8fd5b6e723d193f6c5f2f9b73470665f653f4"
+        },
+        "downloads": 8206,
+        "filename": "plone.outputfilters-1.3.zip",
+        "has_sig": false,
+        "md5_digest": "a8b392474171c6278772ea660d44ba12",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 60919,
+        "upload_time": "2012-05-25T22:45:39",
+        "url": "https://files.pythonhosted.org/packages/5f/40/96990640a8893559f09264bef97153bde2576f121c95d2604f2459bd1805/plone.outputfilters-1.3.zip"
+      }
+    ],
+    "1.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2217ce15574d9deebae776ad91eb7bb8",
+          "sha256": "0f57f8f9217d0b262fceba9879ac947f14a1f603b6611eeb4aa9c6f7f903ad24"
+        },
+        "downloads": 2960,
+        "filename": "plone.outputfilters-1.4.zip",
+        "has_sig": false,
+        "md5_digest": "2217ce15574d9deebae776ad91eb7bb8",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 61361,
+        "upload_time": "2012-08-04T21:03:19",
+        "url": "https://files.pythonhosted.org/packages/24/d9/c4e5f85f97869b2d8ed9a349cdd2cc5f0ab03e66b5ac81c78bd6e5af718d/plone.outputfilters-1.4.zip"
+      }
+    ],
+    "1.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "65ec09e8da06043b84070a55a5da8910",
+          "sha256": "5474753c423fc3324884d99d9e601e4952946be96cc7fe5c473bfb07f17cda72"
+        },
+        "downloads": 2734,
+        "filename": "plone.outputfilters-1.5.zip",
+        "has_sig": false,
+        "md5_digest": "65ec09e8da06043b84070a55a5da8910",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 61492,
+        "upload_time": "2012-08-15T17:28:16",
+        "url": "https://files.pythonhosted.org/packages/d4/3a/989a0a832c142f0de0a4afd06d5b2a948eecf6ff19d220ee24c1adf3f20a/plone.outputfilters-1.5.zip"
+      }
+    ],
+    "1.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ae648b5981dd555449938d4ac3a1b9b4",
+          "sha256": "f1642ed5a0860606a3b9c006849a0c0b26ba5a722b3084eeb1acb1d32d105b00"
+        },
+        "downloads": 9068,
+        "filename": "plone.outputfilters-1.6.zip",
+        "has_sig": false,
+        "md5_digest": "ae648b5981dd555449938d4ac3a1b9b4",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 61620,
+        "upload_time": "2012-08-16T20:24:21",
+        "url": "https://files.pythonhosted.org/packages/c2/04/a599ca5c16fc50be7be4e62895ad19c29c288c2d857411a9ff1028ff80e4/plone.outputfilters-1.6.zip"
+      }
+    ],
+    "1.8": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a5ef28580f7fa7f2dc1768893995b0f7",
+          "sha256": "bdc1eecc19538bef34e946dbd70b8ce0283a4b0ed059bf3594eff2cae2942af4"
+        },
+        "downloads": 9328,
+        "filename": "plone.outputfilters-1.8.zip",
+        "has_sig": false,
+        "md5_digest": "a5ef28580f7fa7f2dc1768893995b0f7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 62642,
+        "upload_time": "2012-12-10T17:12:32",
+        "url": "https://files.pythonhosted.org/packages/03/99/d82f2cc7e54345b41d67a666f827a820ad53a08db467f33c91d3c19146e4/plone.outputfilters-1.8.zip"
+      }
+    ],
+    "1.9": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5ce62a45272c5501bf7d99325d2352c6",
+          "sha256": "24f740fd911919ab73a300fdfb62ecba216e260fb5bcb680ec87e673d281b783"
+        },
+        "downloads": 6092,
+        "filename": "plone.outputfilters-1.9.zip",
+        "has_sig": false,
+        "md5_digest": "5ce62a45272c5501bf7d99325d2352c6",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 62827,
+        "upload_time": "2013-04-06T16:13:11",
+        "url": "https://files.pythonhosted.org/packages/0d/20/03b86ed00eac11f1e12495c4500229a68df491d1d358d99c8e0eb334b6aa/plone.outputfilters-1.9.zip"
+      }
+    ],
+    "2.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b4cb62d772fcb37c4301493c74aed60d",
+          "sha256": "b8c0931bad2ae859c284163b518768bd5ab8e1c040ae3a25f37dc287312507d6"
+        },
+        "downloads": 2677,
+        "filename": "plone.outputfilters-2.0.zip",
+        "has_sig": false,
+        "md5_digest": "b4cb62d772fcb37c4301493c74aed60d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 65217,
+        "upload_time": "2015-03-13T15:13:56",
+        "url": "https://files.pythonhosted.org/packages/02/b1/72ede24914578329991ba62ae1f754a2292b7b7aaa0dd609895ddafc06da/plone.outputfilters-2.0.zip"
+      }
+    ],
+    "2.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ad78900a56e2e2e15d89451d5ed63304",
+          "sha256": "763176566b0e237225f8108edd9b6dc3d034d07703ce3f2aff95ed0a170ac6c4"
+        },
+        "downloads": 6633,
+        "filename": "plone.outputfilters-2.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ad78900a56e2e2e15d89451d5ed63304",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 53077,
+        "upload_time": "2015-07-18T08:07:57",
+        "url": "https://files.pythonhosted.org/packages/91/2a/932b4fb20f05885e127fa329ed160b53352b1f2f4bf5a516f3a68c848501/plone.outputfilters-2.1.tar.gz"
+      }
+    ],
+    "2.1.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "aa188530cc58282dc239ab362f0fccda",
+          "sha256": "4bf3c0bde96ae9448e031cc231c8b8b1b35a73818992f7084a10b7eeb6aee8ee"
+        },
+        "downloads": 612,
+        "filename": "plone.outputfilters-2.1.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "aa188530cc58282dc239ab362f0fccda",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 53286,
+        "upload_time": "2015-11-25T21:39:36",
+        "url": "https://files.pythonhosted.org/packages/9f/b7/fc91f2affc262e8550b8e38a275c649dfb243685d2973a4ac0136adfaca0/plone.outputfilters-2.1.1.tar.gz"
+      }
+    ],
+    "2.1.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "69e271e6a910418ab89e7b08158aa43c",
+          "sha256": "03a0002d43352b6eaf2e01517ae6e747f7254f6e9fe2d6d1c4cc51a226ae6a39"
+        },
+        "downloads": 1517,
+        "filename": "plone.outputfilters-2.1.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "69e271e6a910418ab89e7b08158aa43c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 53427,
+        "upload_time": "2015-12-16T03:08:01",
+        "url": "https://files.pythonhosted.org/packages/df/82/2a4245eb55669325b7be8286e8ce9f45a6c4519562b2138bc458e95eb151/plone.outputfilters-2.1.2.tar.gz"
+      }
+    ],
+    "2.1.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "61f72de5b1c0e08789d23803ce99762d",
+          "sha256": "64ba3d9a2f656bbfd38d951f4785627aa35f882936911dbdbe8fbe2a29717229"
+        },
+        "downloads": 280,
+        "filename": "plone.outputfilters-2.1.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "61f72de5b1c0e08789d23803ce99762d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 53543,
+        "upload_time": "2016-03-07T14:47:02",
+        "url": "https://files.pythonhosted.org/packages/59/6a/161fecda229cf5b6f82d40dc9087069085600afa5858645e9cbbc6c221e7/plone.outputfilters-2.1.3.tar.gz"
+      }
+    ],
+    "2.1.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a8ae1776266cbefbf729b2f3630a1b0f",
+          "sha256": "113021454ff2c2a2687b9fb336b489a7ca61d637cee47923add9d2f05abb1d8c"
+        },
+        "downloads": 107,
+        "filename": "plone.outputfilters-2.1.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a8ae1776266cbefbf729b2f3630a1b0f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 53696,
+        "upload_time": "2016-05-10T21:53:43",
+        "url": "https://files.pythonhosted.org/packages/c7/d5/ff458ce30a3b9702619ea16eca815895957a0f4d6c1c6e0424ef6e60d52d/plone.outputfilters-2.1.4.tar.gz"
+      }
+    ],
+    "2.1.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "71532fd39766ad8171ccdc0389105ae6",
+          "sha256": "e11278d3bdee9e17e974eb705ac1959bb70fa6048234be6532f6a473ac668152"
+        },
+        "downloads": 824,
+        "filename": "plone.outputfilters-2.1.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "71532fd39766ad8171ccdc0389105ae6",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 53809,
+        "upload_time": "2016-06-07T16:26:43",
+        "url": "https://files.pythonhosted.org/packages/da/cb/f6492dc4dbde581e551e30f10250faf768f123d4036839a308c1e419ce6a/plone.outputfilters-2.1.5.tar.gz"
+      }
+    ],
+    "3.0.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0a2c2b26abc7105ab7cd98ab4ac55144",
+          "sha256": "e5c269cedde7d0542cf3c66a5d3996bdbf569d1728e6179a0be4d0d7c9ba96f7"
+        },
+        "downloads": 515,
+        "filename": "plone.outputfilters-3.0.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0a2c2b26abc7105ab7cd98ab4ac55144",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 54119,
+        "upload_time": "2016-08-19T18:12:44",
+        "url": "https://files.pythonhosted.org/packages/6c/4d/d63563a0e63786c1df798784dba66b4e891a03979b323b7d8a94a93f6a5d/plone.outputfilters-3.0.0.tar.gz"
+      }
+    ],
+    "3.0.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2ea101ff45b17f0dbd58db01bd9e6645",
+          "sha256": "dc006c6d87dbaa5f93d01f912176ac5b24700aa3dbd5aa5cf6c131470f659abc"
+        },
+        "downloads": 104,
+        "filename": "plone.outputfilters-3.0.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2ea101ff45b17f0dbd58db01bd9e6645",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 54342,
+        "upload_time": "2017-02-05T19:20:50",
+        "url": "https://files.pythonhosted.org/packages/8e/4d/fc43eaa8e4d597ee9cc5a0ee53c642df33006760489b895087b99e60cc63/plone.outputfilters-3.0.1.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "2ea101ff45b17f0dbd58db01bd9e6645",
+        "sha256": "dc006c6d87dbaa5f93d01f912176ac5b24700aa3dbd5aa5cf6c131470f659abc"
+      },
+      "downloads": 104,
+      "filename": "plone.outputfilters-3.0.1.tar.gz",
+      "has_sig": false,
+      "md5_digest": "2ea101ff45b17f0dbd58db01bd9e6645",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 54342,
+      "upload_time": "2017-02-05T19:20:50",
+      "url": "https://files.pythonhosted.org/packages/8e/4d/fc43eaa8e4d597ee9cc5a0ee53c642df33006760489b895087b99e60cc63/plone.outputfilters-3.0.1.tar.gz"
+    }
+  ]
+}

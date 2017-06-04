@@ -1,0 +1,113 @@
+{
+  "info": {
+    "author": "Amazon Web Services",
+    "author_email": "",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 5 - Production/Stable",
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: Apache Software License",
+      "Natural Language :: English",
+      "Programming Language :: Python",
+      "Programming Language :: Python :: 2",
+      "Programming Language :: Python :: 2.7",
+      "Programming Language :: Python :: 3",
+      "Programming Language :: Python :: 3.4",
+      "Programming Language :: Python :: Implementation :: CPython",
+      "Topic :: Security",
+      "Topic :: Security :: Cryptography"
+    ],
+    "description": "This client is a fully compliant, native Python implementation of the [AWS Encryption SDK][1].\n\n# Getting Started\n## Required Prerequisites\n\n* Python 2.7+ or 3.x\n* cryptography >= 1.4\n* boto3\n* attrs\n\n## Installation\n\n```bash\n$ pip install aws-encryption-sdk\n```\n\n## Concepts\nThere are three main concepts that need to be understood for use of this library:\n\n### Master Key Providers\nMaster Key Providers are resources which provide Master Keys.\nAn example of a Master Key Provider is [AWS KMS][2].\n\nIn the context of this client, a MasterKeyProvider object must contain at least one MasterKey object in order to encrypt data.\n\nMasterKeyProvider objects can also contain other MasterKeyProviders.\n\n### Master Keys\nMaster Keys provide data keys.\nAn example of a Master Key is a [KMS Customer Master Key][3].\n\n### Data Keys\nData Keys are the actual encryption keys which are used to encrypt your data.\n\n# Usage\nIn order to use this client, an instance of a Master Key Provider must be provided.\nFor the examples in this readme, the KMSMasterKeyProvider class will be used as an example.\n\n## KMSMasterKeyProvider\nThe KMSMasterKeyProvider uses the [boto3 SDK][4] to interact with [AWS KMS][2], and as such requires AWS Credentials.\nThese can be provided either in the [standard means by which boto3 locates credentials][5], or by providing the KMSMasterKeyProvider a pre-existing instance of a botocore session.\nThis later option can be useful if you have some alternate means of storing your AWS credentials or\nyou would like to re-use an existing instance of a botocore session in order to decrease startup costs.\n\n```python\nimport aws_encryption_sdk\nimport botocore.session\n\nkms_key_provider = aws_encryption_sdk.KMSMasterKeyProvider()\n\nexisting_botocore_session = botocore.session.Session()\nkms_key_provider = aws_encryption_sdk.KMSMasterKeyProvider(botocore_session=existing_botocore_session)\n```\n\nIf desired, the KMSMasterKeyProvider can be pre-loaded with one or more CMKs.\nAt least one CMK is required to be loaded into a KMSMasterKeyProvider in order to encrypt data.\nIf multiple CMKs are added, a copy of the data key encrypted by each added CMK will be included in the [final message][6].\n\n```python\nimport aws_encryption_sdk\n\nkms_key_provider = aws_encryption_sdk.KMSMasterKeyProvider(key_ids=[\n    'arn:aws:kms:us-east-1:2222222222222:key/22222222-2222-2222-2222-222222222222',\n    'arn:aws:kms:us-east-1:3333333333333:key/33333333-3333-3333-3333-333333333333'\n])\n```\n\nCMKs from multiple regions can be added as well.\n\n```python\nimport aws_encryption_sdk\n\nkms_key_provider = aws_encryption_sdk.KMSMasterKeyProvider(key_ids=[\n    'arn:aws:kms:us-east-1:2222222222222:key/22222222-2222-2222-2222-222222222222',\n    'arn:aws:kms:us-west-2:3333333333333:key/33333333-3333-3333-3333-333333333333',\n    'arn:aws:kms:ap-northeast-1:4444444444444:key/44444444-4444-4444-4444-444444444444'\n])\n```\n\n\n## Encryption and Decryption\nOnce you have an instance of a MasterKeyProvider, you can simply use one of the two high-level encrypt/decrypt functions to encrypt and decrypt your data.\n\n```python\nimport aws_encryption_sdk\n\nkms_key_provider = aws_encryption_sdk.KMSMasterKeyProvider(key_ids=[\n    'arn:aws:kms:us-east-1:2222222222222:key/22222222-2222-2222-2222-222222222222',\n    'arn:aws:kms:us-east-1:3333333333333:key/33333333-3333-3333-3333-333333333333'\n])\nmy_plaintext = 'This is some super secret data!  Yup, sure is!'\n\nmy_ciphertext, encryptor_header = aws_encryption_sdk.encrypt(\n    source=my_plaintext,\n    key_provider=kms_key_provider\n)\n\ndecrypted_plaintext, decryptor_header = aws_encryption_sdk.decrypt(\n    source=my_ciphertext,\n    key_provider=kms_key_provider\n)\n\nassert my_plaintext == decrypted_plaintext\nassert encryptor_header.encryption_context == decryptor_header.encryption_context\n```\n\nIf desired, additional authenticating information can be provided in the form of an [encryption context][7].\n\n```python\nimport aws_encryption_sdk\n\nkms_key_provider = aws_encryption_sdk.KMSMasterKeyProvider(key_ids=[\n    'arn:aws:kms:us-east-1:2222222222222:key/22222222-2222-2222-2222-222222222222',\n    'arn:aws:kms:us-east-1:3333333333333:key/33333333-3333-3333-3333-333333333333'\n])\nmy_plaintext = 'This is some super secret data!  Yup, sure is!'\n\nmy_ciphertext, encryptor_header = aws_encryption_sdk.encrypt(\n    source=my_plaintext,\n    key_provider=kms_key_provider,\n    encryption_context={\n        'not really': 'a secret',\n        'but adds': 'some authentication'\n    }\n)\n\ndecrypted_plaintext, decryptor_header = aws_encryption_sdk.decrypt(\n    source=my_ciphertext,\n    key_provider=kms_key_provider\n)\n\nassert my_plaintext == decrypted_plaintext\nassert encryptor_header.encryption_context == decryptor_header.encryption_context\n```\n\n## Streaming\nIf you are handling large files or simply do not want to put the entire plaintext or ciphertext in memory at once, this library also provides streaming clients.\nThe streaming clients are file-like objects, and behave exactly as you would expect a Python file object to behave, supporting context managers and iteration.\nRather than accepting a string as input, the streaming clients expect an existing file-like object.\nA simple `open()`-like entry point to the streaming clients is provided, to simplify library usage.\n\n```python\nimport aws_encryption_sdk\nimport filecmp\n\nkms_key_provider = aws_encryption_sdk.KMSMasterKeyProvider(key_ids=[\n    'arn:aws:kms:us-east-1:2222222222222:key/22222222-2222-2222-2222-222222222222',\n    'arn:aws:kms:us-east-1:3333333333333:key/33333333-3333-3333-3333-333333333333'\n])\nplaintext_filename = 'my-secret-data.dat'\nciphertext_filename = 'my-encrypted-data.ct'\n\n\nwith open(plaintext_filename, 'rb') as pt_file, open(ciphertext_filename, 'wb') as ct_file:\n    with aws_encryption_sdk.stream(\n        mode='e',\n        source=pt_file,\n        key_provider=kms_key_provider\n    ) as encryptor:\n        for chunk in encryptor:\n            ct_file.write(chunk)\n\nnew_plaintext_filename = 'my-decrypted-data.dat'\n\nwith open(ciphertext_filename, 'rb') as ct_file, open(new_plaintext_filename, 'wb') as pt_file:\n    with aws_encryption_sdk.stream(\n        mode='d',\n        source=ct_file,\n        key_provider=kms_key_provider\n    ) as decryptor:\n        for chunk in decryptor:\n            pt_file.write(chunk)\n\nassert filecmp.cmp(plaintext_filename, new_plaintext_filename)\nassert encryptor.header.encryption_context == decryptor.header.encryption_context\n```\n\n## Performance Considerations\nTwo things will significantly improve the performance of encrypt/decrypt operations with this library:\n\n1. The line length (chunk size) (default: 8192 bytes).\n2. The frame size on framed messages (default: 4096 bytes).\n\nEach line read and each frame in a framed message involve a significant amount of overhead.  If you are encrypting\na large file, increasing the frame size and line length can offer potentially huge performance gains.  It is\nrecommended to tune these values to your use-case in order to obtain peak performance.\n\n\n```\nTested on an m3.xlarge EC2 instance, encrypting a randomly generated 1GB test file from local disk and redirecting output to /dev/null\nEncrypt:\n4096 byte frame, 8192 byte line: 1m58.305s\n10240 byte frame, 8192 byte line: 53.143s\n4096 byte frame, 10240 byte line: 1m53.761s\n10240 byte frame, 10240 byte line: 52.905s\n102400 byte frame, 102400 byte line: 10.170s\nsingle block body, 8192 byte line: 11.408s\nsingle block body, 10240 byte line: 10.201s\nsingle block body, 102400 byte line: 5.744s\n```\n\n\n[1]: https://docs.aws.amazon.com/encryption-sdk/latest/developer-guide/introduction.html\n[2]: https://docs.aws.amazon.com/kms/latest/developerguide/overview.html\n[3]: https://docs.aws.amazon.com/kms/latest/developerguide/concepts.html#master_keys\n[4]: https://boto3.readthedocs.io/en/latest/\n[5]: https://boto3.readthedocs.io/en/latest/guide/configuration.html\n[6]: https://docs.aws.amazon.com/encryption-sdk/latest/developer-guide/message-format.html\n[7]: https://docs.aws.amazon.com/kms/latest/developerguide/concepts.html#encrypt_context",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/awslabs/aws-encryption-sdk-python",
+    "keywords": "aws-encryption-sdk aws kms encryption",
+    "license": "Apache License 2.0",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "aws-encryption-sdk",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/aws-encryption-sdk/",
+    "release_url": "https://pypi.org/project/aws-encryption-sdk/1.2.2/",
+    "requires_python": "",
+    "summary": "AWS Encryption SDK implementation for Python",
+    "version": "1.2.2"
+  },
+  "releases": {
+    "1.2.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c9840e1173b91395200a2d10193bee6a",
+          "sha256": "8341f000174613772397c5ebd2a248e41757cd8ae5aa70886f9c804db8940c52"
+        },
+        "downloads": 64,
+        "filename": "aws_encryption_sdk-1.2.0-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "c9840e1173b91395200a2d10193bee6a",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 51925,
+        "upload_time": "2017-03-21T22:06:12",
+        "url": "https://files.pythonhosted.org/packages/5e/5b/d27ccb9de3ac54cd13487174a734f66b9283c78f2ffa52cfc2e3749e6c58/aws_encryption_sdk-1.2.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "254255a8941c733080915a542f551eaf",
+          "sha256": "7de79298aa1e56f26b9c1ea3874f52aa0b051790ccb6ca96d3d7bb64b766f486"
+        },
+        "downloads": 19,
+        "filename": "aws-encryption-sdk-1.2.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "254255a8941c733080915a542f551eaf",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 39336,
+        "upload_time": "2017-03-21T22:06:14",
+        "url": "https://files.pythonhosted.org/packages/85/3f/3ccb860d615e238b7ca391153dcfd98478af94d94d37f3dd6f4b64f021ef/aws-encryption-sdk-1.2.0.tar.gz"
+      }
+    ],
+    "1.2.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5094493583bdfafe40ce70e677210bc8",
+          "sha256": "a2e757b944a8eb55b853eac3ae75d2b77a4dd91bbf4b90a3bc6918fa5100417e"
+        },
+        "downloads": 0,
+        "filename": "aws_encryption_sdk-1.2.2-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "5094493583bdfafe40ce70e677210bc8",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 51934,
+        "upload_time": "2017-05-23T18:16:48",
+        "url": "https://files.pythonhosted.org/packages/73/2b/1dbab89e8cb8f1836f4f8bf6ed63abe847cf949381f212e3b7976417f8e7/aws_encryption_sdk-1.2.2-py2.py3-none-any.whl"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "5094493583bdfafe40ce70e677210bc8",
+        "sha256": "a2e757b944a8eb55b853eac3ae75d2b77a4dd91bbf4b90a3bc6918fa5100417e"
+      },
+      "downloads": 0,
+      "filename": "aws_encryption_sdk-1.2.2-py2.py3-none-any.whl",
+      "has_sig": false,
+      "md5_digest": "5094493583bdfafe40ce70e677210bc8",
+      "packagetype": "bdist_wheel",
+      "python_version": "py2.py3",
+      "size": 51934,
+      "upload_time": "2017-05-23T18:16:48",
+      "url": "https://files.pythonhosted.org/packages/73/2b/1dbab89e8cb8f1836f4f8bf6ed63abe847cf949381f212e3b7976417f8e7/aws_encryption_sdk-1.2.2-py2.py3-none-any.whl"
+    }
+  ]
+}

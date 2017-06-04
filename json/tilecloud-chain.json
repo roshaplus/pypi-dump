@@ -1,0 +1,620 @@
+{
+  "info": {
+    "author": "St\u00e9phane Brunner",
+    "author_email": "stephane.brunner@camptocamp.com",
+    "bugtrack_url": "",
+    "classifiers": [
+      "Development Status :: 4 - Beta",
+      "Environment :: Console",
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: BSD License",
+      "Programming Language :: Python",
+      "Programming Language :: Python :: 2.7",
+      "Programming Language :: Python :: 3",
+      "Topic :: Scientific/Engineering :: GIS"
+    ],
+    "description": "TileCloud Chain\n===============\n\n.. image:: https://secure.travis-ci.org/camptocamp/tilecloud-chain.svg?branch=master\n.. image:: https://coveralls.io/repos/camptocamp/tilecloud-chain/badge.png?branch=master\n\nThe goal of TileCloud Chain is to provide tools around tile generation on a chain like:\n\nSource: WMS, Mapnik.\n\nOptionally using an SQS queue, AWS host, SNS topic.\n\nDestination in WMTS layout, on S3, on Berkley DB (``bsddb``), on MBTiles, or on local filesystem.\n\nFeatures:\n\n- Generate tiles.\n- Drop empty tiles.\n- Drop tiles outside a geometry or a bbox.\n- Use MetaTiles.\n- Generate the legend images.\n- Generate GetCapabilities.\n- Generate OpenLayers example page.\n- Generate the Apache configuration.\n- Obtain the hash of an empty tile.\n- In future, measure tile generation speed.\n- Calculate cost and generation time.\n- In future, manage the AWS hosts that generate tiles.\n- Delete empty tiles.\n- Copy files between caches.\n- Be able to use an SQS queue to dispatch the generation.\n- Post processing the generated tiles.\n- ...\n\n\n.. contents:: Table of contents\n\n\n------\nGet it\n------\n\nWith Docker\n-----------\n\n.. code:: bash\n\n   # Login to docker hub\n   docker login\n   docker pull camptocamp/tilecloud-chain\n\n   # Initialyse the project\n   docker run -ti \\\n        --volume .:/project \\\n        pcreate -s tilecloud_chain .\n\n   # Run the commands\n   DOCKER_ADRS=`ifconfig docker0 | head -n 2 | tail -n 1 | awk -F : '{print $2}' | awk '{print $1}'`\n   docker run -ti \\\n        --volume .:/project \\\n        --add-host=db:${DOCKER_ADRS} \\\n        --add-host=mapserver:${DOCKER_ADRS} \\\n        --env=USER_NAME=`whoami` \\\n        --env=USER_ID=`id -u` \\\n        --env=GROUP_ID=`id -g` \\\n        --env=UMASK=`umask` \\\n        camptocamp/tilecloud-chain \\\n        run <a command>\n\nTo share the home folder you should add the arguments:\n\n.. code:: bash\n\n    --volume=${HOME}:${HOME} \\\n    --env=HOME=${HOME} \\\n\nThe image also contains some tools needed to render OSM data like: ``fonts-dejavu``, ``node-carto`` and ``osm2pgsql``.\n\nWith pip\n--------\n\nRequirements::\n\n    pg_config and a build environment.\n\nInstall::\n\n    pip install tilecloud-chain\n    pcreate -s tilecloud_chain .\n\nEdit your layers configuration in ``./tilegeneration/config.yaml``.\n\n`Default configuration file <https://github.com/camptocamp/tilecloud-chain/blob/master/tilecloud_chain/scaffolds/create/tilegeneration/config.yaml.mako_tmpl>`_.\n\n---------\nConfigure\n---------\n\nConfigure grids\n---------------\n\nThe ``grid`` describes how the tiles are arranged.\n\nEspecially on ``s3`` be careful to choose every of the grid settings before generating the tiles.\nIf you change one of them you must regenerate all the tiles.\n\nThe ``resolutions`` in [px/m] describes all the resolutions available for this layer.\nFor a raster layer, have a look to the maximum resolution of the source files. It is not needed\nto generate tiles at smaller resolutions than the sources, it is preferable to use the OpenLayers client zoom.\nNote that you can add a resolution in the end without regenerating all the tiles.\n\nThe ``bbox`` should match the resolution of the extent. **CAREFUL: you will have big issue if you\nuse this parameter to generate the tile on a restricted area**: use the ``bbox`` on the layer instead.\n\nThe ``srs`` specifies the code of the projection.\n\nThe ``unit`` is the unit used by the projection.\n\nThe ``tile_size`` is the tile size in [px], defaults to 256.\n\nThe ``matrix_identifier`` is ``zoom`` by default and can also be set to ``resolution``. It specifies how the z index is build to store\nthe tiles, for example, for the resolutions ``[2, 1, 0.5]`` the used values are ``[0, 1, 2]`` based on the zoom\nand ``[2, 1, 0_5]`` based on the resolution. The second has the advantage of allowing to add a new\nresolution without regenerating all the tiles, but it does not work with MapCache.\n\n\nConfigure caches\n----------------\n\nThe available tile caches are: ``s3``, ``bsddb``, ``mbtile`` and ``filesystem``.\n\nThe best solution to store the tiles, ``s3``, ``mbtiles`` and ``bsddb``, have the advantage of using only one file per\nlayer - style  dimensions. To serve the ``mbtile`` and the ``bsddb`` see `Distribute the tiles`_.\n\n``s3`` needs a ``bucket`` and a ``folder`` (defaults to '').\n\n``mbtiles``, ``bsddb`` and ``filesystem`` just need a ``folder``.\n\nOn all the caches we can add some information to generate the URL where the tiles are available.\nThis is needed to generate the capabilities. We can specify:\n\n* ``http_url`` direct url to the tiles root.\n* ``http_urls`` (array) urls to the tiles root.\n* ``http_url`` and ``hosts`` (array), where each value of ``hosts`` is used to replace ``%(host)s`` in ``http_url``.\n\nIn all case ``http_url`` or ``http_urls`` can include all attributes of this cache as ``%(attribute)s``.\n\nMBTiles vs Berkley DB (``bsddb``)\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n* Read performance: similar, eventually the MBTiles is 10% faster.\n* Write performance: The Berkley DB is largely faster, about 10 times.\n* List the tiles: the MBTiles is largely faster but we usually don't need it.\n\n\nConfigure layers\n----------------\n\nFirst of all, all the attributes in ``layer_default`` are copied in all the layers to define the default values.\n\nWe have two ``type`` of layer: ``wms`` or ``mapnik``.\n\nTo start the common attributes are:\n\n``min_resolution_seed`` the minimum resolution that is seeded, other resolutions are served by MapCache.\n\n``bbox`` used to limit the tiles generation.\n\n``px_buffer`` a buffer in px around the object area (geoms or extent).\n\n\nWMTS layout\n~~~~~~~~~~~\n\nTo generate the file paths and the WMTS capabilities we need additional information:\n\nThe ``mime_type`` of the tiles, it's also used by the WMS GetMap and to upload the tiles.\n\nThe ``wmts_style`` defaults to 'default'.\n\nThe ``extension`` is used to end the filename.\n\nThe ``dimensions`` (defaults to  []) is an array of objects that have a ``name``,\na ``default`` value specified in the capabilities,\na ``value`` to generate the tiles (it can be overwritten by an argument),\nand an array of ``values`` that contains all the possible values available in the capabilities.\n\nFor example if you generate the tiles and capabilities with the following configuration:\n\n.. code:: yaml\n\n    dimensions:\n        -   name: DATE\n            default: 2012\n            value: 2012\n            values: [2012]\n\nthen with the following configuration:\n\n.. code:: yaml\n\n    dimensions:\n        -   name: DATE\n            default: 2012\n            value: 2013\n            values: [2012, 2013]\n\nWe will have two set of tiles ``2012`` and ``2013``, both accessible by the capabilities, and by default we will see the first set of tiles.\n\n\nMetatiles\n~~~~~~~~~\n\nThe metatiles are activated by setting ``meta`` to ``on`` (by default it's ``off``).\n\nThe metatiles are used for two things: first to generate multiple tiles with only one WMS query.\nBy setting ``meta_size`` to 8 we will generate a square of 8 by 8 tiles in one shot.\n\nThe second usage of metatiles is prevent cut label names: this is solved by getting a bigger image\nand cutting the borders. The ``meta_buffer`` should be set to a bigger value than half the size of the longest label.\n\n\nConfigure hash\n~~~~~~~~~~~~~~\n\nWe can filter tiles and metatiles by using an hash.\n\nThe configuration of this hash is in the layer like this:\n\n.. code:: yaml\n\n    empty_metatile_detection:\n        size: 740\n        hash: 3237839c217b51b8a9644d596982f342f8041546\n    empty_tile_detection:\n        size: 921\n        hash: 1e3da153be87a493c4c71198366485f290cad43c\n\nTo easily generate this configuration we can use the following command::\n\n    generate_tiles --get-hash <z/x/y> -l <layer_name>\n\nWhere ``<z/x/y>`` should refer to an empty tile/metatile. Generally it's a good\nidea to use z as the maximum zoom, x and y as 0.\n\n\nConfigure geom/sql\n~~~~~~~~~~~~~~~~~~\n\nWe can generate the tiles only on some geometries stored in PostGis.\n\nThe configuration is in the layer like this:\n\n.. code:: yaml\n\n    geoms:\n    -   connection: user=www-data password=www-data dbname=<db> host=localhost\n        sql: <column> AS geom FROM <table>\n        min_resolution: <resolution> # included, optional, last win\n        max_resolution: <resolution> # included, optional, last win\n\nExample:\n\n.. code:: yaml\n\n    geoms:\n    -   connection: user=postgres password=postgres dbname=tests host=localhost\n        sql: the_geom AS geom FROM tests.polygon\n    -   connection: user=postgres password=postgres dbname=tests host=localhost\n        sql: the_geom AS geom FROM tests.point\n        min_resolution: 10\n        max_resolution: 20\n\nIt's preferable to use simple geometries, too complex geometries can slow down the generation.\n\nLegends\n~~~~~~~\n\nTo be able to generate legends with ``generate_controller --generate-legend-images``\nyou should have ``legend_mime`` and ``legend_extention`` in the layer configuration.\n\nfor example:\n\n.. code:: yaml\n\n   legend_mime: image/png\n   legend_extention: png\n\nThen it will create a legend image per layer and per zoom level named\n``.../1.0.0/{{layer}}/{{wmts_style}}/legend{{zoom}}.{{legend_extention}}``\nonly if she is different than the previous zoom level. If we have only one legend image\nit still stores in the file named ``legend0.{{legend_extention}}``.\n\nWhen we do ``generate_controller --generate-wmts-capabilities`` we will at first\nparse the legend images to generate a layer configuration like this:\n\n.. code:: yaml\n\n    legends:\n    -   mime_type: image/png\n        href: http://host/tiles/layer/style/legend0.png\n        min_resolution: 500 # optional, [m/px]\n        max_resolution: 2000 # optional, [m/px]\n        min_scale: # if define overwrite the min_resolution [m/m]\n        max_scale: # if define overwrite the max_resolution [m/m]\n\nIf you define a legends array in the layer configuration it is directly used to generate the capabilities.\n\n\nWMS layers\n~~~~~~~~~~\n\nThe additional value needed by the WMS is the URL of the server and the ``layers``.\n\nThe previously defined ``mime_type`` is also used in the WMS requests.\n\nTo customise the request you also have the attributes ``params``, ``headers``\nand ``generate_salt``.\nIn ``params`` you can specify additional parameter of the WMS request,\nin ``headers`` you can modify the request headers. See the\n`Proxy/cache issue`_ for additional informations.\n\n\nMapnik layers\n~~~~~~~~~~~~~\n\nWe need to specify the ``mapfile`` path.\n\nWith Mapnik we have the possibility to specify a ``data_buffer`` then we should set the unneeded ``meta_buffer`` to 0.\n\nAnd the ``output_format`` used for the Mapnik renderer, can be ``png``, ``png256``, ``jpeg``, ``grid`` (grid_renderer).\n\n\n~~~~~~~~~~~~~~~~~~\nMapnik grid layers\n~~~~~~~~~~~~~~~~~~\n\nWith Mapnik we can generate UTFGrid tiles (JSON format that describes the tiles present on a corresponding tile)\nby using the ``output_format`` 'grid', see also: https://github.com/mapnik/mapnik/wiki/MapnikRenderers#grid_renderer.\n\nSpecific configuration:\n\nWe have a specific way to ``drop_empty_utfgrid`` by using the ``on`` value.\n\nWe should specify the pseudo pixel size [px] with the ``resolution``.\n\nAnd the ``layers_fields`` that we want to get the attributes.\nObject with the layer name as key and the values in an array as value.\n\nIn fact the Mapnik documentation says that's working only for one layer.\n\nAnd don't forget to change the ``extension`` to ``json``, and the ``mime_type`` to ``application/utfgrid``\nand the ``meta`` to ``off`` (not supported).\n\nConfiguration example:\n\n.. code:: yaml\n\n    grid:\n        type: mapnik\n        mapfile: style.mapnik\n        output_format: grid\n        extension: json\n        mime_type: application/utfgrid\n        drop_empty_utfgrid: on\n        resolution: 4\n        meta: off\n        data_buffer: 128\n        layers_fields:\n            buildings: [name, street]\n\n\nProcess\n-------\n\nWe can configure some tile commands to process the tiles.\nThey can be automatically be called in the tile generation it we set the property\n``post_process`` or ``pre_hash_post_process`` in the layer configuration.\n\nThe process is a set of names processes, and each one has a list of commands declared like this:\n\n.. code:: yaml\n\n    process:  # root process config\n        optipng:  # the process command\n        -   cmd: optipng %(args)s -q -zc9 -zm8 -zs3 -f5 -o %(out)s %(in)s  # the command line\n            need_out: true  # if false the command rewrite the input file, default to false\n            arg:  # argument used with the defferant log switches, all default to ''\n                default: '-q' # the argument used by default\n                quiet: '-q' # the arbument used in quiet mode\n                verbose: '-v' # the argument used in verbose mode\n                debug: '-log /tmp/optipng.log' # the argument user in debug mode\n\nThe ``cmd`` can have the following optional argument:\n\n* ``args`` the argument configured in the `arg` section.\n* ``in``, ``out`` the input and output files.\n* ``x``, ``y``, ``z`` the tile coordinates.\n\n\nConfigure Apache\n----------------\n\nTo generate the Apache configuration we use the command::\n\n    generate_controller --generate-apache-config\n\nThe Apache configuration look like this (default values):\n\n.. code:: yaml\n\n    apache:\n        # Generated file\n        config_file: apache/tiles.conf\n        # Serve tiles location, default is /tiles\n        location: /${instanceid}/tiles\n        # Expires header in hours\n        expires: 8\n\n        # Headers added to the ressponces\n        headers:\n            Cache-Control: max-age=864000, public\n\nIf we use a proxy to access to the tiles we can specify a different URL to access\nto the tiles by adding the parameter ``tiles_url`` in the cache.\n\nConfigure MapCache\n------------------\n\nFor the last zoom levels we can use MapCache.\n\nTo select the levels we generate the tiles an witch one we serve them using MapCache\nwe have an option 'min_resolution_seed' in the layer configuration.\n\nThe MapCache configuration look like this (default values):\n\n.. code:: yaml\n\n    mapcache:\n        # The generated file\n        config_file: apache/mapcache.xml\n        # The memcache host\n        memcache_host: localhost\n        # The memcache port\n        memcache_port: 11211\n        # The mapcache location, default is /mapcache\n        location: /${instanceid}/mapcache\n\n\nTo generate the MapCache configuration we use the command::\n\n    generate_controller --generate-mapcache-config\n\nTiles error file\n----------------\n\nIf we set a file path in configuration file:\n\n.. code:: yaml\n\n    generation:\n        error_file: <path>\n\nThe tiles that in error will be append to the file, ant the tiles can be regenerated with\n``generate_tiles --layer <layer> --tiles <path>``.\n\nThe ``<path>`` can be ``/tmp/error_{layer}_{datetime:%Y-%m-%d_%H:%M:%S}``\nto have one file per layer and per run.\n\nThe tiles file looks like:\n\n.. code::\n\n    # [time] some comments\n    z/x/y # [time] the error\n    z/x/y:+m/+m # [time] the error\n\nThe first line is just a comment, the second, is for an error on a tile,\nand the third is for an error on a metatile.\n\nProxy/cache issue\n-----------------\n\nIn general we shouldn't generate tiles throw a proxy, to do that you\nshould configure the layers as this:\n\n.. code:: yaml\n\n    layers_name:\n        url: http://localhost/wms\n        headers:\n            Host: the_host_name\n\nThe idea is to get the WMS server on ``localhost`` and use the ``Host`` header\nto select the right Apache VirtualHost.\n\nTo don't have cache we use the as default the headers:\n\n.. code:: yaml\n\n    headers:\n        Cache-Control: no-cache, no-store\n        Pragma: no-cache\n\nAnd if you steal have issue you can add a ``SALT`` random argument by setting\nthe layer parameter ``generate_salt`` to ``true``.\n\n\nAlternate mime type\n-------------------\n\nBy default TileCloud support only the ``image/jpeg`` and ``image/png`` mime type.\n\n\n----------------\nAmazon services\n----------------\n\nAuthentication\n--------------\n\nTo be authenticated by Amazon you should set those environment variable before running a command::\n\n    export AWS_ACCESS_KEY_ID=...\n    export AWS_SECRET_ACCESS_KEY=...\n\nConfigure S3\n------------\n\nThe cache configuration is like this:\n\n.. code:: yaml\n\n    s3:\n        type: s3\n        # the s3 bucket name\n        bucket: tiles\n        # the used folder in the bucket [default to '']\n        folder: ''\n        # for GetCapabilities\n        http_url: https://%(host)s/%(bucket)s/%(folder)s/\n        hosts:\n        - wmts0.<host>\n\nThe bucket should already exists. If you don't use Amazon's S3, you must specify the ``host`` and\nthe ``tiles_url`` configuration parameter.\n\nConfigure SQS\n-------------\n\nThe configuration in layer is like this:\n\n.. code:: yaml\n\n    sqs:\n        # The region where the SQS queue is\n        region: eu-west-1\n        # The SQS queue name, it should already exists\n        queue: the_name\n\nThe queue should be used only by one layer.\n\nTo use the SQS queue we should first fill the queue::\n\n    generate_tiles --role master --layer <a_layer>\n\nAnd then generate the tiles present in the SQS queue::\n\n    generate_tiles --role slave --layer <a_layer>\n\nConfigure SNS\n-------------\n\nSNS can be used to send a message when the generation ends.\n\nThe configuration is like this:\n\n.. code:: yaml\n\n    sns:\n        topic: arn:aws:sns:eu-west-1:your-account-id:tilecloud\n        region: eu-west-1\n\nThe topic should already exists.\n\nAmazon tool\n-----------\n\nAmazon has a command line tool (`homepage <http://aws.amazon.com/fr/cli/>`_).\n\nTo use it, add in the ``setup.py``:\n\n* ``awscli`` as an ``install_requires``,\n* ``'aws = awscli.clidriver:main',`` in the ``console_scripts``.\n\nThan install it:\n\n.. code:: bash\n\n    pip install awscli\n\nAnd use it:\n\n.. code:: bash\n\n    aws help\n\nFor example to delete many tiles do:\n\n.. code:: bash\n\n    aws s3 rm --recursive s3://your_bucket_name/folder\n\n---------------------------\nOther related configuration\n---------------------------\n\nOpenlayers pink tiles\n---------------------\n\nTo avoid the OpenLayers red tiles on missing empty tiles we can add the following CSS rule:\n\n.. code:: css\n\n    .olImageLoadError {\n        display: none;\n    }\n\nTo completely hide the missing tiles, useful for a transparent layer,\nor for an opaque layer:\n\n.. code:: css\n\n    .olImageLoadError {\n        background-color: white;\n    }\n\n\n--------------------\nDistribute the tiles\n--------------------\n\nThere two ways to serve the tiles, with Apache configuration, or with an internal server.\n\nThe advantage of the internal server are:\n\n* Can distribute Mbtiles or Berkley DB.\n* Return ``204 No Content`` HTTP code in place of ``404 Not Found`` (or ``403 Forbidden`` for s3).\n* Can be used in `KVP` mode.\n* Can have zone per layer where are the tiles, otherwise it redirect on mapcache.\n\nTo generate the Apache configuration we use the command::\n\n    generate_controller --generate-apache-config\n\nThe server can be configure as it:\n\n.. code:: yaml\n\n    server:\n        layers: a_layer # Restrict to serve an certain number of layers [default to all]\n        cache: mbtiles # The used cache [default use generation/default_cache]\n        # the URL without location to MapCache, [default to http://localhost/]\n        mapcache_base: http://localhost/\n        mapcache_headers: # headers, can be used to access to an other Apache vhost [default to {}]\n            Host: localhost\n        geoms_redirect: true # use the geoms to redirect to MapCache [defaut to false]\n        # allowed extension in the static path (default value), not used for s3.\n        static_allow_extension: [jpeg, png, xml, js, html, css]\n\nThe minimal configuration is to enable it:\n\n.. code:: yaml\n\n    server: {}\n\nYou should also configure the ``http_url`` of the used `cache`, to something like\n``https://%(host)s/${instanceid}/tiles`` or like\n``https://%(host)s/${instanceid}/wsgi/tiles`` if you use the Pyramid view.\n\nPyramid view\n------------\n\nTo use the pyramid view use the following configuration:\n\n.. code:: python\n\n    config.get_settings().update({\n        'tilegeneration_configfile': '<the configuration file>',\n    })\n    config.add_route('tiles', '/tiles/\\*path')\n    config.add_view('tilecloud_chain.server:PyramidView', route_name='tiles')\n\n\nInternal WSGI server\n--------------------\n\nin ``production.ini``::\n\n    [app:tiles]\n    use = egg:tilecloud_chain#server\n    configfile = %(here)s/tilegeneration/config.yaml\n\nwith the Apache configuration::\n\n    WSGIDaemonProcess tiles:${instanceid} display-name=%{GROUP} user=${modwsgi_user}\n    WSGIScriptAlias /${instanceid}/tiles ${directory}/apache/wmts.wsgi\n    <Location /${instanceid}/tiles>\n        WSGIProcessGroup tiles:${instanceid}\n        WSGIApplicationGroup %{GLOBAL}\n    </Location>\n\n\n--------\nCommands\n--------\n\nAvailable commands\n------------------\n\n* ``generate_controller`` generate the annexe files like capabilities, legend, OpenLayers test page, MapCache configuration, Apache configuration.\n* ``generate_tiles`` generate the tiles.\n* ``generate_copy`` copy the tiles from a cache to an other.\n* ``generate_process`` process the tiles using a configured process.\n* ``generate_cost`` estimate the cost.\n* ``import_expiretiles`` import the osm2pgsql expire-tiles file as geoms in the database.\n\nEach commands have a ``--help`` option to give a full arguments help.\n\n\nGenerate tiles\n--------------\n\nGenerate all the tiles::\n\n    generate_tiles\n\nGenerate a specific layer::\n\n    generate_tiles --layer <a_layer>\n\nGenerate a specific zoom::\n\n    generate_tiles --zoom 5\n\nGenerate a specific zoom range::\n\n    generate_tiles --zoom 2-8\n\nGenerate a specific some zoom levels::\n\n    generate_tiles --zoom 2,4,7\n\nGenerate tiles from an (error) tiles file::\n\n    generate_tiles --layer <a_layer> --tiles <a_file.tiles>\n\nGenerate tiles on a bbox::\n\n    generate_tiles --bbox <MINX> <MINY> <MAXX> <MAXY>\n\nGenerate a tiles near a tile coordinate (useful for test)::\n\n    generate_tiles --near <X> <Y>\n\nGenerate a tiles in a different cache than the default one::\n\n    generate_tiles --cache <a_cache>\n\nAnd don't forget to generate the WMTS Capabilities::\n\n    generate_controller --capabilities\n\n\nOpenLayers test page\n--------------------\n\nTo generate a test page use::\n\n    generate_controller --openlayers\n\n\n------------\nExplain cost\n------------\n\nConfiguration (default values):\n\n.. code:: yaml\n\n    cost:\n        # [nb/month]\n        request_per_layers: 10000000\n        cloudfront:\n            download: 0.12,\n            get: 0.009\n        request_per_layers: 10000000\n        s3:\n            download: 0.12,\n            get: 0.01,\n            put: 0.01,\n            storage: 0.125\n        sqs:\n            request: 0.01\n\n\nLayer configuration (default values):\n\n.. code:: yaml\n\n    cost:\n        metatile_generation_time: 30.0,\n        tile_generation_time: 30.0,\n        tile_size: 20.0,\n        tileonly_generation_time: 60.0\n\nThe following commands can be used to know the time and cost to do generation::\n\n    generate_controller --cost\n\nUseful options\n--------------\n\n``--quiet`` or ``-q``: used to display only errors.\n\n``--verbose`` or ``-v``: used to display info messages.\n\n``--debug`` or ``-d``: used to display debug message, pleas use this option to report issue.\nWith the debug mode we don't catch exceptions, and we don't log time messages.\n\n``--test <n>`` or ``-t <n>``: used to generate only ``<n>`` tiles, useful for test.\n\nThe logging format is configurable in the``config.yaml`` - ``generation/log_format``,\n`See <http://docs.python.org/2/library/logging.html#logrecord-attributes>`_.\n\n\n-----------------\nImportant remarks\n-----------------\n\nEspecially on S3 the grid name, the layer name, the dimensions, can't be changed\n(understand if we want to change them we should regenerate all the tiles).\n\nBy default we also can't insert a zoom level, if you think that you need it we can\nset the grid property ``matrix_identifier: resolution``, bit it don't work with MapCache.\n\nPlease use the ``--debug`` to report issue.\n\n\n------------\n>From sources\n------------\n\nBuild it:\n\n.. code:: bash\n\n   git submodule update --recursive\n   mkdir .build\n   virtualenv venv\n   venv/bin/pip install -e .\n   venv/bin/pip install -r dev-requirements.txt\n\n\nChangelog\n=========\n\n-----------\nRelease 0.9\n-----------\n\n1. Correct some error with slash.\n\n2. Better error handling.\n\n3. Be able to have one error file per layer.\n\n-----------\nRelease 0.8\n-----------\n\n1. Correct some error with slash.\n\n2. Add ``pre_hash_post_process`` and ``post_process``.\n\n3. Add copy command.\n\n-----------\nRelease 0.7\n-----------\n\n1. Support of deferent geoms per layers, requires configuration changes, old version:\n\n    .. code:: yaml\n\n        connection: user=www-data password=www-data dbname=<db> host=localhost\n        sql: <column> AS geom FROM <table>\n\n    to new version:\n\n    .. code:: yaml\n\n        connection: user=www-data password=www-data dbname=<db> host=localhost\n        geoms:\n        -   sql: <column> AS geom FROM <table>\n\n    More informations in the **Configure geom/sql** chapter.\n\n2. Update from ``optparse`` to ``argparse``, and some argument refactoring, use ``--help`` to see the new version.\n\n3. Add support of Blackbery DB (``bsddb``).\n\n4. The tile ``server`` is completely rewrite, now it support all cache,\n   ``REST`` and ``KVP`` interface, ``GetFeatureInfo`` request,\n   and it can be used as a pyramid view or as a ``WSGI`` server.\n   More informations in the **istribute the tiles** chapter.\n\n5. Add three strategy to bypass the proxy/cache: Use the headers\n   ``Cache-Control: no-cache, no-store``, ``Pragma: no-cache`` (default).\n   Use localhost in the URL and the header ``Host: <host_name>`` (recommended).\n   Add a ``SALT`` random argument (if the above don't work).\n   More informations in the **Proxy/cache issue** chapter.\n\n6. Improve the dimensions usage by adding it ti the WMS requests,\n   And add a ``--dimensions`` argument of ``generate_tiles`` to change the dimensions values.\n\n7. Extract generate_cost and generate_amazon from generate_controler.\n\n8. Now we can creates legends, see the **Legends** chapter.\n\n9. Now the tiles generation display generation statistics at the ends.\n\n10. The EC2 configuration is moved in a separate structure, see README for more informations.\n\n\n-----------\nRelease 0.6\n-----------\n\n1. Now the apache configuration can be generated with ``.build/venv/bin/generate_controller --generate-apache-config``,\n   it support ``filesystem`` ``cache`` and ``MapCache``.\n\n2. Windows fixes.\n\n3. Use console rewrite (\\r) to log generated tiles coordinates.\n\n4. Now if no layers is specified in ``generation:default_layers`` we generate all layers by default.\n\n5. Now bbox to be floats.\n\n6. New ``--get-bbox`` option to get the bbox of a tile.\n\n7. Add coveralls support (https://coveralls.io/r/camptocamp/tilecloud-chain).\n\n8. Add an config option ``generation:error_file`` and a command option ``--tiles``\n   to store and regenerate errored tiles.\n\n\n-----------\nRelease 0.5\n-----------\n\n1. SQS config change:\n\n.. code:: yaml\n\n    layers:\n        layer_name:\n            sqs:\n                # The region where the SQS queue is\n                region: eu-west-1\n                # The SQS queue name, it should already exists\n                queue: the_name\n\n2. Add debug option (``--debug``), please use it to report issue.\n\n3. Now the ``sql`` request can return a set of geometries in a column names geom\n   but the syntax change a little bit => ``<column> AS geom FROM <table>``",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "http://github.com/camptocamp/tilecloud-chain",
+    "keywords": "gis tilecloud chain",
+    "license": "BSD",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "tilecloud-chain",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/tilecloud-chain/",
+    "release_url": "https://pypi.org/project/tilecloud-chain/1.3.0/",
+    "requires_python": "",
+    "summary": "Tools to generates tiles from WMS or Mapnik, to S3, Berkley DB, MBTiles, or local filesystem in WMTS layout using Amazon cloud services.",
+    "version": "1.3.0"
+  },
+  "releases": {
+    "0.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3eeffbfdef21d3846d198290228ebab6",
+          "sha256": "5dd556cee674f4e885c6758f5d3c78602722b2f78bd320a7b020f0dd0ce90d01"
+        },
+        "downloads": 3207,
+        "filename": "tilecloud-chain-0.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3eeffbfdef21d3846d198290228ebab6",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 72168,
+        "upload_time": "2012-10-22T15:37:55",
+        "url": "https://files.pythonhosted.org/packages/fe/fa/078f689d85644267e5966633d476b0233cc9f01ae8a44f8051c0d1f19a0e/tilecloud-chain-0.1.tar.gz"
+      }
+    ],
+    "0.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "61ac3cda54c4d1a9a10246a9b761a315",
+          "sha256": "fa5ef42dbbe6ee034cc2adbb52f965dd73a05579fdb740f28cd416efccdff485"
+        },
+        "downloads": 2746,
+        "filename": "tilecloud-chain-0.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "61ac3cda54c4d1a9a10246a9b761a315",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 86429,
+        "upload_time": "2013-01-07T10:21:57",
+        "url": "https://files.pythonhosted.org/packages/1f/39/626a5a4b47de7b6202aaffcf2cf7d1171a2c907677157f1bf02e074443d3/tilecloud-chain-0.2.tar.gz"
+      }
+    ],
+    "0.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "91679cd7a6adfe699ed80f8635b99f6d",
+          "sha256": "4fdea2412989a4cbbf146e36ee9ae2eda68af9dee3be21ff99901587c9552b7e"
+        },
+        "downloads": 2662,
+        "filename": "tilecloud-chain-0.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "91679cd7a6adfe699ed80f8635b99f6d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 90057,
+        "upload_time": "2013-02-05T08:45:24",
+        "url": "https://files.pythonhosted.org/packages/a6/50/09ac85359e443f7e6bca424cee0146891f28493a9fcaffdcae9592180b86/tilecloud-chain-0.3.tar.gz"
+      }
+    ],
+    "0.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9f081534b6fc82e1fef49e3c69a78245",
+          "sha256": "543e8269853718ce6b7de90c0665fc576a15d944fc2d75e663d16dee1c8de8fd"
+        },
+        "downloads": 2606,
+        "filename": "tilecloud-chain-0.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "9f081534b6fc82e1fef49e3c69a78245",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 90578,
+        "upload_time": "2013-03-06T08:46:05",
+        "url": "https://files.pythonhosted.org/packages/93/99/c8140db72895ce929edba2cbd98dfe8d28a80a9491b210e7c3c4f3cda778/tilecloud-chain-0.4.tar.gz"
+      }
+    ],
+    "0.4.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5ade48e52388ecbfc15e36edc1f04cf4",
+          "sha256": "f446bd61a3d77a57794e78ef699ff5c898ba2e55e7049f6056bf9ea9b159f46a"
+        },
+        "downloads": 2567,
+        "filename": "tilecloud-chain-0.4.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5ade48e52388ecbfc15e36edc1f04cf4",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 90602,
+        "upload_time": "2013-03-12T16:24:39",
+        "url": "https://files.pythonhosted.org/packages/9b/7b/4e0d8d838ba4e99191a38b86402cc58300636ae0e07b9786236fbbb56d15/tilecloud-chain-0.4.1.tar.gz"
+      }
+    ],
+    "0.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "11b1d1829d3b408de1b7c46d13fb9ad6",
+          "sha256": "47e268f0b528f752b1b1d6fd9ad561f80286adb69bd2afc4238f76a68aeaf607"
+        },
+        "downloads": 2185,
+        "filename": "tilecloud-chain-0.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "11b1d1829d3b408de1b7c46d13fb9ad6",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 198517,
+        "upload_time": "2013-04-11T06:29:37",
+        "url": "https://files.pythonhosted.org/packages/52/9a/4eb7b515c9ae55547e00b483a8c4acbec1cc7867d54ce2146e02be89f8ae/tilecloud-chain-0.5.tar.gz"
+      }
+    ],
+    "0.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7b16432d4392be5d9055615c997dba51",
+          "sha256": "d88d0ec26c105f57407b1eb945247777b655da0abb360e35a682561c729c3e1c"
+        },
+        "downloads": 2120,
+        "filename": "tilecloud-chain-0.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7b16432d4392be5d9055615c997dba51",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 54275,
+        "upload_time": "2013-07-28T12:23:03",
+        "url": "https://files.pythonhosted.org/packages/60/6c/e98abd35eb7ce0b05ff99dbf6e9837174e2e96b353ea322e3e3af7a94ef2/tilecloud-chain-0.6.tar.gz"
+      }
+    ],
+    "0.7.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "303067f2a3322a31581c8f5066001f6c",
+          "sha256": "f41dda6001d19c5e0ae14b722199e8a1fef60e9f68ddbacd9c7f6fd95fe35550"
+        },
+        "downloads": 1974,
+        "filename": "tilecloud-chain-0.7.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "303067f2a3322a31581c8f5066001f6c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 128192,
+        "upload_time": "2013-10-29T18:18:01",
+        "url": "https://files.pythonhosted.org/packages/29/67/872809e73480304c66b9dfdbd0f12cfcf0de1707f1f458c0bc70a6a8ff42/tilecloud-chain-0.7.0.tar.gz"
+      }
+    ],
+    "0.7.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b2b3d0065562ff637925d4c952e17f54",
+          "sha256": "35e427c7ab957a24f92e06e14c9dd2d1e8cbf28d2e5c2b7160c35516b904755b"
+        },
+        "downloads": 1922,
+        "filename": "tilecloud-chain-0.7.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b2b3d0065562ff637925d4c952e17f54",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 128410,
+        "upload_time": "2013-12-11T17:13:16",
+        "url": "https://files.pythonhosted.org/packages/2b/55/3919b0093cdf73fc4740f6c33a19e313e4199c41d5a38d69e3e385412f54/tilecloud-chain-0.7.1.tar.gz"
+      }
+    ],
+    "0.7.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f7484472c640c17e53a9a0716116c66e",
+          "sha256": "1557b10a76c9abe4049c48208545faf73518eb7f852c0c779587fde9b90db275"
+        },
+        "downloads": 1625,
+        "filename": "tilecloud-chain-0.7.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f7484472c640c17e53a9a0716116c66e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 133394,
+        "upload_time": "2014-05-09T11:22:42",
+        "url": "https://files.pythonhosted.org/packages/17/cb/b69772f6cc62c6db36f443da21c25f0be97987bd7e2210ed2f6f553dd73e/tilecloud-chain-0.7.2.tar.gz"
+      }
+    ],
+    "0.8.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ab56b5900fe4b58f218d3270ca0aa5b2",
+          "sha256": "69c5e47f53bb86e48fbd4b3005b38f19d9f03233300dea1951aec9152921f307"
+        },
+        "downloads": 1470,
+        "filename": "tilecloud-chain-0.8.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ab56b5900fe4b58f218d3270ca0aa5b2",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 138524,
+        "upload_time": "2014-07-02T15:49:08",
+        "url": "https://files.pythonhosted.org/packages/23/25/22ad9925778f24116cb3de49df815745c2fe7c4287b7261c1e5d854f4067/tilecloud-chain-0.8.0.tar.gz"
+      }
+    ],
+    "0.8.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "db5ecef63bd9eed793e797ef5ae2b30f",
+          "sha256": "bc9bd2899c85ad20e99146859e3048860448e65c611718611c63e3070948f571"
+        },
+        "downloads": 1465,
+        "filename": "tilecloud-chain-0.8.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "db5ecef63bd9eed793e797ef5ae2b30f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 138575,
+        "upload_time": "2014-07-03T06:58:00",
+        "url": "https://files.pythonhosted.org/packages/91/46/0464d7275271ad85869e5f360d971e0a2c2efd42f8293d2c29526263bc8b/tilecloud-chain-0.8.1.tar.gz"
+      }
+    ],
+    "0.8.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "90b2453d0bfb7b8c331f53920493e1de",
+          "sha256": "b3e261016d2b059df7ad95fa085b293bf3ed49edc5b591b243536074e3590229"
+        },
+        "downloads": 1443,
+        "filename": "tilecloud-chain-0.8.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "90b2453d0bfb7b8c331f53920493e1de",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 138555,
+        "upload_time": "2014-07-03T08:34:21",
+        "url": "https://files.pythonhosted.org/packages/40/c1/e8eaec904b69f2f779b138528802f48ad5d98e437fe25a0e2f79edc0e2c7/tilecloud-chain-0.8.2.tar.gz"
+      }
+    ],
+    "0.9.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7bdf8bfe3d19d51e7219af78f53e7e76",
+          "sha256": "a9db58c599a3a3b8dcd51ed2951eafd22ee60511d397474cae2558d217e7563b"
+        },
+        "downloads": 6583,
+        "filename": "tilecloud-chain-0.9.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7bdf8bfe3d19d51e7219af78f53e7e76",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 139633,
+        "upload_time": "2014-08-19T08:15:31",
+        "url": "https://files.pythonhosted.org/packages/95/59/86348bf9e03945bf4a42dd57619971fb0735fa76b9fb7cd15a6de3fcb407/tilecloud-chain-0.9.0.tar.gz"
+      }
+    ],
+    "0.9.0dev-20141105": [],
+    "0.9.0dev1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "58330be7da4b28b296695f6b7a172b63",
+          "sha256": "473b8ac015a75132e97066ad0c6da6a9b04655e7e50ac7ec79b84468730f6f98"
+        },
+        "downloads": 1474,
+        "filename": "tilecloud-chain-0.9.0dev1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "58330be7da4b28b296695f6b7a172b63",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 138600,
+        "upload_time": "2014-07-03T07:59:35",
+        "url": "https://files.pythonhosted.org/packages/c2/c8/254d7687d8c95b236b0a9b7303c9feab3d5ca49f6a6f90aaab966f2afc8f/tilecloud-chain-0.9.0dev1.tar.gz"
+      }
+    ],
+    "0.9.0dev2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ef04626077b89ce3591a23a7b7165213",
+          "sha256": "30f6a3518cad324dab7a22a11098290a2f4923a774b2acd6436ef7f85f0ff2f0"
+        },
+        "downloads": 1447,
+        "filename": "tilecloud-chain-0.9.0dev2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ef04626077b89ce3591a23a7b7165213",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 138566,
+        "upload_time": "2014-07-03T08:20:19",
+        "url": "https://files.pythonhosted.org/packages/18/71/831a4bee0a5bfd2163f42874eee802a64f6bc0f0cca30878a0831910677b/tilecloud-chain-0.9.0dev2.tar.gz"
+      }
+    ],
+    "1.0.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "aa49aee27e59e0c05c1b52af293a63c6",
+          "sha256": "03ff84ecc31b70a09f98970791181d29555b995e87c4753ec500f64d23293995"
+        },
+        "downloads": 1964,
+        "filename": "tilecloud_chain-1.0.0-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "aa49aee27e59e0c05c1b52af293a63c6",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 123965,
+        "upload_time": "2015-11-12T08:48:15",
+        "url": "https://files.pythonhosted.org/packages/a5/86/a13b349101374cb5641c0e52336aee5b1e0ace351f16543f3f79bf188fde/tilecloud_chain-1.0.0-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "835bbeb3b3eb1c022ce4e7bfeb74ffa9",
+          "sha256": "4ee1f58db1d2bc7e2b83d663c6d322848c187682a050c9fbae51f90eed0d7754"
+        },
+        "downloads": 630,
+        "filename": "tilecloud-chain-1.0.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "835bbeb3b3eb1c022ce4e7bfeb74ffa9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 120189,
+        "upload_time": "2015-11-12T08:48:09",
+        "url": "https://files.pythonhosted.org/packages/ba/69/54b17b587fbf75b122f33bf6aa79f4be3ae093bc35127391b975452ec620/tilecloud-chain-1.0.0.tar.gz"
+      }
+    ],
+    "1.0.0dev1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5931889af8fcac958918f7adcf098f75",
+          "sha256": "b8a2c799986df22ad6268feec111cf08e670241803eab0d1753dd1507c380116"
+        },
+        "downloads": 1295,
+        "filename": "tilecloud-chain-1.0.0dev1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5931889af8fcac958918f7adcf098f75",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 140446,
+        "upload_time": "2014-12-16T17:38:25",
+        "url": "https://files.pythonhosted.org/packages/90/82/b5b46459b9d53a9fd8c3cbf812935bb574cb0b1f638a1afaca02a127df33/tilecloud-chain-1.0.0dev1.tar.gz"
+      }
+    ],
+    "1.0.0dev2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2dc16f9733b4ccfd2f3c8d8608fc0864",
+          "sha256": "c4aedb5940c5dd24d6d3cded7a1b3272f99fcdf8033a4c747a60cc17d275e33f"
+        },
+        "downloads": 1739,
+        "filename": "tilecloud-chain-1.0.0dev2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2dc16f9733b4ccfd2f3c8d8608fc0864",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 140466,
+        "upload_time": "2015-04-10T11:44:30",
+        "url": "https://files.pythonhosted.org/packages/d8/ea/45c51a1d628faf926cb3b11d3fea83d4091899ff26d6c37f72c1d651d2eb/tilecloud-chain-1.0.0dev2.tar.gz"
+      }
+    ],
+    "1.1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "779a4f5e75827b9d05dc01abf5e95179",
+          "sha256": "265165dea2a023bf6c622835051e15ca9fdacae8fc03d0ae51433d065e0e0cab"
+        },
+        "downloads": 597,
+        "filename": "tilecloud_chain-1.1.0-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "779a4f5e75827b9d05dc01abf5e95179",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 476611,
+        "upload_time": "2016-03-23T16:05:59",
+        "url": "https://files.pythonhosted.org/packages/5d/8b/1007a69b589fe11a9b3b54ae5af0860c51f03c644529141e2ddaa96087a0/tilecloud_chain-1.1.0-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "051145694e4a4a0fd5f76e28db8e22e0",
+          "sha256": "e31c98087ae96b3d9c15582f41897c922a3265d9f5861fb002393ebf381a522b"
+        },
+        "downloads": 502,
+        "filename": "tilecloud-chain-1.1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "051145694e4a4a0fd5f76e28db8e22e0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 119699,
+        "upload_time": "2016-03-23T16:05:48",
+        "url": "https://files.pythonhosted.org/packages/3c/85/defea5d4efa7c269c214cc73a3efb5bbb642d25a4c4d339f85aba2974605/tilecloud-chain-1.1.0.tar.gz"
+      }
+    ],
+    "1.1.0.dev20160323": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "18987dbba2a8e4114019df6d582bfe92",
+          "sha256": "39f9b16101e6af1ce9d0126bc880001d371dab199ae8c5ca31fd0991b7f3aa7a"
+        },
+        "downloads": 108,
+        "filename": "tilecloud-chain-1.1.0.dev20160323.tar.gz",
+        "has_sig": false,
+        "md5_digest": "18987dbba2a8e4114019df6d582bfe92",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 119800,
+        "upload_time": "2016-03-23T16:04:23",
+        "url": "https://files.pythonhosted.org/packages/a2/63/24e91f71d9301098ba8e92d776e4591f82c5c508061193107f9314bc32ca/tilecloud-chain-1.1.0.dev20160323.tar.gz"
+      }
+    ],
+    "1.2.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3816beeb8efd4bcc83e1e0342e404c1c",
+          "sha256": "08a299c0ed3b9dc54144aadf67497a1026f15369b4a9106df87c6c6a776190e1"
+        },
+        "downloads": 157,
+        "filename": "tilecloud_chain-1.2.0-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "3816beeb8efd4bcc83e1e0342e404c1c",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2",
+        "size": 69232,
+        "upload_time": "2016-07-29T12:36:55",
+        "url": "https://files.pythonhosted.org/packages/6c/37/bc6bf2f2133a1b9fbb71b5fb0b131538738d1a0cc251c26bc18a72c1a4a0/tilecloud_chain-1.2.0-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ea26b23d642507ca439574a3c828ce0a",
+          "sha256": "c958a940b1ec69cc5f11eb10b14ec1516b2c7e7efb700bc426ba5f9e819e9c51"
+        },
+        "downloads": 114,
+        "filename": "tilecloud-chain-1.2.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ea26b23d642507ca439574a3c828ce0a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 67436,
+        "upload_time": "2016-07-29T12:36:58",
+        "url": "https://files.pythonhosted.org/packages/b2/38/1508097807522c1cecfb56dcac51f2abe3928b3c7ccfb22c15b49676a0af/tilecloud-chain-1.2.0.tar.gz"
+      }
+    ],
+    "1.2.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "17cc9c32a2fcf524897af09e5d111463",
+          "sha256": "f02ec41b5487a36ca0224b5cc6f1a0c155eea4e2b2829ce92d96ec171e2b01b7"
+        },
+        "downloads": 496,
+        "filename": "tilecloud_chain-1.2.1-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "17cc9c32a2fcf524897af09e5d111463",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2",
+        "size": 69227,
+        "upload_time": "2016-09-28T13:28:05",
+        "url": "https://files.pythonhosted.org/packages/05/33/db00645a6438ad7fd93291a0813baaf32729d571c1c8a3f98ae45b8cfc2c/tilecloud_chain-1.2.1-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "93ee18f82b6349d8c432ac685ff4feb5",
+          "sha256": "2d0d307cccd0dfa8020b62e76f726bdf8378e152ee962c1401cf777c2afdcd27"
+        },
+        "downloads": 80,
+        "filename": "tilecloud-chain-1.2.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "93ee18f82b6349d8c432ac685ff4feb5",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 67896,
+        "upload_time": "2016-09-28T13:28:08",
+        "url": "https://files.pythonhosted.org/packages/02/a9/751e647f52304728ee558e61739318912038334d9b90d9ba310872f86f62/tilecloud-chain-1.2.1.tar.gz"
+      }
+    ],
+    "1.3.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e8601ac5a8a12eda246308cdbdba303f",
+          "sha256": "4a6625f290d0f483daaf89bde88fae71308fb545d83b1c41d5cb5192b3d988cb"
+        },
+        "downloads": 84,
+        "filename": "tilecloud_chain-1.3.0-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "e8601ac5a8a12eda246308cdbdba303f",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2",
+        "size": 64610,
+        "upload_time": "2017-03-07T17:00:16",
+        "url": "https://files.pythonhosted.org/packages/8e/2d/0ddf26a215aa2eaa189a9ff2195c11a45c3da14d9a031dc4187d1e4f83ad/tilecloud_chain-1.3.0-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e2e4287f8bbe11d7e09eb7d8db715107",
+          "sha256": "d79bed1335fdff93ea69885a4eb462bd946c3bdd9b6cd1bce587d89db51f9c18"
+        },
+        "downloads": 16,
+        "filename": "tilecloud-chain-1.3.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e2e4287f8bbe11d7e09eb7d8db715107",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 65951,
+        "upload_time": "2017-03-07T17:00:18",
+        "url": "https://files.pythonhosted.org/packages/e9/6b/fe9dda1726c5ecc8ebab21e63188358ffb0d30032c0f25a4bb809b65b6c8/tilecloud-chain-1.3.0.tar.gz"
+      }
+    ],
+    "1.4.0.dev1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "603c16d04c9be1a3cfac114a0f5ce15b",
+          "sha256": "199f1a8d19d89add6b684146342ba06e8d6d98e33ef560ccfb25f2ed335933ee"
+        },
+        "downloads": 0,
+        "filename": "tilecloud_chain-1.4.0.dev1-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "603c16d04c9be1a3cfac114a0f5ce15b",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2",
+        "size": 66749,
+        "upload_time": "2017-05-15T10:00:32",
+        "url": "https://files.pythonhosted.org/packages/5f/52/d46929ee0adf33c0a937aa7837d13762e8e149762339f7a30c44a5e6ebed/tilecloud_chain-1.4.0.dev1-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "98b5685f7a1ce08321f93a95dbc1318b",
+          "sha256": "fced2a59cadd1fef8272b7d46549d25afd9e8cf19a4c5128a1b0c371d11a8382"
+        },
+        "downloads": 0,
+        "filename": "tilecloud-chain-1.4.0.dev1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "98b5685f7a1ce08321f93a95dbc1318b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 67957,
+        "upload_time": "2017-05-15T10:00:34",
+        "url": "https://files.pythonhosted.org/packages/50/34/58528213dbde0d519aa22ad6d9cdde4f7dac737fda7135cdd9b8bf70e815/tilecloud-chain-1.4.0.dev1.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "e8601ac5a8a12eda246308cdbdba303f",
+        "sha256": "4a6625f290d0f483daaf89bde88fae71308fb545d83b1c41d5cb5192b3d988cb"
+      },
+      "downloads": 84,
+      "filename": "tilecloud_chain-1.3.0-py2-none-any.whl",
+      "has_sig": false,
+      "md5_digest": "e8601ac5a8a12eda246308cdbdba303f",
+      "packagetype": "bdist_wheel",
+      "python_version": "py2",
+      "size": 64610,
+      "upload_time": "2017-03-07T17:00:16",
+      "url": "https://files.pythonhosted.org/packages/8e/2d/0ddf26a215aa2eaa189a9ff2195c11a45c3da14d9a031dc4187d1e4f83ad/tilecloud_chain-1.3.0-py2-none-any.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "e2e4287f8bbe11d7e09eb7d8db715107",
+        "sha256": "d79bed1335fdff93ea69885a4eb462bd946c3bdd9b6cd1bce587d89db51f9c18"
+      },
+      "downloads": 16,
+      "filename": "tilecloud-chain-1.3.0.tar.gz",
+      "has_sig": false,
+      "md5_digest": "e2e4287f8bbe11d7e09eb7d8db715107",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 65951,
+      "upload_time": "2017-03-07T17:00:18",
+      "url": "https://files.pythonhosted.org/packages/e9/6b/fe9dda1726c5ecc8ebab21e63188358ffb0d30032c0f25a4bb809b65b6c8/tilecloud-chain-1.3.0.tar.gz"
+    }
+  ]
+}

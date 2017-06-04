@@ -1,0 +1,299 @@
+{
+  "info": {
+    "author": "Ilya Kreymer",
+    "author_email": "ikreymer@gmail.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 4 - Beta",
+      "Environment :: Web Environment",
+      "License :: OSI Approved :: Apache Software License",
+      "Programming Language :: Python :: 2",
+      "Programming Language :: Python :: 2.7",
+      "Programming Language :: Python :: 3",
+      "Programming Language :: Python :: 3.3",
+      "Programming Language :: Python :: 3.4",
+      "Programming Language :: Python :: 3.5",
+      "Programming Language :: Python :: 3.6",
+      "Topic :: Software Development :: Libraries :: Python Modules",
+      "Topic :: Utilities"
+    ],
+    "description": "WARCIO: WARC (and ARC) Streaming Library\n========================================\n.. image:: https://travis-ci.org/webrecorder/warcio.svg?branch=master\n      :target: https://travis-ci.org/webrecorder/warcio\n.. image:: https://coveralls.io/repos/github/webrecorder/warcio/badge.svg?branch=master\n      :target: https://coveralls.io/github/webrecorder/warcio?branch=master\n\n\nBackground\n~~~~~~~~~~\n\nThis library provides a fast, standalone way to read and write `WARC\nFormat <https://en.wikipedia.org/wiki/Web_ARChive>`__ commonly used in\nweb archives. Supports Python 2.7+ and Python 3.3+ (using\n`six <https://pythonhosted.org/six/>`__, the only external dependency)\n\nInstall with: ``pip install warcio``\n\nThis library is a spin-off of the WARC reading and writing component of\nthe `pywb <https://github.com/ikreymer/pywb>`__ high-fidelity replay\nlibrary, a key component of\n`Webrecorder <https://github.com/webrecorder/webrecorder>`__\n\nThe library is designed for fast, low-level access to web archival\ncontent, oriented around a stream of WARC records rather than files.\n\nReading WARC Records\n--------------------\n\nA key feature of the library is to be able to iterate over a stream of\nWARC records using the ``ArchiveIterator``\n\nIt includes the following features: - Reading a WARC/ARC stream - On the\nfly ARC to WARC record conversion - Decompressing and de-chunking HTTP\npayload content stored in WARC/ARC files.\n\nFor example, the following prints the the url for each WARC ``response``\nrecord:\n\n.. code:: python\n\n    from warcio.archiveiterator import ArchiveIterator\n\n    with open('path/to/file', 'rb') as stream:\n        for record in ArchiveIterator(stream):\n            if record.rec_type == 'response':\n                print(record.rec_headers.get_header('WARC-Target-URI'))\n\nThe stream object could be a file on disk or a remote network stream.\nThe ``ArchiveIterator`` reads the WARC content in a single pass. The\n``record`` is represented by an ``ArcWarcRecord`` object which contains\nthe format (ARC or WARC), record type, the record headers, http headers\n(if any), and raw stream for reading the payload.\n\n.. code:: python\n\n    class ArcWarcRecord(object):\n        def __init__(self, *args):\n            (self.format, self.rec_type, self.rec_headers, self.raw_stream,\n             self.http_headers, self.content_type, self.length) = args\n\nReading WARC Content\n~~~~~~~~~~~~~~~~~~~~\n\nThe ``raw_stream`` can be used to read the rest of the payload directly.\nA special ``ArcWarcRecord.content_stream()`` function provides a stream that\nautomatically decompresses and de-chunks the HTTP payload, if it is\ncompressed and/or transfer-encoding chunked.\n\nARC Files\n~~~~~~~~~\n\nThe library provides support for reading (but not writing ARC) files.\nThe ARC format is legacy but is important to support in a consistent\nmatter. The ``ArchiveIterator`` can equally iterate over ARC and WARC\nfiles to emit ``ArcWarcRecord`` objects. The special ``arc2warc`` option\nconverts ARC records to WARCs on the fly, allowing for them to be\naccessed using the same API.\n\n(Special ``WARCIterator`` and ``ARCIterator`` subclasses of ``ArchiveIterator``\nare also available to read only WARC or only ARC files).\n\nWARC and ARC Streaming\n~~~~~~~~~~~~~~~~~~~~~~\nFor example, here is a snippet for reading an ARC and a WARC using the\nsame API.\n\nThe example streams a WARC and ARC file over HTTP using\n`requests <http://docs.python-requests.org/en/master/>`__, printing the\n``warcinfo`` record (or ARC header) and any response records (or all ARC\nrecords) that contain HTML:\n\n.. code:: python\n\n    import requests\n    from warcio.archiveiterator import ArchiveIterator\n\n    def print_records(url):\n        resp = requests.get(url, stream=True)\n\n        for record in ArchiveIterator(resp.raw, arc2warc=True):\n            if record.rec_type == 'warcinfo':\n                print(record.raw_stream.read())\n\n            elif record.rec_type == 'response':\n                if record.http_headers.get_header('Content-Type') == 'text/html':\n                    print(record.rec_headers.get_header('WARC-Target-URI'))\n                    print(record.content_stream().read())\n                    print('')\n\n    # WARC\n    print_records('https://archive.org/download/ExampleArcAndWarcFiles/IAH-20080430204825-00000-blackbook.warc.gz')\n\n\n    # ARC with arc2warc\n    print_records('https://archive.org/download/ExampleArcAndWarcFiles/IAH-20080430204825-00000-blackbook.arc.gz')\n\n\nWriting WARC Records\n--------------------\n\nThe library provides a simple and extensible interface for writing WARC\nrecords conformant to WARC 1.0 ISO standard\n`(see draft) <http://bibnum.bnf.fr/WARC/WARC_ISO_28500_version1_latestdraft.pdf>`__\n\nThe library comes with a basic ``WARCWriter`` class for writing to a\nsingle WARC file and ``BufferWARCWriter`` for writing to an in-memory\nbuffer. The ``BaseWARCWriter`` can be extended to support more complex\noperations.\n\n(There is no support for writing legacy ARC files)\n\nThe following example loads ``http://example.com/``, creates a WARC\nresponse record, and writes it, gzip compressed, to ``example.warc.gz``\nThe block and payload digests are computed automatically.\n\n.. code:: python\n\n    from warcio.warcwriter import WARCWriter\n    from warcio.statusandheaders import StatusAndHeaders\n\n    import requests\n\n    with open('example.warc.gz', 'wb') as output:\n        writer = WARCWriter(output, gzip=True)\n\n        resp = requests.get('http://example.com/',\n                            headers={'Accept-Encoding': 'identity'},\n                            stream=True)\n\n        # get raw headers from urllib3\n        headers_list = resp.raw.headers.items()\n\n        http_headers = StatusAndHeaders('200 OK', headers_list, protocol='HTTP/1.0')\n\n        record = writer.create_warc_record('http://example.com/', 'response',\n                                            payload=resp.raw,\n                                            http_headers=http_headers)\n\n        writer.write_record(record)\n\nThe library also includes additional semantics for: - Creating\n``warcinfo`` and ``revisit`` records - Writing ``response`` and\n``request`` records together - Writing custom WARC records - Reading a\nfull WARC record from a stream\n\nPlease refer to `warcwriter.py <warcio/warcwriter.py>`__ and\n`test/test\\_writer.py <test/test_writer.py>`__ for additional examples.\n\nWARCIO CLI: Indexing and Recompression\n--------------------------------------\n\nThe library currently ships with two simple command line tools.\n\nIndex\n~~~~~\n\nThe ``warcio index`` cmd will print a simple index of the records in the\nwarc file as newline delimited JSON lines (NDJSON).\n\nWARC header fields to include in the index can be specified via the\n``-f`` flag, and are included in the JSON block (in order, for\nconvenience)\n\n::\n\n    warcio index ./test/data/example-iana.org-chunked.warc -f warc-type,warc-target-uri,content-length\n    {\"warc-type\": \"warcinfo\", \"content-length\": \"137\"}\n    {\"warc-type\": \"response\", \"warc-target-uri\": \"http://www.iana.org/\", \"content-length\": \"7566\"}\n    {\"warc-type\": \"request\", \"warc-target-uri\": \"http://www.iana.org/\", \"content-length\": \"76\"}\n\n(Note: this library does not produce CDX or CDXJ format indexes often\nassociated with web archives. To create these indexes, please see the\n`pywb <https://github.com/ikreymer/pywb>`__ library)\n\nRecompress\n~~~~~~~~~~\n\nThe ``recompress`` command allows for re-compressing or normalizing WARC\n(or ARC) files to a record-compressed, gzipped WARC file.\n\nEach WARC record is compressed individually and concatenated. This is\nthe 'canonical' WARC storage format used by\n`Webrecorder <https://github.com/webrecorder/webrecorder>`__ and other\nweb archiving institutions, and usually stored with a ``.warc.gz``\nextension.\n\nIt can be used to: - Compress an uncompressed WARC - Convert any ARC\nfile to a compressed WARC - Fix an improperly compressed WARC file (eg.\na WARC compressed entirely instead of by record)\n\n::\n\n    warcio recompress ./input.arc.gz ./output.warc.gz\n\nLicense\n~~~~~~~\n\n``warcio`` is licensed under the Apache 2.0 License and is part of the\nWebrecorder project.\n\nSee `NOTICE <NOTICE>`__ and `LICENSE <LICENSE>`__ for details.",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/webrecorder/warcio",
+    "keywords": "",
+    "license": "Apache 2.0",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "warcio",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/warcio/",
+    "release_url": "https://pypi.org/project/warcio/1.3.3/",
+    "requires_python": "",
+    "summary": "Streaming WARC (and ARC) IO library",
+    "version": "1.3.3"
+  },
+  "releases": {
+    "1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2cf899a72fe72f6b0b833ff799fae850",
+          "sha256": "6a344264c8ca67c48c6aa0bcc50df1f03135c1098e591f8a43ac6b37967876c8"
+        },
+        "downloads": 16,
+        "filename": "warcio-1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2cf899a72fe72f6b0b833ff799fae850",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 43791,
+        "upload_time": "2017-03-07T00:44:47",
+        "url": "https://files.pythonhosted.org/packages/0a/94/b27e9de3162b7756983ba0753755599fffadd57642b07d449ffdc751ccc6/warcio-1.0.tar.gz"
+      }
+    ],
+    "1.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d5ddf8d0c7ca5a30cc94c7608f2f0ed2",
+          "sha256": "de697ba982a26f5be6668c257ff071860ddc94aac332326b1f0d831b76bad8bb"
+        },
+        "downloads": 27,
+        "filename": "warcio-1.1-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "d5ddf8d0c7ca5a30cc94c7608f2f0ed2",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 57154,
+        "upload_time": "2017-03-10T17:50:47",
+        "url": "https://files.pythonhosted.org/packages/a6/c7/1d93a9f71e3a9fc044439ec1e05e0ec875f93d530e0fbdd6e8f2f5354e36/warcio-1.1-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8e70f8e1a09df83e2ab2f2086ebac499",
+          "sha256": "b45028b44993de45cfa2132790c0a4bf6a5be603047e4cc36a4f88da51157719"
+        },
+        "downloads": 26,
+        "filename": "warcio-1.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8e70f8e1a09df83e2ab2f2086ebac499",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 44120,
+        "upload_time": "2017-03-10T17:58:25",
+        "url": "https://files.pythonhosted.org/packages/25/d6/333b417ae8eee63c16d75aa779e17c33b83b9333d2d257bba9224f3effe0/warcio-1.1.tar.gz"
+      }
+    ],
+    "1.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "012f54763534c6d79eba38363c568d09",
+          "sha256": "9dcdb0459888685b49764553be4ee7bea6db5f8975016b24ee9c46e4e16224f1"
+        },
+        "downloads": 0,
+        "filename": "warcio-1.2-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "012f54763534c6d79eba38363c568d09",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 57268,
+        "upload_time": "2017-04-29T20:50:07",
+        "url": "https://files.pythonhosted.org/packages/92/f8/8885bda2e8c44888f22e2e7805b37b16e7e0c1975b7231e7e1719a52aa93/warcio-1.2-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9b66418b441c097e54c3a8506cb1637c",
+          "sha256": "2bb69ced78f15d1de54a528cdf8701818f334bece3a4a2f7052a574d364eed4d"
+        },
+        "downloads": 0,
+        "filename": "warcio-1.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "9b66418b441c097e54c3a8506cb1637c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 48085,
+        "upload_time": "2017-04-29T20:49:56",
+        "url": "https://files.pythonhosted.org/packages/ea/f8/eb444762311ffa68d44351286ec15d96f94eb1fe3433f367de51971d86cb/warcio-1.2.tar.gz"
+      }
+    ],
+    "1.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "dd6fc02ea5a8540ab0e8fcae444e11ef",
+          "sha256": "67eeb14b43affdf5c265ce9e5cbcc46fec70a2cd0abfb0d3cfd024c15f6aa993"
+        },
+        "downloads": 0,
+        "filename": "warcio-1.3-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "dd6fc02ea5a8540ab0e8fcae444e11ef",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 58542,
+        "upload_time": "2017-05-02T04:17:06",
+        "url": "https://files.pythonhosted.org/packages/c5/b4/cdf2c9c371da447f24809b47a5ba8dbd58e3582bdb69041e14dcfc243098/warcio-1.3-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "44ceab09e5bf9ede974629497284a856",
+          "sha256": "84b01711d3fde0e6a2ab3c7ab72feb9054a14bba101894374b063a34e88332f1"
+        },
+        "downloads": 0,
+        "filename": "warcio-1.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "44ceab09e5bf9ede974629497284a856",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 49262,
+        "upload_time": "2017-05-02T04:17:09",
+        "url": "https://files.pythonhosted.org/packages/84/d7/b48dcb31ac526737ba3bc2fe770db8931eb2a113c98371f330261f54ee13/warcio-1.3.tar.gz"
+      }
+    ],
+    "1.3.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3a6f432579d563f2fbe00cabc8b487af",
+          "sha256": "73fa3a4bdc2adee9e11b36c98a3aae68e1a68ef682807fd0cdb9a08367331644"
+        },
+        "downloads": 0,
+        "filename": "warcio-1.3.1-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "3a6f432579d563f2fbe00cabc8b487af",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 58853,
+        "upload_time": "2017-05-10T07:45:39",
+        "url": "https://files.pythonhosted.org/packages/37/9b/77ffa807e6e6755bd624fd7d776e0edbf5da0c659f57c1e6e6fb1a7b3d3c/warcio-1.3.1-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "02b5200fbf9d2a45d0bf996e65d55db8",
+          "sha256": "a14181908ba8aa0955dca622798576ae30143d2acf9eb40a2cbcf0cfdacfa228"
+        },
+        "downloads": 0,
+        "filename": "warcio-1.3.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "02b5200fbf9d2a45d0bf996e65d55db8",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 49584,
+        "upload_time": "2017-05-10T07:46:01",
+        "url": "https://files.pythonhosted.org/packages/ae/37/4aba224ce3442e823131efb6d8fa81aa5c88c951fd67adbb7c0f348d2dfc/warcio-1.3.1.tar.gz"
+      }
+    ],
+    "1.3.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b85affaf76d9d44eb3edf17f2b0cb98b",
+          "sha256": "8076e9988c6aa2f8ac74b879aa481834f35521f4d6c04dde67450cc369568a58"
+        },
+        "downloads": 0,
+        "filename": "warcio-1.3.2-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "b85affaf76d9d44eb3edf17f2b0cb98b",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 59055,
+        "upload_time": "2017-05-24T17:45:14",
+        "url": "https://files.pythonhosted.org/packages/09/3b/669ee35fc063bd90e3e60660c3c40f5e3ec26faf8b71eeb77e7876ba5688/warcio-1.3.2-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "af321fa127d441e74afbf8f7eb7d8f6b",
+          "sha256": "a55c178fccc54064892c274f792ce35934526be880f063c4d378431eb248b905"
+        },
+        "downloads": 0,
+        "filename": "warcio-1.3.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "af321fa127d441e74afbf8f7eb7d8f6b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 49797,
+        "upload_time": "2017-05-24T17:45:17",
+        "url": "https://files.pythonhosted.org/packages/3a/51/883ddf6f311a28cfe9c41318a8d643fa0b976dc7aaf12138fab3adbf6b30/warcio-1.3.2.tar.gz"
+      }
+    ],
+    "1.3.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "98cd768326587894ff5b4b526911aa54",
+          "sha256": "081d0945c5b390d2d7b42d32da5093ed0f04d1ebcefc00e7ca41a85663bc52bc"
+        },
+        "downloads": 0,
+        "filename": "warcio-1.3.3-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "98cd768326587894ff5b4b526911aa54",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 59072,
+        "upload_time": "2017-05-25T04:44:00",
+        "url": "https://files.pythonhosted.org/packages/e7/7c/df9d0e54a38e79819f02c78f88b8e914288ba3b60700599bb3d74a234905/warcio-1.3.3-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "69b8087e670188a2c6b24cb6a7ee5030",
+          "sha256": "15d7448bc03d617d5938627cf93c1100c76cdc4fdaa3aa7411b7efaa34d327ba"
+        },
+        "downloads": 0,
+        "filename": "warcio-1.3.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "69b8087e670188a2c6b24cb6a7ee5030",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 49790,
+        "upload_time": "2017-05-25T04:43:39",
+        "url": "https://files.pythonhosted.org/packages/88/81/5bdd4c2d1e14b9b41b27e82d04d1cfe32baf37882d20c5786f789fcb9938/warcio-1.3.3.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "98cd768326587894ff5b4b526911aa54",
+        "sha256": "081d0945c5b390d2d7b42d32da5093ed0f04d1ebcefc00e7ca41a85663bc52bc"
+      },
+      "downloads": 0,
+      "filename": "warcio-1.3.3-py2.py3-none-any.whl",
+      "has_sig": false,
+      "md5_digest": "98cd768326587894ff5b4b526911aa54",
+      "packagetype": "bdist_wheel",
+      "python_version": "py2.py3",
+      "size": 59072,
+      "upload_time": "2017-05-25T04:44:00",
+      "url": "https://files.pythonhosted.org/packages/e7/7c/df9d0e54a38e79819f02c78f88b8e914288ba3b60700599bb3d74a234905/warcio-1.3.3-py2.py3-none-any.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "69b8087e670188a2c6b24cb6a7ee5030",
+        "sha256": "15d7448bc03d617d5938627cf93c1100c76cdc4fdaa3aa7411b7efaa34d327ba"
+      },
+      "downloads": 0,
+      "filename": "warcio-1.3.3.tar.gz",
+      "has_sig": false,
+      "md5_digest": "69b8087e670188a2c6b24cb6a7ee5030",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 49790,
+      "upload_time": "2017-05-25T04:43:39",
+      "url": "https://files.pythonhosted.org/packages/88/81/5bdd4c2d1e14b9b41b27e82d04d1cfe32baf37882d20c5786f789fcb9938/warcio-1.3.3.tar.gz"
+    }
+  ]
+}

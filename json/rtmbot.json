@@ -1,0 +1,66 @@
+{
+  "info": {
+    "author": "Ryan Huber and Jeff Ammons",
+    "author_email": "jeff@jeffammons.net",
+    "bugtrack_url": null,
+    "classifiers": [],
+    "description": "python-rtmbot\n=============\n\n[![Build Status](https://travis-ci.org/slackhq/python-rtmbot.png)](https://travis-ci.org/slackhq/python-rtmbot)\n[![Coverage Status](https://coveralls.io/repos/github/slackhq/python-rtmbot/badge.svg?branch=master)](https://coveralls.io/github/slackhq/python-rtmbot?branch=master)\n\nA Slack bot written in Python that connects via the RTM API.\n\nPython-rtmbot is a bot engine. The plugins architecture should be familiar to anyone with knowledge of the [Slack API](https://api.slack.com) and Python. The configuration file format is YAML.\n\nThis project is currently pre-1.0. As such, you should plan for it to have breaking changes from time to time. For any breaking changes, we will bump the minor version while we are pre-1.0. (e.g. 0.2.4 -> 0.3.0 implies breaking changes). If stabiilty is important, you'll likely want to lock in a specific minor version)\n\nSome differences to webhooks:\n\n1. Doesn't require a webserver to receive messages\n2. Can respond to direct messages from users\n3. Logs in as a slack user (or bot)\n4. Bot users must be invited to a channel\n\nDependencies\n----------\n* websocket-client https://pypi.python.org/pypi/websocket-client/\n* python-slackclient https://github.com/slackhq/python-slackclient\n\nInstallation\n-----------\n\n1. Create your project\n\n        mkdir myproject\n        cd myproject\n\n2. Install rtmbot (ideally into a [virtualenv](https://virtualenv.readthedocs.io/en/latest/))\n\n        pip install rtmbot\n\n3. Create an rtmbot.conf file and [create a bot for your team](https://api.slack.com/bot-users)\n\n        # Add the following to rtmbot.conf\n        DEBUG: True # make this False in production\n        SLACK_TOKEN: \"xoxb-11111111111-222222222222222\"\n        ACTIVE_PLUGINS:\n            - plugins.repeat.RepeatPlugin\n\n```DEBUG``` will adjust logging verbosity and cause the runner to exit on exceptions, generally making debugging more pleasant.\n\n```SLACK_TOKEN``` is needed to [authenticate with your Slack team.](https://api.slack.com/web#authentication)\n\n```ACTIVE_PLUGINS``` RTMBot will attempt to import any Plugin specified in `ACTIVE_PLUGINS` (relative to your python path) and instantiate them as plugins. These specified classes should inherit from the core Plugin class.\n\nFor example, if your python path includes '/path/to/myproject' and you include `plugins.repeat.RepeatPlugin` in ACTIVE_PLUGINS, it will find the RepeatPlugin class within /path/to/myproject/plugins/repeat.py and instantiate it, then attach it to your running RTMBot.\n\nA Word on Structure\n-------\nTo give you a quick sense of how this library is structured, there is a RtmBot class which does the setup and handles input and outputs of messages. It will also search for and register Plugins within the specified directory(ies). These Plugins handle different message types with various methods and can also register periodic Jobs which will be executed by the Plugins.\n```\nRtmBot\n|--> Plugin\n       |---> Job\n       |---> Job\n|--> Plugin\n|--> Plugin\n       |---> Job\n```\n\nAdd Plugins\n-------\nPlugins can live within any python module, but we recommend just putting them in ./plugins. (Don't forget to add an `__init__.py` file to your directory to make it a module -- use `touch __init__.py` within your plugin directory to create one)\n\nTo add a plugin, create a file within your plugin directory (./plugins is a good place for it).\n\n    mkdir plugins\n    touch plugins/__init__.py\n    cd plugins\n    vi myplugin.py\n\nAdd your plugin content into this file. Here's an example that will just print all of the requests it receives to the console. See below for more information on available methods.\n\n    from future import print_function\n    from rtmbot.core import Plugin\n\n    class MyPlugin(Plugin):\n\n        def catch_all(self, data):\n            print(data)\n\nYou can install as many plugins as you like, and each will handle every event received by the bot indepentently.\n\nTo create an example 'repeat' plugin:\n\nOpen `plugins/repeat.py`\n\nAdd the following:\n\n    from __future__ import print_function\n    from __future__ import unicode_literals\n\n    from rtmbot.core import Plugin\n\n\n    class RepeatPlugin(Plugin):\n\n        def process_message(self, data):\n            if data['channel'].startswith(\"D\"):\n                self.outputs.append(\n                    [data['channel'], 'from repeat1 \"{}\" in channel {}'.format(\n                        data['text'], data['channel']\n                    )]\n                )\n\nThe repeat plugin will now be loaded by the bot on startup. Run `rtmbot` from console to start your RtmBot.\n\n    rtmbot\n\nCreate Plugins\n--------\n\n####Incoming data\nAll events from the RTM websocket are sent to the registered plugins. To act on an event, create a function definition, inside your Plugin class, called process_(api_method) that accepts a single arg for data. For example, to handle incoming messages:\n\n    def process_message(self, data):\n        print data\n\nThis will print the incoming message json (dict) to the screen where the bot is running.\n\nPlugins having a method defined as ```catch_all(self, data)``` will receive ALL events from the websocket. This is useful for learning the names of events and debugging.\n\nFor a list of all possible API Methods, look here: https://api.slack.com/rtm\n\nNote: If you're using Python 2.x, the incoming data should be a unicode string, be careful you don't coerce it into a normal str object as it will cause errors on output. You can add `from __future__ import unicode_literals` to your plugin file to avoid this.\n\n####Outgoing data\n\n#####RTM Output\nPlugins can send messages back to any channel or direct message. This is done by appending a two item array to the Plugin's output array (```myPluginInstance.output```). The first item in the array is the channel or DM ID and the second is the message text. Example that writes \"hello world\" when the plugin is started:\n\n    class myPlugin(Plugin):\n\n        def process_message(self, data):\n            self.outputs.append([\"C12345667\", \"hello world\"])\n\n#####SlackClient Web API Output\nPlugins also have access to the connected SlackClient instance for more complex output (or to fetch data you may need).\n\n    def process_message(self, data):\n        self.slack_client.api_call(\n            \"chat.postMessage\", channel=\"#general\", text=\"Hello from Python! :tada:\",\n            username=\"pybot\", icon_emoji=\":robot_face:\"\n\n\n####Timed jobs\nPlugins can also run methods on a schedule. This allows a plugin to poll for updates or perform housekeeping during its lifetime. Jobs define a run() method and return any outputs to be sent to channels. They also have access to a SlackClient instance that allows them to make calls to the Slack Web API.\n\nFor example, this will print \"hello world\" every 10 seconds. You can output multiple messages two the same or different channels by passing multiple pairs of [Channel, Message] combos.\n\n    from core import Plugin, Job\n\n\n    class myJob(Job):\n\n        def run(self, slack_client):\n            return [[\"C12345667\", \"hello world\"]]\n\n\n    class myPlugin(Plugin):\n\n        def register_jobs(self):\n            job = myJob(10, debug=True)\n            self.jobs.append(job)\n\n\n####Plugin misc\nThe data within a plugin persists for the life of the rtmbot process. If you need persistent data, you should use something like sqlite or the python pickle libraries.\n",
+    "docs_url": null,
+    "download_url": "UNKNOWN",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/slackhq/python-rtmbot",
+    "keywords": null,
+    "license": "UNKNOWN",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "rtmbot",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/rtmbot/",
+    "release_url": "https://pypi.org/project/rtmbot/0.4.0/",
+    "requires_python": null,
+    "summary": "A Slack bot written in python that connects via the RTM API.",
+    "version": "0.4.0"
+  },
+  "releases": {
+    "0.4.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "df5d636f7b636a80d1823cfd65b3d37b",
+          "sha256": "7ba0d44b5e3a237ff74ce44a13b8e2a3aef31b2755ce331d40e8ec7cfc1fe92f"
+        },
+        "downloads": 192,
+        "filename": "rtmbot-0.4.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "df5d636f7b636a80d1823cfd65b3d37b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 8398,
+        "upload_time": "2016-11-02T17:41:26",
+        "url": "https://files.pythonhosted.org/packages/4f/72/d3ee9ca4f1a6aef7ce464dcf9576ac6ebc6252a048638ad01d8353d5020d/rtmbot-0.4.0.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "df5d636f7b636a80d1823cfd65b3d37b",
+        "sha256": "7ba0d44b5e3a237ff74ce44a13b8e2a3aef31b2755ce331d40e8ec7cfc1fe92f"
+      },
+      "downloads": 192,
+      "filename": "rtmbot-0.4.0.tar.gz",
+      "has_sig": false,
+      "md5_digest": "df5d636f7b636a80d1823cfd65b3d37b",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 8398,
+      "upload_time": "2016-11-02T17:41:26",
+      "url": "https://files.pythonhosted.org/packages/4f/72/d3ee9ca4f1a6aef7ce464dcf9576ac6ebc6252a048638ad01d8353d5020d/rtmbot-0.4.0.tar.gz"
+    }
+  ]
+}

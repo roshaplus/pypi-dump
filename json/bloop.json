@@ -1,0 +1,748 @@
+{
+  "info": {
+    "author": "Joe Cross",
+    "author_email": "joe.mcross@gmail.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 5 - Production/Stable",
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: MIT License",
+      "Operating System :: OS Independent",
+      "Programming Language :: Python",
+      "Programming Language :: Python :: 3",
+      "Programming Language :: Python :: 3.5",
+      "Topic :: Software Development :: Libraries"
+    ],
+    "description": ".. image:: https://readthedocs.org/projects/bloop/badge?style=flat-square\n    :target: http://bloop.readthedocs.org/\n.. image:: https://img.shields.io/travis/numberoverzero/bloop/master.svg?style=flat-square\n    :target: https://travis-ci.org/numberoverzero/bloop\n.. image:: https://img.shields.io/codecov/c/github/numberoverzero/bloop/master.svg?style=flat-square\n    :target: https://codecov.io/gh/numberoverzero/bloop/branch/master\n.. image:: https://img.shields.io/gitter/room/numberoverzero/bloop.svg?style=flat-square\n    :target: https://gitter.im/numberoverzero/bloop\n\nBloop is an object mapper for DynamoDB and DynamoDBStreams. py35+\n\n::\n\n    pip install bloop\n\n=======\n Usage\n=======\n\nFirst, we need to import all the things:\n\n.. code-block:: python\n\n    >>> from bloop import (\n    ...     BaseModel, Column, String, UUID,\n    ...     GlobalSecondaryIndex, Engine\n    ... )\n\nNext we'll define the account model (with streaming enabled), and create the backing table:\n\n.. code-block:: python\n\n    >>> class Account(BaseModel):\n    ...     class Meta:\n    ...         stream = {\n    ...             \"include\": {\"old\", \"new\"}\n    ...         }\n    ...     id = Column(UUID, hash_key=True)\n    ...     name = Column(String)\n    ...     email = Column(String)\n    ...    by_email = GlobalSecondaryIndex(projection='keys', hash_key='email')\n    ...\n    >>> engine = Engine()\n    >>> engine.bind(Account)\n\nLet's make a few users and persist them:\n\n.. code-block:: python\n\n    >>> import uuid\n    >>> admin = Account(id=uuid.uuid4(), email=\"admin@domain.com\")\n    >>> admin.name = \"Admin McAdminFace\"\n    >>> support = Account(name=\"this-is-fine.jpg\", email=\"help@domain.com\")\n    >>> support.id = uuid.uuid4()\n    >>> engine.save(admin, support)\n\nAnd find them again:\n\n.. code-block:: python\n\n    >>> q = engine.query(\n    ...     Account.by_email,\n    ...     key=Account.email==\"help@domain.com\"\n    ... )\n    >>> q.first()\n    Account(email='help@domain.com',\n            id=UUID('d30e343f-f067-4fe5-bc5e-0b00cdeaf2ba'))\n\n.. code-block:: python\n\n    >>> s = engine.scan(\n    ...     Account,\n    ...     filter=Account.name.begins_with(\"Admin\")\n    ... )\n    >>> s.one()\n    Account(email='admin@domain.com',\n            id=UUID('08da44ac-5ff6-4f70-8a3f-b75cadb4dd79'),\n            name='Admin McAdminFace')\n\nLet's find them in the stream:\n\n.. code-block:: python\n\n    >>> stream = engine.stream(Account, \"trim_horizon\")\n    >>> next(stream)\n    {'key': None,\n     'meta': {'created_at': datetime.datetime(...),\n      'event': {'id': 'cbb9a9b45eb0a98889b7da85913a5c65',\n       'type': 'insert',\n       'version': '1.1'},\n      'sequence_number': '100000000000588052489'},\n     'new': Account(\n                email='help@domain.com',\n                id=UUID('d30e343f-...-0b00cdeaf2ba'),\n                name='this-is-fine.jpg'),\n     'old': None}\n    >>> next(stream)\n    {'key': None,\n     'meta': {'created_at': datetime.datetime(...),\n      'event': {'id': 'cbdfac5671ea38b99017c4b43a8808ce',\n       'type': 'insert',\n       'version': '1.1'},\n      'sequence_number': '200000000000588052506'},\n     'new': Account(\n                email='admin@domain.com',\n                id=UUID('08da44ac-...-b75cadb4dd79'),\n                name='Admin McAdminFace'),\n     'old': None}\n    >>> next(stream)\n    >>> next(stream)\n    >>>\n\n=============\n What's Next\n=============\n\nCheck out the `User Guide`_ or `Public API Reference`_ to create your own nested types, overlapping models,\nset up cross-region replication in less than 20 lines, and more!\n\n.. _User Guide: https://bloop.readthedocs.io/en/latest/user/quickstart.html\n.. _Public API Reference: https://bloop.readthedocs.io/en/latest/api/public.html\n\n\n===========\n Changelog\n===========\n\nThis changelog structure is based on `Keep a Changelog v0.3.0`__.\nBloop follows `Semantic Versioning 2.0.0`__ and a `draft appendix`__ for its Public API.\n\n__ http://keepachangelog.com/en/0.3.0/\n__ http://semver.org/spec/v2.0.0.html\n__ https://gist.github.com/numberoverzero/c5d0fc6dea624533d004239a27e545ad\n\n--------------\n [Unreleased]\n--------------\n\n--------------------\n 1.1.0 - 2017-04-26\n--------------------\n\nAdded\n=====\n* ``Engine.bind`` takes optional kwarg ``skip_table_setup``\n  to skip CreateTable and DescribeTable calls (see `Issue #83`_)\n* Index validates against a superset of the projection (see `Issue #71`_)\n\n.. _Issue #83: https://github.com/numberoverzero/bloop/issues/83\n.. _Issue #71: https://github.com/numberoverzero/bloop/issues/71\n\n\n--------------------\n 1.0.3 - 2017-03-05\n--------------------\n\nBug fix.\n\nFixed\n=====\n\n* Stream orders records on the integer of SequenceNumber, not the lexicographical sorting of its string\n  representation.  This is an annoying bug, because `as documented`__ we **should** be using lexicographical sorting\n  on the opaque string.  However, without leading 0s that sort fails, and we must assume the string represents an\n  integer to sort on.  Particularly annoying, tomorrow the SequenceNumber could start with non-numeric characters\n  and still conform to the spec, but the sorting-as-int assumption breaks.  However, we can't properly sort without\n  making that assumption.\n\n__ http://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_streams_StreamRecord.html#DDB-Type-streams_StreamRecord-SequenceNumber\n\n--------------------\n 1.0.2 - 2017-03-05\n--------------------\n\nMinor bug fix.\n\nFixed\n=====\n\n* extension types in ``ext.arrow``, ``ext.delorean``, and ``ext.pendulum`` now load and dump ``None`` correctly.\n\n--------------------\n 1.0.1 - 2017-03-04\n--------------------\n\nBug fixes.\n\nChanged\n=======\n\n* The ``arrow``, ``delorean``, and ``pendulum`` extensions now have a default timezone of ``\"utc\"`` instead of\n  ``datetime.timezone.utc``.  There are open issues for both projects to verify if that is the expected behavior.\n\nFixed\n=====\n\n* DynamoDBStreams return a Timestamp for each record's ApproximateCreationDateTime, which botocore is translating\n  into a real datetime.datetime object.  Previously, the record parser assumed an int was used.  While this fix is\n  a breaking change for an internal API, this bug broke the Stream iterator interface entirely, which means no one\n  could have been using it anyway.\n\n--------------------\n 1.0.0 - 2016-11-16\n--------------------\n\n1.0.0 is the culmination of just under a year of redesigns, bug fixes, and new features.  Over 550 commits, more than\n60 issues closed, over 1200 new unit tests.  At an extremely high level:\n\n* The query and scan interfaces have been polished and simplified.  Extraneous methods and configuration settings have\n  been cut out, while ambiguous properties and methods have been merged into a single call.\n* A new, simple API exposes DynamoDBStreams with just a few methods; no need to manage individual shards, maintain\n  shard hierarchies and open/closed polling.  I believe this is a first since the Kinesis Adapter and KCL, although\n  they serve different purposes.  When a single worker can keep up with a model's stream, Bloop's interface is\n  immensely easier to use.\n* Engine's methods are more consistent with each other and across the code base, and all of the configuration settings\n  have been made redundant.  This removes the need for ``EngineView`` and its associated temporary config changes.\n* Blinker-powered signals make it easy to plug in additional logic when certain events occur: before a table is\n  created; after a model is validated; whenever an object is modified.\n* Types have been pared down while their flexibility has increased significantly.  It's possible to create a type that\n  loads another object as a column's value, using the engine and context passed into the load and dump functions.  Be\n  careful with this; transactions on top of DynamoDB are very hard to get right.\n\nSee the Migration Guide above for specific examples of breaking changes and how to fix them, or the User Guide for\na tour of the new Bloop.  Lastly, the Public and Internal API References are finally available and should cover\neverything you need to extend or replace whole subsystems in Bloop (if not, please open an issue).\n\nAdded\n=====\n\n* ``bloop.signals`` exposes Blinker signals which can be used to monitor object changes, when\n  instances are loaded from a query, before models are bound, etc.\n\n    * ``before_create_table``\n    * ``object_loaded``\n    * ``object_saved``\n    * ``object_deleted``\n    * ``object_modified``\n    * ``model_bound``\n    * ``model_created``\n    * ``model_validated``\n\n* ``Engine.stream`` can be used to iterate over all records in a stream, with a total ordering over approximate\n  record creation time.  Use ``engine.stream(model, \"trim_horizon\")`` to get started.  See the User Guide\n* New exceptions ``RecordsExpired`` and ``ShardIteratorExpired`` for errors in stream state\n* New exceptions ``Invalid*`` for bad input subclass ``BloopException`` and ``ValueError``\n* ``DateTime`` types for the three most common date time libraries:\n\n    * ``bloop.ext.arrow.DateTime``\n    * ``bloop.ext.delorean.DateTime``\n    * ``bloop.ext.pendulum.DateTime``\n\n* ``model.Meta`` has a new optional attribute ``stream`` which can be used to enable a stream on the model's table.\n  See the User Guide for details\n* ``model.Meta`` exposes the same ``projection`` attribute as ``Index`` so that ``(index or model.Meta).projection``\n  can be used interchangeably\n* New ``Stream`` class exposes DynamoDBStreams API as a single iterable with powerful seek/jump options, and simple\n  json-friendly tokens for pausing and resuming iteration.  See the User Guide for details\n* Over 1200 unit tests added\n* Initial integration tests added\n* *(internal)* ``bloop.conditions.ReferenceTracker`` handles building ``#n0``, ``:v1``, and associated values.\n  Use ``any_ref`` to build a reference to a name/path/value, and ``pop_refs`` when backtracking (eg. when a value is\n  actually another column, or when correcting a partially valid condition)\n* *(internal)* ``bloop.conditions.render`` is the preferred entry point for rendering, and handles all permutations\n  of conditions, filters, projections.  Use over ``ConditionRenderer`` unless you need very specific control over\n  rendering sequencing.\n* *(internal)* ``bloop.session.SessionWrapper`` exposes DynamoDBStreams operations in addition to previous\n  ``bloop.Client`` wrappers around DynamoDB client\n* *(internal)* New supporting classes ``streams.buffer.RecordBuffer``, ``streams.shard.Shard``, and\n  ``streams.coordinator.Coordinator`` to encapsulate the hell^Wjoy that is working with DynamoDBStreams\n* *(internal)* New class ``util.Sentinel`` for placeholder values like ``missing`` and ``last_token``\n  that provide clearer docstrings, instead of showing ``func(..., default=object<0x...>)`` these will show\n  ``func(..., default=Sentinel<[Missing]>)``\n\n\nChanged\n=======\n\n* ``bloop.Column`` emits ``object_modified`` on ``__set__`` and ``__del__``\n* Conditions now check if they can be used with a column's ``typedef`` and raise ``InvalidCondition`` when they can't.\n  For example, ``contains`` can't be used on ``Number``, nor ``>`` on ``Set(String)``\n* ``bloop.Engine`` no longer takes an optional ``bloop.Client`` but instead optional ``dynamodb`` and\n  ``dynamodbstreams`` clients (usually created from ``boto3.client(\"dynamodb\")`` etc.)\n* ``Engine`` no longer takes ``**config`` -- its settings have been dispersed to their local touch points\n\n    * ``atomic`` is a parameter of ``save`` and ``delete`` and defaults to ``False``\n    * ``consistent`` is a parameter of ``load``, ``query``, ``scan`` and defaults to ``False``\n    * ``prefetch`` has no equivalent, and is baked into the new Query/Scan iterator logic\n    * ``strict`` is a parameter of a ``LocalSecondaryIndex``, defaults to ``True``\n\n* ``Engine`` no longer has a ``context`` to create temporary views with different configuration\n* ``Engine.bind`` is no longer by keyword arg only: ``engine.bind(MyBase)`` is acceptable in addition to\n  ``engine.bind(base=MyBase)``\n* ``Engine.bind`` emits new signals ``before_create_table``, ``model_validated``, and ``model_bound``\n* ``Engine.delete`` and ``Engine.save`` take ``*objs`` instead of ``objs`` to easily save/delete small multiples of\n  objects (``engine.save(user, tweet)`` instead of ``engine.save([user, tweet])``)\n* ``Engine`` guards against loading, saving, querying, etc against abstract models\n* ``Engine.load`` raises ``MissingObjects`` instead of ``NotModified`` (exception rename)\n* ``Engine.scan`` and ``Engine.query`` take all query and scan arguments immediately, instead of using the builder\n  pattern.  For example, ``engine.scan(model).filter(Model.x==3)`` has become\n  ``engine.scan(model, filter=Model.x==3)``.\n* ``bloop.exceptions.NotModified`` renamed to ``bloop.exceptions.MissingObjects``\n* Any code that raised ``AbstractModelException`` now raises ``UnboundModel``\n* ``bloop.types.DateTime`` is now backed by ``datetime.datetime`` instead of ``arrow``.  Only supports UTC now, no\n  local timezone.  Use the ``bloop.ext.arrow.DateTime`` class to continue using ``arrow``.\n* The query and scan interfaces have been entirely refactored: ``count``, ``consistent``, ``ascending`` and other\n  properties are part of the ``Engine.query(...)`` parameters.  ``all()`` is no longer needed, as ``Engine.scan`` and\n  ``.query`` immediately return an iterable object.  There is no ``prefetch`` setting, or ``limit``.\n* The ``complete`` property for Query and Scan have been replaced with ``exhausted``, to be consistent with the Stream\n  module\n* The query and scan iterator no longer cache results\n* The ``projection`` parameter is now required for ``GlobalSecondaryIndex`` and ``LocalSecondaryIndex``\n* Calling ``Index.__set__`` or ``Index.__del__`` will raise ``AttributeError``.  For example,\n  ``some_user.by_email = 3`` raises if ``User.by_email`` is a GSI\n* ``bloop.Number`` replaces ``bloop.Float`` and takes an optional ``decimal.Context`` for converting numbers.\n  For a less strict, **lossy** ``Float`` type see the Patterns section of the User Guide\n* ``bloop.String.dynamo_dump`` no longer calls ``str()`` on the value, which was hiding bugs where a non-string\n  object was passed (eg. ``some_user.name = object()`` would save with a name of ``<object <0x...>``)\n* ``bloop.DateTime`` is now backed by ``datetime.datetime`` and only knows UTC in a fixed format.  Adapters for\n  ``arrow``, ``delorean``, and ``pendulum`` are available in ``bloop.ext``\n* ``bloop.DateTime`` does not support naive datetimes; they must always have a ``tzinfo``\n* docs:\n\n    * use RTD theme\n    * rewritten three times\n    * now includes public and internal api references\n\n* *(internal)* Path lookups on ``Column`` (eg. ``User.profile[\"name\"][\"last\"]``) use simpler proxies\n* *(internal)* Proxy behavior split out from ``Column``'s base class ``bloop.conditions.ComparisonMixin``\n  for a cleaner namespace\n* *(internal)* ``bloop.conditions.ConditionRenderer`` rewritten, uses a new ``bloop.conditions.ReferenceTracker``\n  with a much clearer api\n* *(internal)* ``ConditionRenderer`` can backtrack references and handles columns as values (eg.\n  ``User.name.in_([User.email, \"literal\"])``)\n* *(internal)* ``_MultiCondition`` logic rolled into ``bloop.conditions.BaseCondition``, ``AndCondition`` and\n  ``OrCondition`` no longer have intermediate base class\n* *(internal)* ``AttributeExists`` logic rolled into ``bloop.conditions.ComparisonCondition``\n* *(internal)* ``bloop.tracking`` rolled into ``bloop.conditions`` and is hooked into the ``object_*`` signals.\n  Methods are no longer called directly (eg. no need for ``tracking.sync(some_obj, engine)``)\n* *(internal)* update condition is built from a set of columns, not a dict of updates to apply\n* *(internal)* ``bloop.conditions.BaseCondition`` is a more comprehensive base class, and handles all manner of\n  out-of-order merges (``and(x, y)`` vs ``and(y, x)`` where x is an ``and`` condition and y is not)\n* *(internal)* almost all ``*Condition`` classes simply implement ``__repr__`` and ``render``; ``BaseCondition``\n  takes care of everything else\n* *(internal)* ``bloop.Client`` became ``bloop.session.SessionWrapper``\n* *(internal)* ``Engine._dump`` takes an optional ``context``, ``**kwargs``, matching the\n  signature of ``Engine._load``\n* *(internal)* ``BaseModel`` no longer implements ``__hash__``, ``__eq__``, or ``__ne__`` but ``ModelMetaclass`` will\n  always ensure a ``__hash__`` function when the subclass is created\n* *(internal)* ``Filter`` and ``FilterIterator`` rewritten entirely in the ``bloop.search`` module across multiple\n  classes\n\nRemoved\n=======\n\n* ``AbstractModelException`` has been rolled into ``UnboundModel``\n* The ``all()`` method has been removed from the query and scan iterator interface.  Simply iterate with\n  ``next(query)`` or ``for result in query:``\n* ``Query.results`` and ``Scan.results`` have been removed and results are no longer cached.  You can begin the\n  search again with ``query.reset()``\n* The ``new_base()`` function has been removed in favor of subclassing ``BaseModel`` directly\n* ``bloop.Float`` has been replaced by ``bloop.Number``\n* *(internal)* ``bloop.engine.LoadManager`` logic was rolled into ``bloop.engine.load(...)``\n* ``EngineView`` has been removed since engines no longer have a baseline ``config`` and don't need a\n  context to temporarily modify it\n* *(internal)* ``Engine._update`` has been removed in favor of ``util.unpack_from_dynamodb``\n* *(internal)* ``Engine._instance`` has been removed in favor of directly creating instances from\n  ``model.Meta.init()`` in ``unpack_from_dynamodb``\n\nFixed\n=====\n\n* ``Column.contains(value)`` now renders ``value`` with the column typedef's inner type.  Previously, the container\n  type was used, so ``Data.some_list.contains(\"foo\"))`` would render as ``(contains(some_list, [\"f\", \"o\", \"o\"]))``\n  instead of ``(contains(some_list, \"foo\"))``\n* ``Set`` renders correct wire format -- previously, it incorrectly sent ``{\"SS\": [{\"S\": \"h\"}, {\"S\": \"i\"}]}`` instead\n  of the correct ``{\"SS\": [\"h\", \"i\"]}``\n* *(internal)* ``Set`` and ``List`` expose an ``inner_typedef`` for conditions to force rendering of inner values\n  (currently only used by ``ContainsCondition``)\n\n---------------------\n 0.9.13 - 2016-10-31\n---------------------\n\n[Fixed]\n=======\n\n* ``Set`` was rendering an invalid wire format, and now renders the correct \"SS\", \"NS\", or \"BS\" values.\n* ``Set`` and ``List`` were rendering ``contains`` conditions incorrectly, by trying to dump each value in the\n  value passed to contains.  For example, ``MyModel.strings.contains(\"foo\")`` would render ``contains(#n0, :v1)``\n  where ``:v1`` was ``{\"SS\": [{\"S\": \"f\"}, {\"S\": \"o\"}, {\"S\": \"o\"}]}``.  Now, non-iterable values are rendered\n  singularly, so ``:v1`` would be ``{\"S\": \"foo\"}``.  This is a temporary fix, and only works for simple cases.\n  For example, ``List(List(String))`` will still break when performing a ``contains`` check.\n  **This is fixed correctly in 1.0.0** and you should migrate as soon as possible.\n\n---------------------\n 0.9.12 - 2016-06-13\n---------------------\n\n[Added]\n=======\n\n* ``model.Meta`` now exposes ``gsis`` and ``lsis``, in addition to the existing ``indexes``.  This simplifies code that\n  needs to iterate over each type of index and not all indexes.\n\n[Removed]\n=========\n\n* ``engine_for_profile`` was no longer necessary, since the client instances could simply be created with a given\n  profile.\n\n---------------------\n 0.9.11 - 2016-06-12\n---------------------\n\n[Changed]\n=========\n\n* ``bloop.Client`` now takes ``boto_client``, which should be an instance of ``boto3.client(\"dynamodb\")`` instead of\n  a ``boto3.session.Session``.  This lets you specify endpoints and other configuration only exposed during the\n  client creation process.\n* ``Engine`` no longer uses ``\"session\"`` from the config, and instead takes a ``client`` param which should be an\n  instance of ``bloop.Client``.  **bloop.Client will be going away in 1.0.0** and Engine will simply take the boto3\n  clients directly.\n\n---------------------\n 0.9.10 - 2016-06-07\n---------------------\n\n[Added]\n=======\n\n* New exception ``AbstractModelException`` is raised when attempting to perform an operation which requires a\n  table, on an abstract model.  Raised by all Engine functions as well as ``bloop.Client`` operations.\n\n[Changed]\n=========\n\n* ``Engine`` operations raise ``AbstractModelException`` when attempting to perform operations on abstract models.\n* Previously, models were considered non-abstract if ``model.Meta.abstract`` was False, or there was no value.\n  Now, ``ModelMetaclass`` will explicitly set ``abstract`` to False so that ``model.Meta.abstract`` can be used\n  everywhere, instead of ``getattr(model.Meta, \"abstract\", False)``.\n\n--------------------\n 0.9.9 - 2016-06-06\n--------------------\n\n[Added]\n=======\n\n* ``Column`` has a new attribute ``model``, the model it is bound to.  This is set during the model's creation by\n  the ``ModelMetaclass``.\n\n[Changed]\n=========\n\n* ``Engine.bind`` will now skip intermediate models that are abstract.  This makes it easier to pass abstract models,\n  or models whose subclasses may be abstract (and have non-abstract grandchildren).\n\n--------------------\n 0.9.8 - 2016-06-05\n--------------------\n\n*(no public changes)*\n\n--------------------\n 0.9.7 - 2016-06-05\n--------------------\n\n[Changed]\n=========\n\n* Conditions implement ``__eq__`` for checking if two conditions will evaluate the same.  For example::\n\n    >>> large = Blob.size > 1024**2\n    >>> small = Blob.size < 1024**2\n    >>> large == small\n    False\n    >>> also_large = Blob.size > 1024**2\n    >>> large == also_large\n    True\n    >>> large is also_large\n    False\n\n.. _changelog-v0.9.6:\n\n--------------------\n 0.9.6 - 2016-06-04\n--------------------\n\n0.9.6 is the first significant change to how Bloop binds models, engines, and tables.  There are a few breaking\nchanges, although they should be easy to update.\n\nWhere you previously created a model from the Engine's model:\n\n.. code-block:: python\n\n    from bloop import Engine\n\n    engine = Engine()\n\n    class MyModel(engine.model):\n        ...\n\nYou'll now create a base without any relation to an engine, and then bind it to any engines you want:\n\n.. code-block:: python\n\n    from bloop import Engine, new_base\n\n    BaseModel = new_base()\n\n    class MyModel(BaseModel):\n        ...\n\n    engine = Engine()\n    engine.bind(base=MyModel)  # or base=BaseModel\n\n[Added]\n=======\n\n* A new function ``engine_for_profile`` takes a profile name for the config file and creates an appropriate session.\n  This is a temporary utility, since ``Engine`` will eventually take instances of dynamodb and dynamodbstreams\n  clients.  **This will be going away in 1.0.0**.\n* A new base exception ``BloopException`` which can be used to catch anything thrown by Bloop.\n* A new function ``new_base()`` creates an abstract base for models.  This replaces ``Engine.model`` now that multiple\n  engines can bind the same model.  **This will be going away in 1.0.0** which will provide a ``BaseModel`` class.\n\n[Changed]\n=========\n\n* The ``session`` parameter to ``Engine`` is now part of the ``config`` kwargs.  The underlying ``bloop.Client`` is\n  no longer created in ``Engine.__init__``, which provides an opportunity to swap out the client entirely before\n  the first ``Engine.bind`` call.  The semantics of session and client are unchanged.\n* ``Engine._load``, ``Engine._dump``, and all Type signatures now pass an engine explicitly through the ``context``\n  parameter.  This was mentioned in 0.9.2 and ``context`` is now required.\n* ``Engine.bind`` now binds the given class **and all subclasses**.  This simplifies most workflows, since you can\n  now create a base with ``MyBase = new_base()`` and then bind every model you create with\n  ``engine.bind(base=MyBase)``.\n* All exceptions now subclass a new base exception ``BloopException`` instead of ``Exception``.\n* Vector types ``Set``, ``List``, ``Map``, and ``TypedMap`` accept a typedef of ``None`` so they can raise a more\n  helpful error message.  **This will be reverted in 1.0.0** and will once again be a required parameter.\n\n\n[Removed]\n=========\n\n* Engine no longer has ``model``, ``unbound_models``, or ``models`` attributes.  ``Engine.model`` has been replaced\n  by the ``new_base()`` function, and models are bound directly to the underlying type engine without tracking\n  on the ``Engine`` instance itself.\n* EngineView dropped the corresponding attributes above.\n\n--------------------\n 0.9.5 - 2016-06-01\n--------------------\n\n[Changed]\n=========\n\n* ``EngineView`` attributes are now properties, and point to the underlying engine's attributes; this includes\n  ``client``, ``model``, ``type_engine``, and ``unbound_models``.  This fixed an issue when using\n  ``with engine.context(...) as view:`` to perform operations on models bound to the engine but not the engine view.\n  **EngineView will be going away in 1.0.0**.\n\n--------------------\n 0.9.4 - 2015-12-31\n--------------------\n\n[Added]\n=======\n\n* Engine functions now take optional config parameters to override the engine's config.  You should update your code to\n  use these values instead of ``engine.config``, since **engine.config is going away in 1.0.0**. ``Engine.delete``\n  and ``Engine.save`` expose the ``atomic`` parameter, while ``Engine.load`` exposes ``consistent``.\n\n* Added the ``TypedMap`` class, which provides dict mapping for a single typedef over any number of keys.\n  This differs from ``Map``, which must know all keys ahead of time and can use different types.  ``TypedMap`` only\n  supports a single type, but can have arbitrary keys.  **This will be going away in 1.0.0**.\n\n.. _changelog-v0.9.2:\n\n--------------------\n 0.9.2 - 2015-12-11\n--------------------\n\n[Changed]\n=========\n\n* Type functions ``_load``, ``_dump``, ``dynamo_load``, ``dynamo_dump`` now take an optional keyword-only arg\n  ``context``.  This dict will become required in 0.9.6, and contains the engine\n  instance that should be used for recursive types.  If your type currently uses ``cls.Meta.bloop_engine``,\n  you should start using ``context[\"engine\"]`` in the next release.  The ``bloop_engine`` attribute is being removed,\n  since models will be able to bind to multiple engines.\n\n--------------------\n 0.9.1 - 2015-12-07\n--------------------\n\n*(no public changes)*\n\n.. _changelog-v0.9.0:\n\n--------------------\n 0.9.0 - 2015-12-07\n--------------------\n\n\n",
+    "docs_url": "https://pythonhosted.org/bloop/",
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/numberoverzero/bloop",
+    "keywords": "aws dynamo dynamodb dynamodbstreams orm",
+    "license": "MIT",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "bloop",
+    "platform": "any",
+    "project_url": "https://pypi.org/project/bloop/",
+    "release_url": "https://pypi.org/project/bloop/1.1.0/",
+    "requires_python": "",
+    "summary": "ORM for DynamoDB",
+    "version": "1.1.0"
+  },
+  "releases": {
+    "0.2.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3eb51990b1db050bb377d76751b8af61",
+          "sha256": "99e562c6f243396c258fde5e11832693769a11788fa4f96dc4f8df1cd14b2235"
+        },
+        "downloads": 1084,
+        "filename": "bloop-0.2.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3eb51990b1db050bb377d76751b8af61",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 12449,
+        "upload_time": "2015-02-16T15:58:37",
+        "url": "https://files.pythonhosted.org/packages/e4/f6/a8a58dfbbad9e12265f9ced144490f4c35fb9cc475c4b1c9284294fa1401/bloop-0.2.0.tar.gz"
+      }
+    ],
+    "0.2.1": [],
+    "0.2.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1633ec09d7eede041be1767695a9d43a",
+          "sha256": "ca233f1ccb7d7ed8111d8afb258c79a159b05c71504bc60f55d4c92af609b1fa"
+        },
+        "downloads": 1137,
+        "filename": "bloop-0.2.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1633ec09d7eede041be1767695a9d43a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16489,
+        "upload_time": "2015-03-30T22:39:11",
+        "url": "https://files.pythonhosted.org/packages/15/7e/842e613c0242b3564115935c2ba7aa793c6c14e0df9a28823e502cf7805e/bloop-0.2.2.tar.gz"
+      }
+    ],
+    "0.2.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "579bbe1c91c87fdc61101cefc0ad6a19",
+          "sha256": "b9db30dcc9f30e1868fb722b63a9569c0056b43dae6e158493ea20386138ad52"
+        },
+        "downloads": 1362,
+        "filename": "bloop-0.2.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "579bbe1c91c87fdc61101cefc0ad6a19",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 15760,
+        "upload_time": "2015-03-31T08:06:33",
+        "url": "https://files.pythonhosted.org/packages/68/0f/28899225d50673bbdabcf2d5b16dac17f854e26ec9f33d380532e2b2607e/bloop-0.2.3.tar.gz"
+      }
+    ],
+    "0.3.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b48c1c10b734339ab37f65363d22994a",
+          "sha256": "552d16975d2de07f4607973c6774c7848fddb9519684ac2d075fd334b96bb080"
+        },
+        "downloads": 1784,
+        "filename": "bloop-0.3.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b48c1c10b734339ab37f65363d22994a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 18024,
+        "upload_time": "2015-07-07T05:11:26",
+        "url": "https://files.pythonhosted.org/packages/a7/54/68e8fcb8ff3e48ef5ce4ed764cd0453305f9be4bbbd0e98a76cd458d65cc/bloop-0.3.0.tar.gz"
+      }
+    ],
+    "0.4.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c2f5fa617f8b3ef8109691eae3192699",
+          "sha256": "5078fa04d4159f8c6a87c2c50f13e8ded87bfba9be7010d9ca608cdc8fedca63"
+        },
+        "downloads": 893,
+        "filename": "bloop-0.4.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c2f5fa617f8b3ef8109691eae3192699",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 19145,
+        "upload_time": "2015-07-08T08:39:45",
+        "url": "https://files.pythonhosted.org/packages/26/34/2658ec7d006b4b22cb46e9b022acbe3b3e49b7ead684dfa403ae95e6cb60/bloop-0.4.0.tar.gz"
+      }
+    ],
+    "0.5.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b5640a3e4aa8d1d4be04bdd993f760cf",
+          "sha256": "e6c62c7bf423aed32a8ec6d3a314c35717ddc010fa61ffe03b2fd007ed5268b3"
+        },
+        "downloads": 883,
+        "filename": "bloop-0.5.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b5640a3e4aa8d1d4be04bdd993f760cf",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 51019,
+        "upload_time": "2015-07-11T10:25:56",
+        "url": "https://files.pythonhosted.org/packages/c9/39/b859c80fd14e53ffdd931d12945a9f5b1e66bb948c9facf597d5ce79a72f/bloop-0.5.1.tar.gz"
+      }
+    ],
+    "0.5.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "79e18d555d94cc061c6b8db83b49f683",
+          "sha256": "ef5613e513694be1053362641cc7d9da74289a775ba8f91270d0df1490ae481a"
+        },
+        "downloads": 2193,
+        "filename": "bloop-0.5.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "79e18d555d94cc061c6b8db83b49f683",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 44420,
+        "upload_time": "2015-07-12T05:03:05",
+        "url": "https://files.pythonhosted.org/packages/f6/ae/1806a0d4c01c47c5dd5395a18561cbf551913400fe07ec94cd28d604ea69/bloop-0.5.4.tar.gz"
+      }
+    ],
+    "0.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e4e9dd21cb427d9b9a60fdc276a967be",
+          "sha256": "1ebe66368d10f3723136e7f4a2c43b44356a73cf1d78d24863de528c54a9a3da"
+        },
+        "downloads": 1218,
+        "filename": "bloop-0.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e4e9dd21cb427d9b9a60fdc276a967be",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 39824,
+        "upload_time": "2015-07-15T12:29:09",
+        "url": "https://files.pythonhosted.org/packages/3b/4a/14596bcbbf1ee829b0d9bdd01a32e5c9b685604f0b68e92c0e47562052a5/bloop-0.6.tar.gz"
+      }
+    ],
+    "0.7.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "fb42b046cd8caf44440a5b2baab69148",
+          "sha256": "31677f5637f22412d3f71ab999ab6174a5b6702d65c0ee1739e3cc6dace8fef9"
+        },
+        "downloads": 870,
+        "filename": "bloop-0.7.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "fb42b046cd8caf44440a5b2baab69148",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 39118,
+        "upload_time": "2015-07-16T01:28:32",
+        "url": "https://files.pythonhosted.org/packages/06/ab/08fb7d8a8545ac07c0c8793163661b2943295410aa33267271736fc845ce/bloop-0.7.0.tar.gz"
+      }
+    ],
+    "0.7.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0f90c38b26d5566924c49a0ac15f4330",
+          "sha256": "f78db03d0068f42e653a4286d5542ff350062fcfadd5bafa52f94540effacb05"
+        },
+        "downloads": 882,
+        "filename": "bloop-0.7.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0f90c38b26d5566924c49a0ac15f4330",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 41265,
+        "upload_time": "2015-07-19T23:42:03",
+        "url": "https://files.pythonhosted.org/packages/ea/08/709de7ec016183487842fa9b34ac7c4c6eb3cae1f187a281389f0aafde67/bloop-0.7.1.tar.gz"
+      }
+    ],
+    "0.7.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f083c05164cfa7dbe0c704561ff773b9",
+          "sha256": "0d1569344954ac9cd133ee3d6cd6ff882d8333a3fcabddf6bae4131043770a4c"
+        },
+        "downloads": 866,
+        "filename": "bloop-0.7.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f083c05164cfa7dbe0c704561ff773b9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 27386,
+        "upload_time": "2015-07-20T09:54:51",
+        "url": "https://files.pythonhosted.org/packages/17/87/a0822cb737df58cf663dbd43aeeec80175e36929075270a04d77b0e04aaa/bloop-0.7.4.tar.gz"
+      }
+    ],
+    "0.7.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2b511b6bc0172de6e302739555069d8b",
+          "sha256": "872076da343f2460fc9a18eba00d4fb5335b896ea27e8eb5cf3334f4fe8b675b"
+        },
+        "downloads": 877,
+        "filename": "bloop-0.7.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2b511b6bc0172de6e302739555069d8b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 28937,
+        "upload_time": "2015-07-21T10:45:16",
+        "url": "https://files.pythonhosted.org/packages/ac/63/f54e6e29a390136cc4851e81de463d23edeae38fd6dd9e6dab6792842ce2/bloop-0.7.5.tar.gz"
+      }
+    ],
+    "0.7.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a3d3d873b7865dffb70c56e91da2c79d",
+          "sha256": "b353cf290a4f9a786bedf6b982e5640f023db5af3d81213682f30383feff8651"
+        },
+        "downloads": 1779,
+        "filename": "bloop-0.7.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a3d3d873b7865dffb70c56e91da2c79d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 23865,
+        "upload_time": "2015-07-31T09:55:01",
+        "url": "https://files.pythonhosted.org/packages/92/ad/83e976851999953016bf8c3e132d8fc83ce46a805fce2495a9527fd0d9ee/bloop-0.7.6.tar.gz"
+      }
+    ],
+    "0.8.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b7ba8d616ff20decbe12db992eed7274",
+          "sha256": "c13b68105f8f18086d6db184a4f87c7e2e064a4f7f9565e042328e6bf0c5a340"
+        },
+        "downloads": 811,
+        "filename": "bloop-0.8.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b7ba8d616ff20decbe12db992eed7274",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 24116,
+        "upload_time": "2015-08-08T04:50:50",
+        "url": "https://files.pythonhosted.org/packages/72/b9/cbc53f1b427885fe74257165a57511c32eb4170c9088469f62da7ddbc4f6/bloop-0.8.0.tar.gz"
+      }
+    ],
+    "0.8.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3080307e1847af9c3aabf43a1f00c499",
+          "sha256": "63671ba71d4d26ffa11b093e4225329351b0d7ba6c6641b054fd571e2594fbd1"
+        },
+        "downloads": 891,
+        "filename": "bloop-0.8.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3080307e1847af9c3aabf43a1f00c499",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 24073,
+        "upload_time": "2015-08-09T04:58:03",
+        "url": "https://files.pythonhosted.org/packages/5a/68/3aa110e212e5ddfd871d345e5ac4425411b2691df6d6f6c7477da3625b2f/bloop-0.8.1.tar.gz"
+      }
+    ],
+    "0.9.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a699987cc57a8dc71822c2455112e772",
+          "sha256": "86570350fb01f3cf9a3f82780639eb46f17511a427a7457cd4d08ee0483b37cb"
+        },
+        "downloads": 531,
+        "filename": "bloop-0.9.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a699987cc57a8dc71822c2455112e772",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 25473,
+        "upload_time": "2015-12-07T00:51:57",
+        "url": "https://files.pythonhosted.org/packages/91/82/727a8560f1a7c0a7762d3d4559b1535e988f8ac5571dee0fe8fc6e9fbe89/bloop-0.9.0.tar.gz"
+      }
+    ],
+    "0.9.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ef9e23f0934a3a5aa15d80ee6a215eb0",
+          "sha256": "55f107bf29f26c880c10eb7690f68043c6b3104abac9f2f2e3856ec2b1af3e6b"
+        },
+        "downloads": 492,
+        "filename": "bloop-0.9.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ef9e23f0934a3a5aa15d80ee6a215eb0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 25508,
+        "upload_time": "2015-12-07T10:06:37",
+        "url": "https://files.pythonhosted.org/packages/22/14/16d6cd6da881314134e3fbefdb0ed9914e79ac1aa5d0ae01bad77d824a36/bloop-0.9.1.tar.gz"
+      }
+    ],
+    "0.9.10": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f4fe6e881fa80cde54b4844e57069a9a",
+          "sha256": "1cd37191467619202e55c5184a8d17b90b64462f0dac5d0cc0aad82a8237f788"
+        },
+        "downloads": 163,
+        "filename": "bloop-0.9.10.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f4fe6e881fa80cde54b4844e57069a9a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 27090,
+        "upload_time": "2016-06-07T05:33:54",
+        "url": "https://files.pythonhosted.org/packages/cb/e4/dcfe336bbcba2234be7f8e7fac0b3b03b28221d82c757f5f4efc2757fc2e/bloop-0.9.10.tar.gz"
+      }
+    ],
+    "0.9.11": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "dadbda81d90b48ae1dfe952636316b9a",
+          "sha256": "1dc7072945734b72d59a6eac0ec45f9ace22ee328b8e2b216d887c14b0a75f24"
+        },
+        "downloads": 179,
+        "filename": "bloop-0.9.11.tar.gz",
+        "has_sig": false,
+        "md5_digest": "dadbda81d90b48ae1dfe952636316b9a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 27155,
+        "upload_time": "2016-06-12T21:44:45",
+        "url": "https://files.pythonhosted.org/packages/c2/a6/fb6987fa9eb9fe361baa81c42d1f38edf1bddb99cfdf13c1708c0828780c/bloop-0.9.11.tar.gz"
+      }
+    ],
+    "0.9.12": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "eec5f32b35adf405894c0bdaea91ca09",
+          "sha256": "31252f3601e9cc4644c0a0f8d6ed3a5d356b7e20945f80169b8c2699b4cba39d"
+        },
+        "downloads": 231,
+        "filename": "bloop-0.9.12.tar.gz",
+        "has_sig": false,
+        "md5_digest": "eec5f32b35adf405894c0bdaea91ca09",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 27590,
+        "upload_time": "2016-06-13T06:10:17",
+        "url": "https://files.pythonhosted.org/packages/6c/87/d6d3fdb9a7dbedf893187c22d9c29a3d0dcf5bb4c409558a372268dcba8d/bloop-0.9.12.tar.gz"
+      }
+    ],
+    "0.9.13": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "15a386c5fa858d2c95906e6795eff254",
+          "sha256": "a561d8ff4163af7404d235cc0752061bc0e72d436ab71e3f01c3b036350ffc46"
+        },
+        "downloads": 55,
+        "filename": "bloop-0.9.13.tar.gz",
+        "has_sig": false,
+        "md5_digest": "15a386c5fa858d2c95906e6795eff254",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 27708,
+        "upload_time": "2016-10-31T20:11:57",
+        "url": "https://files.pythonhosted.org/packages/50/cb/597e98574e8a9b208b76e1ce388696d06678f6788ab6f672fe22fd920b9e/bloop-0.9.13.tar.gz"
+      }
+    ],
+    "0.9.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b6ecd44343c01d2f3a178f1683a803bf",
+          "sha256": "6a6fa0b8d20335b5fa60037c7d8fd67be137011ad3089d71add56e1496554b97"
+        },
+        "downloads": 352,
+        "filename": "bloop-0.9.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b6ecd44343c01d2f3a178f1683a803bf",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 25806,
+        "upload_time": "2015-12-11T02:08:03",
+        "url": "https://files.pythonhosted.org/packages/6b/56/7f519e9c4dc651b53945f19eb5dc850863c022d2810c202935b24d77b650/bloop-0.9.2.tar.gz"
+      }
+    ],
+    "0.9.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e4586db6ffafe05e3337cea32e558774",
+          "sha256": "12b0ee4a70675baeb73339e21553f548d653d5c4a609c6b2fdc6f769724d3a26"
+        },
+        "downloads": 446,
+        "filename": "bloop-0.9.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e4586db6ffafe05e3337cea32e558774",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 25442,
+        "upload_time": "2015-12-31T15:22:50",
+        "url": "https://files.pythonhosted.org/packages/a8/30/d081e3dbc622c99e5ce800d1713fd3778ee2100ebedab5fd801e7ac42ed4/bloop-0.9.4.tar.gz"
+      }
+    ],
+    "0.9.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "fe81b177c88377c064d1cea34bc7df32",
+          "sha256": "0c2273209012f9f4f7a13a77f992d4f5e5d077061f5e701bdccd00a337bb1ad3"
+        },
+        "downloads": 156,
+        "filename": "bloop-0.9.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "fe81b177c88377c064d1cea34bc7df32",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 25472,
+        "upload_time": "2016-06-01T22:49:27",
+        "url": "https://files.pythonhosted.org/packages/97/40/7b2234073fee6d1f55f7084dc7a0e5a2dd40f206758174fc383f15397419/bloop-0.9.5.tar.gz"
+      }
+    ],
+    "0.9.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9734483f9c1107ce87b3b5e34e0c8c4e",
+          "sha256": "38f443297f42357e0b9740f84b35920200cabdb11d223daf5231457b43f6cb81"
+        },
+        "downloads": 164,
+        "filename": "bloop-0.9.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "9734483f9c1107ce87b3b5e34e0c8c4e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 26082,
+        "upload_time": "2016-06-04T10:13:45",
+        "url": "https://files.pythonhosted.org/packages/56/55/3bcd297a00de924b347d98b877245c26418d5d3ad2e3390c5ff26798a4b9/bloop-0.9.6.tar.gz"
+      }
+    ],
+    "0.9.7": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b421bdab5aaa75d75569cdb2bd630b1d",
+          "sha256": "489387494d926e6fc09e26f8e38769b337e85f0624f94901cd43673dc074907b"
+        },
+        "downloads": 183,
+        "filename": "bloop-0.9.7.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b421bdab5aaa75d75569cdb2bd630b1d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 26382,
+        "upload_time": "2016-06-05T01:30:58",
+        "url": "https://files.pythonhosted.org/packages/51/a8/1455f7dc0b4ef1386f3a22a6fd14290d12539083cb65fa8e6c627695fa90/bloop-0.9.7.tar.gz"
+      }
+    ],
+    "0.9.8": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f65acabaae0ebbd2d34a95de1df51607",
+          "sha256": "8c72552ab0911fef36f2402cf95af0781176891d854bc45d1c20dee910775c80"
+        },
+        "downloads": 160,
+        "filename": "bloop-0.9.8.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f65acabaae0ebbd2d34a95de1df51607",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 26383,
+        "upload_time": "2016-06-05T02:17:34",
+        "url": "https://files.pythonhosted.org/packages/e6/78/0c3dd8da1660ad409de68080a1c4bd5f6c4c74bd11eec5f90c64497de961/bloop-0.9.8.tar.gz"
+      }
+    ],
+    "0.9.9": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7f15d78cfc282d4836b0b5cc301a2067",
+          "sha256": "f4cda6d3f5ba3804ebda54dde7c8a4dc31f84e91eead0e79a8592fe91f55a3be"
+        },
+        "downloads": 167,
+        "filename": "bloop-0.9.9.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7f15d78cfc282d4836b0b5cc301a2067",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 26857,
+        "upload_time": "2016-06-06T11:08:26",
+        "url": "https://files.pythonhosted.org/packages/91/18/45fe3837a285cefe2b1ada1e9cbc0f109788399ef9666a6e85c60ee5ffb7/bloop-0.9.9.tar.gz"
+      }
+    ],
+    "1.0.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "90b668df294752bcf163515502a02e07",
+          "sha256": "171351d730890a77a58752405a1923f47acbeda68b42713ab3bb5bca1cd5acee"
+        },
+        "downloads": 66,
+        "filename": "bloop-1.0.0-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "90b668df294752bcf163515502a02e07",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 68505,
+        "upload_time": "2016-11-17T08:08:33",
+        "url": "https://files.pythonhosted.org/packages/37/0b/28152af7ecbbbba642c90e7395b62f198e1c27f78343fd07465c05b9d549/bloop-1.0.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "78941267a6d45275045524bde5847356",
+          "sha256": "1396e186f7d9905355563d6fffdc8dc5292c4adfcada4cf291a98a3aa9647472"
+        },
+        "downloads": 65,
+        "filename": "bloop-1.0.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "78941267a6d45275045524bde5847356",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 61736,
+        "upload_time": "2016-11-17T08:08:35",
+        "url": "https://files.pythonhosted.org/packages/b8/b3/6fc1f4d11e5be4d011e70e8d240ad02b1ea5fb60860a20112a9aadbf8dab/bloop-1.0.0.tar.gz"
+      }
+    ],
+    "1.0.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b62803ac8a50474fbd98540f109bb29b",
+          "sha256": "1f12772bb780ea06851cf9ea82204061efea4d9959ff96f510d1b6e313c143eb"
+        },
+        "downloads": 18,
+        "filename": "bloop-1.0.1-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "b62803ac8a50474fbd98540f109bb29b",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "size": 69406,
+        "upload_time": "2017-03-06T00:18:48",
+        "url": "https://files.pythonhosted.org/packages/77/6a/a3a0354568b9ebf717b4bfdf80789c17be8a03c99372c0aa00f3606dd78b/bloop-1.0.1-py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f1ee29c762b27591f7187e0ff7cae47e",
+          "sha256": "3fa93944efe00435ed2e61325752e6f18bf05781dcb54a80445cb2f8897fb683"
+        },
+        "downloads": 16,
+        "filename": "bloop-1.0.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f1ee29c762b27591f7187e0ff7cae47e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 62704,
+        "upload_time": "2017-03-06T00:18:50",
+        "url": "https://files.pythonhosted.org/packages/f1/e5/727a5e8b8cfa93f1fbc5e9b8a0f76904072d5d9a127231152b954b60417f/bloop-1.0.1.tar.gz"
+      }
+    ],
+    "1.0.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "47ed2602e38a3a07686d9497a3fb5e44",
+          "sha256": "86e938081b4144a2e36622055ca01602de4c877792f8f3059b8ea763285b9f57"
+        },
+        "downloads": 17,
+        "filename": "bloop-1.0.2-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "47ed2602e38a3a07686d9497a3fb5e44",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "size": 69569,
+        "upload_time": "2017-03-06T00:24:50",
+        "url": "https://files.pythonhosted.org/packages/44/24/dba5a97e824b1776ee696a3e11da1f04273acb2cf0dff14bd11224cea1a7/bloop-1.0.2-py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f3ba32ce763f60395c01f9977974f9d4",
+          "sha256": "9a84b8d608f7308d6d4fb748870aab76b69d8663ebed1556fcda6597b005f602"
+        },
+        "downloads": 15,
+        "filename": "bloop-1.0.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f3ba32ce763f60395c01f9977974f9d4",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 62837,
+        "upload_time": "2017-03-06T00:24:51",
+        "url": "https://files.pythonhosted.org/packages/56/24/793f64241b6c0dce6faa4a9d90824a9cd948f0cade303c9edb6fa86073c2/bloop-1.0.2.tar.gz"
+      }
+    ],
+    "1.0.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e29752e3ae37ed397f96a2092d061a33",
+          "sha256": "d31a7efafa419bf956220c8cbe521de7a483db5203089fd73dd35f3d49930e40"
+        },
+        "downloads": 17,
+        "filename": "bloop-1.0.3-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "e29752e3ae37ed397f96a2092d061a33",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "size": 70159,
+        "upload_time": "2017-03-06T02:05:45",
+        "url": "https://files.pythonhosted.org/packages/86/5a/74999e9e28eae2e2846fa54f5d4199c19679af4e7d14990189e4f56d37d1/bloop-1.0.3-py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "142564e208d3bac64a518be9207057ba",
+          "sha256": "66b4ea05e996aa32830c65d0efce390478a3a207428ba2bf27ca51ba90749fd5"
+        },
+        "downloads": 15,
+        "filename": "bloop-1.0.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "142564e208d3bac64a518be9207057ba",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 63458,
+        "upload_time": "2017-03-06T02:05:47",
+        "url": "https://files.pythonhosted.org/packages/90/c2/d6b47a4cbcbedda45cab9d3a8bbc2741dfcaff1ea780655455e6e573cd57/bloop-1.0.3.tar.gz"
+      }
+    ],
+    "1.1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6de00993eea3b36ec4d1a8328b8af9ae",
+          "sha256": "86fc36391d458b079412568fa9ca73dd7d6b1cf1f48171deea860f008fbb6e4a"
+        },
+        "downloads": 0,
+        "filename": "bloop-1.1.0-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "6de00993eea3b36ec4d1a8328b8af9ae",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "size": 70637,
+        "upload_time": "2017-04-27T05:42:11",
+        "url": "https://files.pythonhosted.org/packages/8b/c5/aeeda50898884c27e5e17404cdb6bc1607130e632987202f883c090f727d/bloop-1.1.0-py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7bede85b0f978b5b4b9cebea62e92c4c",
+          "sha256": "01afe5bfefb9290c22301edeeb6a332d2022829aa840bfea5843208ac174f3b1"
+        },
+        "downloads": 0,
+        "filename": "bloop-1.1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7bede85b0f978b5b4b9cebea62e92c4c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 64140,
+        "upload_time": "2017-04-27T05:42:13",
+        "url": "https://files.pythonhosted.org/packages/02/75/1632598a7acae89234beb9066b6ba864b23ba68cd9ff8eaae4dbcb0f373e/bloop-1.1.0.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "6de00993eea3b36ec4d1a8328b8af9ae",
+        "sha256": "86fc36391d458b079412568fa9ca73dd7d6b1cf1f48171deea860f008fbb6e4a"
+      },
+      "downloads": 0,
+      "filename": "bloop-1.1.0-py3-none-any.whl",
+      "has_sig": false,
+      "md5_digest": "6de00993eea3b36ec4d1a8328b8af9ae",
+      "packagetype": "bdist_wheel",
+      "python_version": "py3",
+      "size": 70637,
+      "upload_time": "2017-04-27T05:42:11",
+      "url": "https://files.pythonhosted.org/packages/8b/c5/aeeda50898884c27e5e17404cdb6bc1607130e632987202f883c090f727d/bloop-1.1.0-py3-none-any.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "7bede85b0f978b5b4b9cebea62e92c4c",
+        "sha256": "01afe5bfefb9290c22301edeeb6a332d2022829aa840bfea5843208ac174f3b1"
+      },
+      "downloads": 0,
+      "filename": "bloop-1.1.0.tar.gz",
+      "has_sig": false,
+      "md5_digest": "7bede85b0f978b5b4b9cebea62e92c4c",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 64140,
+      "upload_time": "2017-04-27T05:42:13",
+      "url": "https://files.pythonhosted.org/packages/02/75/1632598a7acae89234beb9066b6ba864b23ba68cd9ff8eaae4dbcb0f373e/bloop-1.1.0.tar.gz"
+    }
+  ]
+}

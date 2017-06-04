@@ -1,0 +1,95 @@
+{
+  "info": {
+    "author": "myyang",
+    "author_email": "ymy1019@gmail.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Environment :: Web Environment",
+      "Framework :: Django",
+      "Framework :: Django :: 1.8",
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: MIT License",
+      "Operating System :: OS Independent",
+      "Programming Language :: Python",
+      "Programming Language :: Python :: 3",
+      "Topic :: Internet :: WWW/HTTP",
+      "Topic :: Internet :: WWW/HTTP :: Dynamic Content"
+    ],
+    "description": "django-pb-model\n=========================\n\n.. image:: https://travis-ci.org/myyang/django-pb-model.svg?branch=master\n       :target: https://travis-ci.org/myyang/django-pb-model\n\n.. image:: https://img.shields.io/pypi/v/django-pb-model.svg\n       :target: https://pypi.python.org/pypi/django-pb-model\n\n\nDjango-pb-model provides model mixin mapping/converting protobuf message.\nCurrently support basic value fields and naive relation convertion, including:\n\n* Integer, String, Float, Boolean\n* Choices field\n* Datetime\n* Foriegn Key and Many-to-Many relation\n\nYou could examine testcases_ for more details\n\n.. _testcases: https://github.com/myyang/django-pb-model/tree/master/pb_model/tests\n\nAnd PRs are always welcome :))\n\n\nCompatibility\n-------------\n\nCurrnetly tested with metrics:\n\n* Python2.7, 3.4, 3.5, 3.6\n* Django1.8, 1,9, 1.10, 1.11\n\nInstall\n-------\n\n1. pip install\n    \n.. code:: shell\n\n    pip install django-pb-model\n\n2. Add django-pb to django settings.py\n\n.. code:: python\n\n    INSTALLED_APPS = [\n        ....,\n        pb_model,\n        ...\n    ]\n\n3. Run python/django essential commands:\n\n.. code:: shell\n\n    python manage.py makemigrations\n    python manage.py migrate\n    python manage.py collectstatic -l\n\n4. Start hacking or using app.\n\nUsage\n-----\n\nDeclare your protobuf message and compile it. For example:\n\n.. code:: protobuf\n\n   message Account {\n       int id = 1;\n       string email = 2;\n       string password = 3;\n   }\n\nas `account.proto` file. Then compile it with:\n\n.. code:: shell\n\n   $ protoc --python_out=. account.proto\n\nYou will get `account_pb2.py`.\n\nNow you can interact with your protobuf model, add `ProtoBufMixin` to your model like:\n\n.. code:: python\n\n    from django.db import models\n    from pb_model.models import ProtoBufMixin\n    from . import account_pb2\n\n    class Account(ProtoBufMixin, models.Model):\n        pb_model = account_pb2.Account\n\n        email = models.EmailField(max_length=64)\n        password = models.CharField(max_length=64)\n\n        def __str__(self):\n            # For demo only, encrypt password and DO NOT expose\n            return \"Username: {a.email}, passowrd: {a.password}\".format(a=self)\n\n\nBy above settings, you can covert between django model and protobuf easily.\n\n.. code:: python\n\n   >>> account = Account.objects.create(email='user@email.com', password='passW0rd')\n   >>> account.to_pb()\n   email: \"user@email.com\"\n   passord: \"passW0rd\"\n\n   >>> account2 = Account()\n   >>> account2.from_pb(account.to_pb())\n   <Account: Username: username@mail, password: passW0rd>\n   \n\nField details\n-------------\n\nThere are several special field types while converting, read following section for more details.\n\nField name mapping\n~~~~~~~~~~~~~~~~~~~~~\n\nTo adapt schema migration, field mapping are expected.\n\nFor example, the `email` field in previous session is altered to `username`, but we don't want to break the consistance of protobuf protocol. You may add `pb_2_dj_field_map` attribute to solve this problem. Such as:\n\n.. code:: python\n\n    class Account(ProtoBufMixin, models.Model):\n        pb_model = account_pb2.Account\n        pb_2_dj_field_map = {\n            \"email\": \"username\",  # protobuf field as key and django field as value\n        }\n\n        username = models.CharField(max_length=64)\n        password = models.CharField(max_length=64)\n\nForiegn Key\n~~~~~~~~~~~\n\nForiegn key is a connect to another model in Django. According to this property, the foreign key could and should be converted to nested singular message in Protobuf. For example:\n\n.. code:: Protobuf\n\n   message Relation {\n       int32 id = 1;\n   }\n\n   message Main {\n       int32 id = 1;\n       Relation fk = 2;\n   }\n\nDjango model:\n\n.. code:: python\n\n   class Relation(ProtoBufMixin, models.Model):\n       pb_model = models_pb2.Relation\n\n   \n   class Main(ProtoBufMixin, models.Model):\n       pb_model = models_pb2.Main\n\n       fk = models.ForiegnKey(Relation)\n\n\nWith above settings, pb_model would recursivly serialize and de-serialize bewteen Django and ProtoBuf.\n\n.. code:: python\n\n   >>> m = Main.objects.create(fk=Relation.objects.create())\n   >>> m.to_pb()\n   id: 1\n   fk {\n       id: 1\n   }\n\n   >>> m2 = Main()\n   >>> m2.from_pb(m.to_pb())\n   >>> m2.fk.id\n   1\n\n\n\nMany-to-Many field\n~~~~~~~~~~~~~~~~~~\n\nM2M field is a QuerySet Relation in Django. \nBy default, we assume target message field is \"repeated\" nested message, ex:\n\n.. code:: protobuf\n\n    message M2M {\n        int32 id = 1;\n    }\n\n    message Main {\n        int32 id = 1;\n\n        repeated M2M m2m = 2;\n    }\n\nDjango model would be:\n\n.. code:: python \n\n   class M2M(models.Model):\n       pass\n\n   class Main(models.Model):\n       \n       m2m = models.ManyToManyField(M2M)\n\n\nDjango to Protobuf\n\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\n\nIf this is not the format you expected, overwite `_m2m_to_protobuf()` of Django model by yourself.\n\n\nProtobuf to Django\n\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\n\nSame as previous section, we assume m2m field is repeated value in protobuf.\nBy default, **NO** operation is performed, which means\nyou may query current relation if your coverted django model instance has a valid PK.\n\nIf you want to modify your database while converting on-the-fly, overwrite\nlogics such as:\n\n.. code:: python\n\n    from django.db import transaction\n\n    ...\n\n    class PBCompatibleModel(ProtoBufMixin, models.Model):\n\n        def _repeated_to_m2m(self, dj_field, _pb_repeated_set):\n            with transaction.atomic():\n                for item in _pb_repeated_set:\n                    dj_field.get_or_create(pk=item.pk, defaults={....})\n\n        ...\n\nAlso, you should write your coverting policy if m2m is not nested repeated message in `_repeated_to_m2m` method\n\nDatetime Field\n~~~~~~~~~~~~~~\n\nDatetime is a special singular value.\n\nWe currently convert between `datetime.datetime` (Python) and `google.protobuf.timestamp_pb2.Timestamp` (ProboBuf),\nfor example:\n\nProtoBuf message:\n\n.. code:: protobuf\n\n    package models;\n\n    import \"google/protobuf/timestamp.proto\";\n\n    message WithDatetime {\n        int32 id = 1;\n        google.protobuf.Timestamp datetime_field = 2;\n    }\n\nDjango Model:\n\n.. code:: python\n\n   class WithDatetime(ProtoBufMixin, models.Model):\n       pb_model = models_pb2.WithDatetime\n\n       datetime_field = models.DatetimeField(default=timezone.now())\n\n\n.. code:: python\n\n   >>> WithDatetime.objects.create().to_pb()\n   datetime_field {\n   seconds: 1495119614\n   nanos: 282705000\n   }\n\n\nTimezone\n\"\"\"\"\"\"\"\"\n\nNote that if you use `USE_TZ` in Django settings, all datetime would be converted to UTC timezone while storing in protobuf message.\nAnd coverted to default timezone in django according to settings.\n\n\n\n\nLICENSE\n-------\n\nPlease read LICENSE file",
+    "docs_url": null,
+    "download_url": "UNKNOWN",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/myyang/django-pb-model",
+    "keywords": null,
+    "license": "MIT License",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "django-pb-model",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/django-pb-model/",
+    "release_url": "https://pypi.org/project/django-pb-model/0.1.3/",
+    "requires_python": null,
+    "summary": "Protobuf mixin for Django model",
+    "version": "0.1.3"
+  },
+  "releases": {
+    "0.1.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c4552c878072c198b19329c82a8b5877",
+          "sha256": "8c217ac27575c03843546f2aae1f224f5bce40e447817162bcc8fa3b3b73e47e"
+        },
+        "downloads": 0,
+        "filename": "django-pb-model-0.1.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c4552c878072c198b19329c82a8b5877",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 11700,
+        "upload_time": "2017-05-18T13:58:58",
+        "url": "https://files.pythonhosted.org/packages/d2/f8/56b440a185802f9133abe7c1d0fcb70bd6172f3d9721da2be7bd4f026b3f/django-pb-model-0.1.2.tar.gz"
+      }
+    ],
+    "0.1.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3333975e177de3879592cdf0ead87535",
+          "sha256": "8fd188672d08e929567af49c3cbe868c6c701ea59555bb5f4ff4f9def901a253"
+        },
+        "downloads": 0,
+        "filename": "django-pb-model-0.1.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3333975e177de3879592cdf0ead87535",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 12584,
+        "upload_time": "2017-05-20T16:19:15",
+        "url": "https://files.pythonhosted.org/packages/d2/de/8bb984ef529cd96ec794f9fef4df76d41dcbdb1c4af6a649f6fbe3c1ed0b/django-pb-model-0.1.3.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "3333975e177de3879592cdf0ead87535",
+        "sha256": "8fd188672d08e929567af49c3cbe868c6c701ea59555bb5f4ff4f9def901a253"
+      },
+      "downloads": 0,
+      "filename": "django-pb-model-0.1.3.tar.gz",
+      "has_sig": false,
+      "md5_digest": "3333975e177de3879592cdf0ead87535",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 12584,
+      "upload_time": "2017-05-20T16:19:15",
+      "url": "https://files.pythonhosted.org/packages/d2/de/8bb984ef529cd96ec794f9fef4df76d41dcbdb1c4af6a649f6fbe3c1ed0b/django-pb-model-0.1.3.tar.gz"
+    }
+  ]
+}

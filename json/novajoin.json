@@ -1,0 +1,213 @@
+{
+  "info": {
+    "author": "Rob Crittenden",
+    "author_email": "rcritten@redhat.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 3 - Alpha",
+      "Environment :: OpenStack",
+      "Intended Audience :: Developers",
+      "Intended Audience :: Information Technology",
+      "Intended Audience :: System Administrators",
+      "License :: OSI Approved :: Apache Software License",
+      "Programming Language :: Python",
+      "Programming Language :: Python :: 2",
+      "Programming Language :: Python :: 2.7",
+      "Topic :: Utilities"
+    ],
+    "description": "novajoin Package\n==================\n\nThis Python package provides a dynamic vendordata plugin for the OpenStack\nnova metadata service to manage host instantiation in an IPA server.\n\nIt consists of two services:\n\n    - REST service\n    - notification listener\n\nThe REST service will respond to dynamic requests from the nova metadata\nserver. This is used to add hosts into IPA.\n\nThe notification listener will handle instance delete requests and remove\nthe appropriate host from IPA as well as floating IP associate and\ndisassociate requests and update IPA DNS.\n\nBuild\n=====\n\nIn this directory, run::\n\n  python setup.py build\n\n\nInstallation\n============\n\nIn this directory, run::\n\n  python setup.py install\n\n\nPackage Requirements\n====================\n\nBeyond those packages normally installed by Openstack, these are also\nrequired::\n\n    {free}ipa-python\n\nThese may be pip-installable but as of March 2017 it has only been\nextensively tested with real packages installed on RHEL/CentOS/Fedora.\n\n\nConfiguration\n=============\n\nThere are two installation scenarios:\n\n1. Triple-O Quickstart\n\nThis is primary use case to date. In this scenario the heat and\npuppet code manages most of the configuration. There is even some\ncode to configure everything if you're willing to provide the\nIPA admin password.\n\nIf not you can pre-create the entries needed by running this on\nany machine that has access to your IPA server. It can be\nrun from a git clone of novajoin by setting\nPYTHONPATH=/path/to/novajoin if you'd like::\n\n    novajoin-ipa-setup --precreate  --principal admin --password password \\\n        --server ipa.example.com --realm EXAMPLE.COM --domain example.com \\\n        --hostname undercloud.example.com\n\nThe machine executing this script does NOT need to be enrolled as\nan IPA client.\n\nThe output from the script is the OTP you'll set in undercloud_ipa_otp\nin the yaml configuration for OOOQ.\n\nThe idea here is that the undercloud node is pre-created and an OTP\ngenerated. The OOOQ script knows how to enroll hosts and will pass this\nOTP onto ipa-client-install, retrieve the keytab for the novajoin\nservice principal and configure and start the services. In OOOQ this is\ndone by setting enable_tls_everywhere to true and and prepare_novajoin\nto false.\n\n2. Manual setup\n\nIt is also possible to setup novajoin within an existing OpenStack\ndeployment (I do this in devstack, for example).\n\nThe machine running the novajoin service needs to be enrolled\nas an IPA client.\n\nRun novajoin-install to install and configure the plugin on a\npre-installed nova server.\n\nnova currently needs to be manually configured to enable the\nnovajoin REST service and enable notifications in\n**/etc/nova/nova.conf**::\n\n    vendordata_providers = StaticJSON, DynamicJSON\n    vendordata_dynamic_targets = 'join@http://127.0.0.1:9090/v1/'\n    vendordata_dynamic_connect_timeout = 5\n    vendordata_dynamic_read_timeout = 30\n    vendordata_jsonfile_path = /etc/nova/cloud-config-novajoin.json\n\n    notification_driver = messaging\n    notification_topic = notifications,novajoin_notifications\n    notify_on_state_change = vm_state\n\nNovajoin enables keystone authentication by default, as seen in\n**/etc/novajoin/join-api-paste.ini**. So credentials need to be set for nova to be\nable to communicate with novajoin. This we can set in the\n``[vendordata_dynamic_auth]`` section of **/etc/nova/nova.conf**::\n\n    [vendordata_dynamic_auth]\n    #\n    # Options within this group control the authentication of the vendordata\n    # subsystem of the metadata API server (and config drive) with external\n    # systems.\n\n    auth_type = password\n    password = < service user password  >\n    username = < service user >\n    project_name = < service project >\n    user_domain_name = < service user domain >\n    project_domain_name = < service project domain >\n    os_region_name = < region >\n\nIt is possible to just use the nova credentials here; or create a user just for\nthis. So choose depending on your requirements.\n\nPre-requisites\n--------------\n\nCloud-init 0.7.6+ is required to retrieve dynamic metadata when\nconfig_drive is True. 0.7.9 does not seem to work with OOOQ.\n\nYou will need the IPA admin password, or an account that can\nadd privileges, permissions, roles and can retrieve keytabs.\n\nYou will need to provide Openstack credentails in the environment\nso that the glance metadata upload can occur.\n\nThis will:\n\n- copy the cloud-init and enrollment script to **/etc/novajoin**\n- obtain a keytab to be used to authenticate against IPA when\n  doing host management\n- call out to a script to create the requisite permissions and\n  role in IPA\n- add the IPA metadata to the glance metadata service\n\nThe nova-api service will need to be manually restarted.\n\nThe installer takes the following options::\n\n    --hostname: use this value as the FQDN of the server.\n    --user: user that the nova service runs as. This is needed to\n            set filesystem permissions\n    --principal: the user used to configure IPA integration: create permissions,\n                 get the keytab, etc. Default is the IPA admin account.\n    --password: the password for the principal. If this is not set the the\n                password is obtained interactively\n    --password-file: the file containing the password for the principal.\n\n\nMetadata REST Service Configuration\n===================================\n\nThe REST service is configured in **/etc/novajoin/join.conf** in the DEFAULT\nsection.  It provides the following options:\n\n- join_listen_port: The TCP port to listen on. Defaults to 9090.\n- api_paste_config: The paste configuration file to use.\n- debug: Enable additional debugging output. Default is False.\n- auth_strategy: The authentication strategy to use\n- url: The JSON RPC URL to an IPA server, e.g. https://ipa.host.domain/ipa/json\n- keytab: The Kerberos keytab containing the credentails for the user\n          nova will use to manage hosts. The default is **/etc/krb5.keytab**.\n- domain: The domain to associate with IPA hosts.\n- connect_retries: The number of times to attempt to contact the IPA\n          server before failing.\n- project_subdomain: Use the project the instance is created in as the\n          subddomain for the fully-qualified domain name. For example if\n          the project is admin and the domain is example.com and the\n          instance name is test the FQDN will be test.admin.example.com\n- normalize_project: A project name can contain values not allowed as a\n          DNS label. This will convert invalid values to a dash (-)\n          dropping leading and trailing dashes.\n\nOne must also configure the authtoken middleware in **/etc/novajoin/join.conf** as\nspecified in the `Keystone middleware documentation`_.\n\n.. _`Keystone middleware documentation`: https://docs.openstack.org/developer/keystonemiddleware/middlewarearchitecture.html#configuration\n\nNotification listener Configuration\n===================================\n\nThe only special configuration needed here is to configure nova to\nsend notifications to the novajoin topic in /etc/nova/nova.conf:\n\n    notification_topic = notifications,novajoin_notifications\n\nIf you simply use notifications and ceilometer is running then the\nnotifications will be roughly split between the two services in a\nround-robin format.\n\nUsage\n=====\n\nThis demonstrates how novajoin works once the services are installed,\nconfigured and running:\n\nSample usage from the command-line::\n\n    $ openstack server create --flavor m1.tiny --image cirros-0.3.4-x86_64-uec test --property ipa_enroll=True\n    $ ssh <IP>\n    $ curl http://169.254.169.254/openstack/2016-10-06/vendor_data2.json\n    $ id admin\n    uid=#########(admin) gid=#########(admins) groups=#########(admins)\n\nThe curl output will include a \"join\" element in the returned dict.\nThsi will contain a hostname and ipaotp value. These are used for\nenrollment with ipa-client-install via::\n\n    # ipa-client-install -U -w <ipaotp> --hostname <hostname>\n\nThe provided cloud-init script should do all this for you, automatically\nfetching the OTP and enrolling the client.\n\nThis id command confirms that enrollment was successful.\n\nLogging\n=======\n\nThe REST novajoin-server service logs by default to\n/var/log/novajoin/novajoin-server.log\n\nThe notification listener service novajoin-notify logs by default to\n/var/log/novajoin/novajoin-notify.log\n\nA logrotate script for this is::\n\n    /var/log/novajoin/*log {\n        weekly\n        rotate 14\n        size 10M\n        missingok\n        compress\n    }\n\n\nDesign\n======\n\nThere are quite a few moving parts in novajoin so here is a high-level\noverview of how it fits together.\n\nThe OpenStack Newton release added a new type of metadata to the nova\nmetadata service: dynamic metadata. This is metadata generated on-the-fly\nand not stored within nova (for example for security reasons).\n\nFor the case of enrolling a client into IPA using a One-Time Password (OTP)\nthe password needs to be generated when the IPA host created and then\nsomehow passed to the instance. This is done using dynamic metadata.\n\nThe basic sequence of events is:\n\n1. Instance creation is requested to nova, either via Horizon or the\n   command-line.\n2. nova starts the instance and pushes down a cloud-init script provided\n   by novajoin.\n3. cloud-init executes the provided script which installs the ipa-client\n   package, then executes a script which retrieves the metadata from the\n   nova metadata service[*]. This looks like:\n   % curl http://169.254.169.254/openstack/2016-10-06/vendor_data2.json\n4. This request invokes the novajoin dynamic metadata service provided\n   by the novajoin package. This is registered in **/etc/nova/nova.conf**.\n5. If the instance was created with the property ipa_enroll=True or\n   the host image has this property set then a host in IPA is created and\n   an OTP generated. The OTP and generated FQDN are returned to nova as a\n   python dictionary. The data is returned from the metadata service as\n   JSON. If the glance image has os_distro and os_version set in its\n   metadata then this will be reflected in the IPA host.\n6. The script provided to cloud-init pulls out the OTP and FQDN and calls\n   ipa-client-install\n\nThis results in an IPA-enrolled client with no user interaction.\n\nThe novajoin-notify service waits for notifications from nova that an\ninstance deletion has been completed. If that instance or image has the\nproperty ipa_enroll=True then the host is removed from IPA.\n\n.. note::\n   In the case of config drive the metadata is retrieved and attached\n   to the instance at boot time. cloud-init detects the config drive and\n   reads its metadata from there.\n\n\nOrigin\n======\n\nThis builds on the work of Rich Megginson and Nathan Kinder. Rich\ndid the initial hooks implementation visible at\nhttps://github.com/richm/rdo-vm-factory/blob/master/rdo-ipa-nova\n\nCopyright and License\n=====================\n\nCopyright 2016 Red Hat, Inc.\n\n   Licensed under the Apache License, Version 2.0 (the \"License\"); you may\n   not use this file except in compliance with the License. You may obtain\n   a copy of the License at\n\n        http://www.apache.org/licenses/LICENSE-2.0\n\n   Unless required by applicable law or agreed to in writing, software\n   distributed under the License is distributed on an \"AS IS\" BASIS, WITHOUT\n   WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the\n   License for the specific language governing permissions and limitations\n   under the License.\n\n\n\n",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/rcritten/novajoin",
+    "keywords": "",
+    "license": "Apache License, Version 2.0",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "novajoin",
+    "platform": "",
+    "project_url": "https://pypi.org/project/novajoin/",
+    "release_url": "https://pypi.org/project/novajoin/1.0.13/",
+    "requires_python": "",
+    "summary": "Nova integration to enroll IPA clients",
+    "version": "1.0.13"
+  },
+  "releases": {
+    "1.0.10": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ca08fa2a7de721247672730e04b261f0",
+          "sha256": "021ce5bd475a447b2e96f276c351ef3897947f9aa64dcbfeb79bcae88fe70765"
+        },
+        "downloads": 40,
+        "filename": "novajoin-1.0.10.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ca08fa2a7de721247672730e04b261f0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 51552,
+        "upload_time": "2016-11-30T04:38:54",
+        "url": "https://files.pythonhosted.org/packages/96/a1/2db10a8d3cd3a604475b607f115568caaa2bec7b5b733f4f5604450aac07/novajoin-1.0.10.tar.gz"
+      }
+    ],
+    "1.0.11": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0e91c8e137e2cbce9da6579530d5c123",
+          "sha256": "f396705de9bb67f9ead2255b682719bde3275390433f2a96f3a285b9fcac81cf"
+        },
+        "downloads": 12,
+        "filename": "novajoin-1.0.11-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "0e91c8e137e2cbce9da6579530d5c123",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 70775,
+        "upload_time": "2017-02-14T18:31:19",
+        "url": "https://files.pythonhosted.org/packages/88/97/e91d139d8407e5019afb9224f4646d0418802ad7a1f6d54b6c958fe0f2fd/novajoin-1.0.11-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4509632881f524c1748dde60c7789f31",
+          "sha256": "1a5a0260614884a61fbfe6a8eb2173182aafcafc81a5a4547a2e856f4b1995ad"
+        },
+        "downloads": 13,
+        "filename": "novajoin-1.0.11.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4509632881f524c1748dde60c7789f31",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 59089,
+        "upload_time": "2017-02-14T18:31:21",
+        "url": "https://files.pythonhosted.org/packages/53/34/d9ea04e82358e398a72cd4613fd61a1bf7313d533a7eab9f4ab15ce73a2d/novajoin-1.0.11.tar.gz"
+      }
+    ],
+    "1.0.12": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "64892bbb9b9b9361fd5e2823748cb594",
+          "sha256": "2af6478f0a199c57e836db13d25edd54476c66890216caaea8e5e0268ef9f3e4"
+        },
+        "downloads": 17,
+        "filename": "novajoin-1.0.12-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "64892bbb9b9b9361fd5e2823748cb594",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 74183,
+        "upload_time": "2017-03-30T14:52:37",
+        "url": "https://files.pythonhosted.org/packages/53/c9/a8e39f076dc8b9e568c8a4b2f70026eccce8f5a5d0b6dd54eff65fba6095/novajoin-1.0.12-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d2795449b0bda51178b909d2d411b5c4",
+          "sha256": "4c9789bee42a2633af0c6050f482728674577b30d06a1e01080bb2cee15271a2"
+        },
+        "downloads": 18,
+        "filename": "novajoin-1.0.12.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d2795449b0bda51178b909d2d411b5c4",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 62563,
+        "upload_time": "2017-03-30T14:52:38",
+        "url": "https://files.pythonhosted.org/packages/f3/bc/1cbf14311725835e87898b2423077bfcca437cfcd14db1c8e61dced1150f/novajoin-1.0.12.tar.gz"
+      }
+    ],
+    "1.0.13": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "08b22b42f34255ae8dec59aec705f769",
+          "sha256": "158b1a6715d1bb1ffe0bef232580b7c76f807cb76345eeb73daff6f391b64b19"
+        },
+        "downloads": 0,
+        "filename": "novajoin-1.0.13-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "08b22b42f34255ae8dec59aec705f769",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 73083,
+        "upload_time": "2017-05-26T21:25:01",
+        "url": "https://files.pythonhosted.org/packages/50/92/6efd502bb31506abc5bd1f0bb77358007444ff83de36c5f5c4be6629e548/novajoin-1.0.13-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a94a51bb85ee0e810373e43eb615e416",
+          "sha256": "2313d0e25563da6af39d84aa8c44860fb8e9f1e2eebca687749cc7c9e92c6a92"
+        },
+        "downloads": 0,
+        "filename": "novajoin-1.0.13.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a94a51bb85ee0e810373e43eb615e416",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 66113,
+        "upload_time": "2017-05-26T21:25:04",
+        "url": "https://files.pythonhosted.org/packages/3b/ed/4844d27d6611c21ef052386cbc2d499221d64087534aaebb278963b20ebd/novajoin-1.0.13.tar.gz"
+      }
+    ],
+    "1.0.9": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "05b235680b1f6898f1315267c1e00615",
+          "sha256": "d4534cc48af920db807205c82ae0b0a2e53759f8445e7a33fb78efc0be272848"
+        },
+        "downloads": 37,
+        "filename": "novajoin-1.0.9.tar.gz",
+        "has_sig": false,
+        "md5_digest": "05b235680b1f6898f1315267c1e00615",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 51527,
+        "upload_time": "2016-11-29T16:24:24",
+        "url": "https://files.pythonhosted.org/packages/47/81/7df4e924e8af4cc1a47f7a357258f61d3727b1004e0f6a90fe830cff5bd7/novajoin-1.0.9.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "08b22b42f34255ae8dec59aec705f769",
+        "sha256": "158b1a6715d1bb1ffe0bef232580b7c76f807cb76345eeb73daff6f391b64b19"
+      },
+      "downloads": 0,
+      "filename": "novajoin-1.0.13-py2.py3-none-any.whl",
+      "has_sig": false,
+      "md5_digest": "08b22b42f34255ae8dec59aec705f769",
+      "packagetype": "bdist_wheel",
+      "python_version": "py2.py3",
+      "size": 73083,
+      "upload_time": "2017-05-26T21:25:01",
+      "url": "https://files.pythonhosted.org/packages/50/92/6efd502bb31506abc5bd1f0bb77358007444ff83de36c5f5c4be6629e548/novajoin-1.0.13-py2.py3-none-any.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "a94a51bb85ee0e810373e43eb615e416",
+        "sha256": "2313d0e25563da6af39d84aa8c44860fb8e9f1e2eebca687749cc7c9e92c6a92"
+      },
+      "downloads": 0,
+      "filename": "novajoin-1.0.13.tar.gz",
+      "has_sig": false,
+      "md5_digest": "a94a51bb85ee0e810373e43eb615e416",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 66113,
+      "upload_time": "2017-05-26T21:25:04",
+      "url": "https://files.pythonhosted.org/packages/3b/ed/4844d27d6611c21ef052386cbc2d499221d64087534aaebb278963b20ebd/novajoin-1.0.13.tar.gz"
+    }
+  ]
+}

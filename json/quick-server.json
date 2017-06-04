@@ -1,0 +1,342 @@
+{
+  "info": {
+    "author": "Josua Krause",
+    "author_email": "josua.krause@gmail.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 4 - Beta",
+      "License :: OSI Approved :: MIT License",
+      "Programming Language :: Python :: 2",
+      "Programming Language :: Python :: 2.6",
+      "Programming Language :: Python :: 2.7"
+    ],
+    "description": "QuickServer\n===========\n\n*QuickServer* is a quick to use and easy to set up server\nimplementation. It has the following goals / features and is primarily\nmeant to speed up back end implementation / iteration:\n\n-  serve local files as is with basic black-listing\n-  provide functionality for dynamic requests\n-  provide easy access to worker threads (and caching)\n-  provide a basic command interpret loop for server commands\n\n|Build Status| |codecov.io|\n\nUsage\n-----\n\nYou can install *quick\\_server* with pip:\n\n.. code:: sh\n\n    pip install --user quick-server\n\nImport it in python via:\n\n.. code:: python\n\n    from quick_server import create_server, msg, setup_restart\n\nSetting up a basic file server\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nFollowing we will set up a basic *quick\\_server*. Please refer to the\n`inline documentation <https://github.com/JosuaKrause/quick_server/blob/master/quick_server/__init__.py>`__ of the methods for\nfull information.\n\n.. code:: python\n\n    setup_restart() # sets up restart functionality (if not called the `restart` command of the server needs external help to work)\n    # should be the first real executed command in the script\n    # some services, like heroku, don't play well with this command and it should not be called if in such an environment\n\n    addr = '' # empty address is equivalent to 'localhost'\n    port = 8080\n    server = create_server((addr, port), parallel=True) # parallel is recommended unless your code is not thread-safe\n    server.bind_path('/', 'www') # binds the 'www' directory to the server's root\n    server.add_default_white_list() # adds typical file types to the list of files that will be served; you can use server.add_file_patterns to add more file types\n    server.favicon_fallback = 'favicon.ico' # sets the default favicon file to the given file on disk (you'll need a file called 'favicon.ico')\n    # you can also use server.link_empty_favicon_fallback()\n\n    server.suppress_noise = True # don't report successful requests (turn off if you want to measure performance)\n    server.report_slow_requests = True # reports requests that take longer than 5s\n\nStarting the actual server:\n\n.. code:: python\n\n    msg(\"{0}\", \" \".join(sys.argv)) # prints how the script was started\n    msg(\"starting server at {0}:{1}\", addr if addr else 'localhost', port)\n    server.serve_forever() # starts the server -- only returns when the server stops (e.g., by typing `quit`, `restart`, or `CTRL-C`)\n    msg(\"shutting down..\")\n    server.server_close() # make sure to clean up all resources\n\nAdding dynamic requests\n~~~~~~~~~~~~~~~~~~~~~~~\n\nDynamic requests can be set up by annotating a function. The annotation\nconsists of *return-type* and *http-method*.\n\nA ``POST`` request in ``JSON`` format:\n\n.. code:: python\n\n    @server.json_post('/json_request', 0) # creates a request at http://localhost:8080/json_request\n    def json_request(req, args):\n        return {\n            \"post\": args[\"post\"],\n        }\n\nA ``GET`` request as ``plain text``:\n\n.. code:: python\n\n    @server.text_get('/text_request', 0) # creates a request at http://localhost:8080/text_request\n    def text_request(req, args):\n        return \"plain text\"\n\nWorker threads and caching\n~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nWorker threads require support from the client side.\n\nFirst, provide the necessary JavaScript file via\n\n.. code:: python\n\n    server.link_worker_js('/js/worker.js')\n\nand load it on the client side:\n\n.. code:: html\n\n    <script src=\"js/worker.js\" charset=\"utf-8\"></script>\n\nA worker request can be set up on the server side with\n\n.. code:: python\n\n    @server.json_worker('/json_worker')\n    def json_worker(args):\n        # ...\n        # long, slow computation\n        return myresult # myresult must be JSON convertible\n\nand accessed from the client. An instance of the ``Worker`` class is\nneeded:\n\n.. code:: javascript\n\n    var work = new quick_server.Worker();\n    work.status(function(req) {\n      // req contains the number of currently active requests (-1 indicates an error state)\n      // it can be used to tell the user that something is happening\n    });\n\nAccessing the worker:\n\n.. code:: javascript\n\n    // the first argument identifies worker jobs\n    // jobs with the same name get replaced when a new one has been started\n    // the second argument is the URL\n    work.post(\"worker_name\", \"json_worker\", {\n      // this object will appear as args on the server side\n    }, function(data) {\n      // data is the result of the worker function of the server side\n      // this function is only called if the request was successful\n    });\n\nA worker can be cancelled using its name:\n\n.. code:: javascript\n\n    work.cancel(\"worker_name\");\n\nNote that all running workers are cancelled when the page is unloaded.\n\nWorkers can automatically cache the server response using\n`quick\\_cache <https://pypi.python.org/pypi/quick-cache>`__. The\nserver needs to be set up for this:\n\n.. code:: python\n\n    cache = QuickCache(base_file, quota=500, ram_quota=100, warnings=msg)\n    server.cache = cache\n\nThen caching can be used for workers:\n\n.. code:: python\n\n    @server.json_worker('/json_worker', cache_id=lambda args: {\n            # uniquely identify the task from its arguments (must be JSON convertible)\n        })\n    def json_worker(args):\n        # ...\n        # long, slow computation\n        return myresult # myresult must be JSON convertible\n\nCustom server commands\n~~~~~~~~~~~~~~~~~~~~~~\n\nBy default *quick\\_server* provides the commands ``help`` (list of\navailable commands), ``restart`` (restart the server), and ``quit``\n(terminates the server). You can add own commands via\n\n.. code:: python\n\n    @server.cmd()\n    def name(args): # creates the command name\n        if not args:\n            msg(\"hello\")\n        else:\n            msg(\"hi {0}\", \" \".join(args)) # words typed after name are printed here\n\nA common command to add when having caching functionality (e.g.,\nprovided by\n`quick\\_cache <https://pypi.python.org/pypi/quick-cache>`__) is to\nclear caches. This show-cases also auto-complete functionality:\n\n.. code:: python\n\n    def complete_cache_clear(args, text): # args contains already completed arguments; text the currently started one\n        if args: # we only allow up to one argument\n            return []\n        return [ section for section in cache.list_sections() if section.startswith(text) ] # cache is the quick_cache object\n\n    @server.cmd(complete=complete_cache_clear)\n    def cache_clear(args):\n        if len(args) > 1: # we only allow up to one argument\n          msg(\"too many extra arguments! expected one got {0}\", ' '.join(args))\n          return\n        msg(\"clear {0}cache{1}{2}\", \"\" if args else \"all \", \" \" if args else \"s\", args[0] if args else \"\")\n        cache.clean_cache(args[0] if args else None)\n\nServer without command loop\n~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nThe easiest way to start the server without a command loop (e.g., when\nstarted as service) is to stop the loop with an EOF by calling the\nscript like this:\n\n.. code:: sh\n\n    cat /dev/null | python yourscript.py\n\nMore examples\n~~~~~~~~~~~~~\n\n`example.py <https://github.com/JosuaKrause/quick_server/blob/master/example/example.py>`__ and\n`example2.py <https://github.com/JosuaKrause/quick_server/blob/master/example/example2.py>`__ also contain minimal example\nservers. You can run them with ``./example.py`` and ``./example2.py``\nrespectively from the examples directory. Then you can browse to\nhttp://localhost:8000/example/.\n\nContributing\n------------\n\nPull requests are highly appreciated :) Also, feel free to open\n`issues <https://github.com/JosuaKrause/quick_server/issues>`__ for any\nquestions or bugs you may encounter.\n\n.. |Build Status| image:: https://travis-ci.org/JosuaKrause/quick_server.svg?branch=master\n   :target: https://travis-ci.org/JosuaKrause/quick_server\n.. |codecov.io| image:: https://codecov.io/github/JosuaKrause/quick_server/coverage.svg?branch=master\n   :target: https://codecov.io/github/JosuaKrause/quick_server?branch=master\n\n\n",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/JosuaKrause/quick_server",
+    "keywords": "server REST file quick easy",
+    "license": "MIT",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "quick-server",
+    "platform": "",
+    "project_url": "https://pypi.org/project/quick-server/",
+    "release_url": "https://pypi.org/project/quick-server/0.3.1/",
+    "requires_python": "",
+    "summary": "QuickServer is a quick to use and easy to set up server implementation.",
+    "version": "0.3.1"
+  },
+  "releases": {
+    "0.1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f856c233de27e38df0d5b949e65160a2",
+          "sha256": "35e05a57ef9e35d9eede8db3d4c33a4437ca72b6e1de424dc1415b0e5643d86b"
+        },
+        "downloads": 172,
+        "filename": "quick_server-0.1.0-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "f856c233de27e38df0d5b949e65160a2",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2",
+        "size": 27544,
+        "upload_time": "2016-09-15T18:20:48",
+        "url": "https://files.pythonhosted.org/packages/2e/6b/11082e6d02d99222c266fea29bf08194ca4ea7ee7e3a95c28014242a76fc/quick_server-0.1.0-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b49dfa54742a8f5f8f85e2ca558a2608",
+          "sha256": "9981590ddfa99e2a3e6444346e4cda43bd422857fc0c193fea2f184f5a0f4f24"
+        },
+        "downloads": 72,
+        "filename": "quick_server-0.1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b49dfa54742a8f5f8f85e2ca558a2608",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 26955,
+        "upload_time": "2016-09-15T18:30:13",
+        "url": "https://files.pythonhosted.org/packages/a0/36/8720451dd5cbe12b170f9d2c8df74f6b2ad788478d747ebace5b5ff3b71b/quick_server-0.1.0.tar.gz"
+      }
+    ],
+    "0.1.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "363f326ed6ba12a882fa37af69939a57",
+          "sha256": "925d5c012b4f302de68b5a28f085581e2eceb55ae965ac46054ac9e10dad2311"
+        },
+        "downloads": 74,
+        "filename": "quick_server-0.1.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "363f326ed6ba12a882fa37af69939a57",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 27013,
+        "upload_time": "2016-09-16T19:23:56",
+        "url": "https://files.pythonhosted.org/packages/d8/51/e1c99287f2b0c33caacbc87e2c499abf6a931cd347c165d2290d4209ea5f/quick_server-0.1.1.tar.gz"
+      }
+    ],
+    "0.1.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0253a03b1feba2f8b0c0fca704ac6f57",
+          "sha256": "b1bea25af8bbadcff423a2b3953ba248f8926ffe8c9d28d06d80ab05ccca1666"
+        },
+        "downloads": 89,
+        "filename": "quick_server-0.1.2.macosx-10.6-intel.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0253a03b1feba2f8b0c0fca704ac6f57",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 46656,
+        "upload_time": "2016-09-16T21:59:17",
+        "url": "https://files.pythonhosted.org/packages/02/00/7cbed6f5e514a56fa724db5aafa377c7726cd4e0364eca799bd4ce53e70d/quick_server-0.1.2.macosx-10.6-intel.tar.gz"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a37a1e5c739a59f271a50835360df35c",
+          "sha256": "0f0403338dcd44e945d697cd109550929b08fb1c1f6576303866cc98a3b8e9ff"
+        },
+        "downloads": 94,
+        "filename": "quick_server-0.1.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a37a1e5c739a59f271a50835360df35c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 27037,
+        "upload_time": "2016-09-16T22:00:40",
+        "url": "https://files.pythonhosted.org/packages/df/b0/d08e7e16249d584733f2b2767a95348021a0da00625afe4ac14539be1fec/quick_server-0.1.2.tar.gz"
+      }
+    ],
+    "0.1.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "de20d873ddd8fe18ac421c632c3e4bd9",
+          "sha256": "0569ff9bf695b58d9de0ff9f624f8b6ad74670f6daee9fe46ee141d356e66998"
+        },
+        "downloads": 47,
+        "filename": "quick_server-0.1.3.macosx-10.6-intel.tar.gz",
+        "has_sig": false,
+        "md5_digest": "de20d873ddd8fe18ac421c632c3e4bd9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 47027,
+        "upload_time": "2016-12-08T01:14:29",
+        "url": "https://files.pythonhosted.org/packages/fb/7e/beccef4b99465a9d87ed45b2d7dba6cd66087afa5147a4fb17a81c84a0a7/quick_server-0.1.3.macosx-10.6-intel.tar.gz"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2115fb134abdcbf235274eb9ff688719",
+          "sha256": "ae764816cf2ef37ab49c852bfe673465693f252e128189add825447245951f64"
+        },
+        "downloads": 45,
+        "filename": "quick_server-0.1.3-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "2115fb134abdcbf235274eb9ff688719",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2",
+        "size": 27943,
+        "upload_time": "2016-12-08T01:14:24",
+        "url": "https://files.pythonhosted.org/packages/a3/4f/28b5306f0db319714b40d0608f8fe7d4dda05d20d84b74e1586a699d310f/quick_server-0.1.3-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ba1b84ce4cd6785ba47301800bcb9ca9",
+          "sha256": "3b34c6eeca14f3552903fc94bff24c0329c80ee3ddc7f0fcaa251dcecf1e88e9"
+        },
+        "downloads": 49,
+        "filename": "quick_server-0.1.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ba1b84ce4cd6785ba47301800bcb9ca9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 27391,
+        "upload_time": "2016-12-08T01:14:30",
+        "url": "https://files.pythonhosted.org/packages/8c/ab/ee76ccdd8c5f81d8a779c8185d05ccd5434f4d6aaf1fcc94c6af03bdab2e/quick_server-0.1.3.tar.gz"
+      }
+    ],
+    "0.1.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "15b41afc58193c9375adc33e4c08fa15",
+          "sha256": "ad45516e4355556f66d4c1121ec4c9afe4d41e6fc0fa8b30cfcf58623f46b544"
+        },
+        "downloads": 300,
+        "filename": "quick_server-0.1.4-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "15b41afc58193c9375adc33e4c08fa15",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2",
+        "size": 28341,
+        "upload_time": "2016-12-23T04:54:34",
+        "url": "https://files.pythonhosted.org/packages/87/8c/430e8400849219f87faaad65b6f84cfaf9a318852f957c21885cafebd832/quick_server-0.1.4-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "65ac692c142164180ad061ce9d0bc95c",
+          "sha256": "f01aea9e7f12ead8f529ef41f0eb1d6c68f7078ea35124492e9426641825b96a"
+        },
+        "downloads": 303,
+        "filename": "quick_server-0.1.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "65ac692c142164180ad061ce9d0bc95c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 27676,
+        "upload_time": "2016-12-23T04:54:03",
+        "url": "https://files.pythonhosted.org/packages/ca/bd/7220905bcc053bb56b763f50df6e8e7c126ed733c9cb7a0e5e8d252cca6b/quick_server-0.1.4.tar.gz"
+      }
+    ],
+    "0.2.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "42f6f5efaac6e913ad0d0a4f6a724d3b",
+          "sha256": "94a4d80a80d4ec3d8fc05d4028e285d889501fec2727e6b5b725f7215a2a3442"
+        },
+        "downloads": 305,
+        "filename": "quick_server-0.2.0-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "42f6f5efaac6e913ad0d0a4f6a724d3b",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2",
+        "size": 28421,
+        "upload_time": "2016-12-23T06:55:11",
+        "url": "https://files.pythonhosted.org/packages/d5/c7/1cf1faa2799bd7a30d7a6c4c573222b6fe25378fdb098bdb9f0d8af4b50c/quick_server-0.2.0-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2a1ec0f4401585aade150a02a09f6d87",
+          "sha256": "a0211fa0097a13d13a9448eddbf98e3b2e29a8a798608262ac30e3fb74e95fcb"
+        },
+        "downloads": 309,
+        "filename": "quick_server-0.2.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2a1ec0f4401585aade150a02a09f6d87",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 27809,
+        "upload_time": "2016-12-23T06:55:13",
+        "url": "https://files.pythonhosted.org/packages/66/8b/c1a2c23f864c7d9922f84b3394ab7a3a9018ee459a251e7712c3784e64c2/quick_server-0.2.0.tar.gz"
+      }
+    ],
+    "0.3.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1ff1bed8795910be710e05de85452b46",
+          "sha256": "7c7feb843f2b9b721f2e9bfde70d0fe91a7ea1908c0c31090efac06dcf20cc04"
+        },
+        "downloads": 17,
+        "filename": "quick_server-0.3.0-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "1ff1bed8795910be710e05de85452b46",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2",
+        "size": 29091,
+        "upload_time": "2017-03-03T19:54:59",
+        "url": "https://files.pythonhosted.org/packages/02/e6/12138e09e60a52cdb579f138da8330c849a9ecf3feee6f30ad6d27c620e4/quick_server-0.3.0-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a6a854abf9e80fb466eee62f176b9360",
+          "sha256": "9b37b87aab7f48d9ae03e6d3538a28f75183dcb093d1578062de946c0a724269"
+        },
+        "downloads": 14,
+        "filename": "quick_server-0.3.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a6a854abf9e80fb466eee62f176b9360",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 28474,
+        "upload_time": "2017-03-03T19:55:00",
+        "url": "https://files.pythonhosted.org/packages/89/af/9cdff838544787de718bf6850fdc386d3eb4bbf4418718befb9c3cb6efdf/quick_server-0.3.0.tar.gz"
+      }
+    ],
+    "0.3.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3664df0ec273d95699308ec21b7699a8",
+          "sha256": "e21c550f2f8fee40bf56895239fde5ab48baff76f4aee16ae7ec1d9210c03115"
+        },
+        "downloads": 0,
+        "filename": "quick_server-0.3.1-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "3664df0ec273d95699308ec21b7699a8",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2",
+        "size": 29165,
+        "upload_time": "2017-04-25T22:42:45",
+        "url": "https://files.pythonhosted.org/packages/1d/f6/4d702f4721f577595da08445a49a7a758868dc566fc27e39b5a11db8e033/quick_server-0.3.1-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3b17368345e046f3bcedfecc5cb256f4",
+          "sha256": "64a81e5d069bcc2f38940f8b1a0dd1d8f0e46582e8971cb5d02997682b8eb634"
+        },
+        "downloads": 0,
+        "filename": "quick_server-0.3.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3b17368345e046f3bcedfecc5cb256f4",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 28554,
+        "upload_time": "2017-04-25T22:42:46",
+        "url": "https://files.pythonhosted.org/packages/37/ee/07572161faf28cf5646ed7934988cca5a29501379f367e7ea0763929c0d9/quick_server-0.3.1.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "3664df0ec273d95699308ec21b7699a8",
+        "sha256": "e21c550f2f8fee40bf56895239fde5ab48baff76f4aee16ae7ec1d9210c03115"
+      },
+      "downloads": 0,
+      "filename": "quick_server-0.3.1-py2-none-any.whl",
+      "has_sig": false,
+      "md5_digest": "3664df0ec273d95699308ec21b7699a8",
+      "packagetype": "bdist_wheel",
+      "python_version": "py2",
+      "size": 29165,
+      "upload_time": "2017-04-25T22:42:45",
+      "url": "https://files.pythonhosted.org/packages/1d/f6/4d702f4721f577595da08445a49a7a758868dc566fc27e39b5a11db8e033/quick_server-0.3.1-py2-none-any.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "3b17368345e046f3bcedfecc5cb256f4",
+        "sha256": "64a81e5d069bcc2f38940f8b1a0dd1d8f0e46582e8971cb5d02997682b8eb634"
+      },
+      "downloads": 0,
+      "filename": "quick_server-0.3.1.tar.gz",
+      "has_sig": false,
+      "md5_digest": "3b17368345e046f3bcedfecc5cb256f4",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 28554,
+      "upload_time": "2017-04-25T22:42:46",
+      "url": "https://files.pythonhosted.org/packages/37/ee/07572161faf28cf5646ed7934988cca5a29501379f367e7ea0763929c0d9/quick_server-0.3.1.tar.gz"
+    }
+  ]
+}

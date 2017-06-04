@@ -1,0 +1,200 @@
+{
+  "info": {
+    "author": "Oliver Cope",
+    "author_email": "oliver@redgecko.org",
+    "bugtrack_url": "",
+    "classifiers": [
+      "License :: OSI Approved :: Apache Software License",
+      "Programming Language :: Python :: 2.6",
+      "Programming Language :: Python :: 2.7",
+      "Programming Language :: Python :: 3.3",
+      "Programming Language :: Python :: 3.4",
+      "Topic :: Software Development :: Testing"
+    ],
+    "description": ".. Copyright 2014 Oliver Cope\n..\n.. Licensed under the Apache License, Version 2.0 (the \"License\");\n.. you may not use this file except in compliance with the License.\n.. You may obtain a copy of the License at\n..\n..     http://www.apache.org/licenses/LICENSE-2.0\n..\n.. Unless required by applicable law or agreed to in writing, software\n.. distributed under the License is distributed on an \"AS IS\" BASIS,\n.. WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n.. See the License for the specific language governing permissions and\n.. limitations under the License.\n\nToffee \u2013 test object factories\n==============================\n\n\nToffee helps create test fixtures for ORM model objects.\n\nExample::\n\n    from toffee import Fixture, Factory\n\n    product_factory = Factory(Product, id=Seq())\n\n    class MyFixture(Fixture):\n\n        product_1 = product_factory(desc='cuddly toy')\n        product_2 = product_factory(desc='toy tractor')\n\n        user = Factory(User, username='fred')\n        order = Factory(Order, user=user, products=[product_1, product_2])\n\n\n    def test_product_search():\n\n        fixture = MyFixture()\n        fixture.setup()\n\n        assert fixture.product_1 in search_products('toy')\n        assert fixture.product_2 in search_products('toy')\n        ...\n\n        fixture.teardown()\n\nToffee is similar in scope to\n`factory_boy <https://github.com/dnerdy/factory_boy>`_.\nThe differences that prompted me to write a new library are:\n\n- Toffee promotes working with on fixtures as groups of objects to be created\n  and destroyed as a unit, rather than individual factories\n- Explicit support for setup/teardown of fixtures\n\nUse with Django\n---------------\n\nTo use this with Django's ORM, import DjangoFactory, which knows how to create\nand delete Django model objects correctly::\n\n    from toffee import DjangoFactory as Factory\n    from myapp.models import Product\n\n    class MyFixture(Fixture):\n        product_2 = Factory(Product, desc='toy tractor')\n\n\nUse with Storm\n--------------\n\nTo use this with the `Storm ORM <http://storm.canonical.com/>`_,\nimport StormFactory, which knows how to create\nand delete objects with Storm::\n\n    from toffee import StormFactory\n    from myapp.models import Product\n\n    from storm.database import create_database\n    from storm.store import Store\n\n    database = create_database('sqlite:')\n    Factory = StormFactory.configure(lamdba: Store(database))\n\n    class MyFixture(Fixture):\n        product_2 = Factory(Product, desc='toy tractor')\n\nFlushing and commiting\n``````````````````````\n\nBy default the StormFactory will call ``store.flush()`` at the end of setup,\nbut will not commit.\nThis ensures that database generated values are populated,\n(eg autoincrement ids)\nbut the fixture data will not be persisted\nuntil you explicitly call ``store.commit()``.\n\nTo change this behavior, override ``factoryoptions`` in your fixture class::\n\n  class MyFixture(Fixture):\n\n    factoryoptions = {'commit': True}\n\nThis will cause all instances of your fixture\nto commit their objects after construction.\n\nIf you want to vary factory options between test cases\n(eg if one test case requires the store to be commited,\nbut you don't want it to be the default)\nyou can supply factory options as keyword arguments\nwhen calling ``Fixture.setup``, eg::\n\n  self.f = MyFixture().setup(commit=True)\n\nOr if you are using the context manager syntax\nyou can supply factoryoptions in the fixture constructor, eg::\n\n  with MyFixture(factoryoptions={'commit': True}) as fixturedata:\n    ...\n\nAccessing Storm's Store object\n------------------------------\n\nThe store object is accessible via the factory's ``mapper`` attribute.\nUse it to query existing objects in your fixtures::\n\n\tF = StormFactory.configure(...)\n\n  \tclass MyFixture(Fixture):\n\n\t\tproduct = F.mapper.find(Product).any()\n\t\torder = F(Order, product_id=product.id, ...)\n\nNote that ``mapper`` is a wrapper around the Store object\nthat defers evaluation of any calls\nuntil the fixture objects are created.\nYou cannot use ``mapper``\nto access the store object outside of fixture definitions.\n\n\nUse with SQLAlchemy\n-------------------\n\n``SQLAlchemyFactory`` knows how to create and delete objects within SQLAlchemy.\n\nTo use ``SQLAlchemyFactory`` you need first to configure a Factory class::\n\n        Session = sessionmaker(...)\n        Factory = SQLAlchemyFactory.configure(Session)\n\nAfter this you can use ``Factory`` to create fixture objects::\n\n        class fixture(Fixture):\n            user = Factory(model.User, ...)\n\nBy default, SQLAlchemyFactory calls ``session.flush`` but not\n``session.commit``.\n\nChange this behaviour by passing factory options to setup, eg::\n\n        fixture.setup(commit=True)\n\nor::\n\n        fixture.setup(flush=False)\n\nAlternatively you can supply factory options in the fixture class::\n\n        class CommittingFixture(Fixture):\n            factoryoptions = {'commit': True}\n\nAccessing the SQLAlchemy session\n--------------------------------\n\nThe session object is accessible via the factory's ``mapper`` attribute.\nUse it to query existing objects in your fixtures::\n\n\tF = SQLAlchemyFactory.configure(...)\n\n  \tclass MyFixture(Fixture):\n\n\t\tuser = F.mapper.query(User).get(5)\n\t\tblog_post = F(BlogPost, author=user, ...)\n\nNote that ``mapper`` is a wrapper\nthat defers evaluation of any calls\nuntil the fixture objects are created.\nYou cannot use ``mapper``\nto access the session outside of fixture definitions.\n\n\nOther ORMs\n----------\n\nThere is currently no support for other ORMs. Contributions are welcome!\n\nSetup and teardown\n------------------\n\nFixtures don't create any objects until you explicitly set them up::\n\n    fixture = MyFixture()\n    fixture.setup()\n\nFixtures will destroy any objects they've created when you call ``teardown``::\n\n    fixture.teardown()\n\nNB these methods are aliased to ``setUp`` and ``tearDown`` for consistency with\npython's unittest library.\n\nCall these from your test classes' setup/teardown methods::\n\n\n    class UserFixture(Fixture):\n        user = Factory(User, username='fred')\n        profile = Factory(Profile, user=user, address='10 Downing Street')\n\n    class TestSuite:\n\n        def setUp(self):\n            self.fixtures = UserFixture()\n            self.fixtures.setup()\n\n        def tearDown(self):\n            self.fixtures.teardown()\n\n        def test_wotsit(self):\n            assert self.fixtures.user.username == 'fred'\n            assert self.fixtures.user.get_profile().address == \\\n              '10 Downing Street'\n\n\nYou can also use fixtures as context managers,\nin which case setup and teardown will be called automatically\nwhen you enter/exit the block::\n\n    with UserFixture() as f:\n        assert f.user.username == 'fred'\n        assert f.profile.address == '10 Downing Street'\n\nUsing TestWithFixture\n---------------------\n\nIf you subclass ``toffee.TestWithFixture`` and declare a\n``fixture`` or ``class_fixture`` attribute these will be automatically\nsetup/torndown.\n\nIf you define ``fixture``, it will be set up as part of the test class's\n``setUp`` method,\nand the resulting fixture instance will be available as ``self.f``\n\nIf you define ``class_fixture``, it will be set up as part of the test class's\n``setUp`` method,\nand the resulting fixture instance will be available as ``self.class_f``\nand also ``self.f``.\n\n::\n\n    class TestFoo(toffee.TestWithFixture):\n\n        class fixture(Fixture):\n            user = Factory(User, username='fred')\n\n        def test_it_has_the_expected_name(self):\n            assert self.f.user.username == 'fred'\n\n\nDefining factories\n------------------\n\nThe simplest approach is to create a new Factory for every object required::\n\n    class MyFixture(Fixture):\n        fred = Factory(User, username='fred', is_admin=False)\n        albert = Factory(User, username='albert', is_admin=True)\n\nYou can avoid repeating code by predefine factories for commonly used model\nclasses::\n\n    user_factory = Factory(User, is_admin=False, is_active=True)\n\n    class MyFixture(Fixture):\n\n        ursula = user_factory(username='ursula')\n        inigo = user_factory(username='inigo')\n        albert = user_factory(username='albert', is_admin=True)\n\nFactories can reference other factories to autocreate related objects::\n\n    company_factory = Factory(Company, name=Seq('megacorp-%d'))\n    employee_factory = Factory(Employee, id=Seq(int), company=company_factory)\n\nIf ``employee_factory`` is called without a company argument,\nit will generate a fresh one using ``company_factory``.\n\n\nLists\n`````\n\nUse lists to create large numbers of factory objects::\n\n    class MyFixture(Fixture):\n\n\tusers = [Factory(User, username=Seq(\"user-%d\")) for i in range(20)]\n\nYou can also use lists of factories as parameters to other factories::\n\n    class MyFixture(Fixture):\n\n      \tpizza = Factory(Pizza, toppings=[Factory(Topping, name='tomato'),\n      \t                                 Factory(Topping, name='mozzarella')])\n\nManaging relationships\n``````````````````````\n\nFactories may refer to each other to create relationship graphs::\n\n    class MyFixture(Fixture):\n\n      \tcheeses = Factory(CheeseBoard)\n      \tcheddar = Factory(Cheese, name='cheddar', cheeseboard=cheeses)\n      \tstilton = Factory(Cheese, name='stilton', cheeseboard=cheeses)\n\nAlternatively::\n\n    class MyFixture(Fixture):\n\n      \tcheddar = Factory(Cheese, name='cheddar', cheeseboard=cheeses)\n      \tstilton = Factory(Cheese, name='stilton', cheeseboard=cheeses)\n      \tcheeses = Factory(CheeseBoard, cheeses=[cheddar, stilton])\n\nWhich of these alternatives you use depends on how you have declared the\nrelationships in your ORM model classes,\n\nSometimes you need a circular relationship. Here's one way to manage this::\n\n    class Cities(Fixture):\n\n      \tfrance = Factory(Country, name='France')\n      \tparis = Factory(City, name='paris', county=france)\n      \tfrance.capital = paris\n\nYou can also override the fixture's ``configure`` method to define complex\nrelationships programmatically.\n\n\nPartial factories\n`````````````````\n\nA partial factory is a factory that is not intended to generate an object.\nInstead it can be extended as a template for other factories::\n\n    class Cheeses(Fixture):\n\n      \tfrance = Factory(Country, name='France')\n\n      \t# Partial factories: no objects will be generated directly from these\n      \tfrench_cheese = Factory(Cheese, origin='france', partial=True)\n      \tswiss_cheese = Factory(Cheese, origin='switzerland', partial=True)\n\n      \t# ...but they can be later reused to create more specific factories\n      \tcamembert = french_cheese()\n      \tgruyere = swiss_cheese()\n\n\n\nSequences\n---------\n\nWhen creating multiple objects of the same type you can use the\n``toffee.Seq`` class to avoid manually specifying unique values for\nfields::\n\n    product_factory = Factory(Product, sku=Seq('%04d', 0))\n\n    class MyFixture(Fixture):\n        p1 = product_factory()\n        p2 = product_factory()\n        p3 = product_factory()\n\nThis would assign ``p1.sku = '0000'``, ``p2.sku = '0001'``  and so on.\n\nThe first argument to Seq can be a string (eg ``'user-%d'``)\nor any callable (eg ``int`` or ``lambda n: 'badger' * n``).\nThe second argument is the starting value\n(default 0)\n\nSequences can take a second argument,\n``scope``, with a value of either ``fixture`` or ``session``.\nThis argument determines whether the counter is reset at the start of every\nfixture, or only once, at the start of the test run session.\n\n::\n\n    # A sequence with scope='fixture'\n    product_factory = Factory(Product, sku=Seq('pr-%03d', 1, scope='fixture'))\n\n    # A sequence with scope='session'\n    user_factory = Factory(User, id(int, 1, scope='session'))\n\n    class MyFixture(Fixture):\n\n      \t# `product_factory.sku` uses a fixture-scoped sequence, thus is reset\n      \t# to zero every time the fixture is setup. Tests can rely on the value\n      \t# of product1.sku always being 'pr-001' and product2.sku being 'pr-002'\n        product1 = product_factory()\n        product2 = product_factory()\n\n        # The sequence for `user_factory.id` is session scoped, meaning that\n        # every time the fixture is set up a new value is generated.\n        # Sequence numbers will never conflict, even if you set up multiple\n        # copies of the same fixture concurrently.\n        user = user_factory()\n\n\n\n\nObject relationships and foreign keys\n-------------------------------------\n\nSuppose you have a bug tracking application.\nYou might have one model object called ``Bug`` and another called ``Product``\n\u2013 bugs always belong to a product.\n\nHow to set up a fixture containing a product with multiple bugs?\n\nThe simplest way is\nto create all objects and link between them::\n\n    class BugFixture(Fixture):\n\n        product = Factory(Product, name='my amazing software')\n        bug1 = Factory(Bug, comment=\"it doesnt work\", product=product)\n        bug2 = Factory(Bug, comment=\"it still doesnt work\", product=product)\n\nNow when we setup the fixture, toffee will figure out the relationships we need\nto create the object graph - a single Product instance, linked to two bugs::\n\n    with BugFixture() as f:\n        assert f.bug1.product is f.product\n        assert f.bug1.product is f.bug2.product\n\n\nSuppose we write a lot of tests, and we need a lot of fixtures. To avoid having\nto repeat a lot of code we can predefine the factories::\n\n    product_factory = Factory(Product, name=Seq('Product-%d'))\n    bug_factory = Factory(Bug, comment=Seq('Bug #%d'), product=product_factory)\n\n\nNotice the ``product=product_factory`` bit. Using this ``bug_factory``\nwill call ``product_factory`` to generate a fresh product\nfor us every time::\n\n    class BugsInSeparateProductsFixture(Fixture):\n\n        bug1 = bug_factory()\n        bug2 = bug_factory()\n\n    with BugsInSeparateProductsFixture() as f:\n        assert f.bug1.product.name == 'product-0'\n        assert f.bug2.product.name == 'product-1'\n\n\nIf we want both bugs to link to a single product, we can just tell the second\nbug to reuse the product from bug1::\n\n    class BugsInSameProductFixture(Fixture):\n\n        bug1 = bug_factory()\n        bug1 = bug_factory(product=bug1.product)\n\n    with BugsInSameProductFixture() as f:\n        assert f.bug1.product.name == 'product-0'\n        assert f.bug2.product.name == 'product-0'\n\n\nConfiguring subobjects\n-----------------------\n\nThe double underscore syntax lets you specify attributes of child factories on\nthe parent. Suppose you have an factories for two different model classes::\n\n    author_factory = Factory(Author, name=Seq('author-#%d'))\n    book_factory = Factory(Book, name=Seq('book-%d'), author=author_factory())\n\nNow you can write a fixture like this::\n\n    class MyFixture(Fixture):\n\n        player = book_factory(name='Animal Farm', author__name='Orwell')\n\nPost-creation configuration\n---------------------------\n\nOverride the ``configure`` method to add custom configuration of objects::\n\n    class MyFixture(Fixture):\n\n        user = userfactory()\n\n        def configure(self):\n            add_user_to_group('admin', self.user)\n\n\n\nExtending fixtures\n------------------\n\nClass inheritance is the preferred way to extend fixtures::\n\n    user_factory = Factory(User, username=Seq('user-%d'), is_admin=False)\n\n    class UserFixture(Fixture):\n        fred = user_factory()\n\n    class UserWithAdministratorFixture(UserFixture):\n        sheila = user_factory(is_admin=True)\n\n\nBut you can also extend fixtures in their constructor::\n\n    with UserFixture(sheila=user_factory(is_admin=True)) as f:\n        assert f.sheila.is_admin\n        assert not f.fred.is_admin\n\n\n\n.. Copyright 2014 Oliver Cope\n..\n.. Licensed under the Apache License, Version 2.0 (the \"License\");\n.. you may not use this file except in compliance with the License.\n.. You may obtain a copy of the License at\n..\n..     http://www.apache.org/licenses/LICENSE-2.0\n..\n.. Unless required by applicable law or agreed to in writing, software\n.. distributed under the License is distributed on an \"AS IS\" BASIS,\n.. WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n.. See the License for the specific language governing permissions and\n.. limitations under the License.\n\nCHANGELOG\n=========\n\nVersion 0.2.0\n\n- Dropped support for using setattr to configure subobjects. Use the double\n  underscore convention instead.\n- Attribute/item setting on factory objects now results in the same operation\n  being carried out on the generated object. This is useful for creating\n  circular references between factory objects.\n- Lists of factory objects are now supported, making it easier to manage\n  large numbers of test objects.\n- Factories now can take a ``partial`` flag. This stops the factory from\n  producing a top-level named object, while still allowing it to be used for\n  the basis of other factories.\n\nVersion 0.1.6\n\n- Added support for Python 3.4.\n- Dropped support for Python 3.2.\n- Tests that delete fixture objects before teardown is called no longer cause\n  SQLAlchemy to invalidate the transaction (and thus potentially cause later\n  tests to fail unexpectedly).\n- Added a scope argument to Seq(), that determines whether the sequence counter\n  is reset at the start of each fixture set up or only once, at the start of\n  the test run.\n\nVersion 0.1.5\n\n- Licensing: toffee is now licensed under the Apache License, Version 2.0\n- Bugfix: Fixed exception in LazyRecorderFactory.destroy_object during fixture\n  teardown\n\nVersion 0.1.4\n\n- Added toffee.TestWithFixture\n\nVersion 0.1.3\n\n- The data mapper factories (SQLAlchemy and Storm) support querying for\n  existing objects in fixtures\n- Added experimental SQLAlchemy support\n\nVersion 0.1.2\n\n- Made setting factoryoptions more flexible. It's now possible to change the\n  default flush/commit behavior of StormFactory per fixture class and or at\n  setup time when using the context manager syntax.\n\nVersion 0.1.1\n\n- Bugfix: StormFactory did not flush/commit the store on fixture teardown\n  teardown, meaning the store would not be left clean for subsequent operations\n\nVersion 0.1\n\n- initial release",
+    "docs_url": null,
+    "download_url": "UNKNOWN",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://bitbucket.org/ollyc/toffee",
+    "keywords": "fixtures fixture data test testing sqlalchemy storm django",
+    "license": "BSD",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "toffee",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/toffee/",
+    "release_url": "https://pypi.org/project/toffee/0.2.0/",
+    "requires_python": null,
+    "summary": "Toffee: Test Object Fixture Factories - easy creation of data fixtures for tests",
+    "version": "0.2.0"
+  },
+  "releases": {
+    "0": [],
+    "0.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a4bcab82f10ced09848bc2ede3caab65",
+          "sha256": "303a87b216aaf72845750bf99dcd0e63bfa5828ad7e6a344beeb75606116cd3d"
+        },
+        "downloads": 2369,
+        "filename": "toffee-0.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a4bcab82f10ced09848bc2ede3caab65",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 8497,
+        "upload_time": "2013-05-14T14:12:11",
+        "url": "https://files.pythonhosted.org/packages/e9/89/e60071910f7fdb50d9254f5c72d5c31e7eb4bf1b2f1482e719cb5e439683/toffee-0.1.tar.gz"
+      }
+    ],
+    "0.1.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5667c473dddf3a8e42ddda0e2545d018",
+          "sha256": "01e0ae0ad0aa96e8021d372c45123fee135ed1ed61b7c81621a5c4aacaebd6b9"
+        },
+        "downloads": 1928,
+        "filename": "toffee-0.1.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5667c473dddf3a8e42ddda0e2545d018",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 8741,
+        "upload_time": "2013-05-15T15:51:34",
+        "url": "https://files.pythonhosted.org/packages/87/10/ea231b1c87cb2764ef072b2bb09c8682a40dbfa1f19ec2d3d0380ed5203f/toffee-0.1.1.tar.gz"
+      }
+    ],
+    "0.1.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "88d74da87dd030e6e7ec2fd70d872ed2",
+          "sha256": "9e4cb0cdd465cd570300b9528a0ce4338149a3fd44aaeb374c05f3847cafb3a2"
+        },
+        "downloads": 1866,
+        "filename": "toffee-0.1.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "88d74da87dd030e6e7ec2fd70d872ed2",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9736,
+        "upload_time": "2013-05-21T10:10:50",
+        "url": "https://files.pythonhosted.org/packages/a8/51/10e8b361a7e22977772c2190a04fde4f2fad04f470dd2e018daec38f0426/toffee-0.1.2.tar.gz"
+      }
+    ],
+    "0.1.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "65421252e127a00b7586b85ca30b03b8",
+          "sha256": "3f0e429b9786ff4537bf85844eb201d24d9503d72148e0626a6b21b9da30de17"
+        },
+        "downloads": 1819,
+        "filename": "toffee-0.1.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "65421252e127a00b7586b85ca30b03b8",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 12436,
+        "upload_time": "2014-01-01T15:36:31",
+        "url": "https://files.pythonhosted.org/packages/60/37/8889fb9adc25e10d911a34c0bd48b18a5c6abb4f42cbb811bae9d897e5de/toffee-0.1.3.tar.gz"
+      }
+    ],
+    "0.1.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f954f277a922739fe42c26ec864b99db",
+          "sha256": "2cfa9613d206fb3ebca062c2733ac6ac016e4f04068ab3b0405f37b4d1ba9f9e"
+        },
+        "downloads": 1720,
+        "filename": "toffee-0.1.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f954f277a922739fe42c26ec864b99db",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 14221,
+        "upload_time": "2014-02-28T11:07:12",
+        "url": "https://files.pythonhosted.org/packages/a8/4f/c2d17a740e9d4a26b3678dcf81309b4153edb3b69d9723a5e7f6b2541324/toffee-0.1.4.tar.gz"
+      }
+    ],
+    "0.1.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0a0fdb7dd0a52c614dde6c4727a0237f",
+          "sha256": "b91c6eb9c1f73bde90fa3ae847a7f0c3dbfd27d6a2cd672b8cfeac9893f00884"
+        },
+        "downloads": 1430,
+        "filename": "toffee-0.1.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0a0fdb7dd0a52c614dde6c4727a0237f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 21306,
+        "upload_time": "2014-06-27T08:35:23",
+        "url": "https://files.pythonhosted.org/packages/e1/27/f5d644a472b42fbf2d3324770a29cfd85bd163bdaf05be12fc4bfe932ed2/toffee-0.1.5.tar.gz"
+      }
+    ],
+    "0.1.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d4a2c47427f042cf402ac8e43fb8697f",
+          "sha256": "60e31663b4b729e2ef28a1041e6ae8e88921bc9588382d0ae6402c47951bbfe9"
+        },
+        "downloads": 1674,
+        "filename": "toffee-0.1.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d4a2c47427f042cf402ac8e43fb8697f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 22828,
+        "upload_time": "2014-09-11T14:21:55",
+        "url": "https://files.pythonhosted.org/packages/1c/de/1f11e51e999556dff99d0cb5412f307cd3900c22c98a049859d20f1bcb93/toffee-0.1.6.tar.gz"
+      }
+    ],
+    "0.2.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a558c3db7b57b471533030ef0980d815",
+          "sha256": "00ba57d330acb7039cdbd6b119a5dcbffe46555c57c4e10de3b3fbfabf1876a4"
+        },
+        "downloads": 3141,
+        "filename": "toffee-0.2.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a558c3db7b57b471533030ef0980d815",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 26690,
+        "upload_time": "2015-06-28T12:40:40",
+        "url": "https://files.pythonhosted.org/packages/00/7d/3fb83ae32280706e88c0bc6d0cec15c4799460d63f25bdf4bddc731da283/toffee-0.2.0.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "a558c3db7b57b471533030ef0980d815",
+        "sha256": "00ba57d330acb7039cdbd6b119a5dcbffe46555c57c4e10de3b3fbfabf1876a4"
+      },
+      "downloads": 3141,
+      "filename": "toffee-0.2.0.tar.gz",
+      "has_sig": false,
+      "md5_digest": "a558c3db7b57b471533030ef0980d815",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 26690,
+      "upload_time": "2015-06-28T12:40:40",
+      "url": "https://files.pythonhosted.org/packages/00/7d/3fb83ae32280706e88c0bc6d0cec15c4799460d63f25bdf4bddc731da283/toffee-0.2.0.tar.gz"
+    }
+  ]
+}

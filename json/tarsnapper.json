@@ -1,0 +1,160 @@
+{
+  "info": {
+    "author": "Michael Elsdoerfer",
+    "author_email": "michael@elsdoerfer.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "License :: OSI Approved :: BSD License",
+      "Programming Language :: Python :: 2",
+      "Programming Language :: Python :: 3"
+    ],
+    "description": "==========\nTarsnapper\n==========\n\nA wrapper around tarsnap which does two things:\n\n- Lets you define \"backup jobs\" (tarsnap invocations) in a config file,\n  though on it's own this has little advantage over just using a a shell\n  script.\n\n- The ability to expire old backups using a Grandfather-father-son backup\n  scheme. This feature can be used in conjunction with tarsnapper\n  backup jobs, or standalone, to be applied to any existing set of\n  tarsnap backup archives, regardless of how they have been created.\n\n\nInstallation\n============\n\nUsing ``easy_install``::\n\n    $ apt-get install python-setuptools\n    $ easy_install tarsnapper\n\n\nUsing a configuration file\n==========================\n\nA configuration file looks like this::\n\n    # Global values, valid for all jobs unless overridden:\n    # A job's delta controls when old backups are expired\n    # (see \"How expiring backups works\" below)\n    deltas: 1d 7d 30d\n    # You can avoid repetition by giving deltas names\n    delta-names:\n      super-important: 1h 1d 30d 90d 360d\n    # A job's target sets the name of the created archive\n    target: /localmachine/$name-$date\n    # You can also include jobs from separate files\n    include-jobs: /usr/local/etc/tarsnapper/*.yml\n\n    jobs:\n      # define a job called images (names must be unique)\n      images:\n        source: /var/lib/mysql\n        exclude: /var/lib/mysql/temp\n        exec_before: service mysql stop\n        exec_after: service mysql start\n        # Aliases can be used when renaming a job to match old archives.\n        alias: img\n\n      some-other-job:\n        sources:\n          - /var/dir/1\n          - /etc/google\n        excludes:\n          - /etc/google/cache\n        target: /custom-target-$date.zip\n        deltas: 1h 6h 1d 7d 24d 180d\n\nFor the ``images`` job, the global target will be used, with the ``name``\nplaceholder replaced by the backup job name, in this case ``images``.\n\nYou can then ask tarsnapper to create new backups for each job::\n\n    $ tarsnapper -c myconfigfile make\n\nThe name of the archive will be the ``target`` option, with the ``$date``\nplaceholder replaced by the current timestamp, using either the\n``dateformat`` option, or ``%Y%m%d-%H%M%S``.\n\nOr to expire those archives no longer needed, as per the chosen deltas::\n\n  $ tarsnapper -c myconfigfile expire\n\nIf you need to pass arguments through to tarsnap, you can do this as well::\n\n    $ tarsnapper -o configfile tarsnap.conf -o v -c tarsnapper.conf make\n\nThis will use ``tarsnap.conf`` as the tarsnap configuration file,\n``tarsnapper.conf`` as the tarsnapper configuration file, and will also\nput tarsnap into verbose mode via the ``-v`` flag.\n\nUsing the ``include-jobs`` option, you could insert 1 or more jobs in (for\nexample) ``/usr/local/etc/tarsnapper/extra-backup-jobs.yml``::\n\n      # Included jobs act just like jobs in the main config file, so for\n      # example the default target is active and named deltas are\n      # available, and job names must still be globally unique.\n      yet-another-job:\n        source: /var/dir/2\n        deltas: 1h 1d 30d\n\n      an-important-job:\n        source: /var/something-important\n        delta: super-important\n\n``include-jobs`` uses `Python's globbing`_ to find job files and hence is\nsubject to the limitations thereof.\n\n.. _Python's globbing: https://docs.python.org/2/library/glob.html\n\nExpiring backups\n================\n\nIf you want to create the backups yourself, and are only interested in\nthe expiration functionality, you can do just that::\n\n    $ tarsnapper --target \"foobar-\\$date\" --deltas 1d 7d 30d - expire\n\nThe ``--target`` argument selects which set of backups to apply the expire\noperation to. All archives that match this expression are considered\nto be part of the same backup set that you want to operate on.\n\ntarsnapper will then look at the date of each archive (this is why\nyou need the ``$date`` placeholder) and determine those which are not\nneeded to accommodate the given given delta range. It will parse the date\nusing the ``python-dateutil`` library, which supports a vast array of\ndifferent formats, though some restrictions apply: If you are using\n``yyyy-dd-mm``, it cannot generally differentiate that from ``yyyy-mm-dd``.\n\nYou can specify a custom dateformat using the ``--dateformat`` option,\nwhich should be a format string as expected by the Python ``strptime``\nfunction (e.g. ``%Y%m%d-%H%M%S``). Usually, a custom format is not\nnecessary.\n\nNote the single \"-\" that needs to be given between the ``--deltas``\nargument and the command.\n\nThe ``expire`` command supports a ``--dry-run`` argument that will allow\nyou to see what would be deleted::\n\n    $ tarsnapper --target \"foobar-\\$date\" --deltas 1d 7d 30d - expire --dry-run\n\n\nHow expiring backups works\n==========================\n\nThe design goals for this were as follows:\n\n* Do not require backup names to include information on which generation\n  a backup belongs to, like for example ``tarsnap-generations`` does.\n  That is, you can create your backups anyway you wish, and simply use\n  this utility to delete old backups.\n\n* Do not use any fixed generations (weekly, monthly etc), but freeform\n  timespans.\n\n* Similarily, do not make any assumptions about when or if backup jobs\n  have actually run or will run, but try to match the given deltas as\n  closely as possible.\n\nThe generations are defined by a list of deltas. ``60`` means a minute,\n``12h`` is half a day, ``7d`` is a week. The number of backups in each\ngeneration is implied by it's and the parent generation's delta.\n\nFor example, given the deltas ``1h 1d 7d``, the first generation will\nconsist of 24 backups each one hour older than the previous (or the closest\napproximation possible given the available backups), the second generation\nof 7 backups each one day older than the previous, and backups older than\n7 days will be discarded for good.\n\nThe most recent backup is always kept.\n\nAs an example, here is a list of backups from a Desktop computer that has\noften been running non-stop for days, but also has on occasion been turned\noff for weeks at a time, using the deltas ``1d 7d 30d 360d 18000d``::\n\n      dropbox-20140424-054252\n      dropbox-20140423-054120\n      dropbox-20140422-053921\n      dropbox-20140421-053920\n      dropbox-20140420-054246\n      dropbox-20140419-054007\n      dropbox-20140418-060211\n      dropbox-20140226-065032\n      dropbox-20140214-063824\n      dropbox-20140115-072109\n      dropbox-20131216-100926\n      dropbox-20131115-211256\n      dropbox-20131012-054438\n      dropbox-20130912-054731\n      dropbox-20130813-090621\n      dropbox-20130713-160422\n      dropbox-20130610-054348\n      dropbox-20130511-055537\n      dropbox-20130312-064042\n      dropbox-20120325-054505\n      dropbox-20110331-121745\n",
+    "docs_url": null,
+    "download_url": "UNKNOWN",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "http://github.com/miracle2k/tarsnapper",
+    "keywords": null,
+    "license": "BSD",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "tarsnapper",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/tarsnapper/",
+    "release_url": "https://pypi.org/project/tarsnapper/0.4.0/",
+    "requires_python": null,
+    "summary": "Manages tarsnap backups",
+    "version": "0.4.0"
+  },
+  "releases": {
+    "0.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c213e86efe35cc0ba650a961f9a5c5b9",
+          "sha256": "ab2262323793550a307248f398fad911b839fd6015d8a1238c3a0f8c6f2645f3"
+        },
+        "downloads": 2853,
+        "filename": "tarsnapper-0.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c213e86efe35cc0ba650a961f9a5c5b9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 12865,
+        "upload_time": "2010-08-28T18:26:36",
+        "url": "https://files.pythonhosted.org/packages/e6/d9/8211842cc1874c329f526f74ad153833adcecb57ada8cc023ec165a8b505/tarsnapper-0.1.tar.gz"
+      }
+    ],
+    "0.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "cf0f7b59b537ffb0b724c755d0b4c667",
+          "sha256": "d8b1575ccd84361ac0ba3d40c1a7b81399da357fc7566a849bfc12e816d6ebd1"
+        },
+        "downloads": 1865,
+        "filename": "tarsnapper-0.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "cf0f7b59b537ffb0b724c755d0b4c667",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 14946,
+        "upload_time": "2013-06-28T10:58:41",
+        "url": "https://files.pythonhosted.org/packages/51/e1/9c4b2c6b33bb14ed5ce96d2ca06beccf086b5e5c626d4dfda44d61c7e193/tarsnapper-0.2.tar.gz"
+      }
+    ],
+    "0.2.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ddadbc73bd76696db9286e0efb46d2f0",
+          "sha256": "6edfc4c4d147101d5af26b228ceef6665fa5c5741ea1f035a14bd1e0acc7a3a6"
+        },
+        "downloads": 2827,
+        "filename": "tarsnapper-0.2.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ddadbc73bd76696db9286e0efb46d2f0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 14945,
+        "upload_time": "2013-07-15T13:33:19",
+        "url": "https://files.pythonhosted.org/packages/88/cd/e5d292fc1725f3087bd0e18ad433c8e6cdcd2a7bf065d5ad3a74687970d7/tarsnapper-0.2.1.tar.gz"
+      }
+    ],
+    "0.2.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "209bfcc42ae657d5f601caee9064e693",
+          "sha256": "1feadf62e68ee7235897efdf062d9f3f1a1ebda25f7bca765111db12cd35c008"
+        },
+        "downloads": 2285,
+        "filename": "tarsnapper-0.2.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "209bfcc42ae657d5f601caee9064e693",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16900,
+        "upload_time": "2015-04-22T15:01:48",
+        "url": "https://files.pythonhosted.org/packages/1c/a2/291012983f6911e9963a808d12fd35b3ae31484724b48b9eb02f50f4d22f/tarsnapper-0.2.5.tar.gz"
+      }
+    ],
+    "0.3.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0af3605d375724acdbe77e6ff8f380fd",
+          "sha256": "b0f499f5c9d445834f9b74b3adc0731e56947480c19f207739c0887fe199f3e1"
+        },
+        "downloads": 642,
+        "filename": "tarsnapper-0.3.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0af3605d375724acdbe77e6ff8f380fd",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 18389,
+        "upload_time": "2016-01-14T13:45:02",
+        "url": "https://files.pythonhosted.org/packages/6d/2c/89b9c839d58ada9e76f75580bb8b5798fc1c5389c123e0708e49d3ebae55/tarsnapper-0.3.0.tar.gz"
+      }
+    ],
+    "0.4.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "49668986a47317943fd6ff109b32809c",
+          "sha256": "5afe4846e41686ef8b5b0b90caeeb17abc1a337ceec0ae098068e24ee4db6c52"
+        },
+        "downloads": 265,
+        "filename": "tarsnapper-0.4.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "49668986a47317943fd6ff109b32809c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 18395,
+        "upload_time": "2017-01-04T11:40:24",
+        "url": "https://files.pythonhosted.org/packages/e7/96/bb580eb269f5b192412f83ab2aaed8de7a6cb1712f0ab0072438b327ea9f/tarsnapper-0.4.0.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "49668986a47317943fd6ff109b32809c",
+        "sha256": "5afe4846e41686ef8b5b0b90caeeb17abc1a337ceec0ae098068e24ee4db6c52"
+      },
+      "downloads": 265,
+      "filename": "tarsnapper-0.4.0.tar.gz",
+      "has_sig": false,
+      "md5_digest": "49668986a47317943fd6ff109b32809c",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 18395,
+      "upload_time": "2017-01-04T11:40:24",
+      "url": "https://files.pythonhosted.org/packages/e7/96/bb580eb269f5b192412f83ab2aaed8de7a6cb1712f0ab0072438b327ea9f/tarsnapper-0.4.0.tar.gz"
+    }
+  ]
+}

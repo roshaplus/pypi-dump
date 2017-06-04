@@ -1,0 +1,275 @@
+{
+  "info": {
+    "author": "Oleg Churkin",
+    "author_email": "bahusoff@gmail.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 5 - Production/Stable",
+      "Environment :: Web Environment",
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: MIT License",
+      "Operating System :: OS Independent",
+      "Programming Language :: Python",
+      "Programming Language :: Python :: 2.7",
+      "Programming Language :: Python :: 3.4",
+      "Topic :: Software Development :: Libraries :: Python Modules"
+    ],
+    "description": "UWSGI Tasks engine\n==================\n\nThis package makes it to use `UWSGI signal\nframework <http://uwsgi-docs.readthedocs.org/en/latest/Signals.html>`__\nfor asynchronous tasks management. It's more functional and flexible\nthan `cron scheduler <https://wikipedia.org/wiki/Cron>`__, and can be\nused as replacement for `celery <http://www.celeryproject.org/>`__ in\nmany cases.\n\nRequirements\n------------\n\nThe module works only in `UWSGI web\nserver <https://uwsgi-docs.readthedocs.org/en/latest/>`__ environment,\nyou also may have to setup some\n`mules <https://uwsgi-docs.readthedocs.org/en/latest/Mules.html>`__\nor(http://uwsgi-docs.readthedocs.org/en/latest/Spooler.html) as\ndescribed in UWSGI documentation.\n\nInstallation\n------------\n\nSimple execute ``pip install uwsgi_tasks``\n\nUsage\n-----\n\nMules, farms and spoolers\n~~~~~~~~~~~~~~~~~~~~~~~~~\n\n**Use case**: you have Django project and want to send all emails\nasynchronously.\n\nSetup some mules with ``--mule`` or ``--mules=<N>`` parameters, or some\nspooler processes with ``--spooler==<path_to_spooler_folder>``.\n\nThen write:\n\n.. code:: python\n\n    # myapp/__init__.py\n    from django.core.mail import send_mail\n    from uwsgi_tasks import task, TaskExecutor\n\n    @task(executor=TaskExecutor.SPOOLER)\n    def send_email_async(subject, body, email_to):\n        # Execute task asynchronously on first available spooler\n        return send_mail(subject, body, 'noreply@domain.com', [email_to])\n\n    ...\n\n    def my_view():\n        # Execute tasks asynchronously on first available spooler\n        send_email_async('Welcome!', 'Thank you!', 'user@domain.com')\n\nExecution of ``send_email_async`` will not block execution of\n``my_view``, since function will be called by first available spooler. I\npersonally recommend to use spoolers rather than mules for several\nreasons:\n\n1. Task will be executedeven if uwsgi is crashed or restarted, since\n   task information stored in files.\n2. Task parameters size is not limited to 64 KBytes.\n3. You may switch to externalspoolers if required.\n4. You are able to tune task execution flow with introspection\n   facilities.\n\nThe following tasks execution backends are supported:\n\n-  ``AUTO`` - default mode, spooler will be used if available, otherwise\n   mule will be used. If mule is not available, than task is executed at\n   runtime.\n-  ``MULE`` - execute decorated task on first available mule\n-  ``SPOOLER`` - execute decorated task on spooler\n-  ``RUNTIME`` - execute task at runtime, this backend is also used in\n   case ``uwsgi`` module can't be imported, e.g. tests.\n\nCommon task parameters are:\n\n-  ``working_dir`` - absolute path to execute task in. You won't\n   typically need to provide this value, since it will be provided\n   automatically: as soon as you execute the task current working\n   directory will be saved and sent to spooler or mule. You may pass\n   ``None`` value to disable this feature.\n\nWhen ``SPOOLER`` backend is used, the following additional parameters\nare supported:\n\n-  ``priority`` - **string** related to priority of this task, larger =\n   less important, so you can simply use digits. ``spooler-ordered``\n   uwsgi parameter must be set for this feature to work (in linux\n   only?).\n-  ``at`` - UNIX timestamp or Python **datetime** or Python\n   **timedelta** object.\n-  ``spooler_return`` - boolean value, ``False`` by default. If ``True``\n   is passed, you can return spooler codes from function, e.g.\n   ``SPOOL_OK``, ``SPOOL_RETRY`` and ``SPOOL_IGNORE``.\n-  ``retry_count`` - how many times spooler should repeat the task if it\n   returns ``SPOOL_RETRY`` code, implies ``spooler_return=True``.\n-  ``retry_timeout`` - how many seconds between attempts spooler should\n   wait to execute the task. Actual timeout depends on\n   ``spooler-frequency`` parameter. Python **timedelta** object is also\n   supported.\n\n**Use case**: run task asynchronously and repeat execution 3 times at\nmaximum if it fails, with 5 seconds timeout between attempts.\n\n.. code:: python\n\n    from functools import wraps\n    from uwsgi_tasks import task, TaskExecutor, SPOOL_OK, SPOOL_RETRY\n\n    def task_wrapper(func):\n        @wraps(func)  # required!\n        def _inner(*args, **kwargs):\n            print 'Task started with parameters:', args, kwargs\n            try:\n                func(*args, **kwargs)\n            except Exception as ex:  # example\n                print 'Exception is occurred', ex, 'repeat the task'\n                return SPOOL_RETRY\n\n            print 'Task ended', func\n            return SPOOL_OK\n\n        return _inner\n\n    @task(executor=TaskExecutor.SPOOLER, retry_count=3, retry_timeout=5)\n    @task_wrapper\n    def spooler_task(text):\n        print 'Hello, spooler! text =', text\n        raise Exception('Sorry, task failed!')\n\nRaising\n``RetryTaskException(count=<retry_count>, timeout=<retry_timeout>)``\napproach can be also used to retry task execution:\n\n.. code:: python\n\n    import logging\n    from uwsgi_tasks import RetryTaskException, task, TaskExecutor\n\n    @task(executor=TaskExecutor.SPOOLER, retry_count=2)\n    def process_purchase(order_id):\n\n        try:\n            # make something with order id\n            ...\n        except Exception as ex:\n            logging.exception('Something bad happened')\n            # retry task in 10 seconds for the last time\n            raise RetryTaskException(timeout=10)\n\nBe careful when providing ``count`` parameter to the exception\nconstructor - it may lead to infinite tasks execution, since the\nparameter replaces the value of ``retry_count``.\n\nTask execution process can be also controlled via spooler options, see\ndetails\n`here <http://uwsgi-docs.readthedocs.org/en/latest/Spooler.html?highlight=spool_ok#options>`__.\n\nProject setup\n~~~~~~~~~~~~~\n\nThere are some requirements to make asynchronous tasks work properly.\nLet's imagine your Django project has the following directory structure:\n\n::\n\n    \u251c\u2500\u2500 project/\n    \u2502   \u251c\u2500\u2500 venv/  <-- your virtual environment is placed here\n    \u2502   \u251c\u2500\u2500 my_project/  <-- Django project (created with \"startproject\" command)\n    \u2502   \u2502   \u251c\u2500\u2500 apps/\n    \u2502   \u2502   \u2502   \u251c\u2500\u2500 index/  <-- Single Django application (\"startapp\" command)\n    \u2502   \u2502   \u2502   \u2502   \u251c\u2500\u2500 __init__.py\n    \u2502   \u2502   \u2502   \u2502   \u251c\u2500\u2500 admin.py\n    \u2502   \u2502   \u2502   \u2502   \u251c\u2500\u2500 models.py\n    \u2502   \u2502   \u2502   \u2502   \u251c\u2500\u2500 tasks.py\n    \u2502   \u2502   \u2502   \u2502   \u251c\u2500\u2500 tests.py\n    \u2502   \u2502   \u2502   \u2502   \u251c\u2500\u2500 views.py\n    \u2502   \u2502   \u2502   \u251c\u2500\u2500 __init__.py\n    \u2502   \u2502   \u251c\u2500\u2500 __init__.py\n    \u2502   \u2502   \u251c\u2500\u2500 settings.py\n    \u2502   \u2502   \u251c\u2500\u2500 urls.py\n    \u2502   \u251c\u2500\u2500 spooler/  <-- spooler files are created here\n\nMinimum working UWSGI configuration is placed in ``uwsgi.ini`` file:\n\n.. code:: ini\n\n    [uwsgi]\n    http-socket=127.0.0.1:8080\n    processes=1\n    workers=1\n\n    # python path setup\n    module=django.core.wsgi:get_wsgi_application()\n    # absolute path to the virtualenv directory\n    venv=<base_path>/project/venv/\n    # Django project directory is placed here:\n    pythonpath=<base_path>/project/\n    # \"importable\" path for Django settings\n    env=DJANGO_SETTINGS_MODULE=my_project.settings\n\n    # spooler setup\n    spooler=<base_path>/project/spooler\n    spooler-processes=2\n    spooler-frequency=10\n\nIn such configuration you should put the following code into\n``my_project/__init__.py`` file:\n\n.. code:: python\n\n    # my_project/__init__.py\n    from uwsgi_tasks import set_uwsgi_callbacks\n\n    set_uwsgi_callbacks()\n\nTask functions (decorated with ``@task``) may be placed in any file\nwhere they can be imported, e.g. ``apps/index/tasks.py``.\n\nIf you still receive some strange errors when running asynchronous\ntasks, e. g. \"uwsgi unable to find the spooler function\" or\n\"ImproperlyConfigured Django exception\", you may try the following: add\nto uwsgi configuration new variable ``spooler-import=my_project`` - it\nwill force spooler to import ``my_project/__init__.py`` file when\nstarting, then add Django initialization into this file:\n\n.. code:: python\n\n    # my_project/__init__.py\n    # ... set_uwsgi_callbacks code ...\n\n    # if you use Django, otherwise use\n    # initialization related to your framework\\project\n    from uwsgi_tasks import django_setup\n\n    django_setup()\n\nAlso make sure you **didn't override** uwsgi callbacks with this code\n``from uwsgidecorators import *`` somewhere in your project.\n\nIf nothing helps - please submit a issue.\n\nIf you want to run some cron or timer-like tasks on project\ninitialization you may import them in the same file:\n\n.. code:: python\n\n    # my_project/__init__.py\n    # ... set_uwsgi_callbacks\n\n    from my_cron_tasks import *\n    from my_timer_tasks import *\n\nKeep in mind that task arguments must be\n`pickable <http://stackoverflow.com/questions/3603581/what-does-it-mean-for-an-object-to-be-picklable-or-pickle-able>`__,\nsince they are serialized and send via socket (mule) or file (spooler).\n\nTimers, red-black timers and cron\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nThis API is similar to uwsgi bundled Python decorators\n`module <http://uwsgi-docs.readthedocs.org/en/latest/PythonDecorators.html>`__.\nOne thing to note: you are not able to provide any arguments to\ntimer-like or cron-like tasks. See examples below:\n\n.. code:: python\n\n    from uwsgi_tasks import *\n\n    @timer(seconds=5)\n    def print_every_5_seconds(signal_number):\n        \"\"\"Prints string every 5 seconds\n\n        Keep in mind: task is created on initialization.\n        \"\"\"\n        print 'Task for signal', signal_number\n\n    @timer(seconds=5, iterations=3, target='workers')\n    def print_every_5_seconds(signal_number):\n        \"\"\"Prints string every 5 seconds 3 times\"\"\"\n        print 'Task with iterations for signal', signal_number\n\n    @timer_lazy(seconds=5)\n    def print_every_5_seconds_after_call(signal_number):\n        \"\"\"Prints string every 5 seconds\"\"\"\n        print 'Lazy task for signal', signal_number\n\n    @cron(minute=-2)\n    def print_every_2_minutes(signal_number):\n        print 'Cron task:', signal_number\n\n    @cron_lazy(minute=-2, target='mule')\n    def print_every_2_minutes_after_call(signal_number):\n        print 'Cron task:', signal_number\n\n    ...\n\n    def my_view():\n       print_every_5_seconds_after_call()\n       print_every_2_minutes_after_call()\n\nTimer and cron decorators supports ``target`` parameter, supported\nvalues are described\n`here <http://uwsgi-docs.readthedocs.org/en/latest/PythonModule.html#uwsgi.register_signal>`__.\n\nKeep in mind the maximum number of timer-like and cron-like tasks is 256\nfor each available worker.\n\nTask introspection API\n~~~~~~~~~~~~~~~~~~~~~~\n\nUsing task introspection API you can get current task object inside\ncurrent task function and will be able to change some task parameters.\nYou may also use special ``buffer`` dict-like object to pass data\nbetween task execution attempts. Using ``get_current_task`` you are able\nto get internal representation of task object and manipulate the\nattributes of the task, e.g. SpoolerTask object has the following\nchangeable properties: ``at``, ``retry_count``, ``retry_timeout``.\n\nHere is a complex example:\n\n.. code:: python\n\n    from uwsgi_tasks import get_current_task\n\n    @task(executor=TaskExecutor.SPOOLER, at=datetime.timedelta(seconds=10))\n    def remove_files_sequentially(previous_selected_file=None):\n        # get current SpoolerTask object\n        current_task = get_current_task()\n\n        selected_file = select_file_for_removal(previous_selected_file)\n\n        # we should stop the task here\n        if selected_file is None:\n            logger.info('All files were removed')\n            for filename, removed_at in current_task.buffer['results'].items():\n                logger.info('File \"%s\" was removed at \"%s\"', filename, removed_at)\n            for filename, error_message in current_task.buffer['errors'].items():\n                logger.info('File \"%s\", error: \"%s\"', filename, error_message)\n            return\n\n        try:\n            logger.info('Removing the file \"%s\"', selected_file)\n            # ... remove the file ...\n            del_file(selected_file)\n        except IOError as ex:\n            logger.exception('Cannot delete file \"%s\"', selected_file)\n\n            # let's try to remove this one more time later\n            io_errors = current_task.buffer.setdefault('errors', {}).get(selected_file)\n            if not io_errors:\n                current_task.buffer['errors'][selected_file] = str(ex)\n                current_task.at = datetime.timedelta(seconds=20)\n                return current_task(previous_selected_file)\n\n        # save datetime of removal\n        current_task.buffer.setdefault('results', {})[selected_file] = datetime.datetime.now()\n\n        # run in async mode\n        return current_task(selected_file)\n\nChanging task configuration before execution\n^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nYou may use ``add_setup`` method to change some task-related settings\nbefore (or during) task execution process. The following example shows\nhow to change timer's timeout and iterations amount at runtime:\n\n.. code:: python\n\n    from uwsgi_tasks import timer_lazy\n\n    @timer_lazy(target='worker')\n    def run_me_periodically(signal):\n        print('Running with signal:', signal)\n\n    def my_view(request):\n        run_me_periodically.add_setup(seconds=10, iterations=2)\n        run_me_periodically()",
+    "docs_url": null,
+    "download_url": "UNKNOWN",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/Bahus/uwsgi_tasks",
+    "keywords": "asynchronous,tasks,uwsgi",
+    "license": "MIT",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "uwsgi-tasks",
+    "platform": "Platform Independent",
+    "project_url": "https://pypi.org/project/uwsgi-tasks/",
+    "release_url": "https://pypi.org/project/uwsgi-tasks/0.6.4/",
+    "requires_python": null,
+    "summary": "Asynchronous tasks management with UWSGI server",
+    "version": "0.6.4"
+  },
+  "releases": {
+    "0.1": [],
+    "0.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c85f14236a6c7080972370a4c330a22f",
+          "sha256": "99e7c56f89ac1ae440ddd85a876a3072447d8801f3e7304acb8462b3781c5df5"
+        },
+        "downloads": 914,
+        "filename": "uwsgi-tasks-0.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c85f14236a6c7080972370a4c330a22f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9795,
+        "upload_time": "2015-04-20T18:59:00",
+        "url": "https://files.pythonhosted.org/packages/37/73/e377382a1309313c31049c24203a4b08c97b91665504a43429485b4d8f97/uwsgi-tasks-0.2.tar.gz"
+      }
+    ],
+    "0.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7b9e78bd7c38f5d9a23ce11935a07697",
+          "sha256": "60b08470f5cd16c66510764d2b5605bfc27b1094025075854e77a084eecd073d"
+        },
+        "downloads": 1335,
+        "filename": "uwsgi-tasks-0.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7b9e78bd7c38f5d9a23ce11935a07697",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10296,
+        "upload_time": "2015-04-22T11:23:42",
+        "url": "https://files.pythonhosted.org/packages/6e/a4/e4728257a379a81089ae03bf907d7143a603364dd64664de3e437fb0eddc/uwsgi-tasks-0.3.tar.gz"
+      }
+    ],
+    "0.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "88845397b602e85ae822981d255322fd",
+          "sha256": "a0ab3ae753778dd52949f94386fc32023b73bc2f1e3fe78ebcaa8a2676b22a2c"
+        },
+        "downloads": 897,
+        "filename": "uwsgi-tasks-0.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "88845397b602e85ae822981d255322fd",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 11121,
+        "upload_time": "2015-05-02T18:06:25",
+        "url": "https://files.pythonhosted.org/packages/1f/eb/dd148a06cda56e6926f03254f102b54f65a25843b9a1153cc8b4f5fb0549/uwsgi-tasks-0.4.tar.gz"
+      }
+    ],
+    "0.4.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4e772bdbda8e0c159893e9a4a03ad2e7",
+          "sha256": "5dce3f618c4936f3861b86a44ae2cc8d6ea1aa0719bb3e32e9fc83c639ed5384"
+        },
+        "downloads": 884,
+        "filename": "uwsgi-tasks-0.4.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4e772bdbda8e0c159893e9a4a03ad2e7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 11135,
+        "upload_time": "2015-05-02T18:19:24",
+        "url": "https://files.pythonhosted.org/packages/79/a7/18fb0cc268263fb7d135e0e86cb8a4689a824789cdf937cb479ae598da2e/uwsgi-tasks-0.4.1.tar.gz"
+      }
+    ],
+    "0.4.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "42203edfbecab6c82ea1ccf1fef089ae",
+          "sha256": "76cef9b6b60e22498bd00cdeac2dffb649e232d63cb6bf6d47b076e6e08952c7"
+        },
+        "downloads": 885,
+        "filename": "uwsgi-tasks-0.4.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "42203edfbecab6c82ea1ccf1fef089ae",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 11137,
+        "upload_time": "2015-05-02T18:22:17",
+        "url": "https://files.pythonhosted.org/packages/5b/7a/8a8c20c9aae92624ee4a55462fa79e0214772615e30785112ff1f52be2d2/uwsgi-tasks-0.4.2.tar.gz"
+      }
+    ],
+    "0.4.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6e6b636c4e831f59159d688608424148",
+          "sha256": "dea07618be36f4fb9c42164f8ec75ad8cdf690b8a2e076c94fca8ad6619a8784"
+        },
+        "downloads": 902,
+        "filename": "uwsgi-tasks-0.4.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6e6b636c4e831f59159d688608424148",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 11145,
+        "upload_time": "2015-05-02T18:35:30",
+        "url": "https://files.pythonhosted.org/packages/52/f5/f17f0106fa17d051f2d0087b7a779d0b05859ff9ca5c90f36efa00f49468/uwsgi-tasks-0.4.3.tar.gz"
+      }
+    ],
+    "0.4.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7bfe858414f14a1ebbca9d05480f7404",
+          "sha256": "56d36eee6128dd3ae721972175abdb44b3f0fa801640933f52ff10700b68387d"
+        },
+        "downloads": 952,
+        "filename": "uwsgi-tasks-0.4.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7bfe858414f14a1ebbca9d05480f7404",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 14585,
+        "upload_time": "2015-05-05T07:52:20",
+        "url": "https://files.pythonhosted.org/packages/45/8e/6c0245b03c07811c7ba6dda09293921620858d721a2fe2fd8b3ffc9105db/uwsgi-tasks-0.4.4.tar.gz"
+      }
+    ],
+    "0.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "609398523c1af223da82ed7807455414",
+          "sha256": "c224f40c07f0d56a770feb0e1b68783553b18c92d671aa2d235582eb552d99f1"
+        },
+        "downloads": 1790,
+        "filename": "uwsgi-tasks-0.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "609398523c1af223da82ed7807455414",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 17044,
+        "upload_time": "2015-05-30T14:48:17",
+        "url": "https://files.pythonhosted.org/packages/a7/65/1ace385df2cb28db3b4bd090ddd49bae4351adb9a6738f30742256bbced9/uwsgi-tasks-0.5.tar.gz"
+      }
+    ],
+    "0.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "30570d1055e1743d25eb34637c2723d2",
+          "sha256": "8e1b1b64c64f13d39ca419480cc01c590fc103a936644a818bc8096c199a4dd7"
+        },
+        "downloads": 766,
+        "filename": "uwsgi-tasks-0.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "30570d1055e1743d25eb34637c2723d2",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 17594,
+        "upload_time": "2015-07-28T20:33:42",
+        "url": "https://files.pythonhosted.org/packages/fd/c8/f2cb4a45382762e81c7634954ed77f647dcb91c5f4c385a2fe0b45fd8df2/uwsgi-tasks-0.6.tar.gz"
+      }
+    ],
+    "0.6.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9882be77052314601aee3e3c0316e38c",
+          "sha256": "592d75081e49ffa3f8cbdabb0e7a80b64a22f646749400aeeddfb7265bc727fb"
+        },
+        "downloads": 908,
+        "filename": "uwsgi-tasks-0.6.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "9882be77052314601aee3e3c0316e38c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 18913,
+        "upload_time": "2015-07-30T21:20:34",
+        "url": "https://files.pythonhosted.org/packages/9c/17/96e7b1494e60c94562a01dc2201f5ce54da0e3ac5e595c87c80ed53ebab2/uwsgi-tasks-0.6.1.tar.gz"
+      }
+    ],
+    "0.6.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8ec2b2b2e2bad413447318a735a92d6b",
+          "sha256": "e14b1c3dbd0c56ec7357de07ccfbab6ee3e585d64748846bb5e8a13f7bc305ab"
+        },
+        "downloads": 682,
+        "filename": "uwsgi-tasks-0.6.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8ec2b2b2e2bad413447318a735a92d6b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 19324,
+        "upload_time": "2015-08-03T20:54:31",
+        "url": "https://files.pythonhosted.org/packages/3a/2e/2857374f7b33f2dbc9ccf7e48c813533d36e5e5bb0a1861f58b337a78742/uwsgi-tasks-0.6.3.tar.gz"
+      }
+    ],
+    "0.6.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e4dfe51e85aed01533c6ffaeb8e91fa7",
+          "sha256": "225a8371f9eaf5a78cc9ef73eff98e7411d493f22c073bb79c42aa54ed7ce09b"
+        },
+        "downloads": 3410,
+        "filename": "uwsgi-tasks-0.6.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e4dfe51e85aed01533c6ffaeb8e91fa7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 19365,
+        "upload_time": "2015-08-03T21:26:23",
+        "url": "https://files.pythonhosted.org/packages/cf/88/8714b0b37084d69c13709c79587e4ba26f372c2885bc95964f2cc2e9f574/uwsgi-tasks-0.6.4.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "e4dfe51e85aed01533c6ffaeb8e91fa7",
+        "sha256": "225a8371f9eaf5a78cc9ef73eff98e7411d493f22c073bb79c42aa54ed7ce09b"
+      },
+      "downloads": 3410,
+      "filename": "uwsgi-tasks-0.6.4.tar.gz",
+      "has_sig": false,
+      "md5_digest": "e4dfe51e85aed01533c6ffaeb8e91fa7",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 19365,
+      "upload_time": "2015-08-03T21:26:23",
+      "url": "https://files.pythonhosted.org/packages/cf/88/8714b0b37084d69c13709c79587e4ba26f372c2885bc95964f2cc2e9f574/uwsgi-tasks-0.6.4.tar.gz"
+    }
+  ]
+}

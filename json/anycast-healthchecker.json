@@ -1,0 +1,258 @@
+{
+  "info": {
+    "author": "Pavlos Parissis",
+    "author_email": "pavlos.parissis@gmail.com",
+    "bugtrack_url": "",
+    "classifiers": [
+      "Development Status :: 5 - Production/Stable",
+      "Environment :: Console",
+      "Intended Audience :: Information Technology",
+      "Intended Audience :: System Administrators",
+      "Natural Language :: English",
+      "Operating System :: POSIX",
+      "Programming Language :: Python :: 3.4",
+      "Programming Language :: Python :: 3.5",
+      "Topic :: System :: Monitoring",
+      "Topic :: Utilities"
+    ],
+    "description": ".. anycast_healthchecker\n.. README.rst\n\n=====================\nanycast-healthchecker\n=====================\n\n    *A healthchecker for Anycasted services.*\n\n.. contents::\n\n\nIntroduction\n------------\n\n**anycast-healthchecker** monitors a service by doing periodic health checks\nand based on the result instructs `Bird`_ daemon to either advertise or\nwithdraw the route to reach the monitored service. As a result Bird will only\nadvertise routes for healthy services. Routes for IPv4 and IPv6 addresses are\nsupported.\n\nBird must be configured in a certain way to interface properly with\nanycast-healthchecker. The configuration is detailed later in this document.\n\nanycast-healthchecker is a Python program, which uses the `daemon`_ library\nto implement a well-behaved Unix daemon process and threading to run\nmultiple service checks in parallel.\n\nWhat is Anycast\n---------------\n\nAnycast is a network address scheme where traffic from a sender has more than\none potential receivers, but only one of them receives it. Routing protocols,\ndecide which one of the potential receivers will actually receive traffic based\non the topology of the network. The main attribute which contributes to the\ndecision is the cost of the network path between a sender and a receiver.\n\nCost is a protocol specific (usually integer) value that only has meaning\nwithin a protocol that is used as a metric of distance. Routing protocols\nprovide default values for common topologies (`BGP`_ associates the\ncost of a path with the number of autonomous systems between the sender and the\nreceiver, `OSPF`_ calculates the default cost based on the bandwidth of links),\nbut its main use is to allow administrative control over traffic flow by\nspecifying cost according to business needs.\n\nThe nearest receiver to a sender always receives the traffic and this only\nchanges if something changes on the network, another receiver with best path to\nthe sender appears or current receiver disappears. If multiple receivers have\nthe same distance from the sender more than one of the receivers might receive\ntraffic, based on further details of the network configuration.\n\nThe three drawings below exhibit how traffic is routed between a sender and\nmultiple potential receivers when something changes on network. In this example\nBGP routing protocol is used:\n\n.. image:: anycast-receivers-example1.png\n   :scale: 60%\n.. image:: anycast-receivers-example2.png\n   :scale: 60%\n.. image:: anycast-receivers-example3.png\n   :scale: 60%\n\nThese potential receivers use `BGP`_ or `OSPF`_ by running an Internet Routing\ndaemon, Bird or Quagga, to simultaneously announce the same destination IP\naddress from different places on the network. Due to the nature of Anycast\nreceivers can be located on any network across a global network infrastructure.\n\nAnycast doesn't balance traffic as only one receiver attracts traffic from\nsenders. For instance, if there are two receivers which announce the same\ndestination IP address in certain location, traffic will be distributed across\nthose two receivers unevenly as senders can be spread across the network in an\nuneven way.\n\nAnycast is being used as a mechanism to switch traffic between and within\ndata-centers for the following main reasons:\n\n* the switch of traffic occurs without the need to enforce a change to clients\n\nIn case of loss of a service in one location, traffic to that location will be\nswitched to another data-center without any manual intervention and most\nimportantly without pushing a change to clients which you don't always control.\n\n* the switch happens within few milliseconds\n\nThe same technology can be used for balancing traffic using\n`Equal-Cost Multi-Path`_.\n\nECMP routing is a network technology where traffic can be routed over multiple\npaths. In the context of routing protocols, path is the route a packet has to\ntake in order to be delivered to a destination. Because these multiple paths\nhave the same cost, traffic is balanced across them.\n\nThis provides the possibility to perform load-balancing of traffic across\nmultiple servers. Routers are the devices which perform load-balancing of\ntraffic and most of them use a deterministic way to select the server based on\nthe following four properties of IP packets:\n\n* source IP\n* source PORT\n* destination IP\n* destination PORT\n\nEach unique combination of values for those four properties is called network\nflow. For each different network flow a different destination server is\nselected so traffic is evenly balanced across all servers.\nThese servers run an Internet Routing daemon in the same way as with Anycast\ncase but with the major difference that all servers receive traffic.\n\nThe main characteristic of this type of load-balancing is that is stateless.\nRouter balances traffic to a destination IP address based on the quadruple\nnetwork flow without the need to understand and inspect protocols above Layer 3.\nAs a result it is very cheap in terms of resources and very fast at the same\ntime. This is commonly advertised as traffic balancing at wire-speed.\n\n**anycast-healthchecker** can be utilized in Anycast and ECMP environments.\n\nHow anycast-healthchecker works\n-------------------------------\n\nThe current release of anycast-healthchecker supports only the Bird daemon,\nwhich you have to configure in a specific way. Thus, it is mandatory to explain\nvery briefly how Bird handles advertisements for routes.\n\nBird maintains a routing information base (`RIB`_) and various protocols\nimport/export routes to/from it. The diagram below illustrates how Bird\nadvertises routes for IPs assigned to the loopback interface to the rest of the\nnetwork using BGP protocol. Bird can also import routes learned via BGP/OSPF\nprotocols, but this part of the routing process is irrelevant to the\nfunctionality of anycast-healthchecker.\n\n\n.. image:: bird_daemon_rib_explained.png\n   :scale: 60%\n\nA route is always associated with a service which runs locally on the box.\nThe Anycasted service is a daemon (HAProxy, Nginx, Bind etc) which processes\nincoming traffic and listens to an IP (Anycast Service Address) for which a\nroute exists in the RIB and advertised by Bird.\n\nAs it is exhibited in the above diagram a route is advertised only when:\n\n#. The IP is assigned to the loopback interface.\n#. `direct`_ protocol from Bird imports a route for that IP in the RIB.\n#. BGP/OSPF protocols export that route from the RIB to a network peer.\n\nThe route associated with the Anycasted service must be either advertised or\nwithdrawn based on the health of the service, otherwise traffic will always\nbe routed to the local node regardless of the status of the service.\n\nBird provides `filtering`_ capabilities with the help of a simple programming\nlanguage. A filter can be used to either accept or reject routes before they\nare exported from the RIB to the network.\n\nA list of IP prefixes (<IP>/<prefix length>) is stored in a text file.\nIP prefixes that **are not** included in the list are filtered-out and they\n**do not** get exported from the RIB to the network. The white-list text file\nis sourced by Bird upon startup, reload and reconfiguration.\nThe following diagram illustrates how this technique works:\n\n.. image:: bird_daemon_filter_explained.png\n   :scale: 60%\n\nThis configuration logic allows a separate process to update the list by adding\nor removing IP prefixes and trigger a reconfiguration of Bird in order to\nadvertise or withdraw routes.  **anycast-healthchecker** is that separate\nprocess. It monitors Anycasted services and based on the status of the health\nchecks updates the list of IP prefixes.\n\nBird does not allow the definition of a list with no elements and when that\nhappens Bird will emit an error and refuses to start. Because of this\nanycast-healthchecker makes sure that there is always an IP prefix in the list,\nsee ``dummy_ip_prefix`` and ``dummy_ip6_prefix`` settings in `Daemon section`_.\n\nConfiguring anycast-healthchecker\n---------------------------------\n\nBecause anycast-healthchecker is very much tied in with Bird daemon, the\nconfiguration of Bird is explained first. Next, the configuration of\nanycast-healthchecker (including the configuration for the health checks) is\ncovered and finally the options for invoking the program from the command\nline will be described.\n\nIPv6 support\n############\n\nIPv4 and IPv6 addresses are supported by Bird Internet Routing Daemon project\nby providing a different daemon per IP protocol version, bird for IPv4 and\nbird6 for IPv6. This implies that configuration files are split as well. So,\nyou can't define IPv6 addresses in a configuration, which is sourced by the\nIPv4 daemon.\n\nBird configuration\n##################\n\nThe logic described in `How anycast-healthchecker works`_ can be accomplished\nby configuring:\n\n#. an ``include`` statement to source other configuration files in\n   ``bird.conf``\n#. a function, ``match_route``, as an export filter for the routing\n   protocol (BGP or OSPF)\n#. a list of IP prefixes for routes which allowed to be exported by Bird\n\nanycast-healthchecker **does not** install any of the files mentioned in this\nsection.\n\nbird.conf\n*********\n\nThe most important parts are the lines ``include \"/etc/bird.d/*.conf\";`` and\n``export where match_route();``. The former statement causes inclusion of files\nand the latter forces all routes to pass from the ``match_route`` function\nbefore they are exported. BGP protocol is used in the below bird configuration\nexample but OSPF protocol can be used as well::\n\n    include \"/etc/bird.d/*.conf\";\n    protocol device {\n        scan time 10;\n    }\n    protocol direct direct1 {\n        interface \"lo\";\n            export none;\n            import all;\n    }\n    template bgp bgp_peers {\n        import none;\n        export where match_route();\n        local as 64815;\n    }\n    protocol bgp BGP1 from bgp_peers {\n        disabled no;\n        neighbor 10.248.7.254 as 64814;\n    }\n\nmatch-route.conf\n****************\n\n``match-route.conf`` file configures the ``match_route`` function, which\nperforms the white and black listing of IP prefixes by looking up the IP prefix\nof the route in a list and accepts the export if it finds a matching entry::\n\n    function match_route()\n    {\n        return net ~ ACAST_PS_ADVERTISE;\n    }\n\nThis the equivalent function for IPv6::\n\n    function match_route6()\n    {\n        return net ~ ACAST6_PS_ADVERTISE;\n    }\n\nanycast-prefixes.conf\n*********************\n\n``anycast-prefixes.conf`` file defines a list of IP prefixes which is stored in\na variable with the name ``ACAST_PS_ADVERTISE``. The name of the variable can\nbe anything meaningful but ``bird_variable`` setting **must** be changed\naccordingly in order for anycast-healthchecker to modify it.\n\n::\n\n    define ACAST_PS_ADVERTISE =\n        [\n            10.189.200.255/32\n        ];\n\nanycast-healthchecker daemon removes IP prefixes from the list for which a\nservice check is not configured. But, the IP prefix set in ``dummy_ip_prefix``\ndoes not need a service check configuration.\n\nThis the equivalent list for IPv6 prefixes::\n\n    define ACAST6_PS_ADVERTISE =\n        [\n            2001:db8::1/128\n        ];\n\nanycast-healthchecker creates ``anycast-prefixes.conf`` file for both IP\nversions upon startup if those file don't exist. After the launch **no other process(es)\nshould** modify those files.\n\nUse daemon settings ``bird_conf`` and ``bird6_conf`` to control the location of\nthe files.\n\nWith the default settings those files are located under\n``/var/lib/anycast-healthchecker`` and ``/var/lib/anycast-healthchecker/6``\nAdministrators must create those 2 directories with permissions ``755`` and\nuser/group ownership to the account under which the daemon runs.\n\nIn order for Bird daemon to load them using the ``include`` statement in the\nmain Bird configuration (`bird.conf`_), a link for each file must be created\nunder ``/etc/bird.d`` directory. Administrators must also create those two\nlinks. Here is an example from a production server:\n\n::\n\n    % ls -ls /etc/bird.d/anycast-prefixes.conf\n    4 lrwxrwxrwx 1 root root 105 Dec  2 16:08 /etc/bird.d/anycast-prefixes.conf ->\n    /var/lib/anycast-healthchecker/anycast-prefixes.conf\n\n    % ls -ls /etc/bird.d/6/anycast-prefixes.conf\n    4 lrwxrwxrwx 1 root root 107 Jan 10 10:33 /etc/bird.d/6/anycast-prefixes.conf\n    -> /var/lib/anycast-healthchecker/6/anycast-prefixes.conf\n\nConfiguring the daemon\n######################\n\nanycast-healthchecker uses the popular `INI`_ format for its configuration\nfiles. This is an example configuration file for the daemon\n(/etc/anycast-healthchecker.conf)::\n\n    [DEFAULT]\n    interface            = lo\n\n    [daemon]\n    pidfile              = /var/run/anycast-healthchecker/anycast-healthchecker.pid\n    ipv4                 = true\n    ipv6                 = false\n    bird_conf            = /var/lib/anycast-healthchecker/anycast-prefixes.conf\n    bird6_conf           = /var/lib/anycast-healthchecker/6/anycast-prefixes.conf\n    bird_variable        = ACAST_PS_ADVERTISE\n    bird6_variable       = ACAST6_PS_ADVERTISE\n    bird_reconfigure_cmd = sudo /usr/sbin/birdc configure\n    bird6_reconfigure_cmd = sudo /usr/sbin/birdc6 configure\n    dummy_ip_prefix      = 10.189.200.255/32\n    dummy_ip6_prefix     = 2001:db8::1/128\n    bird_keep_changes    = false\n    bird6_keep_changes   = false\n    bird_changes_counter = 128\n    bird6_changes_counter = 128\n    purge_ip_prefixes    = false\n    loglevel             = debug\n    log_maxbytes         = 104857600\n    log_backups          = 8\n    log_file             = /var/log/anycast-healthchecker/anycast-healthchecker.log\n    stderr_file          = /var/log/anycast-healthchecker/stderr.log\n    stdout_file          = /var/log/anycast-healthchecker/stdout.log\n\nAbove settings are used as defaults when daemon is launched without a\nconfiguration file. The daemon **does not** need to run as root as long as it\nhas sufficient privileges to modify the Bird configuration set in ``bird_conf``\nor ``bird6_conf``, and trigger a reconfiguration of Bird by running the command\nconfigured in ``bird_reconfigure_cmd`` or ``bird6_reconfigure_cmd``.\nIn the above example ``sudo`` is used for that purpose (``sudoers`` file has\nbeen modified for that purpose).\n\nDEFAULT section\n***************\n\nBelow are the default settings for all service checks, see `Configuring checks\nfor services`_ for an explanation of the parameters. Settings in this section\ncan be overwritten in other sections.\n\n:interface: lo\n:check_interval: 10\n:check_timeout: 2\n:check_rise: 2\n:check_fail: 2\n:check_disabled: true\n:on_disabled: withdraw\n:ip_check_disabled: false\n\nDaemon section\n**************\n\nSettings for anycast-healthchecker daemon\n\n* **pidfile** Defaults to **/var/run/anycast-healthchecker/anycast-healthchecker.pid**\n\nFile to store the process id of the daemon. The parent directory must be\ncreated prior the initial launch.\n\n* **ipv4** Defaults to **true**\n\n``true`` enables IPv4 support and ``false`` disables it.\nNOTE: Daemon **will not** start if IPv4 support is disabled while there is an\nservice check configured for IPv4 prefix.\n\n* **ipv6** Defaults to **false**\n\n``true`` enables IPv6 support and ``false`` disables it\nNOTE: Daemon **will not** start if IPv6 support is disabled while there is an\nservice check configured for IPv6 prefix.\n\n* **bird_conf** Defaults to **/var/lib/anycast-healthchecker/anycast-prefixes.conf**\n\nFile with the list of IPv4 prefixes allowed to be exported. If this file is\na symbolic link then the destination and the link itself must be on the same\nmounted filesystem.\n\n* **bird6_conf** Defaults to **/var/lib/anycast-healthchecker/6/anycast-prefixes.conf**\n\nFile with the list of IPv6 prefixes allowed to be exported. If this file is\na symbolic link then the destination and the link itself must be on the same\nmounted filesystem.\n\n* **bird_variable** Defaults to **ACAST_PS_ADVERTISE**\n\nThe name of the list defined in ``bird_conf``\n\n* **bird6_variable** Defaults to **ACAST6_PS_ADVERTISE**\n\nThe name of the list defined in ``bird6_conf``\n\n* **bird_reconfigure_cmd** Defaults to **sudo /usr/sbin/birdc configure**\n\nCommand to trigger a reconfiguration of IPv4 Bird daemon\n\n* **bird6_reconfigure_cmd** Defaults to **sudo /usr/sbin/birdc6 configure**\n\nCommand to trigger a reconfiguration of IPv6 Bird daemon\n\n* **dummy_ip_prefix** Defaults to **10.189.200.255/32**\n\nAn IP prefix in the form <IP>/<prefix length> which will be always available in\nthe list defined by ``bird_variable`` to avoid having an empty list.\nThe ``dummy_ip_prefix`` **must not** be used by any service or assigned to the\ninterface set with ``interface`` or configured anywhere on the network as\nanycast-healthchecker **does not** perform any checks for it.\n\n* **dummy_ip6_prefix** Defaults to **2001:db8::1/128**\n\nAn IPv6 prefix in the form <IPv6>/<prefix length> which will be always\navailable in the list defined by ``bird6_variable`` to avoid having an empty\nlist. The ``dummy_ip6_prefix`` **must not** be used by any service or assigned\nto the interface set with ``interface`` or configured anywhere on the network as\nanycast-healthchecker **does not** perform any checks for it.\n\n* **bird_keep_changes** Defaults to **false**\n\nKeep a history of changes for ``bird_conf`` file by copying it to a directory.\nDuring the startup of the daemon a directory with the name ``history`` is\ncreated under the directory where ``bird_conf`` file resides. The daemon has to\nhave sufficient privileges to create that directory.\n\n* **bird6_keep_changes** Defaults to **false**\n\nKeep a history of changes for ``bird6_conf`` file by copying it to a directory.\nDuring the startup of the daemon a directory with the name ``history`` is\ncreated under the directory where ``bird6_conf`` file resides. The daemon has to\nhave sufficient privileges to create that directory.\nWARNING: When keeping a history of changes is enabled for both IP versions then\nconfiguration files set in ``bird_conf`` and ``bird6_conf`` settings **must** be\nstored on two different directories.\n\n* **bird_changes_counter** Defaults to **128**\n\nHow many ``bird_conf`` files to keep in the ``history`` directory.\n\n* **bird6_changes_counter** Defaults to **128**\n\nHow many ``bird6_conf`` files to keep in the ``history`` directory.\n\n* **purge_ip_prefixes** Defaults to **false**\n\nPurge IP-Prefixes from configuration files set in ``bird_conf`` and\n``bird6_conf`` on start-up which don't have a service check associated with\nthem.\n\nNOTE: Those IP-Prefixes are always removed from the configuration files set in\n``bird_conf`` and in ``bird6_conf`` settings when daemon updates those files.\n``purge_ip_prefixes`` is considered only during start-up and was introduced in\norder to be compatible with the behavior of previous releases, which didn't\nremove those IP-Prefixes on start-up.\n\n* **loglevel** Defaults to **debug**\n\nLog level to use, possible values are: debug, info, warning, error, critical\n\n* **log_file** Defaults to **/var/log/anycast-healthchecker/anycast-healthchecker.log**\n\nFile to log messages to. The parent directory must be created prior the initial\nlaunch.\n\n* **log_maxbytes** Defaults to **104857600** (bytes)\n\nMaximum size in bytes for log files\n\n* **log_backups** Defaults to **8**\n\nNumber of old log files to maintain\n\n* **stderr_file** Defaults to **/var/log/anycast-healthchecker/stderr.log**\n\nFile to redirect standard error to. The parent directory must be created prior\nthe initial launch.\n\n* **stdout_file** Defaults to **/var/log/anycast-healthchecker/stdout.log**\n\nFile to redirect standard output to. The parent directory must be created prior\nthe initial launch.\n\nJSON logging\n************\n\nanycast-healthchecker daemon can be configured to send logging messages over\nHTTP to a central place in addition to write them to log files.\nIt builds a JSON blob with a specific data structure, which **is not**\nconfigurable at the moment.\n\nThe following settings can be added to the [daemon] section for enabling\nJSON logging.\n\n* **json_logging** Defaults to **false**\n\n``true`` enables JSON logging ``false`` disables it\n\n* **http_server** Unset by default\n\nServer name to send JSON logging over HTTP protocol\n\n* **http_server_port**  Unset by default\n\nPort to connect\n\n* **http_server_protocol** Unset by default\n\nHTTP protocol to use, either ``http`` or ``https``\n\n* **http_server_timeout** Unset by default\n\nHow long to wait for the server to accept data before giving up, as a floating\npoint number. Daemon sends JSON data over HTTP in blocking mode, which means\nthat possible long delays sending JSON will make the health checks to be\ndelayed as well. ``http_server_timeout`` accepts floating point numbers as\nvalue, which is passed to underlying `requests`_ module as a single timeout,\nwhich is applied to both the connect and the read timeouts.\n\nConfiguring checks for services\n###############################\n\nThe configuration for a single service check is defined in one section.\nHere are few examples::\n\n    [foo.bar.com]\n    check_cmd         = /usr/bin/curl --fail --silent http://10.52.12.1/\n    check_interval    = 10\n    check_timeout     = 2\n    check_fail        = 2\n    check_rise        = 2\n    check_disabled    = false\n    on_disabled       = withdraw\n    ip_prefix         = 10.52.12.1/32\n\n    [foo6.bar.com]\n    check_cmd         = /usr/bin/curl --fail 'http://[fd12:aba6:57db:ffff::1]:8888'\n    check_timeout     = 5\n    check_rise        = 2\n    check_fail        = 2\n    check_disabled    = false\n    on_disabled       = withdraw\n    ip_prefix         = fd12:aba6:57db:ffff::1/128\n    ip_check_disabled = false\n\nThe name of the section becomes the name of the service check and appears in\nthe log files for easier searching of error/warning messages.\n\n* **check_cmd** Unset by default\n\nThe command to run to determine the status of the service based\n**on the return code**. Complex health checking should be wrapped in a script.\nWhen check command fails, the stdout and stderr appears in the log file.\n\n* **check_interval** Defaults to **2** (seconds)\n\nHow often to run the check\n\n* **check_timeout** Defaults to **2** (seconds)\n\nMaximum time in seconds for the check command to complete.\nanycast-healthchecker will try kill the check if it doesn't return after\n*check_timeout* seconds. If *check_cmd* runs under another user account (root)\nvia sudo then it wouldn't be killed.  anycast-healthchecker could run as root\nto overcome this problem, but it is highly recommended to run it as normal user.\n\n* **check_fail** Defaults to **2**\n\nA service is considered DOWN after this many consecutive unsuccessful health\nchecks\n\n* **check_rise** Defaults to **2**\n\nA service is considered HEALTHY after this many consecutive successful health\nchecks\n\n* **check_disabled** Defaults to **false**\n\n``true`` disables the check, ``false`` enables it\n\n* **on_disabled** Defaults to **withdraw**\n\nWhat to do when check is disabled, either ``withdraw`` or ``advertise``\n\n* **ip_prefix** Unset by default\n\nIP prefix associated with the service. It **must be** assigned to the\ninterface set in ``interface`` parameter unless ``ip_check_disabled`` is set to\n``true``. Prefix length is optional and defaults to 32 for IPv4 addresses and\nto 128 for IPv6 addresses.\n\n* **ip_check_disabled** Defaults to **false**\n\n``true`` disables the assignment check of ``ip_prefix`` to the interface set in\n``interface``, ``false`` enables it.\n\nIf the ``check_cmd`` checks the availability of the service by sending a\nrequest to the Anycasted IP address then that request may be served by another\nnode which advertises the same IP address on the network. This usually happens\nwhen the Anycasted IP address is not assigned to loopback or any other\ninterface on the local node.\n\nTherefore, it should be only enabled in environments where the network or the\nnetwork configuration of the local node prevents the request from ``check_cmd``\nto be forwarded to another node.\n\n* **interface** Defaults to **lo**\n\nThe name of the interface that ``ip_prefix`` is assigned to\n\nMultiple sections may be combined in one file or provide one file per section.\nFile must be stored under one directory and their name should use ``.conf``\nas suffix (foo.bar.com.conf).\n\nStarting the daemon\n###################\n\nDaemon CLI usage::\n\n    anycast-healthchecker --help\n    A simple healthchecker for Anycasted services.\n\n    Usage:\n        anycast-healthchecker [ -f <file> -c -p -P ] [ -d <directory> | -F <file> ]\n\n    Options:\n        -f, --file=<file>          read settings for the daemon from <file>\n                                   [default: /etc/anycast-healthchecker.conf]\n        -d, --dir=<dir>            read settings for service checks from files\n                                   under <dir> directory\n                                   [default: /etc/anycast-healthchecker.d]\n        -F, --service-file=<file>  read <file> for settings of a single service\n                                   check\n        -c, --check                perform a sanity check on configuration\n        -p, --print                show default settings for daemon and service\n                                   checks\n        -P, --print-conf           show running configuration with default settings\n                                   applied\n        -v, --version              show version\n        -h, --help                 show this screen\n\nThe daemon can be launched by supplying a configuration file and a directory\nwith configuration files for service checks::\n\n  anycast-healthchecker -f ./anycast-healthchecker.conf -d ./anycast-healthchecker.d\n\n\nAt the root of the project there is System V init and a Systemd unit file for\nproper integration with OS startup tools.\n\nSystemd and SysVinit integration\n################################\n\nUnder contrib/systemd and contrib/SysVinit directories there are the necessary\nUnit service and startup files which can be used to start the daemon on boot.\n\nNagios check\n############\n\nUnder contrib/nagios directory there is a nagios plugin to check if daemon is\nup and if all threads are running.\n\nInstallation\n------------\n\nUse pip::\n\n    pip install anycast-healthchecker\n\nFrom Source::\n\n   sudo python setup.py install\n\nBuild (source) RPMs::\n\n   python setup.py clean --all; python setup.py bdist_rpm\n\nBuild a source archive for manual installation::\n\n   python setup.py sdist\n\n\nRelease\n-------\n\n#. Bump version in anycast_healthchecker/__init__.py\n\n#. Commit above change with::\n\n      git commit -av -m'RELEASE 0.1.3 version'\n\n#. Create a signed tag, pbr will use this for the version number::\n\n      git tag -s 0.1.3 -m 'bump release'\n\n#. Create the source distribution archive (the archive will be placed in the **dist** directory)::\n\n      python setup.py sdist\n\n#. pbr will update ChangeLog file and we want to squeeze them to the previous commit thus we run::\n\n      git commit -av --amend\n\n#. Move current tag to the last commit::\n\n      git tag -fs 0.1.3 -m 'bump release'\n\n#. Push changes::\n\n      git push;git push --tags\n\n\nDevelopment\n-----------\nI would love to hear what other people think about **anycast_healthchecker** and provide\nfeedback. Please post your comments, bug reports and wishes on my `issues page\n<https://github.com/unixsurfer/anycast_healthchecker/issues>`_.\n\nTesting\n#######\n\nAt the root of the project there is a ``local_run.sh`` script which you can use\nfor testing purposes. It does the following:\n\n#. Creates the necessary directory structure under $PWD/var to store\n   configuration and log files\n\n#. Generates configuration for the daemon and for 2 service checks\n\n#. Generates bird configuration(anycast-prefixes.conf)\n\n#. Installs anycast-healthchecker with ``python3 setup.py install``\n\n#. Assigns 4 IPv4 addresses and 2 IPv6 addresses to loopback interface\n\n#. Checks if bird daemon runs but it does not try to start if it is down\n\n#. Starts the daemon as normal user and not as root\n\nRequirements for running ``local_run.sh``\n\n#. python3 installation\n\n#. A working python virtual environment, use the excellent tool virtualenvwrapper\n\n#. Bird installed and configured as it is mentioned in `Bird configuration`_\n\n#. sudo access to run ``birdc configure`` and ``birdc6 configure``\n\n#. sudo access to assign IPs on the loopback interface using ``ip`` tool\n\nContributers\n############\n\nThe following people have contributed to project with feedback, commits and\ncode reviews\n\n- K\u00e1roly Nagy (@charlesnagy)\n- Nick Demou (@ndemou)\n- Ralf Ertzinger (@alufu)\n\nLicensing\n---------\n\nApache 2.0\n\nAcknowledgement\n---------------\nThis program was originally developed for Booking.com.  With approval\nfrom Booking.com, the code was generalised and published as Open Source\non github, for which the author would like to express his gratitude.\n\nContacts\n--------\n\n**Project website**: https://github.com/unixsurfer/anycast_healthchecker\n\n**Author**: Pavlos Parissis <pavlos.parissis@gmail.com>\n\n.. _Bird: http://bird.network.cz/\n.. _BGP: https://en.wikipedia.org/wiki/Border_Gateway_Protocol\n.. _OSPF: https://en.wikipedia.org/wiki/Open_Shortest_Path_First\n.. _Equal-Cost Multi-Path: https://en.wikipedia.org/wiki/Equal-cost_multi-path_routing\n.. _direct: http://bird.network.cz/?get_doc&f=bird-6.html#ss6.4\n.. _filtering: http://bird.network.cz/?get_doc&f=bird-5.html\n.. _RIB: https://en.wikipedia.org/wiki/Routing_table\n.. _INI: https://en.wikipedia.org/wiki/INI_file\n.. _daemon: https://pypi.python.org/pypi/python-daemon/\n.. _requests: https://github.com/kennethreitz/requests\n",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/unixsurfer/anycast_healthchecker",
+    "keywords": "healthchecker anycast ECMP",
+    "license": "Apache 2.0",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "anycast-healthchecker",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/anycast-healthchecker/",
+    "release_url": "https://pypi.org/project/anycast-healthchecker/0.7.4/",
+    "requires_python": "",
+    "summary": "A healthchecker for Anycasted Services",
+    "version": "0.7.4"
+  },
+  "releases": {
+    "0.5.10": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "cb39a65eb9b936becdf35ce2fdf9d091",
+          "sha256": "5d3630ec5ee8bf27b2b0e73482652dc51212891c1025ecda4233c0d76b8c78dc"
+        },
+        "downloads": 190,
+        "filename": "anycast-healthchecker-0.5.10.tar.gz",
+        "has_sig": true,
+        "md5_digest": "cb39a65eb9b936becdf35ce2fdf9d091",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 214373,
+        "upload_time": "2016-06-15T20:29:49",
+        "url": "https://files.pythonhosted.org/packages/4a/e9/b0f1607890d0a589ad6c61483d4431a96532dd0107f50e8a72f25c027f71/anycast-healthchecker-0.5.10.tar.gz"
+      }
+    ],
+    "0.5.6": [],
+    "0.5.9": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "514634629fdb717ed4857c57279258be",
+          "sha256": "13117fb121408331529faabb6bd87a3d79e0b2a5a41c0dca5646d7f1024142b0"
+        },
+        "downloads": 204,
+        "filename": "anycast-healthchecker-0.5.9.tar.gz",
+        "has_sig": true,
+        "md5_digest": "514634629fdb717ed4857c57279258be",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 212220,
+        "upload_time": "2016-05-21T16:49:00",
+        "url": "https://files.pythonhosted.org/packages/cc/8e/fd682bbf1679d7d2be1dca2b73633f95f50603895270aa76e8dde845f102/anycast-healthchecker-0.5.9.tar.gz"
+      }
+    ],
+    "0.6.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f43d059bacf3a7f4e3e37fce96609ff0",
+          "sha256": "b8a1245cc6022bd607d5bcfc9edca8598c2e6e9bc889236fea5dcedaad4b2ef1"
+        },
+        "downloads": 477,
+        "filename": "anycast-healthchecker-0.6.0.tar.gz",
+        "has_sig": true,
+        "md5_digest": "f43d059bacf3a7f4e3e37fce96609ff0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 215166,
+        "upload_time": "2016-06-23T03:28:29",
+        "url": "https://files.pythonhosted.org/packages/1e/4f/135c08d912a501b5c95972e8e64f7c9edd91b4835e9d2cb9cc9f96f9f180/anycast-healthchecker-0.6.0.tar.gz"
+      }
+    ],
+    "0.6.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ecde7c207b23467f6cf2a06e9c18ef08",
+          "sha256": "0ae994c7a0e52ddeae94ebe5d6cb2789bbb9a52335dc8fb86333f43997f376d7"
+        },
+        "downloads": 165,
+        "filename": "anycast-healthchecker-0.6.1.tar.gz",
+        "has_sig": true,
+        "md5_digest": "ecde7c207b23467f6cf2a06e9c18ef08",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 215274,
+        "upload_time": "2016-09-28T23:24:22",
+        "url": "https://files.pythonhosted.org/packages/00/5d/1e79bc1514d5a28b49b5f1369a5be95777807c5196ab679e2e225890d6d3/anycast-healthchecker-0.6.1.tar.gz"
+      }
+    ],
+    "0.6.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a7243892a8e6bf5c03ad2139971e83f1",
+          "sha256": "418fbb116948bf512550c8eaa3bcafc168dbf53bf90a04a881aa2976eb3d4edf"
+        },
+        "downloads": 129,
+        "filename": "anycast-healthchecker-0.6.2.tar.gz",
+        "has_sig": true,
+        "md5_digest": "a7243892a8e6bf5c03ad2139971e83f1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 215981,
+        "upload_time": "2016-10-16T13:57:30",
+        "url": "https://files.pythonhosted.org/packages/16/5a/3e731c0aa9743475ee7178902f851b77c9166d581cc5e606306f1ec23530/anycast-healthchecker-0.6.2.tar.gz"
+      }
+    ],
+    "0.6.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "aa52535be82f3529babe39b740b74c31",
+          "sha256": "8626ac8aff1477340daf49ddca334befa7c7ab1cab3b75d0e2e94da903daaf26"
+        },
+        "downloads": 70,
+        "filename": "anycast-healthchecker-0.6.3.tar.gz",
+        "has_sig": true,
+        "md5_digest": "aa52535be82f3529babe39b740b74c31",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 216553,
+        "upload_time": "2016-11-06T18:34:20",
+        "url": "https://files.pythonhosted.org/packages/c2/aa/84d3cd8646b1fad015ae42a0777da59229635728606fe6bc6e03f793e70c/anycast-healthchecker-0.6.3.tar.gz"
+      }
+    ],
+    "0.7.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "454b3f0e2ca90e9333475bcaef0d9e28",
+          "sha256": "8c27528b09ade6b7f652422741846a07f980c200f97796542ff5d90c7cc2e80a"
+        },
+        "downloads": 198,
+        "filename": "anycast-healthchecker-0.7.0.tar.gz",
+        "has_sig": true,
+        "md5_digest": "454b3f0e2ca90e9333475bcaef0d9e28",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 218368,
+        "upload_time": "2016-12-15T20:35:40",
+        "url": "https://files.pythonhosted.org/packages/38/8d/c960d497103fce203309f6132cec9c41db4fd8a0711f802cb3bb77353711/anycast-healthchecker-0.7.0.tar.gz"
+      }
+    ],
+    "0.7.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2512e5f75ee9e6af3be81e8fcdc42382",
+          "sha256": "fee80b351a8ace2cc213a5c58d434d1c25a8b7c22717394325dea9eebd030eaf"
+        },
+        "downloads": 14,
+        "filename": "anycast-healthchecker-0.7.1.tar.gz",
+        "has_sig": true,
+        "md5_digest": "2512e5f75ee9e6af3be81e8fcdc42382",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 219686,
+        "upload_time": "2017-01-07T16:59:19",
+        "url": "https://files.pythonhosted.org/packages/a9/b9/415f0af3406ca046cbe6f3d6a7a00b521805078edab6c2210f853e73d95e/anycast-healthchecker-0.7.1.tar.gz"
+      }
+    ],
+    "0.7.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "82aee711ac7c96a02ad2d50fa47f28f9",
+          "sha256": "8e9018d44a0eec73ec686217b30863fcb3998270c4143eb85fd718b2f41a14b4"
+        },
+        "downloads": 16,
+        "filename": "anycast-healthchecker-0.7.2.tar.gz",
+        "has_sig": true,
+        "md5_digest": "82aee711ac7c96a02ad2d50fa47f28f9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 220068,
+        "upload_time": "2017-01-10T13:56:25",
+        "url": "https://files.pythonhosted.org/packages/29/d0/781578547a5ea779aca6aa6ecb92e596d717509e355e5c0635a6cf57968d/anycast-healthchecker-0.7.2.tar.gz"
+      }
+    ],
+    "0.7.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8a52ee2f4f6978bfc2d49cbd1f5cc2bf",
+          "sha256": "c57f635141f98e283bcea299d866e63b24aad7a3d16d042429b6145f0f0746a6"
+        },
+        "downloads": 15,
+        "filename": "anycast-healthchecker-0.7.3.tar.gz",
+        "has_sig": true,
+        "md5_digest": "8a52ee2f4f6978bfc2d49cbd1f5cc2bf",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 219659,
+        "upload_time": "2017-01-11T00:04:46",
+        "url": "https://files.pythonhosted.org/packages/d0/d6/6938fe861cf3bfd243875c0460c181a87e5fb6103f39282ccb266b13bc3c/anycast-healthchecker-0.7.3.tar.gz"
+      }
+    ],
+    "0.7.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "26108f9677e6f05e4612be90f1044c37",
+          "sha256": "01b465ee2483991b6cd50b9eb5a4435b5c6cf55563841bd97ea838a016c680cd"
+        },
+        "downloads": 0,
+        "filename": "anycast-healthchecker-0.7.4.tar.gz",
+        "has_sig": true,
+        "md5_digest": "26108f9677e6f05e4612be90f1044c37",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 227337,
+        "upload_time": "2017-05-03T11:09:10",
+        "url": "https://files.pythonhosted.org/packages/40/c6/d9115f7f62ed8238af138021f6a1cb17485f6a436f94e41b1fcd970d2808/anycast-healthchecker-0.7.4.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "26108f9677e6f05e4612be90f1044c37",
+        "sha256": "01b465ee2483991b6cd50b9eb5a4435b5c6cf55563841bd97ea838a016c680cd"
+      },
+      "downloads": 0,
+      "filename": "anycast-healthchecker-0.7.4.tar.gz",
+      "has_sig": true,
+      "md5_digest": "26108f9677e6f05e4612be90f1044c37",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 227337,
+      "upload_time": "2017-05-03T11:09:10",
+      "url": "https://files.pythonhosted.org/packages/40/c6/d9115f7f62ed8238af138021f6a1cb17485f6a436f94e41b1fcd970d2808/anycast-healthchecker-0.7.4.tar.gz"
+    }
+  ]
+}

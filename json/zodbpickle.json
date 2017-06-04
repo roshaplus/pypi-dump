@@ -1,0 +1,796 @@
+{
+  "info": {
+    "author": "Python and Zope Foundation",
+    "author_email": "zodb-dev@zope.org",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 4 - Beta",
+      "Framework :: ZODB",
+      "License :: OSI Approved :: Python Software Foundation License",
+      "License :: OSI Approved :: Zope Public License",
+      "Operating System :: MacOS :: MacOS X",
+      "Operating System :: Microsoft :: Windows",
+      "Operating System :: Unix",
+      "Programming Language :: Python",
+      "Programming Language :: Python :: 2",
+      "Programming Language :: Python :: 2.6",
+      "Programming Language :: Python :: 2.7",
+      "Programming Language :: Python :: 3",
+      "Programming Language :: Python :: 3.2",
+      "Programming Language :: Python :: 3.3",
+      "Programming Language :: Python :: 3.4",
+      "Programming Language :: Python :: Implementation :: CPython",
+      "Programming Language :: Python :: Implementation :: PyPy",
+      "Topic :: Database",
+      "Topic :: Software Development :: Libraries :: Python Modules"
+    ],
+    "description": "``zodbpickle`` README\n=====================\n\nThis package presents a uniform pickling interface for ZODB:\n\n- Under Python2, this package forks both Python 2.7's ``pickle`` and\n  ``cPickle`` modules, adding support for the ``protocol 3`` opcodes.\n  It also provides a new subclass of ``bytes``, ``zodbpickle.binary``,\n  which Python2 applications can use to pickle binary values such that\n  they will be unpickled as ``bytes`` under Py3k.\n\n- Under Py3k, this package forks the ``pickle`` module (and the supporting\n  C extension) from both Python 3.2 and Python 3.3.  The fork add support\n  for the ``noload`` operations used by ZODB.\n\n\nGeneral Usage\n-------------\n\nTo get compatibility between Python 2 and 3 pickling, replace::\n\n    import pickle\n    \nby::\n\n    from zodbpickle import pickle\n    \nThis provides compatibility, but has the effect that you get the fast implementation\nin Python 3, while Python 2 uses the slow version.\n\nTo get a more deterministic choice of the implementation, use one of::\n\n    from zodbpickle import fastpickle # always C\n    from zodbpickle import slowpickle # always Python\n\nBoth modules can co-exist which is helpful for comparison.\n\nBut there is a bit more to consider, so please read on!\n\nLoading/Storing Python 2 Strings\n--------------------------------\n\nIn all their wisdom, the Python developers have decided that Python 2 ``str``\ninstances should be loaded as Python 3 ``str`` objects (i.e. unicode\nstrings). Patches were proposed in Python `issue 6784`__ but were never\napplied. This code base contains those patches.\n\n.. __: http://bugs.python.org/issue6784\n\nExample 1: Loading Python 2 pickles on Python 3 ::\n\n    $ python2\n    >>> import pickle\n    >>> pickle.dumps('\\xff', protocol=0)\n    \"S'\\\\xff'\\np0\\n.\"\n    >>> pickle.dumps('\\xff', protocol=1)\n    'U\\x01\\xffq\\x00.'\n    >>> pickle.dumps('\\xff', protocol=2)\n    '\\x80\\x02U\\x01\\xffq\\x00.'\n\n    $ python3\n    >>> from zodbpickle import pickle\n    >>> pickle.loads(b\"S'\\\\xff'\\np0\\n.\", encoding='bytes')\n    b'\\xff'\n    >>> pickle.loads(b'U\\x01\\xffq\\x00.', encoding='bytes')\n    b'\\xff'\n    >>> pickle.loads(b'\\x80\\x02U\\x01\\xffq\\x00.', encoding='bytes')\n    b'\\xff'\n\nExample 2: Loading Python 3 pickles on Python 2 ::\n\n    $ python3\n    >>> from zodbpickle import pickle\n    >>> pickle.dumps(b\"\\xff\", protocol=0)\n    b'c_codecs\\nencode\\np0\\n(V\\xff\\np1\\nVlatin1\\np2\\ntp3\\nRp4\\n.'\n    >>> pickle.dumps(b\"\\xff\", protocol=1)\n    b'c_codecs\\nencode\\nq\\x00(X\\x02\\x00\\x00\\x00\\xc3\\xbfq\\x01X\\x06\\x00\\x00\\x00latin1q\\x02tq\\x03Rq\\x04.'\n    >>> pickle.dumps(b\"\\xff\", protocol=2)\n    b'\\x80\\x02c_codecs\\nencode\\nq\\x00X\\x02\\x00\\x00\\x00\\xc3\\xbfq\\x01X\\x06\\x00\\x00\\x00latin1q\\x02\\x86q\\x03Rq\\x04.'\n\n    $ python2\n    >>> import pickle\n    >>> pickle.loads('c_codecs\\nencode\\np0\\n(V\\xff\\np1\\nVlatin1\\np2\\ntp3\\nRp4\\n.')\n    '\\xff'\n    >>> pickle.loads('c_codecs\\nencode\\nq\\x00(X\\x02\\x00\\x00\\x00\\xc3\\xbfq\\x01X\\x06\\x00\\x00\\x00latin1q\\x02tq\\x03Rq\\x04.')\n    '\\xff'\n    >>> pickle.loads('\\x80\\x02c_codecs\\nencode\\nq\\x00X\\x02\\x00\\x00\\x00\\xc3\\xbfq\\x01X\\x06\\x00\\x00\\x00latin1q\\x02\\x86q\\x03Rq\\x04.')\n    '\\xff'\n\nExample 3: everything breaks down ::\n\n    $ python2\n    >>> class Foo(object):\n    ...     def __init__(self):\n    ...         self.x = 'hello'\n    ...\n    >>> import pickle\n    >>> pickle.dumps(Foo(), protocol=0)\n    \"ccopy_reg\\n_reconstructor\\np0\\n(c__main__\\nFoo\\np1\\nc__builtin__\\nobject\\np2\\nNtp3\\nRp4\\n(dp5\\nS'x'\\np6\\nS'hello'\\np7\\nsb.\"\n    >>> pickle.dumps(Foo(), protocol=1)\n    'ccopy_reg\\n_reconstructor\\nq\\x00(c__main__\\nFoo\\nq\\x01c__builtin__\\nobject\\nq\\x02Ntq\\x03Rq\\x04}q\\x05U\\x01xq\\x06U\\x05helloq\\x07sb.'\n    >>> pickle.dumps(Foo(), protocol=2)\n    '\\x80\\x02c__main__\\nFoo\\nq\\x00)\\x81q\\x01}q\\x02U\\x01xq\\x03U\\x05helloq\\x04sb.'\n\n    $ python3\n    >>> from zodbpickle import pickle\n    >>> class Foo(object): pass\n    ... \n    >>> foo = pickle.loads(\"ccopy_reg\\n_reconstructor\\np0\\n(c__main__\\nFoo\\np1\\nc__builtin__\\nobject\\np2\\nNtp3\\nRp4\\n(dp5\\nS'x'\\np6\\nS'hello'\\np7\\nsb.\", encoding='bytes')\n    >>> foo.x\n    Traceback (most recent call last):\n      File \"<stdin>\", line 1, in <module>\n    AttributeError: 'Foo' object has no attribute 'x'\n\nwait what? ::\n\n    >>> foo.__dict__\n    {b'x': b'hello'}\n\noooh.  So we use ``encoding='ASCII'`` (the default) and ``errors='bytes'`` and\nhope it works::\n\n    >>> foo = pickle.loads(\"ccopy_reg\\n_reconstructor\\np0\\n(c__main__\\nFoo\\np1\\nc__builtin__\\nobject\\np2\\nNtp3\\nRp4\\n(dp5\\nS'x'\\np6\\nS'hello'\\np7\\nsb.\", errors='bytes')\n    >>> foo.x\n    'hello'\n\nfalling back to bytes if necessary ::\n\n    >>> pickle.loads(b'\\x80\\x02U\\x01\\xffq\\x00.', errors='bytes')\n    b'\\xff'\n\n\nSupport for ``noload()``\n------------------------\n\nThe ZODB uses `cPickle`'s ``noload()`` method to retrieve all persistent\nreferences from a pickle without loading any objects. This feature was removed\nfrom Python 3's pickle. Unfortuantely, this unnecessarily fills the pickle\ncache.\n\nThis module provides a ``noload()`` method again.\n\n\n``zodbpickle`` Changelog\n========================\n\n0.6.0 (2015-04-02)\n------------------\n\n- Restore the ``noload`` behaviour from Python 2.6 and provide the\n  ``noload`` method on the non-C-accelerated unpicklers under PyPy and\n  Python 2.\n\n- Add support for PyPy, PyPy3, and Python 3.4.\n\n0.5.2 (2013-08-17)\n------------------\n\n- Import accelerator from *our* extension module under Py3k.\n  See https://github.com/zopefoundation/zodbpickle/issues/6,\n  https://github.com/zopefoundation/zodbpickle/issues/7.\n\n- Fix unpickler's ``load_short_binstring`` across supported platforms.\n\n0.5.1 (2013-07-06)\n------------------\n\n- Update all code and tests to Python 2.6.8, 2.7.5, 3.2.5, 3.3.2 .\n\n- Add the modules ``zodbpickle.fastpickle`` and ``zodbpickle.slowpickle``.\n  This provides a version-independent choice of the C or Python\n  implementation.\n\n- Fix a minor bug on OS X\n\n0.5.0 (2013-06-14)\n------------------\n\n- Removed support for the ``bytes_as_strings`` arguments to pickling APIs:\n  the pickles created when that argument was true might not be unpickled\n  without passing ``encoding='bytes'``, which ZODB couldn't reliably enforce.\n  On Py3k, ZODB will be using ``protocol=3`` pickles anyway.\n\n0.4.4 (2013-06-07)\n------------------\n\n- Add protocol 3 opcodes to the C version of the ``noload()`` dispatcher.\n\n0.4.3 (2013-06-07)\n------------------\n\n- Packaging error:  remove spurious ``-ASIDE`` file from sdist.\n\n0.4.2 (2013-06-07)\n------------------\n\n- Fix NameError in pure-Python version of ``Unpickler.noload_appends``.\n\n- Fix NameError in pure-Python version of ``Unpickler.noload_setitems``.\n\n0.4.1 (2013-04-29)\n------------------\n\n- Fix typo in Python2 version of ``zodbpickle.pickle`` module.\n\n0.4 (2013-04-28)\n----------------\n\n- Support the common pickle module interface for Python 2.6, 2.7, 3.2, and 3.3.\n\n- Split the Python implementations / tests into Python2- and Py3k-specific\n  variants.\n\n- Added a fork of the Python 2.7 ``_pickle.c``, for use under Python2.\n  The fork adds support for the Py3k ``protocol 3`` opcodes.\n\n- Added a custom ``binary`` type for use in Python2 apps.\n  Derived from ``bytes``, the ``binary`` type allows Python2 apps to pickle\n  binary data using opcodes which will cause it to be unpickled as ``bytes``\n  on Py3k.  Under Py3k, the ``binary`` type is just an alias for ``bytes``.\n\n0.3 (2013-03-18)\n----------------\n\n- Added ``noload`` code to Python 3.2 version of ``Unpickler``.  As with\n  the Python 3.3 version, this code remains untested.\n\n- Added ``bytes_as_strings`` option to the Python 3.2 version of\n  ``Pickler``, ``dump``, and ``dumps``.\n\n0.2 (2013-03-05)\n----------------\n\n- Added ``bytes_as_strings`` option to ``Pickler``, ``dump``, and ``dumps``.\n\n- Incomplete support for Python 3.2:\n\n  - Move ``_pickle.c`` -> ``_pickle_33.c``.\n\n  - Clone Python 3.2.3's ``_pickle.c`` -> ``_pickle_32.c`` and apply the\n    same patch.\n\n  - Choose between them at build time based on ``sys.version_info``.\n\n  - Disable some tests of 3.3-only features.\n\n  - Missing: implementation of ``noload()`` in ``_pickle_32.c``.\n\n  - Missing: implementation of ``bytes_as_strings=True`` in ``_pickle_32.c``.\n\n\n0.1.0 (2013-02-27)\n------------------\n\n- Initial release of Python 3.3's pickle with the patches of Python\n  `issue 6784`__ applied.\n\n.. __: http://bugs.python.org/issue6784#msg156166\n\n- Added support for ``errors=\"bytes\"``.",
+    "docs_url": null,
+    "download_url": "UNKNOWN",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "http://pypi.python.org/pypi/zodbpickle",
+    "keywords": null,
+    "license": "PSFL 2 and ZPL 2.1",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "zodbpickle",
+    "platform": "any",
+    "project_url": "https://pypi.org/project/zodbpickle/",
+    "release_url": "https://pypi.org/project/zodbpickle/0.6.0/",
+    "requires_python": null,
+    "summary": "Fork of Python 3 pickle module.",
+    "version": "0.6.0"
+  },
+  "releases": {
+    "0.1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7c16a415e20431f2e118b671f088306c",
+          "sha256": "0031b0ea7e2efda76c34a57c0693e54c769b2e911163a72b36094a46cbf89dd6"
+        },
+        "downloads": 2084,
+        "filename": "zodbpickle-0.1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7c16a415e20431f2e118b671f088306c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 95979,
+        "upload_time": "2013-02-27T15:50:54",
+        "url": "https://files.pythonhosted.org/packages/99/56/9a582fd853408d9286a342c86814b1ea457ea3a412122d483421ae60dbe0/zodbpickle-0.1.0.tar.gz"
+      }
+    ],
+    "0.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "fdede613768e32b877b273e0b86abdf5",
+          "sha256": "953cf7eb253ca3d28a7bb172d26f9e9127575cbd5e6efdad4e01a555cf8f0e8c"
+        },
+        "downloads": 2421,
+        "filename": "zodbpickle-0.2.zip",
+        "has_sig": false,
+        "md5_digest": "fdede613768e32b877b273e0b86abdf5",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 145912,
+        "upload_time": "2013-03-05T14:53:22",
+        "url": "https://files.pythonhosted.org/packages/40/60/a1d7b0df59df4052c7ab6abf16fc917f021384f09bc9c0ac221fcf6eb710/zodbpickle-0.2.zip"
+      }
+    ],
+    "0.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a76cf8586865e3dec5264087d3db7454",
+          "sha256": "caddb94972799d1c3aad581a31519a77eb343f15da5155241b79c6650f73c5f0"
+        },
+        "downloads": 1924,
+        "filename": "zodbpickle-0.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a76cf8586865e3dec5264087d3db7454",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 143307,
+        "upload_time": "2013-03-18T18:04:13",
+        "url": "https://files.pythonhosted.org/packages/75/73/6e98700016ab2bc69a2def6a9d05970a1786500818775f82d5c6e07ea9ab/zodbpickle-0.3.tar.gz"
+      }
+    ],
+    "0.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "adb18b2c0164398ad97b9ddf57b9792d",
+          "sha256": "64bb5ee3c260af49aae3c8c15c9da234bb3b2b982e80f4c7d449ce748ac25809"
+        },
+        "downloads": 1846,
+        "filename": "zodbpickle-0.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "adb18b2c0164398ad97b9ddf57b9792d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 215878,
+        "upload_time": "2013-04-29T01:46:53",
+        "url": "https://files.pythonhosted.org/packages/83/fa/62d0a66ca349e311a69f4eb1bf32d4f81b96d7d31a7918f3a007ca0a65c4/zodbpickle-0.4.tar.gz"
+      }
+    ],
+    "0.4.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "801d9d48f0d9c78317cac39b6a44f201",
+          "sha256": "521cb896a36ef37dc9cf664170e92f10f26b76379d6d513351aba3396303b66d"
+        },
+        "downloads": 1862,
+        "filename": "zodbpickle-0.4.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "801d9d48f0d9c78317cac39b6a44f201",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 216111,
+        "upload_time": "2013-04-29T15:50:01",
+        "url": "https://files.pythonhosted.org/packages/80/da/d36212b3fd997df0f10f876a9b4ab950cdb8b983e230e452ad21f8fc82c1/zodbpickle-0.4.1.tar.gz"
+      }
+    ],
+    "0.4.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6d66120665cb8003c22537ed9a58310b",
+          "sha256": "3ba872d3c42397ec1ca9f9b7f8bf76c5c41b1b3db7e920710bb751b98621d332"
+        },
+        "downloads": 1677,
+        "filename": "zodbpickle-0.4.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6d66120665cb8003c22537ed9a58310b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 322981,
+        "upload_time": "2013-06-08T02:53:30",
+        "url": "https://files.pythonhosted.org/packages/15/26/a5d23a400cd35e4fc7a7f6e14ea5499e6c766bb4b9431010aa8b715214c7/zodbpickle-0.4.2.tar.gz"
+      }
+    ],
+    "0.4.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "787b1c981013043cd4210f3e7a4f54cb",
+          "sha256": "18da5a3726700809ea7a591f9d4dfe625943dcf9006403e7103280e83d95f00e"
+        },
+        "downloads": 1677,
+        "filename": "zodbpickle-0.4.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "787b1c981013043cd4210f3e7a4f54cb",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 216493,
+        "upload_time": "2013-06-08T02:58:46",
+        "url": "https://files.pythonhosted.org/packages/7c/cf/26c6cdf0b5029a25c0cdc78b200e5443b93fe8ac62dc9212b48d86c39819/zodbpickle-0.4.3.tar.gz"
+      }
+    ],
+    "0.4.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6a9794f141bf6c07a889dd30b81dfcbf",
+          "sha256": "6c78bfcedb639734c43565101fca6086025d9e915dfa441182451c81c3648659"
+        },
+        "downloads": 1691,
+        "filename": "zodbpickle-0.4.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6a9794f141bf6c07a889dd30b81dfcbf",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 216657,
+        "upload_time": "2013-06-08T03:35:37",
+        "url": "https://files.pythonhosted.org/packages/18/24/64084fefdac08aff7e22bd6afbaf678a52b98659512df2afcb2da663cd89/zodbpickle-0.4.4.tar.gz"
+      }
+    ],
+    "0.5.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0d70d8905c9bcbdcfac3086fcc715257",
+          "sha256": "f0afaa584bfa443b9bbe6232c8d7e676deaea6579df9b15144b5a96f06ae515a"
+        },
+        "downloads": 1750,
+        "filename": "zodbpickle-0.5.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0d70d8905c9bcbdcfac3086fcc715257",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 215500,
+        "upload_time": "2013-06-14T14:53:07",
+        "url": "https://files.pythonhosted.org/packages/db/b6/b87936c6eb6ce4eac40be4355e4ab2cafff2bad0e0e330d8e4a4515387db/zodbpickle-0.5.0.tar.gz"
+      }
+    ],
+    "0.5.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7c4a7cb845b7234866e79ad91abf5a75",
+          "sha256": "c45669afc183c18c1d050cba0c24b12d03a0067f727fa2f55f062955cb3eaa00"
+        },
+        "downloads": 1873,
+        "filename": "zodbpickle-0.5.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7c4a7cb845b7234866e79ad91abf5a75",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 217309,
+        "upload_time": "2013-07-17T01:52:35",
+        "url": "https://files.pythonhosted.org/packages/86/cb/24f99ad26aa2b79f4859c7ce6ee1c3ee6f68a18cbba0268f73b1d9da52bd/zodbpickle-0.5.1.tar.gz"
+      }
+    ],
+    "0.5.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d401bd89f99ec8d56c22493e6f8c0443",
+          "sha256": "f65c00fbc13523fced63de6cc11747aa1a6343aeb2895c89838ed55a5ab12cca"
+        },
+        "downloads": 7668,
+        "filename": "zodbpickle-0.5.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d401bd89f99ec8d56c22493e6f8c0443",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 221427,
+        "upload_time": "2013-08-17T22:03:37",
+        "url": "https://files.pythonhosted.org/packages/de/2c/b44b8353e438edf33eefe45c216257d4e07d5374accbf82369dfa71d16d3/zodbpickle-0.5.2.tar.gz"
+      }
+    ],
+    "0.6.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "38438a9f5eeb86c6166386d8636a42a9",
+          "sha256": "e7229162d9a316b82fcb3db748c97d4589c917b06cacd703d0bf42b166b3b31e"
+        },
+        "downloads": 872,
+        "filename": "zodbpickle-0.6.0-py2.6-win32.egg",
+        "has_sig": false,
+        "md5_digest": "38438a9f5eeb86c6166386d8636a42a9",
+        "packagetype": "bdist_egg",
+        "python_version": "2.6",
+        "size": 306007,
+        "upload_time": "2015-05-25T06:03:51",
+        "url": "https://files.pythonhosted.org/packages/af/78/d9eec7c96de4152a6992aa41f0a7aa9b50d386da332be52119b38ea7a943/zodbpickle-0.6.0-py2.6-win32.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "362192c2c9730569c5e51e9a2dc159ee",
+          "sha256": "43d82d7d7b64715225491a91b767f06938462cc859638d778f9a376a23099c28"
+        },
+        "downloads": 2753,
+        "filename": "zodbpickle-0.6.0-py2.6-win-amd64.egg",
+        "has_sig": false,
+        "md5_digest": "362192c2c9730569c5e51e9a2dc159ee",
+        "packagetype": "bdist_egg",
+        "python_version": "2.6",
+        "size": 309894,
+        "upload_time": "2015-05-25T06:04:13",
+        "url": "https://files.pythonhosted.org/packages/8b/b7/cc15fd5b3839d31f0f99fda3b3444aba0427ae7a3ae69dcf4325d7f6637d/zodbpickle-0.6.0-py2.6-win-amd64.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b5a62fa8104af42c9ccc53c176c78ad3",
+          "sha256": "8624381abb49bdf66ca32b2f62b4ba0c2314bcf8e7e9feb0fef39d9ae5f6a9a0"
+        },
+        "downloads": 1369,
+        "filename": "zodbpickle-0.6.0-py2.7-win32.egg",
+        "has_sig": false,
+        "md5_digest": "b5a62fa8104af42c9ccc53c176c78ad3",
+        "packagetype": "bdist_egg",
+        "python_version": "2.7",
+        "size": 305773,
+        "upload_time": "2015-05-25T06:04:25",
+        "url": "https://files.pythonhosted.org/packages/5e/9c/471b4b631bf079477bcf13411024b1ca56ff2c218bfd64dd86bf5d48a27c/zodbpickle-0.6.0-py2.7-win32.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "510debaccbf42b916c563c35e366c2c6",
+          "sha256": "40bfa2ce16f17c4020f4ce2a99855b5fe4778ee85df748925d07f577cc382c22"
+        },
+        "downloads": 1038,
+        "filename": "zodbpickle-0.6.0-py2.7-win-amd64.egg",
+        "has_sig": false,
+        "md5_digest": "510debaccbf42b916c563c35e366c2c6",
+        "packagetype": "bdist_egg",
+        "python_version": "2.7",
+        "size": 309738,
+        "upload_time": "2015-05-25T06:04:36",
+        "url": "https://files.pythonhosted.org/packages/f5/17/ac9f9220ccb517e8b5b906ff6c428747064a16fbee22e2eb6ff0b0196d8e/zodbpickle-0.6.0-py2.7-win-amd64.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "37aca0131d89057a53f83615dde89658",
+          "sha256": "d340606be588752f8ca498898cf06a3ddc0949f2cb6e3fff6d663fc289240264"
+        },
+        "downloads": 125,
+        "filename": "zodbpickle-0.6.0-py3.3-win32.egg",
+        "has_sig": false,
+        "md5_digest": "37aca0131d89057a53f83615dde89658",
+        "packagetype": "bdist_egg",
+        "python_version": "3.3",
+        "size": 322189,
+        "upload_time": "2016-05-26T10:57:01",
+        "url": "https://files.pythonhosted.org/packages/66/16/c9ba21ce75479008f18a77962f49f92a8860cb2776a85985f1e5419fe197/zodbpickle-0.6.0-py3.3-win32.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ba58586bc4cc0dad90350c8c9b17ed52",
+          "sha256": "92ba1411653d30a41793d1e52f9a193979600f7afd2a6ab5a7171a496f8a8cb6"
+        },
+        "downloads": 121,
+        "filename": "zodbpickle-0.6.0-py3.3-win-amd64.egg",
+        "has_sig": false,
+        "md5_digest": "ba58586bc4cc0dad90350c8c9b17ed52",
+        "packagetype": "bdist_egg",
+        "python_version": "3.3",
+        "size": 328035,
+        "upload_time": "2016-05-26T10:58:19",
+        "url": "https://files.pythonhosted.org/packages/63/bd/acd90f0a00b58977e4be878d5e7d6b879d4c88513bbac7eafdaef407ba26/zodbpickle-0.6.0-py3.3-win-amd64.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5db1b44572be5c64d96361703fefb5bd",
+          "sha256": "018c56cbcc7173d23b606162286c54dffb617365ec683e0497210d2540c31b3d"
+        },
+        "downloads": 134,
+        "filename": "zodbpickle-0.6.0-py3.4-win32.egg",
+        "has_sig": false,
+        "md5_digest": "5db1b44572be5c64d96361703fefb5bd",
+        "packagetype": "bdist_egg",
+        "python_version": "3.4",
+        "size": 319375,
+        "upload_time": "2016-05-26T10:59:11",
+        "url": "https://files.pythonhosted.org/packages/cd/2f/d103886763e9211c8bca3228446fd246ab7b4724f9639d82146798f20e50/zodbpickle-0.6.0-py3.4-win32.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "bc91eb56fc37e493c4c26a5391d52f79",
+          "sha256": "51b49f8e93d62293c57b774ce5d84178e10eba06510c6b3cea3b75acf48d8803"
+        },
+        "downloads": 124,
+        "filename": "zodbpickle-0.6.0-py3.4-win-amd64.egg",
+        "has_sig": false,
+        "md5_digest": "bc91eb56fc37e493c4c26a5391d52f79",
+        "packagetype": "bdist_egg",
+        "python_version": "3.4",
+        "size": 325291,
+        "upload_time": "2016-05-26T10:59:53",
+        "url": "https://files.pythonhosted.org/packages/b8/74/abf0bd059b692bb29f7e1b38035bb365e5a2c4251165ccd7a3c6e0ab91e6/zodbpickle-0.6.0-py3.4-win-amd64.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "bd050064511eaf2ac276a21bedf9d072",
+          "sha256": "ea3248be966159e7791e3db0e35ea992b9235d52e7d39835438686741d196665"
+        },
+        "downloads": 15834,
+        "filename": "zodbpickle-0.6.0.tar.gz",
+        "has_sig": true,
+        "md5_digest": "bd050064511eaf2ac276a21bedf9d072",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 223043,
+        "upload_time": "2015-04-02T13:08:29",
+        "url": "https://files.pythonhosted.org/packages/7a/fc/f6f437a5222b330735eaf8f1e67a6845bd1b600e9a9455e552d3c13c4902/zodbpickle-0.6.0.tar.gz"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a27b1acfd108e6f30d383d09a66e80f3",
+          "sha256": "a282b471531b6f82aa2858982b42f261d69c638df23f1d86859111903bc38c68"
+        },
+        "downloads": 819,
+        "filename": "zodbpickle-0.6.0.win32-py2.6.exe",
+        "has_sig": false,
+        "md5_digest": "a27b1acfd108e6f30d383d09a66e80f3",
+        "packagetype": "bdist_wininst",
+        "python_version": "2.6",
+        "size": 453072,
+        "upload_time": "2015-05-25T06:03:58",
+        "url": "https://files.pythonhosted.org/packages/af/76/40e0211d8a5b3fb7e4e9757ab7d49f37ba648119464129ca60f4701f6a44/zodbpickle-0.6.0.win32-py2.6.exe"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ec29662c113e7c1ab4ad0cc47f87846d",
+          "sha256": "41b0ca802972195f51e76a855bb59daae9a992cb61eb155dee1b0807a75e9b9e"
+        },
+        "downloads": 863,
+        "filename": "zodbpickle-0.6.0.win32-py2.7.exe",
+        "has_sig": false,
+        "md5_digest": "ec29662c113e7c1ab4ad0cc47f87846d",
+        "packagetype": "bdist_wininst",
+        "python_version": "2.7",
+        "size": 452979,
+        "upload_time": "2015-05-25T06:04:30",
+        "url": "https://files.pythonhosted.org/packages/ea/ca/da07bc1fc664f18569c754a69bdb957fb2a8f7edee75aad405d0df5b3c1e/zodbpickle-0.6.0.win32-py2.7.exe"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "785ec5c7d00a8b160050daf73a519fdc",
+          "sha256": "ec00e0b21119bec9c4135c824abaaeeac02b3034476af1894508d475b2ee9fa7"
+        },
+        "downloads": 112,
+        "filename": "zodbpickle-0.6.0.win32-py3.3.exe",
+        "has_sig": false,
+        "md5_digest": "785ec5c7d00a8b160050daf73a519fdc",
+        "packagetype": "bdist_wininst",
+        "python_version": "3.3",
+        "size": 450173,
+        "upload_time": "2016-05-26T10:57:41",
+        "url": "https://files.pythonhosted.org/packages/ac/6c/2f2daa31709b7edb31aa55be9a004d704df7744c13395d02250ea67580ee/zodbpickle-0.6.0.win32-py3.3.exe"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e6b59a10379c6fb3a10c7237ac1a870e",
+          "sha256": "71c4ccb51aad026e16d4b7ce81c8b9ee66c06bfd41d111136c75ad8ef298e9c4"
+        },
+        "downloads": 112,
+        "filename": "zodbpickle-0.6.0.win32-py3.4.exe",
+        "has_sig": false,
+        "md5_digest": "e6b59a10379c6fb3a10c7237ac1a870e",
+        "packagetype": "bdist_wininst",
+        "python_version": "3.4",
+        "size": 449922,
+        "upload_time": "2016-05-26T10:59:31",
+        "url": "https://files.pythonhosted.org/packages/1a/6d/67480f09ff85f6284add74617b10276e83b23d1cf00e9bf4b3366bc85267/zodbpickle-0.6.0.win32-py3.4.exe"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "cab34ca25aa8a4758cd798a2fd9721a4",
+          "sha256": "64c82aef492278455d8e0506f66e6764f23c7c7048db9e0659db5fa45377ff7b"
+        },
+        "downloads": 820,
+        "filename": "zodbpickle-0.6.0.win-amd64-py2.6.exe",
+        "has_sig": false,
+        "md5_digest": "cab34ca25aa8a4758cd798a2fd9721a4",
+        "packagetype": "bdist_wininst",
+        "python_version": "2.6",
+        "size": 484529,
+        "upload_time": "2015-05-25T06:04:19",
+        "url": "https://files.pythonhosted.org/packages/a3/c4/edd21b58f064cea088992395d556992f0a3e383a989e0c2b3410e5777274/zodbpickle-0.6.0.win-amd64-py2.6.exe"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "356aaf4a1a2fb0087bdcc8196ea01dc8",
+          "sha256": "5937628f2aa56bc097e097a1a269ba9dbd04c02193d0177f889c1d14f4a303cd"
+        },
+        "downloads": 817,
+        "filename": "zodbpickle-0.6.0.win-amd64-py2.7.exe",
+        "has_sig": false,
+        "md5_digest": "356aaf4a1a2fb0087bdcc8196ea01dc8",
+        "packagetype": "bdist_wininst",
+        "python_version": "2.7",
+        "size": 484522,
+        "upload_time": "2015-05-25T06:04:40",
+        "url": "https://files.pythonhosted.org/packages/26/8a/70d7fd59abf0f035869065cba2b51e3201805c970efdeccd98dd7fb2005b/zodbpickle-0.6.0.win-amd64-py2.7.exe"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f76e7fcc33fd9665f71cc67134cd3f95",
+          "sha256": "9728f787876bd1a001f89d70d74b3be8b9e7ccdfb61400bcaecb8d6a27fe83e4"
+        },
+        "downloads": 138,
+        "filename": "zodbpickle-0.6.0.win-amd64-py3.3.exe",
+        "has_sig": false,
+        "md5_digest": "f76e7fcc33fd9665f71cc67134cd3f95",
+        "packagetype": "bdist_wininst",
+        "python_version": "3.3",
+        "size": 487152,
+        "upload_time": "2016-05-26T10:58:38",
+        "url": "https://files.pythonhosted.org/packages/47/07/70f3745cc77f15d722ab75f53fc432cf01e2b354ed129c03f15bce8fe20e/zodbpickle-0.6.0.win-amd64-py3.3.exe"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "612ec987d9057a4a67f8e647bdb79fe3",
+          "sha256": "716eb0be86d1b7eaa72b83f55a09586919e88535cd5e0117c65782dc5dba518f"
+        },
+        "downloads": 117,
+        "filename": "zodbpickle-0.6.0.win-amd64-py3.4.exe",
+        "has_sig": false,
+        "md5_digest": "612ec987d9057a4a67f8e647bdb79fe3",
+        "packagetype": "bdist_wininst",
+        "python_version": "3.4",
+        "size": 487023,
+        "upload_time": "2016-05-26T11:00:33",
+        "url": "https://files.pythonhosted.org/packages/a7/81/aa4983ea958ef9aa199dcf0c3158e575613d08935408bdca386a19ce23dc/zodbpickle-0.6.0.win-amd64-py3.4.exe"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "38438a9f5eeb86c6166386d8636a42a9",
+        "sha256": "e7229162d9a316b82fcb3db748c97d4589c917b06cacd703d0bf42b166b3b31e"
+      },
+      "downloads": 872,
+      "filename": "zodbpickle-0.6.0-py2.6-win32.egg",
+      "has_sig": false,
+      "md5_digest": "38438a9f5eeb86c6166386d8636a42a9",
+      "packagetype": "bdist_egg",
+      "python_version": "2.6",
+      "size": 306007,
+      "upload_time": "2015-05-25T06:03:51",
+      "url": "https://files.pythonhosted.org/packages/af/78/d9eec7c96de4152a6992aa41f0a7aa9b50d386da332be52119b38ea7a943/zodbpickle-0.6.0-py2.6-win32.egg"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "362192c2c9730569c5e51e9a2dc159ee",
+        "sha256": "43d82d7d7b64715225491a91b767f06938462cc859638d778f9a376a23099c28"
+      },
+      "downloads": 2753,
+      "filename": "zodbpickle-0.6.0-py2.6-win-amd64.egg",
+      "has_sig": false,
+      "md5_digest": "362192c2c9730569c5e51e9a2dc159ee",
+      "packagetype": "bdist_egg",
+      "python_version": "2.6",
+      "size": 309894,
+      "upload_time": "2015-05-25T06:04:13",
+      "url": "https://files.pythonhosted.org/packages/8b/b7/cc15fd5b3839d31f0f99fda3b3444aba0427ae7a3ae69dcf4325d7f6637d/zodbpickle-0.6.0-py2.6-win-amd64.egg"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "b5a62fa8104af42c9ccc53c176c78ad3",
+        "sha256": "8624381abb49bdf66ca32b2f62b4ba0c2314bcf8e7e9feb0fef39d9ae5f6a9a0"
+      },
+      "downloads": 1369,
+      "filename": "zodbpickle-0.6.0-py2.7-win32.egg",
+      "has_sig": false,
+      "md5_digest": "b5a62fa8104af42c9ccc53c176c78ad3",
+      "packagetype": "bdist_egg",
+      "python_version": "2.7",
+      "size": 305773,
+      "upload_time": "2015-05-25T06:04:25",
+      "url": "https://files.pythonhosted.org/packages/5e/9c/471b4b631bf079477bcf13411024b1ca56ff2c218bfd64dd86bf5d48a27c/zodbpickle-0.6.0-py2.7-win32.egg"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "510debaccbf42b916c563c35e366c2c6",
+        "sha256": "40bfa2ce16f17c4020f4ce2a99855b5fe4778ee85df748925d07f577cc382c22"
+      },
+      "downloads": 1038,
+      "filename": "zodbpickle-0.6.0-py2.7-win-amd64.egg",
+      "has_sig": false,
+      "md5_digest": "510debaccbf42b916c563c35e366c2c6",
+      "packagetype": "bdist_egg",
+      "python_version": "2.7",
+      "size": 309738,
+      "upload_time": "2015-05-25T06:04:36",
+      "url": "https://files.pythonhosted.org/packages/f5/17/ac9f9220ccb517e8b5b906ff6c428747064a16fbee22e2eb6ff0b0196d8e/zodbpickle-0.6.0-py2.7-win-amd64.egg"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "37aca0131d89057a53f83615dde89658",
+        "sha256": "d340606be588752f8ca498898cf06a3ddc0949f2cb6e3fff6d663fc289240264"
+      },
+      "downloads": 125,
+      "filename": "zodbpickle-0.6.0-py3.3-win32.egg",
+      "has_sig": false,
+      "md5_digest": "37aca0131d89057a53f83615dde89658",
+      "packagetype": "bdist_egg",
+      "python_version": "3.3",
+      "size": 322189,
+      "upload_time": "2016-05-26T10:57:01",
+      "url": "https://files.pythonhosted.org/packages/66/16/c9ba21ce75479008f18a77962f49f92a8860cb2776a85985f1e5419fe197/zodbpickle-0.6.0-py3.3-win32.egg"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "ba58586bc4cc0dad90350c8c9b17ed52",
+        "sha256": "92ba1411653d30a41793d1e52f9a193979600f7afd2a6ab5a7171a496f8a8cb6"
+      },
+      "downloads": 121,
+      "filename": "zodbpickle-0.6.0-py3.3-win-amd64.egg",
+      "has_sig": false,
+      "md5_digest": "ba58586bc4cc0dad90350c8c9b17ed52",
+      "packagetype": "bdist_egg",
+      "python_version": "3.3",
+      "size": 328035,
+      "upload_time": "2016-05-26T10:58:19",
+      "url": "https://files.pythonhosted.org/packages/63/bd/acd90f0a00b58977e4be878d5e7d6b879d4c88513bbac7eafdaef407ba26/zodbpickle-0.6.0-py3.3-win-amd64.egg"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "5db1b44572be5c64d96361703fefb5bd",
+        "sha256": "018c56cbcc7173d23b606162286c54dffb617365ec683e0497210d2540c31b3d"
+      },
+      "downloads": 134,
+      "filename": "zodbpickle-0.6.0-py3.4-win32.egg",
+      "has_sig": false,
+      "md5_digest": "5db1b44572be5c64d96361703fefb5bd",
+      "packagetype": "bdist_egg",
+      "python_version": "3.4",
+      "size": 319375,
+      "upload_time": "2016-05-26T10:59:11",
+      "url": "https://files.pythonhosted.org/packages/cd/2f/d103886763e9211c8bca3228446fd246ab7b4724f9639d82146798f20e50/zodbpickle-0.6.0-py3.4-win32.egg"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "bc91eb56fc37e493c4c26a5391d52f79",
+        "sha256": "51b49f8e93d62293c57b774ce5d84178e10eba06510c6b3cea3b75acf48d8803"
+      },
+      "downloads": 124,
+      "filename": "zodbpickle-0.6.0-py3.4-win-amd64.egg",
+      "has_sig": false,
+      "md5_digest": "bc91eb56fc37e493c4c26a5391d52f79",
+      "packagetype": "bdist_egg",
+      "python_version": "3.4",
+      "size": 325291,
+      "upload_time": "2016-05-26T10:59:53",
+      "url": "https://files.pythonhosted.org/packages/b8/74/abf0bd059b692bb29f7e1b38035bb365e5a2c4251165ccd7a3c6e0ab91e6/zodbpickle-0.6.0-py3.4-win-amd64.egg"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "bd050064511eaf2ac276a21bedf9d072",
+        "sha256": "ea3248be966159e7791e3db0e35ea992b9235d52e7d39835438686741d196665"
+      },
+      "downloads": 15834,
+      "filename": "zodbpickle-0.6.0.tar.gz",
+      "has_sig": true,
+      "md5_digest": "bd050064511eaf2ac276a21bedf9d072",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 223043,
+      "upload_time": "2015-04-02T13:08:29",
+      "url": "https://files.pythonhosted.org/packages/7a/fc/f6f437a5222b330735eaf8f1e67a6845bd1b600e9a9455e552d3c13c4902/zodbpickle-0.6.0.tar.gz"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "a27b1acfd108e6f30d383d09a66e80f3",
+        "sha256": "a282b471531b6f82aa2858982b42f261d69c638df23f1d86859111903bc38c68"
+      },
+      "downloads": 819,
+      "filename": "zodbpickle-0.6.0.win32-py2.6.exe",
+      "has_sig": false,
+      "md5_digest": "a27b1acfd108e6f30d383d09a66e80f3",
+      "packagetype": "bdist_wininst",
+      "python_version": "2.6",
+      "size": 453072,
+      "upload_time": "2015-05-25T06:03:58",
+      "url": "https://files.pythonhosted.org/packages/af/76/40e0211d8a5b3fb7e4e9757ab7d49f37ba648119464129ca60f4701f6a44/zodbpickle-0.6.0.win32-py2.6.exe"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "ec29662c113e7c1ab4ad0cc47f87846d",
+        "sha256": "41b0ca802972195f51e76a855bb59daae9a992cb61eb155dee1b0807a75e9b9e"
+      },
+      "downloads": 863,
+      "filename": "zodbpickle-0.6.0.win32-py2.7.exe",
+      "has_sig": false,
+      "md5_digest": "ec29662c113e7c1ab4ad0cc47f87846d",
+      "packagetype": "bdist_wininst",
+      "python_version": "2.7",
+      "size": 452979,
+      "upload_time": "2015-05-25T06:04:30",
+      "url": "https://files.pythonhosted.org/packages/ea/ca/da07bc1fc664f18569c754a69bdb957fb2a8f7edee75aad405d0df5b3c1e/zodbpickle-0.6.0.win32-py2.7.exe"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "785ec5c7d00a8b160050daf73a519fdc",
+        "sha256": "ec00e0b21119bec9c4135c824abaaeeac02b3034476af1894508d475b2ee9fa7"
+      },
+      "downloads": 112,
+      "filename": "zodbpickle-0.6.0.win32-py3.3.exe",
+      "has_sig": false,
+      "md5_digest": "785ec5c7d00a8b160050daf73a519fdc",
+      "packagetype": "bdist_wininst",
+      "python_version": "3.3",
+      "size": 450173,
+      "upload_time": "2016-05-26T10:57:41",
+      "url": "https://files.pythonhosted.org/packages/ac/6c/2f2daa31709b7edb31aa55be9a004d704df7744c13395d02250ea67580ee/zodbpickle-0.6.0.win32-py3.3.exe"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "e6b59a10379c6fb3a10c7237ac1a870e",
+        "sha256": "71c4ccb51aad026e16d4b7ce81c8b9ee66c06bfd41d111136c75ad8ef298e9c4"
+      },
+      "downloads": 112,
+      "filename": "zodbpickle-0.6.0.win32-py3.4.exe",
+      "has_sig": false,
+      "md5_digest": "e6b59a10379c6fb3a10c7237ac1a870e",
+      "packagetype": "bdist_wininst",
+      "python_version": "3.4",
+      "size": 449922,
+      "upload_time": "2016-05-26T10:59:31",
+      "url": "https://files.pythonhosted.org/packages/1a/6d/67480f09ff85f6284add74617b10276e83b23d1cf00e9bf4b3366bc85267/zodbpickle-0.6.0.win32-py3.4.exe"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "cab34ca25aa8a4758cd798a2fd9721a4",
+        "sha256": "64c82aef492278455d8e0506f66e6764f23c7c7048db9e0659db5fa45377ff7b"
+      },
+      "downloads": 820,
+      "filename": "zodbpickle-0.6.0.win-amd64-py2.6.exe",
+      "has_sig": false,
+      "md5_digest": "cab34ca25aa8a4758cd798a2fd9721a4",
+      "packagetype": "bdist_wininst",
+      "python_version": "2.6",
+      "size": 484529,
+      "upload_time": "2015-05-25T06:04:19",
+      "url": "https://files.pythonhosted.org/packages/a3/c4/edd21b58f064cea088992395d556992f0a3e383a989e0c2b3410e5777274/zodbpickle-0.6.0.win-amd64-py2.6.exe"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "356aaf4a1a2fb0087bdcc8196ea01dc8",
+        "sha256": "5937628f2aa56bc097e097a1a269ba9dbd04c02193d0177f889c1d14f4a303cd"
+      },
+      "downloads": 817,
+      "filename": "zodbpickle-0.6.0.win-amd64-py2.7.exe",
+      "has_sig": false,
+      "md5_digest": "356aaf4a1a2fb0087bdcc8196ea01dc8",
+      "packagetype": "bdist_wininst",
+      "python_version": "2.7",
+      "size": 484522,
+      "upload_time": "2015-05-25T06:04:40",
+      "url": "https://files.pythonhosted.org/packages/26/8a/70d7fd59abf0f035869065cba2b51e3201805c970efdeccd98dd7fb2005b/zodbpickle-0.6.0.win-amd64-py2.7.exe"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "f76e7fcc33fd9665f71cc67134cd3f95",
+        "sha256": "9728f787876bd1a001f89d70d74b3be8b9e7ccdfb61400bcaecb8d6a27fe83e4"
+      },
+      "downloads": 138,
+      "filename": "zodbpickle-0.6.0.win-amd64-py3.3.exe",
+      "has_sig": false,
+      "md5_digest": "f76e7fcc33fd9665f71cc67134cd3f95",
+      "packagetype": "bdist_wininst",
+      "python_version": "3.3",
+      "size": 487152,
+      "upload_time": "2016-05-26T10:58:38",
+      "url": "https://files.pythonhosted.org/packages/47/07/70f3745cc77f15d722ab75f53fc432cf01e2b354ed129c03f15bce8fe20e/zodbpickle-0.6.0.win-amd64-py3.3.exe"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "612ec987d9057a4a67f8e647bdb79fe3",
+        "sha256": "716eb0be86d1b7eaa72b83f55a09586919e88535cd5e0117c65782dc5dba518f"
+      },
+      "downloads": 117,
+      "filename": "zodbpickle-0.6.0.win-amd64-py3.4.exe",
+      "has_sig": false,
+      "md5_digest": "612ec987d9057a4a67f8e647bdb79fe3",
+      "packagetype": "bdist_wininst",
+      "python_version": "3.4",
+      "size": 487023,
+      "upload_time": "2016-05-26T11:00:33",
+      "url": "https://files.pythonhosted.org/packages/a7/81/aa4983ea958ef9aa199dcf0c3158e575613d08935408bdca386a19ce23dc/zodbpickle-0.6.0.win-amd64-py3.4.exe"
+    }
+  ]
+}

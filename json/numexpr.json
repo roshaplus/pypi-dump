@@ -1,0 +1,2571 @@
+{
+  "info": {
+    "author": "David M. Cooke, Francesc Alted and others",
+    "author_email": "david.m.cooke@gmail.com, faltet@gmail.com",
+    "bugtrack_url": "",
+    "classifiers": [],
+    "description": "======================================================\nNumexpr: Fast numerical expression evaluator for NumPy\n======================================================\n\n:Author: David M. Cooke, Francesc Alted and others\n:Contact: faltet@gmail.com\n:URL: https://github.com/pydata/numexpr\n:Travis CI: |travis|\n:Appveyor: |appveyor|\n:PyPi: |version| |pypi|\n\n.. |travis| image:: https://travis-ci.org/pydata/numexpr.png?branch=master\n        :target: https://travis-ci.org/pydata/numexpr\n.. |appveyor| image:: https://ci.appveyor.com/api/projects/status/github/pydata/numexpr\n        :target: https://ci.appveyor.com/project/pydata/numexpr\n.. |pypi| image:: https://img.shields.io/pypi/dm/numexpr.png\n        :target: https://pypi.python.org/pypi/numexpr\n.. |version| image:: https://img.shields.io/pypi/v/numexpr.png\n        :target: https://pypi.python.org/pypi/numexpr\n\n\nWhat it is Numexpr?\n===================\n\nNumexpr is a fast numerical expression evaluator for NumPy.  With it,\nexpressions that operate on arrays (like \"3*a+4*b\") are accelerated\nand use less memory than doing the same calculation in Python.\n\nIn addition, its multi-threaded capabilities can make use of all your\ncores -- which may accelerate computations, most specially if they are\nnot memory-bounded (e.g. those using transcendental functions).\n\nLast but not least, numexpr can make use of Intel's VML (Vector Math\nLibrary, normally integrated in its Math Kernel Library, or MKL).\nThis allows further acceleration of transcendent expressions.\n\n\nHow Numexpr achieves high performance\n=====================================\n\nThe main reason why Numexpr achieves better performance than NumPy is\nthat it avoids allocating memory for intermediate results. This\nresults in better cache utilization and reduces memory access in\ngeneral. Due to this, Numexpr works best with large arrays.\n\nNumexpr parses expressions into its own op-codes that are then used by\nan integrated computing virtual machine. The array operands are split\ninto small chunks that easily fit in the cache of the CPU and passed\nto the virtual machine. The virtual machine then applies the\noperations on each chunk. It's worth noting that all temporaries and\nconstants in the expression are also chunked.\n\nThe result is that Numexpr can get the most of your machine computing\ncapabilities for array-wise computations. Common speed-ups with regard\nto NumPy are usually between 0.95x (for very simple expressions like\n\u2019a + 1\u2019) and 4x (for relatively complex ones like 'a*b-4.1*a >\n2.5*b'), although much higher speed-ups can be achieved (up to 15x in\nsome cases).\n\nNumexpr performs best on matrices that do not fit in CPU cache.  In\norder to get a better idea on the different speed-ups that can be\nachieved on your platform, run the provided benchmarks.\n\nSee more info about how Numexpr works in the `wiki <https://github.com/pydata/numexpr/wiki>`_.\n\n\nExamples of use\n===============\n\n::\n\n  >>> import numpy as np\n  >>> import numexpr as ne\n\n  >>> a = np.arange(1e6)   # Choose large arrays for better speedups\n  >>> b = np.arange(1e6)\n\n  >>> ne.evaluate(\"a + 1\")   # a simple expression\n  array([  1.00000000e+00,   2.00000000e+00,   3.00000000e+00, ...,\n           9.99998000e+05,   9.99999000e+05,   1.00000000e+06])\n\n  >>> ne.evaluate('a*b-4.1*a > 2.5*b')   # a more complex one\n  array([False, False, False, ...,  True,  True,  True], dtype=bool)\n\n  >>> ne.evaluate(\"sin(a) + arcsinh(a/b)\")   # you can also use functions\n  array([        NaN,  1.72284457,  1.79067101, ...,  1.09567006,\n          0.17523598, -0.09597844])\n\n  >>> s = np.array(['abba', 'abbb', 'abbcdef'])\n  >>> ne.evaluate(\"'abba' == s\")   # string arrays are supported too\n  array([ True, False, False], dtype=bool)\n\n\nDatatypes supported internally\n==============================\n\nNumexpr operates internally only with the following types::\n\n    * 8-bit boolean (bool)\n    * 32-bit signed integer (int or int32)\n    * 64-bit signed integer (long or int64)\n    * 32-bit single-precision floating point number (float or float32)\n    * 64-bit, double-precision floating point number (double or float64)\n    * 2x64-bit, double-precision complex number (complex or complex128)\n    * Raw string of bytes (str)\n\nIf the arrays in the expression does not match any of these types,\nthey will be upcasted to one of the above types (following the usual\ntype inference rules, see below).  Have this in mind when doing\nestimations about the memory consumption during the computation of\nyour expressions.\n\nAlso, the types in Numexpr conditions are somewhat more restrictive\nthan those of Python.  For instance, the only valid constants for\nbooleans are `True` and `False`, and they are never automatically cast\nto integers.\n\n\nCasting rules\n=============\n\nCasting rules in Numexpr follow closely those of NumPy.  However, for\nimplementation reasons, there are some known exceptions to this rule,\nnamely::\n\n    * When an array with type `int8`, `uint8`, `int16` or `uint16` is\n      used inside Numexpr, it is internally upcasted to an `int` (or\n      `int32` in NumPy notation).\n\n    * When an array with type `uint32` is used inside Numexpr, it is\n      internally upcasted to a `long` (or `int64` in NumPy notation).\n\n    * A floating point function (e.g. `sin`) acting on `int8` or\n      `int16` types returns a `float64` type, instead of the `float32`\n      that is returned by NumPy functions.  This is mainly due to the\n      absence of native `int8` or `int16` types in Numexpr.\n\n    * In operations implying a scalar and an array, the normal rules\n      of casting are used in Numexpr, in contrast with NumPy, where\n      array types takes priority.  For example, if 'a' is an array of\n      type `float32` and 'b' is an scalar of type `float64` (or Python\n      `float` type, which is equivalent), then 'a*b' returns a\n      `float64` in Numexpr, but a `float32` in NumPy (i.e. array\n      operands take priority in determining the result type).  If you\n      need to keep the result a `float32`, be sure you use a `float32`\n      scalar too.\n\n\nSupported operators\n===================\n\nNumexpr supports the set of operators listed below::\n\n    * Logical operators: &, |, ~\n    * Comparison operators: <, <=, ==, !=, >=, >\n    * Unary arithmetic operators: -\n    * Binary arithmetic operators: +, -, *, /, **, %, <<, >>\n\n\nSupported functions\n===================\n\nSupported functions are listed below::\n\n  * where(bool, number1, number2): number\n      Number1 if the bool condition is true, number2 otherwise.\n  * {sin,cos,tan}(float|complex): float|complex\n      Trigonometric sine, cosine or tangent.\n  * {arcsin,arccos,arctan}(float|complex): float|complex\n      Trigonometric inverse sine, cosine or tangent.\n  * arctan2(float1, float2): float\n      Trigonometric inverse tangent of float1/float2.\n  * {sinh,cosh,tanh}(float|complex): float|complex\n      Hyperbolic sine, cosine or tangent.\n  * {arcsinh,arccosh,arctanh}(float|complex): float|complex\n      Hyperbolic inverse sine, cosine or tangent.\n  * {log,log10,log1p}(float|complex): float|complex\n      Natural, base-10 and log(1+x) logarithms.\n  * {exp,expm1}(float|complex): float|complex\n      Exponential and exponential minus one.\n  * sqrt(float|complex): float|complex\n      Square root.\n  * abs(float|complex): float|complex\n      Absolute value.\n  * conj(complex): complex\n      Conjugate value.\n  * {real,imag}(complex): float\n      Real or imaginary part of complex.\n  * complex(float, float): complex\n      Complex from real and imaginary parts.\n  * contains(str, str): bool\n      Returns True for every string in `op1` that contains `op2`.\n\n.. Notes:\n\n  + `abs()` for complex inputs returns a ``complex`` output too.  This\n  is a departure from NumPy where a ``float`` is returned instead.\n  However, Numexpr is not flexible enough yet so as to allow this to\n  happen.  Meanwhile, if you want to mimic NumPy behaviour, you may\n  want to select the real part via the ``real`` function\n  (e.g. \"real(abs(cplx))\") or via the ``real`` selector\n  (e.g. \"abs(cplx).real\").\n\n  + `contains()` only works with bytes strings, not unicode strings.\n\nYou may add additional functions as needed.\n\n\nSupported reduction operations\n==============================\n\nThe following reduction operations are currently supported::\n\n  * sum(number, axis=None): Sum of array elements over a given axis.\n    Negative axis are not supported.\n\n  * prod(number, axis=None): Product of array elements over a given\n    axis.  Negative axis are not supported.\n\n  * min(number, axis=None): Minimum of array elements over a given\n    axis.  Negative axis are not supported.\n\n  * max(number, axis=None): Maximum of array elements over a given\n    axis.  Negative axis are not supported.\n\n\nGeneral routines\n================\n\n::\n\n  * evaluate(expression, local_dict=None, global_dict=None,\n             out=None, order='K', casting='safe', **kwargs):\n    Evaluate a simple array expression element-wise.  See docstrings\n    for more info on parameters.  Also, see examples above.\n\n  * re_evaluate(local_dict=None):\n    Re-evaluate the previous executed array expression without any\n    check.  This is meant for accelerating loops that are\n    re-evaluating the same expression repeatedly without changing\n    anything else than the operands.  If unsure, use evaluate() which\n    is safer.\n\n  * test():  Run all the tests in the test suite.\n\n  * print_versions():  Print the versions of software that numexpr\n    relies on.\n\n  * set_num_threads(nthreads): Sets a number of threads to be used in\n    operations.  Returns the previous setting for the number of\n    threads.  During initialization time Numexpr sets this number to\n    the number of detected cores in the system (see\n    `detect_number_of_cores()`).\n\n    If you are using Intel's VML, you may want to use\n    `set_vml_num_threads(nthreads)` to perform the parallel job with\n    VML instead.  However, you should get very similar performance\n    with VML-optimized functions, and VML's parallelizer cannot deal\n    with common expressions like `(x+1)*(x-2)`, while Numexpr's one\n    can.\n\n  * detect_number_of_cores(): Detects the number of cores in the\n    system.\n\n\nIntel's VML specific support routines\n=====================================\n\nWhen compiled with Intel's VML (Vector Math Library), you will be able\nto use some additional functions for controlling its use. These are outlined below::\n\n  * set_vml_accuracy_mode(mode):  Set the accuracy for VML operations.\n\nThe `mode` parameter can take the values:\n  - 'low': Equivalent to VML_LA - low accuracy VML functions are called\n  - 'high': Equivalent to VML_HA - high accuracy VML functions are called\n  - 'fast': Equivalent to VML_EP - enhanced performance VML functions are called\n\nIt returns the previous mode.\n\nThis call is equivalent to the `vmlSetMode()` in the VML library.\n\n::\n\n  * set_vml_num_threads(nthreads): Suggests a maximum number of\n    threads to be used in VML operations.\n\nThis function is equivalent to the call\n`mkl_domain_set_num_threads(nthreads, MKL_DOMAIN_VML)` in the MKL library.\n\nSee the Intel documentation on `VM Service Functions <https://software.intel.com/en-us/node/521831>`_ for more information.\n\n* get_vml_version():  Get the VML/MKL library version.\n\n\nAuthors\n=======\n\nSee AUTHORS.txt\n\n\nLicense\n=======\n\nNumexpr is distributed under the MIT license.\n\n\n\n.. Local Variables:\n.. mode: text\n.. coding: utf-8\n.. fill-column: 70\n.. End:\n",
+    "docs_url": null,
+    "download_url": "UNKNOWN",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/pydata/numexpr",
+    "keywords": null,
+    "license": "MIT",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "numexpr",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/numexpr/",
+    "release_url": "https://pypi.org/project/numexpr/2.6.2/",
+    "requires_python": null,
+    "summary": "Fast numerical expression evaluator for NumPy",
+    "version": "2.6.2"
+  },
+  "releases": {
+    "1.1.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9c0b9d4e4d04a6eec20d6aec263b9b7c",
+          "sha256": "d4d2cb55bc088709620fe6bcdda93bd724dcf2a178b50fed87625b53c3b21e58"
+        },
+        "downloads": 2722,
+        "filename": "numexpr-1.1.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "9c0b9d4e4d04a6eec20d6aec263b9b7c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 40322,
+        "upload_time": "2009-01-23T13:01:57",
+        "url": "https://files.pythonhosted.org/packages/7c/f4/d9919d24127cc4d805390cb658d521378e8e27dee6257cd47b7266631ecd/numexpr-1.1.1.tar.gz"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9415de45c71ee38474d4b625d8f459c3",
+          "sha256": "0309e50ed728c8acd18999320d11ffce44c53cfce1ccd7a866b51ee5c89e9508"
+        },
+        "downloads": 2463,
+        "filename": "numexpr-1.1.1.win32-py2.4.exe",
+        "has_sig": false,
+        "md5_digest": "9415de45c71ee38474d4b625d8f459c3",
+        "packagetype": "bdist_wininst",
+        "python_version": "2.4",
+        "size": 101333,
+        "upload_time": "2009-01-23T12:57:00",
+        "url": "https://files.pythonhosted.org/packages/3a/77/522c315ad5c5823bd30a4c70d050b40556b22a24432707ba0b1ea1a233df/numexpr-1.1.1.win32-py2.4.exe"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "845e664b127fb0fb180f2923f05223ec",
+          "sha256": "585189667cc5c0b6a3a569b97b9d5bd97ece67ffb73e44e36b24b971add99966"
+        },
+        "downloads": 2436,
+        "filename": "numexpr-1.1.1.win32-py2.5.exe",
+        "has_sig": false,
+        "md5_digest": "845e664b127fb0fb180f2923f05223ec",
+        "packagetype": "bdist_wininst",
+        "python_version": "2.5",
+        "size": 101722,
+        "upload_time": "2009-01-23T13:11:40",
+        "url": "https://files.pythonhosted.org/packages/e5/ac/30f05a5aff5ef683cb608a5a4f37ca743ddc1cc2af70f5ffb8e0d52455d6/numexpr-1.1.1.win32-py2.5.exe"
+      }
+    ],
+    "1.2": [],
+    "1.3": [
+      {
+        "comment_text": "Sources",
+        "digests": {
+          "md5": "a7395468850e1c62b8bf6d8dc70f27a0",
+          "sha256": "68fbe8c8fb65094a2a838bf5d9a18d7f52e239491930bd2e438864c815469b42"
+        },
+        "downloads": 2728,
+        "filename": "numexpr-1.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a7395468850e1c62b8bf6d8dc70f27a0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 50597,
+        "upload_time": "2009-06-02T18:41:52",
+        "url": "https://files.pythonhosted.org/packages/5d/90/8916ce76319929f9288e9f7f74e9a3329f4bf45665bde53a33905e6992c7/numexpr-1.3.tar.gz"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d276ac648cd655a059cce4ef0805ccba",
+          "sha256": "c06fe06c9ad2eba4cfd82d82afa3e17252ad1ecc8cef9609dfb937c6eb046fae"
+        },
+        "downloads": 2439,
+        "filename": "numexpr-1.3.win32-py2.4.exe",
+        "has_sig": false,
+        "md5_digest": "d276ac648cd655a059cce4ef0805ccba",
+        "packagetype": "bdist_wininst",
+        "python_version": "2.4",
+        "size": 106247,
+        "upload_time": "2009-06-02T18:04:03",
+        "url": "https://files.pythonhosted.org/packages/67/05/a009ee8ba1bd6f8f4b841cb3d7c21b5e4ee8c0498d0c793c458b037aac54/numexpr-1.3.win32-py2.4.exe"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ec9c7348c7258661169894eb1a4fcd1b",
+          "sha256": "35dcc764d82f41e616d0e5bf04e4cc9aad562394dc6ab97b0528fc9a7eef5ab0"
+        },
+        "downloads": 2439,
+        "filename": "numexpr-1.3.win32-py2.5.exe",
+        "has_sig": false,
+        "md5_digest": "ec9c7348c7258661169894eb1a4fcd1b",
+        "packagetype": "bdist_wininst",
+        "python_version": "2.5",
+        "size": 106655,
+        "upload_time": "2009-06-02T18:04:18",
+        "url": "https://files.pythonhosted.org/packages/da/bf/0a87c6ed3c20d20621d9a9bb694d19cb83c0f25f0e0f967531981712781c/numexpr-1.3.win32-py2.5.exe"
+      },
+      {
+        "comment_text": "32-bit binaries",
+        "digests": {
+          "md5": "f3cb5e6e7812cc82b2a970baf2bcf5df",
+          "sha256": "322e9c0065e1103f29d8be9f7259efb0560f5f761ad2c5cae1305d5feb2ff5e5"
+        },
+        "downloads": 2406,
+        "filename": "numexpr-1.3.win32-py2.6.exe",
+        "has_sig": false,
+        "md5_digest": "f3cb5e6e7812cc82b2a970baf2bcf5df",
+        "packagetype": "bdist_wininst",
+        "python_version": "2.6",
+        "size": 114718,
+        "upload_time": "2009-06-02T18:04:57",
+        "url": "https://files.pythonhosted.org/packages/42/d9/e2ae8409d002b0aa3ef61041fa110954ade4b4239ead7f01411973b83d43/numexpr-1.3.win32-py2.6.exe"
+      }
+    ],
+    "1.3.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1ca0cf40350913fa620f73cbd906378a",
+          "sha256": "52bae05999975b181a49903371bd22073669c210d2e34a26d6b87bf684c35263"
+        },
+        "downloads": 2870,
+        "filename": "numexpr-1.3.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1ca0cf40350913fa620f73cbd906378a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 56972,
+        "upload_time": "2009-06-23T14:15:51",
+        "url": "https://files.pythonhosted.org/packages/56/4e/19f79e02028e0772b6c84f03440aaf0219240a2cdc7bdc63cff14ad3907d/numexpr-1.3.1.tar.gz"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9c7f8c99018f503db55f81b49049a280",
+          "sha256": "7ea3d3ef487c9956a1c4d2d7bd91c42d75882dbee35645735724be2968602efc"
+        },
+        "downloads": 2455,
+        "filename": "numexpr-1.3.1.win32-py2.4.exe",
+        "has_sig": false,
+        "md5_digest": "9c7f8c99018f503db55f81b49049a280",
+        "packagetype": "bdist_wininst",
+        "python_version": "2.4",
+        "size": 111250,
+        "upload_time": "2009-06-23T14:16:10",
+        "url": "https://files.pythonhosted.org/packages/3b/b4/d79d676b519c64a052a7ded58f614a87e7f4a2fceb141ed418692fff33e5/numexpr-1.3.1.win32-py2.4.exe"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b9a719c5634847556168aad1366c1f1a",
+          "sha256": "488729fbcebbea21bceab98aa90f53174fdd3820db56c3548748ac15951f6174"
+        },
+        "downloads": 2474,
+        "filename": "numexpr-1.3.1.win32-py2.5.exe",
+        "has_sig": false,
+        "md5_digest": "b9a719c5634847556168aad1366c1f1a",
+        "packagetype": "bdist_wininst",
+        "python_version": "2.5",
+        "size": 111645,
+        "upload_time": "2009-06-23T14:16:26",
+        "url": "https://files.pythonhosted.org/packages/f9/14/b2a057e33384d6eb569e8c767a2d6ea7e4446637f923dfe00e151b7a3894/numexpr-1.3.1.win32-py2.5.exe"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e037829c22a445972c5ec9d5fd124174",
+          "sha256": "e52d92758910cbc6cf8cf36add8edad7a8db6ebb4be2c259e029ceb414eaeed5"
+        },
+        "downloads": 2508,
+        "filename": "numexpr-1.3.1.win32-py2.6.exe",
+        "has_sig": false,
+        "md5_digest": "e037829c22a445972c5ec9d5fd124174",
+        "packagetype": "bdist_wininst",
+        "python_version": "2.6",
+        "size": 119700,
+        "upload_time": "2009-06-23T14:16:45",
+        "url": "https://files.pythonhosted.org/packages/1c/af/646bc08e8f7eceb28fe2fca4093664f02450fd108af4ca0705def61c39c1/numexpr-1.3.1.win32-py2.6.exe"
+      }
+    ],
+    "1.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e31594a3796f225292a1515637dfff9c",
+          "sha256": "5ef302c10f069b7999a58ceccdae748eb697ec91c6b56239c671b2e9ba40fe2c"
+        },
+        "downloads": 3404,
+        "filename": "numexpr-1.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e31594a3796f225292a1515637dfff9c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 62200,
+        "upload_time": "2010-08-02T07:47:02",
+        "url": "https://files.pythonhosted.org/packages/f9/c3/8b4bc1b996efb8149a917c9b9ed295bd83913f64cca0f56949889697f057/numexpr-1.4.tar.gz"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "94d9e2f9fa4675972e4539100b16ef19",
+          "sha256": "23057832135e1e2a87f87a9c5ca6e2c3cd3cb6b51e5686958e72cbfc1d8601e2"
+        },
+        "downloads": 2444,
+        "filename": "numexpr-1.4.win32-py2.6.exe",
+        "has_sig": false,
+        "md5_digest": "94d9e2f9fa4675972e4539100b16ef19",
+        "packagetype": "bdist_wininst",
+        "python_version": "2.6",
+        "size": 132662,
+        "upload_time": "2010-08-01T13:20:03",
+        "url": "https://files.pythonhosted.org/packages/4c/34/bdacd5ab016576a163bf4a778e480a6d2a1398093eb2c97be03daec4f9be/numexpr-1.4.win32-py2.6.exe"
+      },
+      {
+        "comment_text": "64-bit version",
+        "digests": {
+          "md5": "d12d77381160f7047fd50a696b2cee3c",
+          "sha256": "49c960528a22b52befb621ae88c13746561bc90f8314b659ed6429d1d6bb39bb"
+        },
+        "downloads": 2420,
+        "filename": "numexpr-1.4.win-amd64-py2.6.exe",
+        "has_sig": false,
+        "md5_digest": "d12d77381160f7047fd50a696b2cee3c",
+        "packagetype": "bdist_wininst",
+        "python_version": "2.6",
+        "size": 290058,
+        "upload_time": "2010-08-01T13:20:31",
+        "url": "https://files.pythonhosted.org/packages/70/81/cffc89866034fa5b7ee9d89292a526ba8262790e171f926508ec83544b71/numexpr-1.4.win-amd64-py2.6.exe"
+      }
+    ],
+    "1.4.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0627596d4166d99c55a2291650e09358",
+          "sha256": "27cef1ce2a5c98294a307cf89bf9a0534d56940a42516f5d4bb952715cae727b"
+        },
+        "downloads": 5973,
+        "filename": "numexpr-1.4.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0627596d4166d99c55a2291650e09358",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 63109,
+        "upload_time": "2010-10-20T18:58:18",
+        "url": "https://files.pythonhosted.org/packages/61/ef/cf680615fa46d948524617e9b1e29ee220ba2f73a5e76b9ff458fd8663f8/numexpr-1.4.1.tar.gz"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ae030ff43daff0a26ba630e760ce73d0",
+          "sha256": "f17ddf4166b8a004f04c802bf7e1f791e6d5011a803b532fdb0cb70668feb8c7"
+        },
+        "downloads": 2558,
+        "filename": "numexpr-1.4.1.win32-py2.6.exe",
+        "has_sig": false,
+        "md5_digest": "ae030ff43daff0a26ba630e760ce73d0",
+        "packagetype": "bdist_wininst",
+        "python_version": "2.6",
+        "size": 262273,
+        "upload_time": "2010-10-20T19:00:13",
+        "url": "https://files.pythonhosted.org/packages/0f/b6/5ccf00ea4699c987578d10b3c98ed5b7e5adaa69071eee885494d6e583c7/numexpr-1.4.1.win32-py2.6.exe"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "825c87f5f3868a598491799509248f32",
+          "sha256": "256bc8cd4e47833efce15a06da372b4b056c739104e33df4ea35d27cf23b1fcf"
+        },
+        "downloads": 2698,
+        "filename": "numexpr-1.4.1.win32-py2.7.exe",
+        "has_sig": false,
+        "md5_digest": "825c87f5f3868a598491799509248f32",
+        "packagetype": "bdist_wininst",
+        "python_version": "2.7",
+        "size": 262144,
+        "upload_time": "2010-10-20T19:00:34",
+        "url": "https://files.pythonhosted.org/packages/73/b6/4d365593c7261d2d4ff02e9c4a8d04cd3f08db766f4daac0c15d59fe69ef/numexpr-1.4.1.win32-py2.7.exe"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2adb45c1944570c67ece9ce63383866f",
+          "sha256": "c7f29f30fd666d4e8c370a0bbfbbca5ef7224770d32f19f343c60ba68d91cf7c"
+        },
+        "downloads": 2514,
+        "filename": "numexpr-1.4.1.win-amd64-py2.6.exe",
+        "has_sig": false,
+        "md5_digest": "2adb45c1944570c67ece9ce63383866f",
+        "packagetype": "bdist_wininst",
+        "python_version": "2.6",
+        "size": 290794,
+        "upload_time": "2010-10-20T18:59:38",
+        "url": "https://files.pythonhosted.org/packages/5e/5f/2451f779bad4a140be0c2611fcb8ee9f018294190f6cfc68d95a093893df/numexpr-1.4.1.win-amd64-py2.6.exe"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e546fbc653100ae0e1767c0d7b0d2eb2",
+          "sha256": "6a9e8ca48394c422e4582962f3507c15951cf265262585dc08a61d0b8e8a3af7"
+        },
+        "downloads": 2595,
+        "filename": "numexpr-1.4.1.win-amd64-py2.7.exe",
+        "has_sig": false,
+        "md5_digest": "e546fbc653100ae0e1767c0d7b0d2eb2",
+        "packagetype": "bdist_wininst",
+        "python_version": "2.7",
+        "size": 290869,
+        "upload_time": "2010-10-20T18:59:54",
+        "url": "https://files.pythonhosted.org/packages/03/99/198100d99e2b9ec47f1c73b55887666a0568646b1fcfc5570194657190b1/numexpr-1.4.1.win-amd64-py2.7.exe"
+      }
+    ],
+    "1.4.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "139115cc196dc57a66b2eb30cd3e80a0",
+          "sha256": "38f73f0402bca52566186dbeca586989617c02f8f23a31085cf27eb5fd654967"
+        },
+        "downloads": 19128,
+        "filename": "numexpr-1.4.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "139115cc196dc57a66b2eb30cd3e80a0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 64172,
+        "upload_time": "2011-01-25T18:33:46",
+        "url": "https://files.pythonhosted.org/packages/b3/96/752e551671487350809a0eebb24d4b96fae17a2dcd569221bc71f77de9bb/numexpr-1.4.2.tar.gz"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d52989822ca449052d008061d7aff544",
+          "sha256": "b1fcf03ff85309421d482d7ef6dadb0db9a25b629a2ec1698ec878df6f261d79"
+        },
+        "downloads": 2538,
+        "filename": "numexpr-1.4.2.win32-py2.6.exe",
+        "has_sig": false,
+        "md5_digest": "d52989822ca449052d008061d7aff544",
+        "packagetype": "bdist_wininst",
+        "python_version": "2.6",
+        "size": 262918,
+        "upload_time": "2011-01-25T18:34:10",
+        "url": "https://files.pythonhosted.org/packages/ca/a9/4bdc518081f4e17d1d41efb0e456ca27cf49969a175ab026b1543a764231/numexpr-1.4.2.win32-py2.6.exe"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "046a8d3b3315c424ff6da95a7a6c0b30",
+          "sha256": "2728e19fdaf3bcecbc16d3780f087cd9122a8fed1144dc388873744864358368"
+        },
+        "downloads": 2618,
+        "filename": "numexpr-1.4.2.win32-py2.7.exe",
+        "has_sig": false,
+        "md5_digest": "046a8d3b3315c424ff6da95a7a6c0b30",
+        "packagetype": "bdist_wininst",
+        "python_version": "2.7",
+        "size": 262906,
+        "upload_time": "2011-01-25T18:34:28",
+        "url": "https://files.pythonhosted.org/packages/fe/ab/0730f715c51d7bc03c50dbb1007eab58d305d0812302c63966435b2b376d/numexpr-1.4.2.win32-py2.7.exe"
+      },
+      {
+        "comment_text": "64-bit version",
+        "digests": {
+          "md5": "e061b03b24d5541e85e7d4c8f3a0d88b",
+          "sha256": "cc118fa9b3ba2d55d9044e207bdab593643f806f5de363f67530d2a2e82ef8e9"
+        },
+        "downloads": 2486,
+        "filename": "numexpr-1.4.2.win-amd64-py2.6.exe",
+        "has_sig": false,
+        "md5_digest": "e061b03b24d5541e85e7d4c8f3a0d88b",
+        "packagetype": "bdist_wininst",
+        "python_version": "2.6",
+        "size": 290744,
+        "upload_time": "2011-01-25T18:36:04",
+        "url": "https://files.pythonhosted.org/packages/dc/3b/b4eccb2dde9bad68f14de541da286c6d1d4d3fe6bf200af0a3320b9d2343/numexpr-1.4.2.win-amd64-py2.6.exe"
+      },
+      {
+        "comment_text": "64-bit version",
+        "digests": {
+          "md5": "29cad89d3a374f33eb9e61c164c56df7",
+          "sha256": "26fb818f83e926d2c39823b84ed52f752723ea8c9c3f81dd2b50953135453468"
+        },
+        "downloads": 2551,
+        "filename": "numexpr-1.4.2.win-amd64-py2.7.exe",
+        "has_sig": false,
+        "md5_digest": "29cad89d3a374f33eb9e61c164c56df7",
+        "packagetype": "bdist_wininst",
+        "python_version": "2.7",
+        "size": 290742,
+        "upload_time": "2011-01-25T18:35:29",
+        "url": "https://files.pythonhosted.org/packages/20/2d/05f3245d4ef6d1d16510381db48e60e5de01ee9740053f31d0ee7996011c/numexpr-1.4.2.win-amd64-py2.7.exe"
+      }
+    ],
+    "2.0": [],
+    "2.0.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5cdc05c2ef8761daeae8a3182e468ba4",
+          "sha256": "29492a08d5137c9a3a369527a899680ef7c1908cd4851ad2827b6c1d3767b092"
+        },
+        "downloads": 6951,
+        "filename": "numexpr-2.0.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5cdc05c2ef8761daeae8a3182e468ba4",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 68549,
+        "upload_time": "2013-05-03T15:36:45",
+        "url": "https://files.pythonhosted.org/packages/14/b4/24183cc49a74b3197b47042f363cc12535cabdf2669c1c2420efcb116c71/numexpr-2.0.1.tar.gz"
+      }
+    ],
+    "2.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8c138e81fb4214d05453da0fc88bf0d5",
+          "sha256": "39f2fed7f1b8125c0f2df3af454c97e5dfa636ce487ad7921025815e24c17df8"
+        },
+        "downloads": 19087,
+        "filename": "numexpr-2.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8c138e81fb4214d05453da0fc88bf0d5",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 73944,
+        "upload_time": "2013-04-27T09:42:54",
+        "url": "https://files.pythonhosted.org/packages/b6/06/8b93c1bfced7e560e1167b07b3f4628f6544ec023a3e8d4bd964cd0e62e1/numexpr-2.1.tar.gz"
+      }
+    ],
+    "2.2": [],
+    "2.2.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d79081537d5a8059c352d57ac27e0305",
+          "sha256": "7f263f3aa70d5b873d23df23c05764a246321381155514041e8b9481b2eabd4a"
+        },
+        "downloads": 3910,
+        "filename": "numexpr-2.2.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d79081537d5a8059c352d57ac27e0305",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 72249,
+        "upload_time": "2013-09-08T18:13:44",
+        "url": "https://files.pythonhosted.org/packages/8d/40/c371492ea99f9d8f7cb855258261aa641cdd4bf939cf8bd16ec1dcb3acee/numexpr-2.2.1.tar.gz"
+      }
+    ],
+    "2.2.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "18103954044b3039c0a74a6006c8e0a7",
+          "sha256": "47d3435785f59a72dc06a1c0257b83f0f656d4974e804c30a6ef8c0de293d9ee"
+        },
+        "downloads": 28407,
+        "filename": "numexpr-2.2.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "18103954044b3039c0a74a6006c8e0a7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 75680,
+        "upload_time": "2013-09-27T11:00:32",
+        "url": "https://files.pythonhosted.org/packages/68/a3/3ad7062a14c56f169e0e43c3934bd96f2dab4c4238c2a07593dc253a1799/numexpr-2.2.2.tar.gz"
+      }
+    ],
+    "2.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0cf44db190b25cb33b8878516faf3e4a",
+          "sha256": "72765c99d63e828d111e56e0a5848221006e9672d37732588c6ba1d8c5d05a8f"
+        },
+        "downloads": 9184,
+        "filename": "numexpr-2.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0cf44db190b25cb33b8878516faf3e4a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 74856,
+        "upload_time": "2014-01-26T07:28:49",
+        "url": "https://files.pythonhosted.org/packages/50/b7/07579bd35ee320ca0b153482a49453033e049d7b407fd24d9126f02adf9e/numexpr-2.3.tar.gz"
+      }
+    ],
+    "2.3-rc1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "44893e0d3c96525c84dab260ddd05024",
+          "sha256": "6b3b091aeb28c095148ac3a0b2514bc843ad3c2b4441e4f2b906a0d613598fe1"
+        },
+        "downloads": 2672,
+        "filename": "numexpr-2.3-rc1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "44893e0d3c96525c84dab260ddd05024",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 72926,
+        "upload_time": "2014-01-24T12:31:27",
+        "url": "https://files.pythonhosted.org/packages/9b/01/ecdeb71008d42b57d35caf0743c07218cbf9b0305cc531028c99a44c64cd/numexpr-2.3-rc1.tar.gz"
+      }
+    ],
+    "2.3.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ef3e131c0dec28032f4781eef8b2a029",
+          "sha256": "4dd39c835f061ae145d1a1df5ca6962a1d097caa8b39176ae395d077bcbac967"
+        },
+        "downloads": 21017,
+        "filename": "numexpr-2.3.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ef3e131c0dec28032f4781eef8b2a029",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 74876,
+        "upload_time": "2014-02-18T07:58:04",
+        "url": "https://files.pythonhosted.org/packages/7a/bd/523b45fb5b145a1ede66fd7d519275309f72b4cf083cd8da615e30a6ed24/numexpr-2.3.1.tar.gz"
+      }
+    ],
+    "2.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ffd4df04f7a7cc94d7e08f86d8239d0a",
+          "sha256": "baf9a0d68f8418d217f1f4c5ee72e95e93b1f945713335eb49b83811bef93fc1"
+        },
+        "downloads": 4085,
+        "filename": "numexpr-2.4-cp27-none-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "ffd4df04f7a7cc94d7e08f86d8239d0a",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 235897,
+        "upload_time": "2014-11-29T01:34:53",
+        "url": "https://files.pythonhosted.org/packages/26/58/170b61025819c556d8a53b4c3c0a4ee4795556d0e839ad2aeaa8a6615a1d/numexpr-2.4-cp27-none-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7b5141381d06199e92794753d8a42fa2",
+          "sha256": "0d7793f8a216e3af22942dac66b38023763e2c44e3f5ff091efdb86adf6aeaa6"
+        },
+        "downloads": 3507,
+        "filename": "numexpr-2.4-cp27-none-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "7b5141381d06199e92794753d8a42fa2",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 235887,
+        "upload_time": "2014-08-02T17:29:32",
+        "url": "https://files.pythonhosted.org/packages/64/fe/7e360206b9c904c59b2cb2f37ed9b6a921408f00badb9a9658db0817a2b8/numexpr-2.4-cp27-none-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3843599b75ccc02d83d83bc3cbf45222",
+          "sha256": "e199982baf6ba8000ce19b2345678196ba4dfac69341dce774c920c2c79b889f"
+        },
+        "downloads": 1286,
+        "filename": "numexpr-2.4-cp33-cp33m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "3843599b75ccc02d83d83bc3cbf45222",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp33",
+        "size": 236172,
+        "upload_time": "2014-11-29T01:34:57",
+        "url": "https://files.pythonhosted.org/packages/12/4b/c92f3f6b52f8b6ab441493652269ebbb163264b1a9a6958e33bef3a8aae5/numexpr-2.4-cp33-cp33m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f39aceda4f4fc76cc2c0dc17eb5ca5bb",
+          "sha256": "c0039a7b5892e99267ab4a8d06c90d115931a8e7e6399c22255382af4f4efddf"
+        },
+        "downloads": 1657,
+        "filename": "numexpr-2.4-cp33-cp33m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "f39aceda4f4fc76cc2c0dc17eb5ca5bb",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp33",
+        "size": 236155,
+        "upload_time": "2014-08-02T17:29:35",
+        "url": "https://files.pythonhosted.org/packages/3b/a9/976ced1fbf03dcf48f1583d6d2ce6752b3563aef199cea29a10e893bdb96/numexpr-2.4-cp33-cp33m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7a855a7ef61eb1238b4697e88b32348e",
+          "sha256": "13c0aa737291e4675f793b066207e98d6a24d774d89e7b45d70e6ad8a21052b7"
+        },
+        "downloads": 1709,
+        "filename": "numexpr-2.4-cp34-cp34m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "7a855a7ef61eb1238b4697e88b32348e",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 236076,
+        "upload_time": "2014-11-29T01:35:01",
+        "url": "https://files.pythonhosted.org/packages/ec/ed/f5305061e8e677433c207534c3c564d8bde6fcd11566e70cf3eda4658f51/numexpr-2.4-cp34-cp34m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d3a01e5d5009b4076913ea1db5e023d5",
+          "sha256": "54af15dbd1638cb452854081789879d53feaf8ce2a08d30b4d4833c8a3e7dfbf"
+        },
+        "downloads": 1898,
+        "filename": "numexpr-2.4-cp34-cp34m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "d3a01e5d5009b4076913ea1db5e023d5",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 236065,
+        "upload_time": "2014-08-02T17:29:37",
+        "url": "https://files.pythonhosted.org/packages/99/1a/6c48c6234f74389f71c732e21b89508a2022e9c43b84c21bcdcb302e692f/numexpr-2.4-cp34-cp34m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "df7e8d9e9dbb145b56d43c465c2bf854",
+          "sha256": "1b63a5ce11c10d36433e2a74e2e4c360a4e004618507778881659e80a912fc58"
+        },
+        "downloads": 459424,
+        "filename": "numexpr-2.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "df7e8d9e9dbb145b56d43c465c2bf854",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 84770,
+        "upload_time": "2014-04-13T18:38:31",
+        "url": "https://files.pythonhosted.org/packages/52/2b/2a0ae329ea41782d55c5165c662117cc22a1dce569d7796627d039f6888e/numexpr-2.4.tar.gz"
+      }
+    ],
+    "2.4-rc1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "307f9f4da6dfdbd0e83245663050d750",
+          "sha256": "1d91db98850dbe9cedd2e4502b3ee9676fd437e5878a00bbe0299b6e23e571e2"
+        },
+        "downloads": 1747,
+        "filename": "numexpr-2.4-rc1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "307f9f4da6dfdbd0e83245663050d750",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 81608,
+        "upload_time": "2014-04-06T10:44:04",
+        "url": "https://files.pythonhosted.org/packages/c5/f7/9f5e181cf189c58b6b001ce009ccbad8bab8c8735cc5a4050f42c133b70d/numexpr-2.4-rc1.tar.gz"
+      }
+    ],
+    "2.4-rc2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2adf61dcf445112fab33dbcb50a76ecd",
+          "sha256": "d2225f622a893565adb9df7cd42c92966cc507cca64356f1b9775ce9eb5815f1"
+        },
+        "downloads": 6481,
+        "filename": "numexpr-2.4-rc2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2adf61dcf445112fab33dbcb50a76ecd",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 84603,
+        "upload_time": "2014-04-07T07:05:04",
+        "url": "https://files.pythonhosted.org/packages/a9/5c/d5061aef73af71a0951b93803932a02f6d237fe65b86372ff19cb5589871/numexpr-2.4-rc2.tar.gz"
+      }
+    ],
+    "2.4.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0c04b36b1348c02760871aa7a9c00e29",
+          "sha256": "109f2604fa88b2e9404c3e174e1ede3a8b0fb8420e05164c5c5963f640abd6ec"
+        },
+        "downloads": 1255,
+        "filename": "numexpr-2.4.1-cp27-none-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "0c04b36b1348c02760871aa7a9c00e29",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 236025,
+        "upload_time": "2015-04-14T21:23:16",
+        "url": "https://files.pythonhosted.org/packages/44/f1/9833d22659ea3ee7168011b33dfd7a6d33c5623a456c8d9828e4908706ac/numexpr-2.4.1-cp27-none-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "18febdd05175014a255c165c16fe56cd",
+          "sha256": "29defce028a53cde881fdafdd2fbdb85a635d00e958a0d28578e61f5d97846f8"
+        },
+        "downloads": 948,
+        "filename": "numexpr-2.4.1-cp33-cp33m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "18febdd05175014a255c165c16fe56cd",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp33",
+        "size": 236252,
+        "upload_time": "2015-04-14T21:23:20",
+        "url": "https://files.pythonhosted.org/packages/d3/95/fcf2e5dcbf93f4cecc386df5469173a850667a2ad50d254f975eb36416db/numexpr-2.4.1-cp33-cp33m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0212f92ee432859adeea5ec9e9b04d08",
+          "sha256": "734f6b180e59506b35f000624a8a6cbe72dd6fa30158134be30ee69ddd6b8b88"
+        },
+        "downloads": 988,
+        "filename": "numexpr-2.4.1-cp34-cp34m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "0212f92ee432859adeea5ec9e9b04d08",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 236175,
+        "upload_time": "2015-04-14T21:23:24",
+        "url": "https://files.pythonhosted.org/packages/e0/73/f1428ba5dddef31f387154e514386e46a135a67dc5a3be37b1aab3c1c584/numexpr-2.4.1-cp34-cp34m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "17128e09fa80059998c32b3fb3709f29",
+          "sha256": "5b53a9e9e50f33e2e562b4ae9f88066c9e54a3bd7c144d29d0067b87856815b4"
+        },
+        "downloads": 3744,
+        "filename": "numexpr-2.4.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "17128e09fa80059998c32b3fb3709f29",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 84990,
+        "upload_time": "2015-04-14T16:01:35",
+        "url": "https://files.pythonhosted.org/packages/38/af/ba484d2f46bb2f409fe99ce6768943ef4c753fac28c618fef25ed07eb549/numexpr-2.4.1.tar.gz"
+      }
+    ],
+    "2.4.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8d987fc29840e940b4fa7add9ad7baa1",
+          "sha256": "a5937173b9ef00af31e5d9e6f62c15d74f0074c6212627cbed8b6cb6e958c92d"
+        },
+        "downloads": 3047,
+        "filename": "numexpr-2.4.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8d987fc29840e940b4fa7add9ad7baa1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 84969,
+        "upload_time": "2015-04-22T08:45:09",
+        "url": "https://files.pythonhosted.org/packages/1a/f6/4d52d16ba169066984fea463c8b5c8b46e39e3b3090f02e7b6c414dcb39d/numexpr-2.4.2.tar.gz"
+      }
+    ],
+    "2.4.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "bc237e61d76dd1ce10c7b89823c8c767",
+          "sha256": "aae190daf78aed70c5f3934c4f30d000aaf6aba4d00865680ffbdac6e9673699"
+        },
+        "downloads": 6055,
+        "filename": "numexpr-2.4.3-cp27-none-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "bc237e61d76dd1ce10c7b89823c8c767",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 237564,
+        "upload_time": "2015-04-27T17:10:25",
+        "url": "https://files.pythonhosted.org/packages/cc/92/c2a13a8f94e12db4247af069f11004954ce67a06e5fda0fc87d70119771b/numexpr-2.4.3-cp27-none-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c71996a86a18a8d4678e09b2b958b05c",
+          "sha256": "280b5f749dd3dfcd40250ced7ada3c50c41c63e4aec7ec4bce145353f8f93c5f"
+        },
+        "downloads": 937,
+        "filename": "numexpr-2.4.3-cp33-cp33m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "c71996a86a18a8d4678e09b2b958b05c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp33",
+        "size": 237668,
+        "upload_time": "2015-04-27T17:10:29",
+        "url": "https://files.pythonhosted.org/packages/39/2e/f07dda2076ddceecaab05cf5af0817e9a7c70bbaf6725f12fe7d896fa980/numexpr-2.4.3-cp33-cp33m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f689e5492637af8a6eb4304d97597d97",
+          "sha256": "d1217d882ee7b127dad5c1f5be90e0cc97e598ad10a087e70b42f81db77c2e13"
+        },
+        "downloads": 1781,
+        "filename": "numexpr-2.4.3-cp34-cp34m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "f689e5492637af8a6eb4304d97597d97",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 237790,
+        "upload_time": "2015-04-27T17:10:32",
+        "url": "https://files.pythonhosted.org/packages/98/ca/83fbfa2dcdd707c297b671c1f9075e334190d14dcbd09a2a614ef4103d91/numexpr-2.4.3-cp34-cp34m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "defcdba412912e1ee59c7da6cfa48224",
+          "sha256": "3ae7191c89df40db6b0a8637a4dace7c5956bc910793a53225f985f3b443c722"
+        },
+        "downloads": 51775,
+        "filename": "numexpr-2.4.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "defcdba412912e1ee59c7da6cfa48224",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 85171,
+        "upload_time": "2015-04-27T15:47:26",
+        "url": "https://files.pythonhosted.org/packages/21/0c/8b1975367a723ed94404cbd7f21a1d1a6a87ba7fb323fb9074fa2987e804/numexpr-2.4.3.tar.gz"
+      }
+    ],
+    "2.4.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "93e4a3ba293d262bac90bb290b58dc4e",
+          "sha256": "111fb6a403d3b00f0bc8bbb45b62f3454c3d750fc67ac599d8cb2f20361f8731"
+        },
+        "downloads": 1874,
+        "filename": "numexpr-2.4.4-cp27-none-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "93e4a3ba293d262bac90bb290b58dc4e",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 237975,
+        "upload_time": "2015-09-18T20:53:02",
+        "url": "https://files.pythonhosted.org/packages/67/47/ba49eb919b9e22166c9e6c31d1564ab3c35af59d0fc149625d763ec81057/numexpr-2.4.4-cp27-none-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "65e6e92e3427b22564ff82a3bc6dd228",
+          "sha256": "506e488462be9b03dba1fde1976fc10205452fb458dd3bdae98b68695b5ee501"
+        },
+        "downloads": 595,
+        "filename": "numexpr-2.4.4-cp33-cp33m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "65e6e92e3427b22564ff82a3bc6dd228",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp33",
+        "size": 237869,
+        "upload_time": "2015-09-18T20:53:12",
+        "url": "https://files.pythonhosted.org/packages/bd/98/3b88632a75506b5074422cfcb4ab03da72b5bcef717e9eedda3c51dcf598/numexpr-2.4.4-cp33-cp33m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "04143d45a8468907d6327fbcbada7c0b",
+          "sha256": "28be350bea97eb75e5e88888f5d10faaebf4f33e5ae8795bca9b0df820ed955c"
+        },
+        "downloads": 767,
+        "filename": "numexpr-2.4.4-cp34-cp34m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "04143d45a8468907d6327fbcbada7c0b",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 237958,
+        "upload_time": "2015-09-18T20:53:18",
+        "url": "https://files.pythonhosted.org/packages/cf/9f/c6584bd31bcda1e028dbaf18bebbd924e219c4738cd6ed88791f35823847/numexpr-2.4.4-cp34-cp34m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5939d6e2d50ae2d1a4360a9333347c81",
+          "sha256": "f98c2f38769f3b81267f46d194f3e5615f082dca580f8f71a54cb75bcc982888"
+        },
+        "downloads": 828,
+        "filename": "numexpr-2.4.4-cp35-cp35m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "5939d6e2d50ae2d1a4360a9333347c81",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 237946,
+        "upload_time": "2015-09-18T20:53:22",
+        "url": "https://files.pythonhosted.org/packages/08/c9/f268436b326f089b83d5569f9b723374ae611a0b3bc5d89600908e48f2d6/numexpr-2.4.4-cp35-cp35m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5d62b029b6405317ab1f6dfa33da30fc",
+          "sha256": "dfa2fad1af040e93a8022fbe4437f2183bf80e5f64d466381ad589308a73565b"
+        },
+        "downloads": 15408,
+        "filename": "numexpr-2.4.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5d62b029b6405317ab1f6dfa33da30fc",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 87133,
+        "upload_time": "2015-09-14T16:06:35",
+        "url": "https://files.pythonhosted.org/packages/5e/8d/bd908c3f42fba62b0be43fd1b06ae143c00fba3730fbcb6695a6ca7c7ce7/numexpr-2.4.4.tar.gz"
+      }
+    ],
+    "2.4.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "22d1bbea5473ed7bb6e922600236ad8a",
+          "sha256": "ee066cad4acd0bd045960d3b07edf5a836ba02b57e8c069f00bb4e2188c7162e"
+        },
+        "downloads": 838,
+        "filename": "numexpr-2.4.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "22d1bbea5473ed7bb6e922600236ad8a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 87494,
+        "upload_time": "2015-11-02T10:06:27",
+        "url": "https://files.pythonhosted.org/packages/69/10/7af49c1c806cb0558bd176472e49fc91a0f61af99c281d4b8b90707b5a82/numexpr-2.4.5.tar.gz"
+      }
+    ],
+    "2.4.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "643abe3bac9f29e5977b12e5b5e342d3",
+          "sha256": "451c1ca94c7f1390ae71d69a1f58cb4854b64a40f2bc8fd660fb116369d1ef19"
+        },
+        "downloads": 3079,
+        "filename": "numexpr-2.4.6-cp27-none-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "643abe3bac9f29e5977b12e5b5e342d3",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 133207,
+        "upload_time": "2015-11-02T19:25:03",
+        "url": "https://files.pythonhosted.org/packages/60/7a/b24a7c4f2f305d5339275c62fb3d157de95184bd565a134475c9c9c7e094/numexpr-2.4.6-cp27-none-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4ab9fb38d172b2e35d0c200e386b8f56",
+          "sha256": "36fc906099db40d0dd8257a58a1f4ea2b9e04bc1143cb08be8f85735dfad155d"
+        },
+        "downloads": 515,
+        "filename": "numexpr-2.4.6-cp33-cp33m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "4ab9fb38d172b2e35d0c200e386b8f56",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp33",
+        "size": 133544,
+        "upload_time": "2015-11-02T19:25:26",
+        "url": "https://files.pythonhosted.org/packages/ac/0a/243e441e11519bf11bcd0460d5c4ef91ff6f08a66580c997b3587bf84caf/numexpr-2.4.6-cp33-cp33m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d16b2583317660f4d359af98b8150452",
+          "sha256": "13b733919fd1d609165ce832b7ecd5e9bd008c171eb9093c16ea5c2059275ed3"
+        },
+        "downloads": 858,
+        "filename": "numexpr-2.4.6-cp34-cp34m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "d16b2583317660f4d359af98b8150452",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 133498,
+        "upload_time": "2015-11-02T19:25:31",
+        "url": "https://files.pythonhosted.org/packages/a6/43/5b76d639f9a548118ba3d83d37049d9d0ca32258d4051263f6a1a23d5207/numexpr-2.4.6-cp34-cp34m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9cc2a832abbc287ccf427a34859413e1",
+          "sha256": "6b2854a9ab14196ab610e6ecc231ce61ae1e1a6ea5994e52d50fd28c9d5aea41"
+        },
+        "downloads": 1094,
+        "filename": "numexpr-2.4.6-cp35-cp35m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "9cc2a832abbc287ccf427a34859413e1",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 133556,
+        "upload_time": "2015-11-02T19:25:38",
+        "url": "https://files.pythonhosted.org/packages/9f/c4/05d5cd4c7583571c5ce99ba0aa815b658ba5b16941b0e9632939336750d0/numexpr-2.4.6-cp35-cp35m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "17ac6fafc9ea1ce3eb970b9abccb4fbd",
+          "sha256": "052397670dc56d7845ff894cd7d858e4f115491ecd93bcc0eda5cb83990c5da3"
+        },
+        "downloads": 28028,
+        "filename": "numexpr-2.4.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "17ac6fafc9ea1ce3eb970b9abccb4fbd",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 87481,
+        "upload_time": "2015-11-02T19:09:41",
+        "url": "https://files.pythonhosted.org/packages/5a/d5/14b87de25ea857a321e0729a2b2ec3a4a98a993801427938209380a3fc82/numexpr-2.4.6.tar.gz"
+      }
+    ],
+    "2.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ab9e8103b36b1e61c10b479812424852",
+          "sha256": "71d6c55fdae9145fc45ed7135f7baebfd079b331e5741875c32480465796293d"
+        },
+        "downloads": 132,
+        "filename": "numexpr-2.5-cp27-cp27m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "ab9e8103b36b1e61c10b479812424852",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 137218,
+        "upload_time": "2016-02-09T18:30:10",
+        "url": "https://files.pythonhosted.org/packages/39/7e/0746fab17a72a94517bcba7fc388faeac138954648fa570776e44c63c6c6/numexpr-2.5-cp27-cp27m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "189daa441324dcf3f5b83304129f4877",
+          "sha256": "8c719c7eae53b0cd3ca5cf2074c088efd31c4d5c56c33cdb69712d36beffac3d"
+        },
+        "downloads": 111,
+        "filename": "numexpr-2.5-cp33-cp33m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "189daa441324dcf3f5b83304129f4877",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp33",
+        "size": 137632,
+        "upload_time": "2016-02-09T18:30:27",
+        "url": "https://files.pythonhosted.org/packages/4c/e2/393094a8122c9ec3981f67d9b00c4470ba930e12d5e776926382571c958c/numexpr-2.5-cp33-cp33m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "93d75c102c57e194ba926b4c1d9bca9a",
+          "sha256": "933a9ba47259bad43305f0f988054e97eb365279526b16ca08ce4d7031a28fb4"
+        },
+        "downloads": 111,
+        "filename": "numexpr-2.5-cp34-cp34m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "93d75c102c57e194ba926b4c1d9bca9a",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 137568,
+        "upload_time": "2016-02-09T18:30:35",
+        "url": "https://files.pythonhosted.org/packages/19/7f/2317dd3832603f26fd395cb89dff00873ae4c935360085656feb78149dc9/numexpr-2.5-cp34-cp34m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7c7c3ea9f661f51304416352b3c53389",
+          "sha256": "6e292e54ab1cddcec0b8f157d23a84485bfed8b769abb35837621907c75b1fcf"
+        },
+        "downloads": 131,
+        "filename": "numexpr-2.5-cp35-cp35m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "7c7c3ea9f661f51304416352b3c53389",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 137620,
+        "upload_time": "2016-02-09T18:30:42",
+        "url": "https://files.pythonhosted.org/packages/eb/70/df72ed29f448a890ced3299efbf6cf21a0bcacac5e53e74df3d3e4ddc943/numexpr-2.5-cp35-cp35m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "84f66cced45ba3e30dcf77a937763aaa",
+          "sha256": "319cdf4e402177a1c8ed4972cffd09f523446f186d347b7c1974787cdabf0294"
+        },
+        "downloads": 737,
+        "filename": "numexpr-2.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "84f66cced45ba3e30dcf77a937763aaa",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 88347,
+        "upload_time": "2016-02-06T10:48:25",
+        "url": "https://files.pythonhosted.org/packages/7b/a4/e4fb495692ba8b2a6798b2b93c2ee090c1addaf0f6c16395ef3bad72e0ce/numexpr-2.5.tar.gz"
+      }
+    ],
+    "2.5.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "91f80073ca59c5deb3c9688e245e0ccc",
+          "sha256": "d0fcb3f06d651ee257d543e987e1027cf1f92d9aed5427e206afe3df8ff3a79d"
+        },
+        "downloads": 114,
+        "filename": "numexpr-2.5.1-cp27-cp27m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": true,
+        "md5_digest": "91f80073ca59c5deb3c9688e245e0ccc",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 137453,
+        "upload_time": "2016-03-31T16:29:22",
+        "url": "https://files.pythonhosted.org/packages/7a/b1/1ab4e325284ab3df4565c363bef2e3b80c5d60307f0777d40ac846de9afb/numexpr-2.5.1-cp27-cp27m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3fc1ce93f00cc2b1a2f46aa50bdc9130",
+          "sha256": "17f2fd3084954e9509b374b2a9baa2a8102fbe0d765a597f42050d6208e96f29"
+        },
+        "downloads": 104,
+        "filename": "numexpr-2.5.1-cp33-cp33m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": true,
+        "md5_digest": "3fc1ce93f00cc2b1a2f46aa50bdc9130",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp33",
+        "size": 137865,
+        "upload_time": "2016-03-31T16:29:33",
+        "url": "https://files.pythonhosted.org/packages/f4/ce/abf6013519c090b250144513033758a9f642f22efd5465a5a0e05d1a5d7e/numexpr-2.5.1-cp33-cp33m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a3f63fed16322ba06ef7ca701a635ca2",
+          "sha256": "a1debddf2c7e8d9dcf963554eccb078aad0ea3d691b3d5813efdadee5527675b"
+        },
+        "downloads": 100,
+        "filename": "numexpr-2.5.1-cp34-cp34m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": true,
+        "md5_digest": "a3f63fed16322ba06ef7ca701a635ca2",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 137799,
+        "upload_time": "2016-03-31T16:29:45",
+        "url": "https://files.pythonhosted.org/packages/a8/0b/9e8ef9c28e38a8a35ea4fa49385819f1bf577ac868f4bbb7cb07ea77a147/numexpr-2.5.1-cp34-cp34m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "49d919811999311ea1aad52be8b44a5d",
+          "sha256": "5616060d0ff264c47606453183de2f9f1fc332df2b1b3560e8f6e29bac3b0669"
+        },
+        "downloads": 118,
+        "filename": "numexpr-2.5.1-cp35-cp35m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": true,
+        "md5_digest": "49d919811999311ea1aad52be8b44a5d",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 137842,
+        "upload_time": "2016-03-31T16:29:58",
+        "url": "https://files.pythonhosted.org/packages/56/64/3b7a068cfa3f51ecdbbc48439c21a324768dfc0fa7e47ba3175032257cfb/numexpr-2.5.1-cp35-cp35m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4a83ffcf6bee9bd5b2a763bc562b09ee",
+          "sha256": "fb2f00226ec21bf3431d1dd17b170c47c08ea35dde40f965b41ccb5a553589e8"
+        },
+        "downloads": 189,
+        "filename": "numexpr-2.5.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4a83ffcf6bee9bd5b2a763bc562b09ee",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 89849,
+        "upload_time": "2016-03-31T07:37:46",
+        "url": "https://files.pythonhosted.org/packages/61/b6/d902622dbce9c058f9b3ddd80b9da3e133297e24a4f95279cedeef18f75d/numexpr-2.5.1.tar.gz"
+      }
+    ],
+    "2.5.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2d1f1e8ae5c253814f615c1547d57ee0",
+          "sha256": "b5e0ea490d9a379ec4fdb3d10e506fde32e056073efc094351e09510cdb357d5"
+        },
+        "downloads": 133,
+        "filename": "numexpr-2.5.2-cp27-cp27m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": true,
+        "md5_digest": "2d1f1e8ae5c253814f615c1547d57ee0",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 137628,
+        "upload_time": "2016-04-07T17:53:09",
+        "url": "https://files.pythonhosted.org/packages/46/59/6d616a4483c0902464ed0d9e21e6360b878e50289836177e786afc88ce69/numexpr-2.5.2-cp27-cp27m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "04a2ebadbdd1da14b9933d6fc8f24fc5",
+          "sha256": "c8e3b424e235ad210288c4be7fb9aaa05928caee92e7e2aec400b384d18ab26a"
+        },
+        "downloads": 125,
+        "filename": "numexpr-2.5.2-cp27-none-win32.whl",
+        "has_sig": true,
+        "md5_digest": "04a2ebadbdd1da14b9933d6fc8f24fc5",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 106533,
+        "upload_time": "2016-04-07T20:07:34",
+        "url": "https://files.pythonhosted.org/packages/cf/74/6dffa2bdec5a8336aa170344e236ad76d63e56ec4d2d441598b1085493c5/numexpr-2.5.2-cp27-none-win32.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a3e590c7b907fe94cbf34a26276abc7c",
+          "sha256": "81aa7305d33435afa6549c48b047e55accca07e245a7322b19df112100598845"
+        },
+        "downloads": 114,
+        "filename": "numexpr-2.5.2-cp27-none-win_amd64.whl",
+        "has_sig": true,
+        "md5_digest": "a3e590c7b907fe94cbf34a26276abc7c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 102719,
+        "upload_time": "2016-04-07T20:07:44",
+        "url": "https://files.pythonhosted.org/packages/53/f2/14eee55d9ccede95177494f25d135965f37cc3484969a7be5124bd465af4/numexpr-2.5.2-cp27-none-win_amd64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ae0fa9cc880daa39bd45982c8bca67e9",
+          "sha256": "32907db208b0d1d4cd4ba03360b12aeab47a8326beb0322bb19bba34173b78ad"
+        },
+        "downloads": 105,
+        "filename": "numexpr-2.5.2-cp33-cp33m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": true,
+        "md5_digest": "ae0fa9cc880daa39bd45982c8bca67e9",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp33",
+        "size": 138038,
+        "upload_time": "2016-04-07T17:55:39",
+        "url": "https://files.pythonhosted.org/packages/68/14/bad9c9170644bf37fd81e0161be3e0a0ed19cad1784b09141637b057aee7/numexpr-2.5.2-cp33-cp33m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "db1ee1e4a5b69e2c2574587a271954ba",
+          "sha256": "9bc60b669fcdb160f5b6e49dcc1908f4df31420f8c27b9e11062168314a4f51f"
+        },
+        "downloads": 122,
+        "filename": "numexpr-2.5.2-cp34-cp34m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": true,
+        "md5_digest": "db1ee1e4a5b69e2c2574587a271954ba",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 137977,
+        "upload_time": "2016-04-07T17:56:05",
+        "url": "https://files.pythonhosted.org/packages/44/68/38b19940d6dd2e244ff88c61552002c9a0b76b244a2a3fb664a101847f5f/numexpr-2.5.2-cp34-cp34m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5da8938bebdf967978f51e9bd1940626",
+          "sha256": "d26126a477369bdff0a0af33c429fbcbc763a73abbd406e5a276e6c453a5756f"
+        },
+        "downloads": 120,
+        "filename": "numexpr-2.5.2-cp34-none-win32.whl",
+        "has_sig": true,
+        "md5_digest": "5da8938bebdf967978f51e9bd1940626",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 82286,
+        "upload_time": "2016-04-07T20:07:54",
+        "url": "https://files.pythonhosted.org/packages/e9/d0/a414dea2db0dcfe6ca4e198cbfd2f42c19b99f6828177214b915d198b5bc/numexpr-2.5.2-cp34-none-win32.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "bb05f6cb279d1d09e221a1a919080ef9",
+          "sha256": "a3f831a5e6abc25fc7079568879ac7d4e5a2f5e2ccce44a7ceca2e4871d56313"
+        },
+        "downloads": 109,
+        "filename": "numexpr-2.5.2-cp34-none-win_amd64.whl",
+        "has_sig": true,
+        "md5_digest": "bb05f6cb279d1d09e221a1a919080ef9",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 81340,
+        "upload_time": "2016-04-07T20:08:11",
+        "url": "https://files.pythonhosted.org/packages/8f/b2/d61e1d08734400f5ac66d304668765d820cc590fe5b62ce4e0097f511178/numexpr-2.5.2-cp34-none-win_amd64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6af6ffd91799ff1ee1af4e9ff157b26b",
+          "sha256": "0343364173ae47b0e1f98890d5ed4c3a046a8eb96b9883aec626f0dffa382db6"
+        },
+        "downloads": 113,
+        "filename": "numexpr-2.5.2-cp35-cp35m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": true,
+        "md5_digest": "6af6ffd91799ff1ee1af4e9ff157b26b",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 138031,
+        "upload_time": "2016-04-07T17:58:19",
+        "url": "https://files.pythonhosted.org/packages/62/17/2d48b1651572a394aa063eaf499fe4c7f84ed3bb82e451b45245b7cd054d/numexpr-2.5.2-cp35-cp35m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0530021c364efe208184320eff946da7",
+          "sha256": "fb4a625d1d55add22e00339fcfaedc307d3706518dd4713f4a812423e4482e62"
+        },
+        "downloads": 102,
+        "filename": "numexpr-2.5.2-cp35-none-win32.whl",
+        "has_sig": true,
+        "md5_digest": "0530021c364efe208184320eff946da7",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 82757,
+        "upload_time": "2016-04-07T20:09:03",
+        "url": "https://files.pythonhosted.org/packages/84/86/03d95d9a2309072c501b04b43ce15a1bdedc06fd30768eb171b984854381/numexpr-2.5.2-cp35-none-win32.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8d0a95c6afccb4470e0c1b9aed548997",
+          "sha256": "dbea23dbd28d731f97423e93129da0e439c6c5c68513215c01e6de635b810354"
+        },
+        "downloads": 106,
+        "filename": "numexpr-2.5.2-cp35-none-win_amd64.whl",
+        "has_sig": true,
+        "md5_digest": "8d0a95c6afccb4470e0c1b9aed548997",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 85049,
+        "upload_time": "2016-04-07T20:09:22",
+        "url": "https://files.pythonhosted.org/packages/65/d2/7a2968264c430dbd74e5cd9c2da09770d98b51d18f1d18ce40579b973275/numexpr-2.5.2-cp35-none-win_amd64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8af9680b2b9a378aa361d40542fd0bd5",
+          "sha256": "7e85595cf65c8c9a850fdcb073b46f29f52a9a8ab4d0e13161b73bee1229664d"
+        },
+        "downloads": 514,
+        "filename": "numexpr-2.5.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8af9680b2b9a378aa361d40542fd0bd5",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 90078,
+        "upload_time": "2016-04-07T09:41:58",
+        "url": "https://files.pythonhosted.org/packages/88/e9/df01e8e220a380780f55b74f0733f9d953200079b7cebe863b9756e43fe3/numexpr-2.5.2.tar.gz"
+      }
+    ],
+    "2.6.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3347050def13e992d4780778bff6c96d",
+          "sha256": "18cebc70b59cd7cc40d853131eeac14ce415898dae763900735d7fbddab37605"
+        },
+        "downloads": 409,
+        "filename": "numexpr-2.6.0-cp27-cp27m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": true,
+        "md5_digest": "3347050def13e992d4780778bff6c96d",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 137946,
+        "upload_time": "2016-06-01T17:17:24",
+        "url": "https://files.pythonhosted.org/packages/a4/0d/59038aa0d01d13a9ebce5d2a6d15e0ca041f888689b9d2bd16b791656f90/numexpr-2.6.0-cp27-cp27m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4aa51efddc73d943aaec95348ad81f64",
+          "sha256": "0e1b6a58fa49d08fa91051e91e7a8247c3cbfe4a04d0f2b1f8e6ac203877ba59"
+        },
+        "downloads": 136,
+        "filename": "numexpr-2.6.0-cp27-cp27m-manylinux1_i686.whl",
+        "has_sig": false,
+        "md5_digest": "4aa51efddc73d943aaec95348ad81f64",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 371341,
+        "upload_time": "2016-07-05T11:41:30",
+        "url": "https://files.pythonhosted.org/packages/1b/35/131637784c301853dbe0ada5ac7a1c97f1af6c5b863c0360a9935f72d535/numexpr-2.6.0-cp27-cp27m-manylinux1_i686.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "740336e2695bd10bb34edb8b98d45e72",
+          "sha256": "45030a4d2dae99bbf88fec190b03bab6cfc9ae308b6dab939c9788d1cbe6908f"
+        },
+        "downloads": 168,
+        "filename": "numexpr-2.6.0-cp27-cp27m-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "740336e2695bd10bb34edb8b98d45e72",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 364006,
+        "upload_time": "2016-07-05T11:41:34",
+        "url": "https://files.pythonhosted.org/packages/5b/1c/64a8a43d3ca1257326c1e789820fb3f7e5132549347046c2f74d4c286f14/numexpr-2.6.0-cp27-cp27m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "562eee2f6bec0bd9ca34c9e131db8cb5",
+          "sha256": "652e6410b6fd45e0f1c59421889af2bf6c3ea6b525aadff6a20490b562cddff3"
+        },
+        "downloads": 156,
+        "filename": "numexpr-2.6.0-cp27-cp27mu-manylinux1_i686.whl",
+        "has_sig": false,
+        "md5_digest": "562eee2f6bec0bd9ca34c9e131db8cb5",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 371334,
+        "upload_time": "2016-07-05T11:41:37",
+        "url": "https://files.pythonhosted.org/packages/09/1e/e204de46ee4206db924df9636b46c6c19dad69187afbcd722a18cda3805c/numexpr-2.6.0-cp27-cp27mu-manylinux1_i686.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1980e5ed6c37aac90eaedcff038a4b97",
+          "sha256": "b88da37e0ca0fa78d610951753fff41832483d9a57f7a6c74aa472937879dac9"
+        },
+        "downloads": 711,
+        "filename": "numexpr-2.6.0-cp27-cp27mu-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "1980e5ed6c37aac90eaedcff038a4b97",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 363992,
+        "upload_time": "2016-07-05T11:41:44",
+        "url": "https://files.pythonhosted.org/packages/14/0f/11adf0465d8cb0fa96058ad08a9f75e987dfd6e830ba57f87655c5ee968d/numexpr-2.6.0-cp27-cp27mu-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "fecbed4cbf0f59fdc175a7fcad8220f4",
+          "sha256": "cf3426aafee97ec12cc958f1fb5632d9e0bf9731b17be42508abe847e38ba27d"
+        },
+        "downloads": 115,
+        "filename": "numexpr-2.6.0-cp33-cp33m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": true,
+        "md5_digest": "fecbed4cbf0f59fdc175a7fcad8220f4",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp33",
+        "size": 138362,
+        "upload_time": "2016-06-01T17:17:33",
+        "url": "https://files.pythonhosted.org/packages/eb/f0/14c1e381e56bf025547b61ec0bdfcf5d0b0e7dcad3ad37703512e228b8e7/numexpr-2.6.0-cp33-cp33m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9f367544c83a2099fe0402b4072173bf",
+          "sha256": "afe850a075cf9b20b6c328af4c906cf9461bf12180162357afc3bdeba90f9b9e"
+        },
+        "downloads": 138,
+        "filename": "numexpr-2.6.0-cp34-cp34m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": true,
+        "md5_digest": "9f367544c83a2099fe0402b4072173bf",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 138300,
+        "upload_time": "2016-06-01T17:17:40",
+        "url": "https://files.pythonhosted.org/packages/f4/57/442271618d6482929dd1f21a0ab71389b4172e1380976354b1103bb9dc76/numexpr-2.6.0-cp34-cp34m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3c0e812ff10712622621ff09c4cdf4a0",
+          "sha256": "ddc74c714b30d4940dca254da26971d6734a66fbbaf1f736c591a158f155c4c7"
+        },
+        "downloads": 138,
+        "filename": "numexpr-2.6.0-cp34-cp34m-manylinux1_i686.whl",
+        "has_sig": false,
+        "md5_digest": "3c0e812ff10712622621ff09c4cdf4a0",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 384137,
+        "upload_time": "2016-07-05T11:41:47",
+        "url": "https://files.pythonhosted.org/packages/81/c2/04a0d5c086aa296f7c21fb9832bcea16b0026f7436b2704c5fd5d5b1f4df/numexpr-2.6.0-cp34-cp34m-manylinux1_i686.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "fd397a2d54e64146fb4d0ec65f9a8e15",
+          "sha256": "b3488fbcb860bffeb4ed25b7cbbc5fa8a79f697001da1507ada572babd774cb8"
+        },
+        "downloads": 240,
+        "filename": "numexpr-2.6.0-cp34-cp34m-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "fd397a2d54e64146fb4d0ec65f9a8e15",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 387872,
+        "upload_time": "2016-07-05T11:41:50",
+        "url": "https://files.pythonhosted.org/packages/44/94/1b047950ab3791cc0bd89a03ddfcf2ddc158173f6fb94908fca1dd37b049/numexpr-2.6.0-cp34-cp34m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0b645946bc38eb7645b629afcdb21c50",
+          "sha256": "f611a3079a3e9a93716130225ad26370e2db3189779fafc2e95ad00dde4fd7ac"
+        },
+        "downloads": 251,
+        "filename": "numexpr-2.6.0-cp35-cp35m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": true,
+        "md5_digest": "0b645946bc38eb7645b629afcdb21c50",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 138353,
+        "upload_time": "2016-06-01T17:17:47",
+        "url": "https://files.pythonhosted.org/packages/64/ba/72096e51ed6e18f0a398c382a1a3106b8008a665d0265517ff5b83a52ef4/numexpr-2.6.0-cp35-cp35m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7a2c45f9e04f5077181203071e30e487",
+          "sha256": "153f8317b807e4206c9ac714aa8c82400f5a19e6d17328daea10ab5eb76cc004"
+        },
+        "downloads": 139,
+        "filename": "numexpr-2.6.0-cp35-cp35m-manylinux1_i686.whl",
+        "has_sig": false,
+        "md5_digest": "7a2c45f9e04f5077181203071e30e487",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 384470,
+        "upload_time": "2016-07-05T11:41:53",
+        "url": "https://files.pythonhosted.org/packages/69/57/58275cc0528bf6ec01d2a5d58bd3f4c5ed968a65cf74742c1c0c5b98d5f7/numexpr-2.6.0-cp35-cp35m-manylinux1_i686.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4fe8e127bf491b65e19f82b2a906e2c1",
+          "sha256": "7790f75a7679fc91fec40b0440672056763b2083fe462d068df93ec47e91e7c3"
+        },
+        "downloads": 338,
+        "filename": "numexpr-2.6.0-cp35-cp35m-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "4fe8e127bf491b65e19f82b2a906e2c1",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 388226,
+        "upload_time": "2016-07-05T11:41:57",
+        "url": "https://files.pythonhosted.org/packages/cc/b1/8770b01040e9222dffb4eda986c2cfab8da6a5ffaf9e4cf654cddc8dc911/numexpr-2.6.0-cp35-cp35m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "af0e40bb8c5a74f5cf18d82191f37f86",
+          "sha256": "4f31d38cbe24a4780f760761eaf13600959d0a6a72ad8f0946794128e853d144"
+        },
+        "downloads": 4262,
+        "filename": "numexpr-2.6.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "af0e40bb8c5a74f5cf18d82191f37f86",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 90481,
+        "upload_time": "2016-06-01T11:58:37",
+        "url": "https://files.pythonhosted.org/packages/05/cd/8dbb09b835539234bafc6c5fa02452186da9869e44e7489037ef3994471e/numexpr-2.6.0.tar.gz"
+      }
+    ],
+    "2.6.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "03bef30d9d6ba134ebe0c7835e3546f4",
+          "sha256": "538b52892e1d42a84f2924edf37f9f8236e553623918805c36e00d7d31f2522a"
+        },
+        "downloads": 1617,
+        "filename": "numexpr-2.6.1-cp27-cp27m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": true,
+        "md5_digest": "03bef30d9d6ba134ebe0c7835e3546f4",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 138529,
+        "upload_time": "2016-07-17T17:31:32",
+        "url": "https://files.pythonhosted.org/packages/a5/99/2ce090eab61bbf95abd9fe37cfccf56a82de66cdd3949fe347e87af24831/numexpr-2.6.1-cp27-cp27m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0f21eab0a5f9f75cad450ce0ec7a1d22",
+          "sha256": "8dbc94f9e2f1158d615f6b05940675b4edba5ab0a3097e3ab3a561a0e62ec4f1"
+        },
+        "downloads": 237,
+        "filename": "numexpr-2.6.1-cp27-cp27m-manylinux1_i686.whl",
+        "has_sig": true,
+        "md5_digest": "0f21eab0a5f9f75cad450ce0ec7a1d22",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 370356,
+        "upload_time": "2016-07-17T17:32:02",
+        "url": "https://files.pythonhosted.org/packages/52/2d/0bb315a92c65547a24f5c10fdcd58e4df1a7d05ece3e3f74b975e555dafe/numexpr-2.6.1-cp27-cp27m-manylinux1_i686.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b30eb0ac94a633d75f0bd5c33c0345f2",
+          "sha256": "5243e68bb0ff5f5d14db10dd5161c83c3cc8298d9216bbcf4e636417da764be0"
+        },
+        "downloads": 497,
+        "filename": "numexpr-2.6.1-cp27-cp27m-manylinux1_x86_64.whl",
+        "has_sig": true,
+        "md5_digest": "b30eb0ac94a633d75f0bd5c33c0345f2",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 361893,
+        "upload_time": "2016-07-17T17:32:05",
+        "url": "https://files.pythonhosted.org/packages/26/f2/a482fc5f927599a2dcf577cbd9e9301307daf086e6ffb56308041aba1521/numexpr-2.6.1-cp27-cp27m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6115a6353f59306bcf6d7699e4d48c8f",
+          "sha256": "7aafbe04249c03b1b254bad3e493df972b3f0f37ed4a60076276c64395ed47ec"
+        },
+        "downloads": 283,
+        "filename": "numexpr-2.6.1-cp27-cp27mu-manylinux1_i686.whl",
+        "has_sig": true,
+        "md5_digest": "6115a6353f59306bcf6d7699e4d48c8f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 370341,
+        "upload_time": "2016-07-17T17:32:09",
+        "url": "https://files.pythonhosted.org/packages/a6/df/92e5d22fe34183b1bff6e4a3f2013a61d99e5ef0a4ed109c54f1f5e2d05e/numexpr-2.6.1-cp27-cp27mu-manylinux1_i686.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9559e8e65eda5607a834d2a42f2a0421",
+          "sha256": "fd17461a756b69d29be0ed1c1102bc579f3ff3f15c19d4a02f3ac3ca64ed0639"
+        },
+        "downloads": 9028,
+        "filename": "numexpr-2.6.1-cp27-cp27mu-manylinux1_x86_64.whl",
+        "has_sig": true,
+        "md5_digest": "9559e8e65eda5607a834d2a42f2a0421",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 361882,
+        "upload_time": "2016-07-17T17:32:12",
+        "url": "https://files.pythonhosted.org/packages/3a/98/b92e2361061465c6f893b074faba595a391811cd68cbfd69c56c80b59289/numexpr-2.6.1-cp27-cp27mu-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "893674d277f4a2b927f8b28071ac2542",
+          "sha256": "8d92b91591ddb46d619c140c68d1d6f81baaef17c88fcc3b03435d0ef2744537"
+        },
+        "downloads": 321,
+        "filename": "numexpr-2.6.1-cp34-cp34m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": true,
+        "md5_digest": "893674d277f4a2b927f8b28071ac2542",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 138846,
+        "upload_time": "2016-07-17T17:31:36",
+        "url": "https://files.pythonhosted.org/packages/b2/1d/db5ae05877386a091c8e505d7e8b7b9927d9c60c143cfd9445b13f678454/numexpr-2.6.1-cp34-cp34m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1beccecf58389c8eb1ea1ec5b6ee8bc0",
+          "sha256": "9ce3c10363b8410719e6a3a9b501991d48df0c6ea2885ccecbcc8d5270d9eaba"
+        },
+        "downloads": 231,
+        "filename": "numexpr-2.6.1-cp34-cp34m-manylinux1_i686.whl",
+        "has_sig": true,
+        "md5_digest": "1beccecf58389c8eb1ea1ec5b6ee8bc0",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 384355,
+        "upload_time": "2016-07-17T17:32:16",
+        "url": "https://files.pythonhosted.org/packages/ed/ea/4353e060695f9414fc99176708127a17f7655222cd0b5e71b2b2e6bc2e51/numexpr-2.6.1-cp34-cp34m-manylinux1_i686.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "01e6abfe177a9cee376336790168e24d",
+          "sha256": "a1fbfb13b5a38a601d7a086912672eabad474c3c33d68520f16e85de1436ad98"
+        },
+        "downloads": 1314,
+        "filename": "numexpr-2.6.1-cp34-cp34m-manylinux1_x86_64.whl",
+        "has_sig": true,
+        "md5_digest": "01e6abfe177a9cee376336790168e24d",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 387843,
+        "upload_time": "2016-07-17T17:32:19",
+        "url": "https://files.pythonhosted.org/packages/75/73/b697e14391d1e77ef225bcf4c9052258fc3644fa8faee066c9b12a450290/numexpr-2.6.1-cp34-cp34m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d9fab43ab3a050b4eae19f05a32d7c60",
+          "sha256": "25fcdb166d6264ad42858c6b3391056fab68b50973cb2aa333701bda935c6ff7"
+        },
+        "downloads": 830,
+        "filename": "numexpr-2.6.1-cp35-cp35m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": true,
+        "md5_digest": "d9fab43ab3a050b4eae19f05a32d7c60",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 138900,
+        "upload_time": "2016-07-17T17:31:39",
+        "url": "https://files.pythonhosted.org/packages/96/1a/6f3ab1e3a5ee3c39e62a68d133d5a8a953f260d7bbca934690b569e9dc2a/numexpr-2.6.1-cp35-cp35m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7cd7ca53b43059c779bbb4373f5bcb88",
+          "sha256": "4dbe8c9699e24ce519b65b7a9e796c272d2b18c17ec397e1032644f1e68cdbdd"
+        },
+        "downloads": 238,
+        "filename": "numexpr-2.6.1-cp35-cp35m-manylinux1_i686.whl",
+        "has_sig": true,
+        "md5_digest": "7cd7ca53b43059c779bbb4373f5bcb88",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 384714,
+        "upload_time": "2016-07-17T17:32:22",
+        "url": "https://files.pythonhosted.org/packages/45/c4/8f217fdbc612cc19ada9cd821934e27a844bc0f29cae142b5547dac9f2f3/numexpr-2.6.1-cp35-cp35m-manylinux1_i686.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "08139c8696f7dfcac41693e5f4ddf30d",
+          "sha256": "1edcbc7a35d6c62c871d5071a6d431567db57a83d79cfa6ace7a87f6c4b46379"
+        },
+        "downloads": 2880,
+        "filename": "numexpr-2.6.1-cp35-cp35m-manylinux1_x86_64.whl",
+        "has_sig": true,
+        "md5_digest": "08139c8696f7dfcac41693e5f4ddf30d",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 388199,
+        "upload_time": "2016-07-17T17:32:25",
+        "url": "https://files.pythonhosted.org/packages/66/29/5cdba68c2a0dd9de89422f9edbc903ec339bf2fb413034adc61f2f95264f/numexpr-2.6.1-cp35-cp35m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4028d87b455dc8ecd871e6796f74f30c",
+          "sha256": "49bbf67ea4081bf49038c074f2525ca4629042ef3d406b51100d227864cf8fa8"
+        },
+        "downloads": 66,
+        "filename": "numexpr-2.6.1-cp36-cp36m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": true,
+        "md5_digest": "4028d87b455dc8ecd871e6796f74f30c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "size": 170024,
+        "upload_time": "2016-12-31T23:08:13",
+        "url": "https://files.pythonhosted.org/packages/1a/bb/3139036553e93bbd17467aa536a6c8b4a12edd25913ec6f7f167c89e329e/numexpr-2.6.1-cp36-cp36m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "876d717a5aa2b7809869226c014e94bd",
+          "sha256": "6fbb38c928d4f734fbbeb60084134e8cb25eeec48ad791aeb1d2ab4c186ee8bf"
+        },
+        "downloads": 40,
+        "filename": "numexpr-2.6.1-cp36-cp36m-manylinux1_i686.whl",
+        "has_sig": true,
+        "md5_digest": "876d717a5aa2b7809869226c014e94bd",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "size": 384725,
+        "upload_time": "2016-12-31T23:08:16",
+        "url": "https://files.pythonhosted.org/packages/22/a4/6d7ba174b03815c9dcedbbf54cd7122aae57d23c9505205b35d5e3122e39/numexpr-2.6.1-cp36-cp36m-manylinux1_i686.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "77a5895a3ace76dfeeec8b739f44ae4d",
+          "sha256": "449d5a9e4fe464e08ab39ddaa23c0baafcfadef7bc4b5212acbe2c44c98611fc"
+        },
+        "downloads": 113,
+        "filename": "numexpr-2.6.1-cp36-cp36m-manylinux1_x86_64.whl",
+        "has_sig": true,
+        "md5_digest": "77a5895a3ace76dfeeec8b739f44ae4d",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "size": 388348,
+        "upload_time": "2016-12-31T23:08:19",
+        "url": "https://files.pythonhosted.org/packages/fb/a9/b028c841653aee5d90bd5eb901d7f50342eb8a5f5816f498de3c7a4a57a7/numexpr-2.6.1-cp36-cp36m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6365245705b446426df9543ad218dd8e",
+          "sha256": "db2ee72f277b23c82d204189290ea4b792f9bd5b9d67744b045f8c2a8e929a06"
+        },
+        "downloads": 8877,
+        "filename": "numexpr-2.6.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6365245705b446426df9543ad218dd8e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 90819,
+        "upload_time": "2016-07-17T09:51:36",
+        "url": "https://files.pythonhosted.org/packages/c6/f0/11628fa4d332d8fe9ab0ba8e9bfe0e065fb6b5324859171ee72d84e079c0/numexpr-2.6.1.tar.gz"
+      }
+    ],
+    "2.6.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "989f07f34a7d67432a47916d660a1bbf",
+          "sha256": "2dc50be71fb606bfef1b629ca86dea368d925e3d0efa1a80515ebbb0813d63e3"
+        },
+        "downloads": 178,
+        "filename": "numexpr-2.6.2-cp27-cp27m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": true,
+        "md5_digest": "989f07f34a7d67432a47916d660a1bbf",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 170321,
+        "upload_time": "2017-01-30T12:40:42",
+        "url": "https://files.pythonhosted.org/packages/dd/94/fd5e444a837355815a0e8d59b7df5b84f648eae84ae478c15154ae5eb65e/numexpr-2.6.2-cp27-cp27m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b2c35ed5831311e2bd20e936c134ec3d",
+          "sha256": "11516f075617b1172ad8061d75ba3f574688276b10b863762b4ada345b3d3476"
+        },
+        "downloads": 13,
+        "filename": "numexpr-2.6.2-cp27-cp27m-manylinux1_i686.whl",
+        "has_sig": true,
+        "md5_digest": "b2c35ed5831311e2bd20e936c134ec3d",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 372102,
+        "upload_time": "2017-01-30T12:41:05",
+        "url": "https://files.pythonhosted.org/packages/34/cb/1ea7967e6b852d9378477c32bd6676e466fed2f4af4d2912c0ab23968ca7/numexpr-2.6.2-cp27-cp27m-manylinux1_i686.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f27987b340d97edf723d780e4f53b68a",
+          "sha256": "f8649fa20e3b1320c5b835948e8901bb0d113ad55467c0eb333a94249562c98b"
+        },
+        "downloads": 275,
+        "filename": "numexpr-2.6.2-cp27-cp27m-manylinux1_x86_64.whl",
+        "has_sig": true,
+        "md5_digest": "f27987b340d97edf723d780e4f53b68a",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 364017,
+        "upload_time": "2017-01-30T12:41:08",
+        "url": "https://files.pythonhosted.org/packages/48/16/0a508e29f2aa353483733d5c331f92520d4ab370a0e0c3771c46ae44239e/numexpr-2.6.2-cp27-cp27m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ad6a9c67a03b45493c9ad9b1799a9acd",
+          "sha256": "ca59ca17d3865ba7f0262716b3f1f3827189d589a31433dce71451a78e7fdb08"
+        },
+        "downloads": 24,
+        "filename": "numexpr-2.6.2-cp27-cp27mu-manylinux1_i686.whl",
+        "has_sig": true,
+        "md5_digest": "ad6a9c67a03b45493c9ad9b1799a9acd",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 372096,
+        "upload_time": "2017-01-30T12:41:11",
+        "url": "https://files.pythonhosted.org/packages/52/ff/49f64b9cf2b75f634fe5bfe207b4bccd2088365221356d89498a0ac39f27/numexpr-2.6.2-cp27-cp27mu-manylinux1_i686.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "80389279a484c12dacd0391fa876ac46",
+          "sha256": "2cc252330551d3487d25af598cfa8cf098316e8cedc1bf20cd8b0029977b44c5"
+        },
+        "downloads": 2400,
+        "filename": "numexpr-2.6.2-cp27-cp27mu-manylinux1_x86_64.whl",
+        "has_sig": true,
+        "md5_digest": "80389279a484c12dacd0391fa876ac46",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 363997,
+        "upload_time": "2017-01-30T12:41:14",
+        "url": "https://files.pythonhosted.org/packages/b3/b7/0ea4e7a8dec3fcf63f2c868eff2b0c7501e37b52c077a3e6f391c2bd2f20/numexpr-2.6.2-cp27-cp27mu-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9777369d02b11cc0f881bfaf2bdd82a4",
+          "sha256": "b0f8377da896313b1fb0444444e2eedb0084da55b450a68ebe6fbe5d0186913b"
+        },
+        "downloads": 50,
+        "filename": "numexpr-2.6.2-cp27-none-win32.whl",
+        "has_sig": true,
+        "md5_digest": "9777369d02b11cc0f881bfaf2bdd82a4",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 107463,
+        "upload_time": "2017-01-30T13:19:10",
+        "url": "https://files.pythonhosted.org/packages/fa/9f/b805d77995198f7ab73df4a9780f550576b3fd586288e581434cb283efd1/numexpr-2.6.2-cp27-none-win32.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a9eb0b703430037049c302b1fefdc8da",
+          "sha256": "85588324d252d041e74f048668aad73b75e40984c373a3aff8a8aad78db66ab2"
+        },
+        "downloads": 61,
+        "filename": "numexpr-2.6.2-cp27-none-win_amd64.whl",
+        "has_sig": true,
+        "md5_digest": "a9eb0b703430037049c302b1fefdc8da",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 103655,
+        "upload_time": "2017-01-30T13:19:13",
+        "url": "https://files.pythonhosted.org/packages/12/d1/9740a74309ae01034d4e852407eb114fe0d148ae8c91d0e841ef9dd9874f/numexpr-2.6.2-cp27-none-win_amd64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "76c0b4fefaf3c45fc9bca69254832252",
+          "sha256": "f1636ca0f90fd119c9b4a4ae1ba5caf11732e7a7d6252e4c96bed67e5e27d182"
+        },
+        "downloads": 15,
+        "filename": "numexpr-2.6.2-cp34-cp34m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": true,
+        "md5_digest": "76c0b4fefaf3c45fc9bca69254832252",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 170840,
+        "upload_time": "2017-01-30T12:40:45",
+        "url": "https://files.pythonhosted.org/packages/67/75/d50d1b3b2a33a3228bde5e8149359902e13058516e505cf20688076df682/numexpr-2.6.2-cp34-cp34m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9cf9f854134b25f4700a2a4eaecf85a3",
+          "sha256": "362b17ce6ad90749f873b722d1a2af07046d5ad89cb241bd3c7760f119e04ca7"
+        },
+        "downloads": 14,
+        "filename": "numexpr-2.6.2-cp34-cp34m-manylinux1_i686.whl",
+        "has_sig": true,
+        "md5_digest": "9cf9f854134b25f4700a2a4eaecf85a3",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 385602,
+        "upload_time": "2017-01-30T12:41:16",
+        "url": "https://files.pythonhosted.org/packages/48/c7/20b82ba7cac5114b82476b2cb5d748a65f0ea609223e9ad402009051c10a/numexpr-2.6.2-cp34-cp34m-manylinux1_i686.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3724ef63ed23dd4ac95b02bdb1de51fb",
+          "sha256": "daf41cf30d100b516cd5019f88872d40355ddcd5170f45893b59220ab2737360"
+        },
+        "downloads": 145,
+        "filename": "numexpr-2.6.2-cp34-cp34m-manylinux1_x86_64.whl",
+        "has_sig": true,
+        "md5_digest": "3724ef63ed23dd4ac95b02bdb1de51fb",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 377521,
+        "upload_time": "2017-01-30T12:41:19",
+        "url": "https://files.pythonhosted.org/packages/50/dd/4d55deba908dbf7ddfb89c97ae8140feffcf5ae00b14f55dcef64b51fc98/numexpr-2.6.2-cp34-cp34m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "03f57e9312f6953d28031e160d34fa60",
+          "sha256": "9772910b7ff27eb67aadd1788aff39e03eeaf7a21a33f1cc87833d1d74a610a8"
+        },
+        "downloads": 17,
+        "filename": "numexpr-2.6.2-cp34-none-win32.whl",
+        "has_sig": true,
+        "md5_digest": "03f57e9312f6953d28031e160d34fa60",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 83167,
+        "upload_time": "2017-01-30T13:19:15",
+        "url": "https://files.pythonhosted.org/packages/1f/df/fc803de4a83ff22e94e79f7a2e6ca78ddb825b047581d560eda509ebe416/numexpr-2.6.2-cp34-none-win32.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b0b613817f45ad6cdcd95a989d2f305a",
+          "sha256": "22c48be646998793877fc47cf26b662446a3deab1ae4da24cbb76f875759fd84"
+        },
+        "downloads": 24,
+        "filename": "numexpr-2.6.2-cp34-none-win_amd64.whl",
+        "has_sig": true,
+        "md5_digest": "b0b613817f45ad6cdcd95a989d2f305a",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 82323,
+        "upload_time": "2017-01-30T13:19:16",
+        "url": "https://files.pythonhosted.org/packages/f3/8b/69033ffa1818336fb502a6a1a90fc364202901ae3dbfd8f6b20000d71496/numexpr-2.6.2-cp34-none-win_amd64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f3399a8cfb2a25d962695bd1a4d83f75",
+          "sha256": "ed4431d5acc18eec477ffab1b8bffa59fd31c81894659f42fbe88dde78d8e1e2"
+        },
+        "downloads": 57,
+        "filename": "numexpr-2.6.2-cp35-cp35m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": true,
+        "md5_digest": "f3399a8cfb2a25d962695bd1a4d83f75",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 170892,
+        "upload_time": "2017-01-30T12:40:47",
+        "url": "https://files.pythonhosted.org/packages/06/fc/c2d1110e7edc1f403928bd3b2accf0cfb3f288bff5c01eb36c3a84e14424/numexpr-2.6.2-cp35-cp35m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5fa5bdaac3b36755bd9325cb8e8be373",
+          "sha256": "0460a0adf33a93b3477a2cfcf15a03464c53a6ec40136b7ba899446920b45079"
+        },
+        "downloads": 13,
+        "filename": "numexpr-2.6.2-cp35-cp35m-manylinux1_i686.whl",
+        "has_sig": true,
+        "md5_digest": "5fa5bdaac3b36755bd9325cb8e8be373",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 385974,
+        "upload_time": "2017-01-30T12:41:21",
+        "url": "https://files.pythonhosted.org/packages/52/00/139d0089835e73e1e8f5e828b3edb0a6b5edf06f38fbe7d67550b45f6829/numexpr-2.6.2-cp35-cp35m-manylinux1_i686.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2e77aadc5bbca13687b97366db967571",
+          "sha256": "2eafc97f8ae8ad599fd015d1ef038145891551802dabf68c265b4e16f27a6746"
+        },
+        "downloads": 531,
+        "filename": "numexpr-2.6.2-cp35-cp35m-manylinux1_x86_64.whl",
+        "has_sig": true,
+        "md5_digest": "2e77aadc5bbca13687b97366db967571",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 377903,
+        "upload_time": "2017-01-30T12:41:23",
+        "url": "https://files.pythonhosted.org/packages/fc/63/6499a9628d8e6ac9d576f2c5a6bd38a6b4fc6e8cc518502fa987eedcf93a/numexpr-2.6.2-cp35-cp35m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b3c4e21ed6bc48627b50357ff0908b44",
+          "sha256": "2f16a5f6aa5df7246d726777ec24acc155d0b78244e0204c8ecfe6588e2b121d"
+        },
+        "downloads": 18,
+        "filename": "numexpr-2.6.2-cp35-none-win32.whl",
+        "has_sig": true,
+        "md5_digest": "b3c4e21ed6bc48627b50357ff0908b44",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 84537,
+        "upload_time": "2017-01-30T13:19:19",
+        "url": "https://files.pythonhosted.org/packages/22/b1/25cbfafe5d5bbda882e7842082ba996c98fb325d5dfbd21237a4133e6489/numexpr-2.6.2-cp35-none-win32.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ede6611da0e11418017f42e14fd76c49",
+          "sha256": "3cab1e468f106cb9df770baece4919a35482bbc34cf4d0648a8358d318e54460"
+        },
+        "downloads": 72,
+        "filename": "numexpr-2.6.2-cp35-none-win_amd64.whl",
+        "has_sig": true,
+        "md5_digest": "ede6611da0e11418017f42e14fd76c49",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 86185,
+        "upload_time": "2017-01-30T13:19:21",
+        "url": "https://files.pythonhosted.org/packages/27/89/a819a6749bcda97de88722fb499c3fe59f5de1d74a70dc77142d5151be1f/numexpr-2.6.2-cp35-none-win_amd64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ebd27c1f15882a6a485136b92f6f1629",
+          "sha256": "883d2f47ab90adfa7c43294dc002bf209787a065be72c9138bba659a7b9eeb21"
+        },
+        "downloads": 78,
+        "filename": "numexpr-2.6.2-cp36-cp36m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+        "has_sig": true,
+        "md5_digest": "ebd27c1f15882a6a485136b92f6f1629",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "size": 170893,
+        "upload_time": "2017-01-30T12:40:50",
+        "url": "https://files.pythonhosted.org/packages/4a/0a/d04e720027ab2230e1b63f3263d73e4ded136946cf79291440bef6635cfe/numexpr-2.6.2-cp36-cp36m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1a2a3464aeb1e7dfb7cb24ba710192a2",
+          "sha256": "5727bca8b2405df88b7b26d535d3219d067b75ca2ab7a860cf8540eefab2bd7b"
+        },
+        "downloads": 14,
+        "filename": "numexpr-2.6.2-cp36-cp36m-manylinux1_i686.whl",
+        "has_sig": true,
+        "md5_digest": "1a2a3464aeb1e7dfb7cb24ba710192a2",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "size": 385984,
+        "upload_time": "2017-01-30T12:41:25",
+        "url": "https://files.pythonhosted.org/packages/7b/cf/709b4caed0182053a7501a30f5d260b91ce05e94b96ddc2525c1dc3bc56c/numexpr-2.6.2-cp36-cp36m-manylinux1_i686.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e494f68e9a6d4b4acbae7e5b91db7e96",
+          "sha256": "6d76098433f3345eba0d2932a3d5f24d478af6d77679433b4bf5d4d6dda1265b"
+        },
+        "downloads": 277,
+        "filename": "numexpr-2.6.2-cp36-cp36m-manylinux1_x86_64.whl",
+        "has_sig": true,
+        "md5_digest": "e494f68e9a6d4b4acbae7e5b91db7e96",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "size": 378013,
+        "upload_time": "2017-01-30T12:41:27",
+        "url": "https://files.pythonhosted.org/packages/f9/fd/d17b6e9e4538c922daa47468fdb4d33e7d8e77342338ab239ee47149893b/numexpr-2.6.2-cp36-cp36m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "787d5437c960db06f9dff05bc2c59396",
+          "sha256": "7c76e211914540bc7fc99a1cfe9ea4afa4a593016ee76289bd0947f802cf083a"
+        },
+        "downloads": 20,
+        "filename": "numexpr-2.6.2-cp36-none-win32.whl",
+        "has_sig": true,
+        "md5_digest": "787d5437c960db06f9dff05bc2c59396",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "size": 84549,
+        "upload_time": "2017-01-30T13:19:23",
+        "url": "https://files.pythonhosted.org/packages/03/4c/bce74b251f468f571b4bb9be60a054bdf87177bfc041d21f5106c93fc6a5/numexpr-2.6.2-cp36-none-win32.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "bec45a0c1f4d30ecd00c689360dffa29",
+          "sha256": "783ad2c913f94af68f110c878536d2aca87594c6618c483a52f04879661bbe6d"
+        },
+        "downloads": 49,
+        "filename": "numexpr-2.6.2-cp36-none-win_amd64.whl",
+        "has_sig": true,
+        "md5_digest": "bec45a0c1f4d30ecd00c689360dffa29",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "size": 86178,
+        "upload_time": "2017-01-30T13:19:25",
+        "url": "https://files.pythonhosted.org/packages/de/26/bf6d3e0c9970c1da8cbe7947537c9a48a114f19df446ca5f01f3664e2d31/numexpr-2.6.2-cp36-none-win_amd64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "943f8e4be7569b1ad01b10cbaa002a5c",
+          "sha256": "6ab8ff5c19e7f452966bf5a3220b845cf3244fe0b96544f7f9acedcc2db5c705"
+        },
+        "downloads": 402,
+        "filename": "numexpr-2.6.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "943f8e4be7569b1ad01b10cbaa002a5c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 90970,
+        "upload_time": "2017-01-29T13:03:24",
+        "url": "https://files.pythonhosted.org/packages/31/43/7777ab9535c416faabd1865453389260fdad0a23a714609c13112885009a/numexpr-2.6.2.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "989f07f34a7d67432a47916d660a1bbf",
+        "sha256": "2dc50be71fb606bfef1b629ca86dea368d925e3d0efa1a80515ebbb0813d63e3"
+      },
+      "downloads": 178,
+      "filename": "numexpr-2.6.2-cp27-cp27m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+      "has_sig": true,
+      "md5_digest": "989f07f34a7d67432a47916d660a1bbf",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp27",
+      "size": 170321,
+      "upload_time": "2017-01-30T12:40:42",
+      "url": "https://files.pythonhosted.org/packages/dd/94/fd5e444a837355815a0e8d59b7df5b84f648eae84ae478c15154ae5eb65e/numexpr-2.6.2-cp27-cp27m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "b2c35ed5831311e2bd20e936c134ec3d",
+        "sha256": "11516f075617b1172ad8061d75ba3f574688276b10b863762b4ada345b3d3476"
+      },
+      "downloads": 13,
+      "filename": "numexpr-2.6.2-cp27-cp27m-manylinux1_i686.whl",
+      "has_sig": true,
+      "md5_digest": "b2c35ed5831311e2bd20e936c134ec3d",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp27",
+      "size": 372102,
+      "upload_time": "2017-01-30T12:41:05",
+      "url": "https://files.pythonhosted.org/packages/34/cb/1ea7967e6b852d9378477c32bd6676e466fed2f4af4d2912c0ab23968ca7/numexpr-2.6.2-cp27-cp27m-manylinux1_i686.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "f27987b340d97edf723d780e4f53b68a",
+        "sha256": "f8649fa20e3b1320c5b835948e8901bb0d113ad55467c0eb333a94249562c98b"
+      },
+      "downloads": 275,
+      "filename": "numexpr-2.6.2-cp27-cp27m-manylinux1_x86_64.whl",
+      "has_sig": true,
+      "md5_digest": "f27987b340d97edf723d780e4f53b68a",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp27",
+      "size": 364017,
+      "upload_time": "2017-01-30T12:41:08",
+      "url": "https://files.pythonhosted.org/packages/48/16/0a508e29f2aa353483733d5c331f92520d4ab370a0e0c3771c46ae44239e/numexpr-2.6.2-cp27-cp27m-manylinux1_x86_64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "ad6a9c67a03b45493c9ad9b1799a9acd",
+        "sha256": "ca59ca17d3865ba7f0262716b3f1f3827189d589a31433dce71451a78e7fdb08"
+      },
+      "downloads": 24,
+      "filename": "numexpr-2.6.2-cp27-cp27mu-manylinux1_i686.whl",
+      "has_sig": true,
+      "md5_digest": "ad6a9c67a03b45493c9ad9b1799a9acd",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp27",
+      "size": 372096,
+      "upload_time": "2017-01-30T12:41:11",
+      "url": "https://files.pythonhosted.org/packages/52/ff/49f64b9cf2b75f634fe5bfe207b4bccd2088365221356d89498a0ac39f27/numexpr-2.6.2-cp27-cp27mu-manylinux1_i686.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "80389279a484c12dacd0391fa876ac46",
+        "sha256": "2cc252330551d3487d25af598cfa8cf098316e8cedc1bf20cd8b0029977b44c5"
+      },
+      "downloads": 2400,
+      "filename": "numexpr-2.6.2-cp27-cp27mu-manylinux1_x86_64.whl",
+      "has_sig": true,
+      "md5_digest": "80389279a484c12dacd0391fa876ac46",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp27",
+      "size": 363997,
+      "upload_time": "2017-01-30T12:41:14",
+      "url": "https://files.pythonhosted.org/packages/b3/b7/0ea4e7a8dec3fcf63f2c868eff2b0c7501e37b52c077a3e6f391c2bd2f20/numexpr-2.6.2-cp27-cp27mu-manylinux1_x86_64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "9777369d02b11cc0f881bfaf2bdd82a4",
+        "sha256": "b0f8377da896313b1fb0444444e2eedb0084da55b450a68ebe6fbe5d0186913b"
+      },
+      "downloads": 50,
+      "filename": "numexpr-2.6.2-cp27-none-win32.whl",
+      "has_sig": true,
+      "md5_digest": "9777369d02b11cc0f881bfaf2bdd82a4",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp27",
+      "size": 107463,
+      "upload_time": "2017-01-30T13:19:10",
+      "url": "https://files.pythonhosted.org/packages/fa/9f/b805d77995198f7ab73df4a9780f550576b3fd586288e581434cb283efd1/numexpr-2.6.2-cp27-none-win32.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "a9eb0b703430037049c302b1fefdc8da",
+        "sha256": "85588324d252d041e74f048668aad73b75e40984c373a3aff8a8aad78db66ab2"
+      },
+      "downloads": 61,
+      "filename": "numexpr-2.6.2-cp27-none-win_amd64.whl",
+      "has_sig": true,
+      "md5_digest": "a9eb0b703430037049c302b1fefdc8da",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp27",
+      "size": 103655,
+      "upload_time": "2017-01-30T13:19:13",
+      "url": "https://files.pythonhosted.org/packages/12/d1/9740a74309ae01034d4e852407eb114fe0d148ae8c91d0e841ef9dd9874f/numexpr-2.6.2-cp27-none-win_amd64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "76c0b4fefaf3c45fc9bca69254832252",
+        "sha256": "f1636ca0f90fd119c9b4a4ae1ba5caf11732e7a7d6252e4c96bed67e5e27d182"
+      },
+      "downloads": 15,
+      "filename": "numexpr-2.6.2-cp34-cp34m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+      "has_sig": true,
+      "md5_digest": "76c0b4fefaf3c45fc9bca69254832252",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp34",
+      "size": 170840,
+      "upload_time": "2017-01-30T12:40:45",
+      "url": "https://files.pythonhosted.org/packages/67/75/d50d1b3b2a33a3228bde5e8149359902e13058516e505cf20688076df682/numexpr-2.6.2-cp34-cp34m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "9cf9f854134b25f4700a2a4eaecf85a3",
+        "sha256": "362b17ce6ad90749f873b722d1a2af07046d5ad89cb241bd3c7760f119e04ca7"
+      },
+      "downloads": 14,
+      "filename": "numexpr-2.6.2-cp34-cp34m-manylinux1_i686.whl",
+      "has_sig": true,
+      "md5_digest": "9cf9f854134b25f4700a2a4eaecf85a3",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp34",
+      "size": 385602,
+      "upload_time": "2017-01-30T12:41:16",
+      "url": "https://files.pythonhosted.org/packages/48/c7/20b82ba7cac5114b82476b2cb5d748a65f0ea609223e9ad402009051c10a/numexpr-2.6.2-cp34-cp34m-manylinux1_i686.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "3724ef63ed23dd4ac95b02bdb1de51fb",
+        "sha256": "daf41cf30d100b516cd5019f88872d40355ddcd5170f45893b59220ab2737360"
+      },
+      "downloads": 145,
+      "filename": "numexpr-2.6.2-cp34-cp34m-manylinux1_x86_64.whl",
+      "has_sig": true,
+      "md5_digest": "3724ef63ed23dd4ac95b02bdb1de51fb",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp34",
+      "size": 377521,
+      "upload_time": "2017-01-30T12:41:19",
+      "url": "https://files.pythonhosted.org/packages/50/dd/4d55deba908dbf7ddfb89c97ae8140feffcf5ae00b14f55dcef64b51fc98/numexpr-2.6.2-cp34-cp34m-manylinux1_x86_64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "03f57e9312f6953d28031e160d34fa60",
+        "sha256": "9772910b7ff27eb67aadd1788aff39e03eeaf7a21a33f1cc87833d1d74a610a8"
+      },
+      "downloads": 17,
+      "filename": "numexpr-2.6.2-cp34-none-win32.whl",
+      "has_sig": true,
+      "md5_digest": "03f57e9312f6953d28031e160d34fa60",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp34",
+      "size": 83167,
+      "upload_time": "2017-01-30T13:19:15",
+      "url": "https://files.pythonhosted.org/packages/1f/df/fc803de4a83ff22e94e79f7a2e6ca78ddb825b047581d560eda509ebe416/numexpr-2.6.2-cp34-none-win32.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "b0b613817f45ad6cdcd95a989d2f305a",
+        "sha256": "22c48be646998793877fc47cf26b662446a3deab1ae4da24cbb76f875759fd84"
+      },
+      "downloads": 24,
+      "filename": "numexpr-2.6.2-cp34-none-win_amd64.whl",
+      "has_sig": true,
+      "md5_digest": "b0b613817f45ad6cdcd95a989d2f305a",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp34",
+      "size": 82323,
+      "upload_time": "2017-01-30T13:19:16",
+      "url": "https://files.pythonhosted.org/packages/f3/8b/69033ffa1818336fb502a6a1a90fc364202901ae3dbfd8f6b20000d71496/numexpr-2.6.2-cp34-none-win_amd64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "f3399a8cfb2a25d962695bd1a4d83f75",
+        "sha256": "ed4431d5acc18eec477ffab1b8bffa59fd31c81894659f42fbe88dde78d8e1e2"
+      },
+      "downloads": 57,
+      "filename": "numexpr-2.6.2-cp35-cp35m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+      "has_sig": true,
+      "md5_digest": "f3399a8cfb2a25d962695bd1a4d83f75",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp35",
+      "size": 170892,
+      "upload_time": "2017-01-30T12:40:47",
+      "url": "https://files.pythonhosted.org/packages/06/fc/c2d1110e7edc1f403928bd3b2accf0cfb3f288bff5c01eb36c3a84e14424/numexpr-2.6.2-cp35-cp35m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "5fa5bdaac3b36755bd9325cb8e8be373",
+        "sha256": "0460a0adf33a93b3477a2cfcf15a03464c53a6ec40136b7ba899446920b45079"
+      },
+      "downloads": 13,
+      "filename": "numexpr-2.6.2-cp35-cp35m-manylinux1_i686.whl",
+      "has_sig": true,
+      "md5_digest": "5fa5bdaac3b36755bd9325cb8e8be373",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp35",
+      "size": 385974,
+      "upload_time": "2017-01-30T12:41:21",
+      "url": "https://files.pythonhosted.org/packages/52/00/139d0089835e73e1e8f5e828b3edb0a6b5edf06f38fbe7d67550b45f6829/numexpr-2.6.2-cp35-cp35m-manylinux1_i686.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "2e77aadc5bbca13687b97366db967571",
+        "sha256": "2eafc97f8ae8ad599fd015d1ef038145891551802dabf68c265b4e16f27a6746"
+      },
+      "downloads": 531,
+      "filename": "numexpr-2.6.2-cp35-cp35m-manylinux1_x86_64.whl",
+      "has_sig": true,
+      "md5_digest": "2e77aadc5bbca13687b97366db967571",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp35",
+      "size": 377903,
+      "upload_time": "2017-01-30T12:41:23",
+      "url": "https://files.pythonhosted.org/packages/fc/63/6499a9628d8e6ac9d576f2c5a6bd38a6b4fc6e8cc518502fa987eedcf93a/numexpr-2.6.2-cp35-cp35m-manylinux1_x86_64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "b3c4e21ed6bc48627b50357ff0908b44",
+        "sha256": "2f16a5f6aa5df7246d726777ec24acc155d0b78244e0204c8ecfe6588e2b121d"
+      },
+      "downloads": 18,
+      "filename": "numexpr-2.6.2-cp35-none-win32.whl",
+      "has_sig": true,
+      "md5_digest": "b3c4e21ed6bc48627b50357ff0908b44",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp35",
+      "size": 84537,
+      "upload_time": "2017-01-30T13:19:19",
+      "url": "https://files.pythonhosted.org/packages/22/b1/25cbfafe5d5bbda882e7842082ba996c98fb325d5dfbd21237a4133e6489/numexpr-2.6.2-cp35-none-win32.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "ede6611da0e11418017f42e14fd76c49",
+        "sha256": "3cab1e468f106cb9df770baece4919a35482bbc34cf4d0648a8358d318e54460"
+      },
+      "downloads": 72,
+      "filename": "numexpr-2.6.2-cp35-none-win_amd64.whl",
+      "has_sig": true,
+      "md5_digest": "ede6611da0e11418017f42e14fd76c49",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp35",
+      "size": 86185,
+      "upload_time": "2017-01-30T13:19:21",
+      "url": "https://files.pythonhosted.org/packages/27/89/a819a6749bcda97de88722fb499c3fe59f5de1d74a70dc77142d5151be1f/numexpr-2.6.2-cp35-none-win_amd64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "ebd27c1f15882a6a485136b92f6f1629",
+        "sha256": "883d2f47ab90adfa7c43294dc002bf209787a065be72c9138bba659a7b9eeb21"
+      },
+      "downloads": 78,
+      "filename": "numexpr-2.6.2-cp36-cp36m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
+      "has_sig": true,
+      "md5_digest": "ebd27c1f15882a6a485136b92f6f1629",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp36",
+      "size": 170893,
+      "upload_time": "2017-01-30T12:40:50",
+      "url": "https://files.pythonhosted.org/packages/4a/0a/d04e720027ab2230e1b63f3263d73e4ded136946cf79291440bef6635cfe/numexpr-2.6.2-cp36-cp36m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "1a2a3464aeb1e7dfb7cb24ba710192a2",
+        "sha256": "5727bca8b2405df88b7b26d535d3219d067b75ca2ab7a860cf8540eefab2bd7b"
+      },
+      "downloads": 14,
+      "filename": "numexpr-2.6.2-cp36-cp36m-manylinux1_i686.whl",
+      "has_sig": true,
+      "md5_digest": "1a2a3464aeb1e7dfb7cb24ba710192a2",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp36",
+      "size": 385984,
+      "upload_time": "2017-01-30T12:41:25",
+      "url": "https://files.pythonhosted.org/packages/7b/cf/709b4caed0182053a7501a30f5d260b91ce05e94b96ddc2525c1dc3bc56c/numexpr-2.6.2-cp36-cp36m-manylinux1_i686.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "e494f68e9a6d4b4acbae7e5b91db7e96",
+        "sha256": "6d76098433f3345eba0d2932a3d5f24d478af6d77679433b4bf5d4d6dda1265b"
+      },
+      "downloads": 277,
+      "filename": "numexpr-2.6.2-cp36-cp36m-manylinux1_x86_64.whl",
+      "has_sig": true,
+      "md5_digest": "e494f68e9a6d4b4acbae7e5b91db7e96",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp36",
+      "size": 378013,
+      "upload_time": "2017-01-30T12:41:27",
+      "url": "https://files.pythonhosted.org/packages/f9/fd/d17b6e9e4538c922daa47468fdb4d33e7d8e77342338ab239ee47149893b/numexpr-2.6.2-cp36-cp36m-manylinux1_x86_64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "787d5437c960db06f9dff05bc2c59396",
+        "sha256": "7c76e211914540bc7fc99a1cfe9ea4afa4a593016ee76289bd0947f802cf083a"
+      },
+      "downloads": 20,
+      "filename": "numexpr-2.6.2-cp36-none-win32.whl",
+      "has_sig": true,
+      "md5_digest": "787d5437c960db06f9dff05bc2c59396",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp36",
+      "size": 84549,
+      "upload_time": "2017-01-30T13:19:23",
+      "url": "https://files.pythonhosted.org/packages/03/4c/bce74b251f468f571b4bb9be60a054bdf87177bfc041d21f5106c93fc6a5/numexpr-2.6.2-cp36-none-win32.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "bec45a0c1f4d30ecd00c689360dffa29",
+        "sha256": "783ad2c913f94af68f110c878536d2aca87594c6618c483a52f04879661bbe6d"
+      },
+      "downloads": 49,
+      "filename": "numexpr-2.6.2-cp36-none-win_amd64.whl",
+      "has_sig": true,
+      "md5_digest": "bec45a0c1f4d30ecd00c689360dffa29",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp36",
+      "size": 86178,
+      "upload_time": "2017-01-30T13:19:25",
+      "url": "https://files.pythonhosted.org/packages/de/26/bf6d3e0c9970c1da8cbe7947537c9a48a114f19df446ca5f01f3664e2d31/numexpr-2.6.2-cp36-none-win_amd64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "943f8e4be7569b1ad01b10cbaa002a5c",
+        "sha256": "6ab8ff5c19e7f452966bf5a3220b845cf3244fe0b96544f7f9acedcc2db5c705"
+      },
+      "downloads": 402,
+      "filename": "numexpr-2.6.2.tar.gz",
+      "has_sig": false,
+      "md5_digest": "943f8e4be7569b1ad01b10cbaa002a5c",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 90970,
+      "upload_time": "2017-01-29T13:03:24",
+      "url": "https://files.pythonhosted.org/packages/31/43/7777ab9535c416faabd1865453389260fdad0a23a714609c13112885009a/numexpr-2.6.2.tar.gz"
+    }
+  ]
+}

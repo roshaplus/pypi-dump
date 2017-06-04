@@ -1,0 +1,126 @@
+{
+  "info": {
+    "author": "BlueDynamics Alliance",
+    "author_email": "dev@bluedynamics.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "License :: OSI Approved :: BSD License",
+      "Operating System :: OS Independent",
+      "Programming Language :: Python",
+      "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
+      "Topic :: Software Development"
+    ],
+    "description": "ZODB Storage for lots of (light weight) data. Utilizes\n`repoze.catalog <http://pypi.python.org/pypi/repoze.catalog>`_,\n`ZODB BTrees <http://www.zodb.org/documentation/guide/modules.html#btrees-package>`_,\n`node <http://pypi.python.org/pypi/node>`_ (and\n`node.ext.zodb <http://pypi.python.org/pypi/node.ext.zodb>`_).\n\nSouper is a tool for programmers. It offers an integrated storage tied together\nwith indexes in a catalog. The records in the storage are generic. It is\npossible to store any data on a record if it is persistent pickable in ZODB.\n\nSouper can be used used in any python application using the ZODB, such as\n`Pyramid <http://docs.pylonsproject.org/en/latest/docs/pyramid.html>`_ or\n`Plone <http://plone.org>`_.\n\n\nUsing Souper\n============\n\n\nProviding a Locator\n-------------------\n\nSoups are looked up by adapting ``souper.interfaces.IStorageLocator`` to\nsome context. Souper does not provide any default locator. So first one need\nto be provided. Let's assume context is some persistent dict-like instance::\n\n    >>> from zope.interface import implementer\n    >>> from zope.interface import Interface\n    >>> from zope.component import provideAdapter\n    >>> from souper.interfaces import IStorageLocator\n    >>> from souper.soup import SoupData\n    >>> @implementer(IStorageLocator)\n    ... class StorageLocator(object):\n    ...\n    ...     def __init__(self, context):\n    ...        self.context = context\n    ...\n    ...     def storage(self, soup_name):\n    ...        if soup_name not in self.context:\n    ...            self.context[soup_name] = SoupData()\n    ...        return self.context[soup_name]\n\n    >>> provideAdapter(StorageLocator, adapts=[Interface])\n\nSo we have locator creating soups by name on the fly. Now its easy to get a soup\nby name::\n\n    >>> from souper.soup import get_soup\n    >>> soup = get_soup('mysoup', context)\n    >>> soup\n    <souper.soup.Soup object at 0x...>\n\n\nProviding a Catalog Factory\n---------------------------\n\nDepending on your needs the catalog and its indexes may look different from\nuse-case to use-case. The catalog factory is responsible to create a catalog\nfor a soup. The factory is a named utility implementing ``souper.interfaces.ICatalogFactory``.\nThe name of the utility has to the the same as the soup have.\n\nHere ``repoze.catalog`` is used and to let the indexes access the data on the\nrecords by key the ``NodeAttributeIndexer`` is used. For special cases one may\nwrite its custom indexers, but the default one is fine most of the time::\n\n    >>> from souper.interfaces import ICatalogFactory\n    >>> from souper.soup import NodeAttributeIndexer\n    >>> from souper.soup import NodeTextIndexer\n    >>> from zope.component import provideUtility\n    >>> from repoze.catalog.catalog import Catalog\n    >>> from repoze.catalog.indexes.field import CatalogFieldIndex\n    >>> from repoze.catalog.indexes.text import CatalogTextIndex\n    >>> from repoze.catalog.indexes.keyword import CatalogKeywordIndex\n\n    >>> @implementer(ICatalogFactory)\n    ... class MySoupCatalogFactory(object):\n    ...\n    ...     def __call__(self, context=None):\n    ...         catalog = Catalog()\n    ...         userindexer = NodeAttributeIndexer('user')\n    ...         catalog[u'user'] = CatalogFieldIndex(userindexer)\n    ...         textindexer = NodeTextIndexer(['text', 'user')\n    ...         catalog[u'text'] = CatalogTextIndex(textindexer)\n    ...         keywordindexer = NodeAttributeIndexer('keywords')\n    ...         catalog[u'keywords'] = CatalogKeywordIndex(keywordindexer)\n    ...         return catalog\n\n    >>> provideUtility(MySoupCatalogFactory(), name=\"mysoup\")\n\nThe catalog factory is used soup-internal only but one may want to check if it\nworks fine::\n\n    >>> catalogfactory = getUtility(ICatalogFactory, name='mysoup')\n    >>> catalogfactory\n    <MySoupCatalogFactory object at 0x...>\n\n    >>> catalog = catalogfactory()\n    >>> sorted(catalog.items())\n    [(u'keywords', <repoze.catalog.indexes.keyword.CatalogKeywordIndex object at 0x...>),\n    (u'text', <repoze.catalog.indexes.text.CatalogTextIndex object at 0x...>),\n    (u'user', <repoze.catalog.indexes.field.CatalogFieldIndex object at 0x...>)]\n\n\nAdding records\n--------------\n\nAs mentioned above the ``souper.soup.Record`` is the one and only kind of data\nadded to the soup. A record has attributes containing the data::\n\n    >>> from souper.soup import get_soup\n    >>> from souper.soup import Record\n    >>> soup = get_soup('mysoup', context)\n    >>> record = Record()\n    >>> record.attrs['user'] = 'user1'\n    >>> record.attrs['text'] = u'foo bar baz'\n    >>> record.attrs['keywords'] = [u'1', u'2', u'\u00fc']\n    >>> record_id = soup.add(record)\n\nA record may contains other records. But to index them one would need a custom\nindexer, so usally conatined records are valuable for later display, not for\nsearching::\n\n    >>> record['subrecord'] = Record()\n    >>> record['homeaddress'].attrs['zip'] = '6020'\n    >>> record['homeaddress'].attrs['town'] = 'Innsbruck'\n    >>> record['homeaddress'].attrs['country'] = 'Austria'\n\n\nAccess data\n-----------\n\nEven without any query a record can be fetched by id::\n\n    >>> from souper.soup import get_soup\n    >>> soup = get_soup('mysoup', context)\n    >>> record = soup.get(record_id)\n\nAll records can be accessed using utilizing the container BTree::\n\n    >>> soup.data.keys()[0] == record_id\n    True\n\n\nQuery data\n----------\n\n`How to query a repoze catalog is documented well. <http://docs.repoze.org/catalog/usage.html#searching>`_\nSorting works the same too. Queries are passed to soups ``query`` method (which\nuses then repoze catalog). It returns a generator::\n\n    >>> from repoze.catalog.query import Eq\n    >>> [r for r in soup.query(Eq('user', 'user1'))]\n    [<Record object 'None' at ...>]\n\n    >>> [r for r in soup.query(Eq('user', 'nonexists'))]\n    []\n\nTo also get the size of the result set pass a ``with_size=True`` to the query.\nThe first item returned by the generator is the size::\n\n    >>> [r for r in soup.query(Eq('user', 'user1'), with_size-True)]\n    [1, <Record object 'None' at ...>]\n\n\nTo optimize handling of large result sets one may not to fetch the record but a\ngenerator returning light weight objects. Records are fetched on call::\n\n    >>> lazy = [l for l in soup.lazy(Eq('name', 'name'))]\n    >>> lazy\n    [<souper.soup.LazyRecord object at ...>,\n\n    >>> lazy[0]()\n    <Record object 'None' at ...>\n\nHere the size is passed as first value of the geneartor too if ``with_size=True``\nis passed.\n\n\nDelete a record\n---------------\n\nTo remove a record from the soup python ``del`` is used like one would do on\nany dict::\n\n    >>> del soup[record]\n\n\nReindex\n-------\n\nAfter a records data changed it needs a reindex::\n\n    >>> record.attrs['user'] = 'user1'\n    >>> soup.reindex(records=[record])\n\nSometimes one may want to reindex all data. Then ``reindex`` has to be\ncalled without parameters. It may take a while::\n\n    >>> soup.reindex()\n\n\nRebuild catalog\n---------------\n\nUsally after a change of catalog factory was made - i.e. some index was added -\na rebuild of the catalog i needed. It replaces the current catalog with a new\none created by the catalog factory and reindexes all data. It may take while::\n\n    >>> soup.rebuild()\n\n\nReset (or clear) the soup\n-------------------------\n\nTo remove all data from the soup and empty and rebuild the catalog call\n``clear``. Attention: all data is lost!\n\n::\n\n    >>> soup.clear()\n\n\nInstallation Notes\n==================\n\nIn order to use souper ``node.ext.zodb`` is needed. As this beta was released\nthere was no release (will be done soon). Please check\n`pypi <http://pypi.python.org>`_ if it is there, otherwise please fetch\n`node.ext.zodb from github <https://github.com/bluedynamics/node.ext.zodb>`_\n\n\nSource Code\n===========\n\nThe sources are in a GIT DVCS with its main branches at\n`github <http://github.com/bluedynamics/souper>`_.\n\nWe'd be happy to see many forks and pull-requests to make souper even better.\n\n\nContributors\n============\n\n- Robert Niederreiter <rnix [at] squarewave [dot] at>\n\n- Jens W. Klein <jk [at] kleinundpartner [dot] at>\n\nChangelog\n=========\n\n1.0.2 (2015-02-25)\n------------------\n\n- fix: unicode with special chars in text indexer failed.\n  [jensens, 2014-02-25]\n\n1.0.1\n-----\n\n- PEP-8.\n  [rnix, 2012-10-16]\n\n- Python 2.7 Support.\n  [rnix, 2012-10-16]\n\n- Fix documentation.\n\n1.0\n---\n\n- make it work\n  [rnix, jensens, et al]\n\nLicense\n=======\n\nCopyright (c) 2008-2012, BlueDynamics Alliance, Austria, Germany, Switzerland\nAll rights reserved.\n\nRedistribution and use in source and binary forms, with or without\nmodification, are permitted provided that the following conditions are met:\n\n* Redistributions of source code must retain the above copyright notice, this \n  list of conditions and the following disclaimer.\n* Redistributions in binary form must reproduce the above copyright notice, this \n  list of conditions and the following disclaimer in the documentation and/or \n  other materials provided with the distribution.\n* Neither the name of the BlueDynamics Alliance nor the names of its \n  contributors may be used to endorse or promote products derived from this \n  software without specific prior written permission.\n      \nTHIS SOFTWARE IS PROVIDED BY BlueDynamics Alliance ``AS IS`` AND ANY\nEXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED\nWARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE\nDISCLAIMED. IN NO EVENT SHALL BlueDynamics Alliance BE LIABLE FOR ANY\nDIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES\n(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;\nLOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND\nON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT\n(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS\nSOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.",
+    "docs_url": null,
+    "download_url": "UNKNOWN",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "http://packages.python.org/souper",
+    "keywords": "zodb zope pyramid node plone",
+    "license": "BSD",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "souper",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/souper/",
+    "release_url": "https://pypi.org/project/souper/1.0.2/",
+    "requires_python": null,
+    "summary": "Souper - Generic Indexed Storage based on ZODB",
+    "version": "1.0.2"
+  },
+  "releases": {
+    "1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5718f015f9b715b9a2e849695d0dacff",
+          "sha256": "9cd668c26725cb1b01301395287f13a61102f7ce63f01fe5cd358d35ed50ece1"
+        },
+        "downloads": 2119,
+        "filename": "souper-1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5718f015f9b715b9a2e849695d0dacff",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10836,
+        "upload_time": "2012-10-07T08:38:58",
+        "url": "https://files.pythonhosted.org/packages/de/d7/62e4b352ab064a6b4d3cb01def687995bd28c7b314ca5cc97a3d45ce0379/souper-1.0.tar.gz"
+      }
+    ],
+    "1.0-beta1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1cf40e0713b33a2566a9f62600c27577",
+          "sha256": "173416722f4de319cfbee6161fc1b58c83ef410ffe88c29cd99d3397eba656cf"
+        },
+        "downloads": 2719,
+        "filename": "souper-1.0-beta1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1cf40e0713b33a2566a9f62600c27577",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 13196,
+        "upload_time": "2012-08-28T17:06:34",
+        "url": "https://files.pythonhosted.org/packages/98/3c/43239a9419ba1445430f76504c152e1407a2519d04703ab27a273bb9fb5e/souper-1.0-beta1.tar.gz"
+      }
+    ],
+    "1.0.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1510d6af465249a9989159ef753255d2",
+          "sha256": "d96b43b0e51a8111fd8671bc1f1a15fa68be8e0fed1f90ba6a86e0f219b231d9"
+        },
+        "downloads": 2721,
+        "filename": "souper-1.0.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1510d6af465249a9989159ef753255d2",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10881,
+        "upload_time": "2012-12-05T11:10:14",
+        "url": "https://files.pythonhosted.org/packages/eb/0e/5e9138d50a87c5ff26aa069b9abb814762e246b0c97adf8e8c3aac5189ca/souper-1.0.1.tar.gz"
+      }
+    ],
+    "1.0.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f3c64a13b6bde42c8320a0ff165d47c7",
+          "sha256": "7d3b6114d43b2c00be9d501abb498fcf5e48b907f85337ddc55e084ed0c1002f"
+        },
+        "downloads": 2815,
+        "filename": "souper-1.0.2.zip",
+        "has_sig": false,
+        "md5_digest": "f3c64a13b6bde42c8320a0ff165d47c7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 20727,
+        "upload_time": "2015-02-25T11:55:55",
+        "url": "https://files.pythonhosted.org/packages/36/6c/2baf6b285d5298f3c7640cc8e393462204baf82c8d23f0822742b86b17bb/souper-1.0.2.zip"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "f3c64a13b6bde42c8320a0ff165d47c7",
+        "sha256": "7d3b6114d43b2c00be9d501abb498fcf5e48b907f85337ddc55e084ed0c1002f"
+      },
+      "downloads": 2815,
+      "filename": "souper-1.0.2.zip",
+      "has_sig": false,
+      "md5_digest": "f3c64a13b6bde42c8320a0ff165d47c7",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 20727,
+      "upload_time": "2015-02-25T11:55:55",
+      "url": "https://files.pythonhosted.org/packages/36/6c/2baf6b285d5298f3c7640cc8e393462204baf82c8d23f0822742b86b17bb/souper-1.0.2.zip"
+    }
+  ]
+}

@@ -1,0 +1,708 @@
+{
+  "info": {
+    "author": "Matthew Honnibal",
+    "author_email": "matt@spacy.io",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Environment :: Console",
+      "Intended Audience :: Developers",
+      "Intended Audience :: Science/Research",
+      "License :: OSI Approved :: MIT License",
+      "Operating System :: MacOS :: MacOS X",
+      "Operating System :: Microsoft :: Windows",
+      "Operating System :: POSIX :: Linux",
+      "Programming Language :: Cython",
+      "Programming Language :: Python :: 2.6",
+      "Programming Language :: Python :: 2.7",
+      "Programming Language :: Python :: 3.3",
+      "Programming Language :: Python :: 3.4",
+      "Programming Language :: Python :: 3.5",
+      "Topic :: Scientific/Engineering"
+    ],
+    "description": ".. image:: https://travis-ci.org/spacy-io/cymem.svg?branch=master\n    :target: https://travis-ci.org/spacy-io/cymem\n\nCython Memory Helper\n--------------------\n\ncymem provides two small memory-management helpers for Cython. They make it\neasy to tie memory to a Python object's life-cycle, so that the memory is freed\nwhen the object is garbage collected.\n\nThe most useful is cymem.Pool, which acts as a thin wrapper around the calloc\nfunction:\n\n    >>> from cymem.cymem cimport Pool\n    >>> cdef Pool mem = Pool()\n    >>> data1 = <int*>mem.alloc(10, sizeof(int))\n    >>> data2 = <float*>mem.alloc(12, sizeof(float))\n\nThe Pool object saves the memory addresses internally, and frees them when the\nobject is garbage collected. Typically you'll attach the Pool to some cdef'd\nclass. This is particularly handy for deeply nested structs, which have\ncomplicated initialization functions. Just pass the pool object into the\ninitializer, and you don't have to worry about freeing your struct at all ---\nall of the calls to Pool.alloc will be automatically freed when the Pool\nexpires.\n\nInstallation\n------------\n\nInstallation is via pip, and requires Cython.\n\n    pip install cymem\n\nExample Use Case: An array of structs\n-------------------------------------\n\nLet's say we want a sequence of sparse matrices. We need fast access, and\na Python list isn't performing well enough. So, we want a C-array or C++\nvector, which means we need the sparse matrix to be a C-level struct --- it\ncan't be a Python class.  We can write this easily enough in Cython:\n\n.. code-block:: cython\n\n    \"\"\"Example without Cymem\n    \n    To use an array of structs, we must carefully walk the data structure when\n    we deallocate it.\n    \"\"\"\n\n    from libc.stdlib cimport calloc, free\n    \n    cdef struct SparseRow:\n        size_t length\n        size_t* indices\n        double* values\n\n    cdef struct SparseMatrix:\n        size_t length\n        SparseRow* rows\n\n    cdef class MatrixArray:\n        cdef size_t length\n        cdef SparseMatrix** matrices\n\n        def __cinit__(self, list py_matrices):\n            self.length = 0\n            self.matrices = NULL\n\n        def __init__(self, list py_matrices):\n            self.length = len(py_matrices)\n            self.matrices = <SparseMatrix**>calloc(len(py_matrices), sizeof(SparseMatrix*))\n\n            for i, py_matrix in enumerate(py_matrices):\n                self.matrices[i] = sparse_matrix_init(py_matrix)\n\n        def __dealloc__(self):\n            for i in range(self.length):\n                sparse_matrix_free(self.matrices[i])\n            free(self.matrices)\n\n\n    cdef SparseMatrix* sparse_matrix_init(list py_matrix) except NULL:\n        sm = <SparseMatrix*>calloc(1, sizeof(SparseMatrix))\n        sm.length = len(py_matrix)\n        sm.rows = <SparseRow*>calloc(sm.length, sizeof(SparseRow))\n        cdef size_t i, j\n        cdef dict py_row\n        cdef size_t idx\n        cdef double value\n        for i, py_row in enumerate(py_matrix):\n            sm.rows[i].length = len(py_row)\n            sm.rows[i].indices = <size_t*>calloc(sm.rows[i].length, sizeof(size_t))\n            sm.rows[i].values = <double*>calloc(sm.rows[i].length, sizeof(double))\n            for j, (idx, value) in enumerate(py_row.items()):\n                sm.rows[i].indices[j] = idx\n                sm.rows[i].values[j] = value\n        return sm\n\n\n    cdef void* sparse_matrix_free(SparseMatrix* sm) except *:\n        cdef size_t i\n        for i in range(sm.length):\n            free(sm.rows[i].indices)\n            free(sm.rows[i].values)\n        free(sm.rows)\n        free(sm)\n\n\nWe wrap the data structure in a Python ref-counted class at as low a level as\nwe can, given our performance constraints.  This allows us to allocate and free\nthe memory in the __cinit__ and __dealloc__ Cython special methods.\n\nHowever, it's very easy to make mistakes when writing the __dealloc__ and\nsparse_matrix_free functions, leading to memory leaks. cymem prevents you from\nwriting these deallocators at all. Instead, you write as follows:\n\n.. code-block:: cython\n\n    \"\"\"Example with Cymem.\n\n    Memory allocation is hidden behind the Pool class, which remembers the\n    addresses it gives out.  When the Pool object is garbage collected, all of\n    its addresses are freed.\n\n    We don't need to write MatrixArray.__dealloc__ or sparse_matrix_free,\n    eliminating a common class of bugs.\n    \"\"\"\n    from cymem.cymem cimport Pool\n   \n    cdef struct SparseRow:\n        size_t length\n        size_t* indices\n        double* values\n\n    cdef struct SparseMatrix:\n        size_t length\n        SparseRow* rows\n\n\n    cdef class MatrixArray:\n        cdef size_t length\n        cdef SparseMatrix** matrices\n        cdef Pool mem\n    \n        def __cinit__(self, list py_matrices):\n            self.mem = None\n            self.length = 0\n            self.matrices = NULL\n\n        def __init__(self, list py_matrices):\n            self.mem = Pool()\n            self.length = len(py_matrices)\n            self.matrices = <SparseMatrix**>self.mem.alloc(self.length, sizeof(SparseMatrix*))\n            for i, py_matrix in enumerate(py_matrices):\n                self.matrices[i] = sparse_matrix_init(self.mem, py_matrix)\n\n    cdef SparseMatrix* sparse_matrix_init_cymem(Pool mem, list py_matrix) except NULL:\n        sm = <SparseMatrix*>mem.alloc(1, sizeof(SparseMatrix))\n        sm.length = len(py_matrix)\n        sm.rows = <SparseRow*>mem.alloc(sm.length, sizeof(SparseRow))\n        cdef size_t i, j\n        cdef dict py_row\n        cdef size_t idx\n        cdef double value\n        for i, py_row in enumerate(py_matrix):\n            sm.rows[i].length = len(py_row)\n            sm.rows[i].indices = <size_t*>mem.alloc(sm.rows[i].length, sizeof(size_t))\n            sm.rows[i].values = <double*>mem.alloc(sm.rows[i].length, sizeof(double))\n            for j, (idx, value) in enumerate(py_row.items()):\n                sm.rows[i].indices[j] = idx\n                sm.rows[i].values[j] = value\n        return sm\n\n\nAll that the Pool class does is remember the addresses it gives out. When the\nMatrixArray object is garbage-collected, the Pool object will also be garbage\ncollected, which triggers a call to Pool.__dealloc__. The Pool then frees all of\nits addresses. This saves you from walking back over your nested data structures\nto free them, eliminating a common class of errors.",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/spacy-io/cymem",
+    "keywords": "",
+    "license": "MIT",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "cymem",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/cymem/",
+    "release_url": "https://pypi.org/project/cymem/1.31.2/",
+    "requires_python": "",
+    "summary": "Manage calls to calloc/free through Cython",
+    "version": "1.31.2"
+  },
+  "releases": {
+    "0.8": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "026c587f6a4c50028e167059af3972e5",
+          "sha256": "06dd610d5c4a90137a1aec74c3feee2e75b8e82bd36f1234cd0c014cac9c78fe"
+        },
+        "downloads": 1485,
+        "filename": "cymem-0.8.tar.gz",
+        "has_sig": false,
+        "md5_digest": "026c587f6a4c50028e167059af3972e5",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 26611,
+        "upload_time": "2014-09-25T14:48:04",
+        "url": "https://files.pythonhosted.org/packages/c7/e5/39e04f9016599faf34425d1afddd5fd77f35391f276e90bcd175f1d7d55c/cymem-0.8.tar.gz"
+      }
+    ],
+    "0.9": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "517bfc13df7010f0a5bce1f9f329a259",
+          "sha256": "f2e7746836813dcb267390499d135260e519dc932a0d853a4d1127a351b17c3f"
+        },
+        "downloads": 1891,
+        "filename": "cymem-0.9.tar.gz",
+        "has_sig": false,
+        "md5_digest": "517bfc13df7010f0a5bce1f9f329a259",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 26794,
+        "upload_time": "2014-10-04T13:39:58",
+        "url": "https://files.pythonhosted.org/packages/07/ab/a6758c83baa17f377037d71631fe6c5cbec063bf42124f7130df3db9fd12/cymem-0.9.tar.gz"
+      }
+    ],
+    "1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "88459d9c15eeed0159c9acb499b20eae",
+          "sha256": "c0b7fbc7f6800f6e2eb645ac2ca3137d5845527a6989b3a829c1ed1a86655c84"
+        },
+        "downloads": 1644,
+        "filename": "cymem-1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "88459d9c15eeed0159c9acb499b20eae",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 27576,
+        "upload_time": "2014-10-21T08:19:33",
+        "url": "https://files.pythonhosted.org/packages/94/67/e81b7d9f7f0e1bbe428f1ac82be8b154d585e169b0f477a6932f7a898cf6/cymem-1.0.tar.gz"
+      }
+    ],
+    "1.1": [],
+    "1.10": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e2a983a572fe8eb9abf88065b819e3bf",
+          "sha256": "969db96fa01e9682af7944316232f1fc860f74bce750b7f17e3b6251840070cf"
+        },
+        "downloads": 2247,
+        "filename": "cymem-1.10.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e2a983a572fe8eb9abf88065b819e3bf",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 26702,
+        "upload_time": "2015-01-02T18:12:53",
+        "url": "https://files.pythonhosted.org/packages/59/d9/0cddd33933b9fd4462ec47edc28f96ffa75ac0cdfb62d7419b7129da55be/cymem-1.10.tar.gz"
+      }
+    ],
+    "1.11": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6a257e0abca8771db4d2263762fd5d0c",
+          "sha256": "d7bdfae0deac3639ae37c6541cd3b5e1fdf7337ac19efdc0621dd68b894aea91"
+        },
+        "downloads": 7450,
+        "filename": "cymem-1.11.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6a257e0abca8771db4d2263762fd5d0c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 26884,
+        "upload_time": "2015-01-31T01:49:41",
+        "url": "https://files.pythonhosted.org/packages/3f/6f/369a600d4cde6295dca393bca8374c5185335cc7067c4afd33b5126891dd/cymem-1.11.tar.gz"
+      }
+    ],
+    "1.3.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "56a5cfc85215a732542e71c052b82f8a",
+          "sha256": "f2c9b3b742a9067a747c6edd3d1ca0dd3562eef311aa7d463da16f5410b8f26a"
+        },
+        "downloads": 623,
+        "filename": "cymem-1.3.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "56a5cfc85215a732542e71c052b82f8a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 28459,
+        "upload_time": "2015-11-02T14:23:10",
+        "url": "https://files.pythonhosted.org/packages/25/02/8ea7f90077d722eaf40f3adb3921e588303fac6ecae7b22773ac27a10b72/cymem-1.3.0.tar.gz"
+      }
+    ],
+    "1.30": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "bf95cef6d1bfc4c8f443c6e265aa0eab",
+          "sha256": "cd510ca98f77d9ed6152576d36be1d03b15b1d6b2441a667cbfc73de304ab933"
+        },
+        "downloads": 7542,
+        "filename": "cymem-1.30.tar.gz",
+        "has_sig": false,
+        "md5_digest": "bf95cef6d1bfc4c8f443c6e265aa0eab",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 28460,
+        "upload_time": "2015-11-02T14:26:25",
+        "url": "https://files.pythonhosted.org/packages/ff/ba/00a9590f41fca7e629deca628d0d0a2fdf6a49ad680ff4ff7914271aec40/cymem-1.30.tar.gz"
+      }
+    ],
+    "1.31.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6873993a220176bff2d5c2276882b2fc",
+          "sha256": "6e2498cf7d432c84e7c93a8d6ca8ef23b88166eb0ad85d09308738e53f8e0517"
+        },
+        "downloads": 339,
+        "filename": "cymem-1.31.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6873993a220176bff2d5c2276882b2fc",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 28558,
+        "upload_time": "2016-01-30T15:09:04",
+        "url": "https://files.pythonhosted.org/packages/fa/dc/5f773462ca95a24e35a51d0401b42b35ad319312d55948acf568e7dd0bac/cymem-1.31.0.tar.gz"
+      }
+    ],
+    "1.31.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "610ab1a2277fbd6f058e8498f8bd2381",
+          "sha256": "e68bd6fee09345fc556143eb2c78941b78ed7afbd1a6abfe59c2392ffd8fcc02"
+        },
+        "downloads": 143,
+        "filename": "cymem-1.31.1-cp27-cp27m-macosx_10_6_intel.whl",
+        "has_sig": false,
+        "md5_digest": "610ab1a2277fbd6f058e8498f8bd2381",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 22275,
+        "upload_time": "2016-03-25T12:39:26",
+        "url": "https://files.pythonhosted.org/packages/dd/3e/951f3dd078371dc66be01bd4abdfcdfea262e8d287b0365cbe62008699cb/cymem-1.31.1-cp27-cp27m-macosx_10_6_intel.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5f306b3e19062bb0751935efb1a8b7a4",
+          "sha256": "00121923e4a7b4f6f9abbf119684a1ad72a5be8edd5f098f2a219d2042612edf"
+        },
+        "downloads": 160,
+        "filename": "cymem-1.31.1-cp27-cp27mu-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "5f306b3e19062bb0751935efb1a8b7a4",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 66212,
+        "upload_time": "2016-04-19T20:21:44",
+        "url": "https://files.pythonhosted.org/packages/b2/33/eb2f07f928120c8a4cd9df2845a62ec4cf96eb657eec59d8496304398bce/cymem-1.31.1-cp27-cp27mu-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a35d242702e940e87f4858fba309aac3",
+          "sha256": "9099fac0039bfa1806c3c9d4fb521c9bb64d59e0e539d1f9337abd72e6fabb89"
+        },
+        "downloads": 131,
+        "filename": "cymem-1.31.1-cp27-none-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "a35d242702e940e87f4858fba309aac3",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 23783,
+        "upload_time": "2016-03-25T12:39:32",
+        "url": "https://files.pythonhosted.org/packages/70/95/8c33eb85f50f40406d535e58b7f3bc922dc9fb818a91b401e58a64d07681/cymem-1.31.1-cp27-none-win_amd64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "840512609a5ffcfb18d4595b44c9b69f",
+          "sha256": "8dada09070ffacd6fbba0a6c3090062238e57154cc5bf10c2e1a1919268f328a"
+        },
+        "downloads": 139,
+        "filename": "cymem-1.31.1-cp34-cp34m-macosx_10_6_intel.whl",
+        "has_sig": false,
+        "md5_digest": "840512609a5ffcfb18d4595b44c9b69f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 22720,
+        "upload_time": "2016-03-25T12:39:36",
+        "url": "https://files.pythonhosted.org/packages/de/ba/ac4592292d958892a412851375f31235af40ae7e2c19dede661a2625ff07/cymem-1.31.1-cp34-cp34m-macosx_10_6_intel.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4b228d581cced8324b01ceb23a8b87b4",
+          "sha256": "110409a78b0b7e2f8dc858293556c4a071612c30c52d7f97681042d63f495185"
+        },
+        "downloads": 174,
+        "filename": "cymem-1.31.1-cp34-cp34m-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "4b228d581cced8324b01ceb23a8b87b4",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 72040,
+        "upload_time": "2016-04-19T20:17:56",
+        "url": "https://files.pythonhosted.org/packages/c2/e2/e6e590362e114489d21edbe75ec5fab387567bd33d7c005deea1f843d279/cymem-1.31.1-cp34-cp34m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "73c1ce007b1b816411017c5ba7a9e95b",
+          "sha256": "13102a1aa5e19f2685029789ba4cca2010bd9417323eabba0b7ea17f41451fd4"
+        },
+        "downloads": 137,
+        "filename": "cymem-1.31.1-cp34-none-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "73c1ce007b1b816411017c5ba7a9e95b",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 24237,
+        "upload_time": "2016-03-25T12:39:44",
+        "url": "https://files.pythonhosted.org/packages/11/5c/04696375a9ff54b8d5141e2dd5a048e8bc948791147e2e6ce9bf2ee27e69/cymem-1.31.1-cp34-none-win_amd64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "27b4f3f2726aad6abaf27b7bd680b299",
+          "sha256": "588acb15567a0feb7954f10a0372c38baf77e2860d89262c60c13cbdeabd23d9"
+        },
+        "downloads": 144,
+        "filename": "cymem-1.31.1-cp35-cp35m-macosx_10_6_intel.whl",
+        "has_sig": false,
+        "md5_digest": "27b4f3f2726aad6abaf27b7bd680b299",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 22770,
+        "upload_time": "2016-03-25T12:39:48",
+        "url": "https://files.pythonhosted.org/packages/1e/ea/64a740322da1866368629eb0754ee8e0efb821d4f9d737b977f10f42d980/cymem-1.31.1-cp35-cp35m-macosx_10_6_intel.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "791c99585c96495889d23822009fd099",
+          "sha256": "f43fe23bfad0f1dda38bd4c3b1ddcf915f0650c84dbc7c4f5145d36109e8e95a"
+        },
+        "downloads": 137,
+        "filename": "cymem-1.31.1-cp35-cp35m-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "791c99585c96495889d23822009fd099",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 71091,
+        "upload_time": "2016-04-19T20:18:21",
+        "url": "https://files.pythonhosted.org/packages/4c/1a/d913d81cfe6f803217a4958d111b26291f76653a0dd5ae240ba58cd924a3/cymem-1.31.1-cp35-cp35m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9cfa43c678a8ac3fca68f6dcdd1b726b",
+          "sha256": "0be17b3ee12b4b75bab7d292b6952e0d72cb641db45903f37b5a28153e825541"
+        },
+        "downloads": 142,
+        "filename": "cymem-1.31.1-cp35-none-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "9cfa43c678a8ac3fca68f6dcdd1b726b",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 25431,
+        "upload_time": "2016-03-25T12:39:56",
+        "url": "https://files.pythonhosted.org/packages/33/5a/f52fdf5f10bceb7482381ce7a299c684c39a62954fc295681b62fb97a91f/cymem-1.31.1-cp35-none-win_amd64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4130380c1c7b97c9c586c216192627e1",
+          "sha256": "d21d652e9c7eb0711f8b328515cacab1787783d151cc9c2365b5e6a14d10bf32"
+        },
+        "downloads": 162,
+        "filename": "cymem-1.31.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4130380c1c7b97c9c586c216192627e1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 33749,
+        "upload_time": "2016-03-25T12:40:00",
+        "url": "https://files.pythonhosted.org/packages/b9/2b/569c36a66587f5f3459d1adf8fca94489b9887c36572593d32c3b0f730a9/cymem-1.31.1.tar.gz"
+      }
+    ],
+    "1.31.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8a7719f6b6c5b7650dc9c946ffe6a1e8",
+          "sha256": "b6513b2926c60d641f159e79e6fb16460dfb50ebcce31a5af0370c51837c7efc"
+        },
+        "downloads": 1209,
+        "filename": "cymem-1.31.2-cp27-cp27m-macosx_10_6_intel.whl",
+        "has_sig": false,
+        "md5_digest": "8a7719f6b6c5b7650dc9c946ffe6a1e8",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 22091,
+        "upload_time": "2016-04-30T09:15:02",
+        "url": "https://files.pythonhosted.org/packages/a2/41/dc242f063af9aa284089d2a1f5da7d72d2169080651dfdec58f4db162f2b/cymem-1.31.2-cp27-cp27m-macosx_10_6_intel.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d607b0dd4e387252515319c82b6c6393",
+          "sha256": "616d06333f46dd03c128d97912d361183fc02249e6420a7b7907b41214c51562"
+        },
+        "downloads": 298,
+        "filename": "cymem-1.31.2-cp27-cp27m-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "d607b0dd4e387252515319c82b6c6393",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 66031,
+        "upload_time": "2016-04-30T09:15:19",
+        "url": "https://files.pythonhosted.org/packages/e2/ef/e1ebaf55e478e1d34c6ac9b0d2fa8678e180542d3bc9398af9e95b546df1/cymem-1.31.2-cp27-cp27m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "092f589c235eb51076ce64b155a93593",
+          "sha256": "944af97d4d34a2470b5199f1c31d2dfc79cdec7bd7a41354d839a8ab87fdfaa6"
+        },
+        "downloads": 6226,
+        "filename": "cymem-1.31.2-cp27-cp27mu-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "092f589c235eb51076ce64b155a93593",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 66028,
+        "upload_time": "2016-04-30T09:17:46",
+        "url": "https://files.pythonhosted.org/packages/b7/a2/76d5031797be8a7881537f1dd658142f993f6a18f0e946caa8ee20b7a2fa/cymem-1.31.2-cp27-cp27mu-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "520cb8680a83c423dcbec6c524f26619",
+          "sha256": "50292f4dd0d950a8698bae27d71efe59da7ff08e591b735e08b658aae42c4745"
+        },
+        "downloads": 520,
+        "filename": "cymem-1.31.2-cp27-none-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "520cb8680a83c423dcbec6c524f26619",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 23610,
+        "upload_time": "2016-04-30T09:17:53",
+        "url": "https://files.pythonhosted.org/packages/39/be/896063d10e227201760cdd05e6dd41ae6c87d2c528d74b6c43b491fc1a8f/cymem-1.31.2-cp27-none-win_amd64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f615410496f0dfb73df4df86b4c9e49b",
+          "sha256": "daa6003fcc199752ab703142021cff74774872a932303b240dc0ea177adf295d"
+        },
+        "downloads": 203,
+        "filename": "cymem-1.31.2-cp34-cp34m-macosx_10_6_intel.whl",
+        "has_sig": false,
+        "md5_digest": "f615410496f0dfb73df4df86b4c9e49b",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 22536,
+        "upload_time": "2016-04-30T09:18:09",
+        "url": "https://files.pythonhosted.org/packages/e2/b4/d20597d322b62fefea6a77633d09e03083ef1942ad9e25a6e16808f576c8/cymem-1.31.2-cp34-cp34m-macosx_10_6_intel.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c8adce70280299c0ac6c708834ed8645",
+          "sha256": "b38056efb99078b06c504adb5f03a8d9e822a5543451737b746028a71c4b1ac3"
+        },
+        "downloads": 827,
+        "filename": "cymem-1.31.2-cp34-cp34m-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "c8adce70280299c0ac6c708834ed8645",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 71858,
+        "upload_time": "2016-04-30T09:18:40",
+        "url": "https://files.pythonhosted.org/packages/b6/89/0f4f338b405c0cc72fd46287f2a1047377062c81875e35a55dadea361877/cymem-1.31.2-cp34-cp34m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d088bb83bd505404e672fa8ed058c5fe",
+          "sha256": "4bc1056b52d959fcbb1e0f32ec84fa131754d6be1e36b65782c6ac86419f4bf3"
+        },
+        "downloads": 202,
+        "filename": "cymem-1.31.2-cp34-none-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "d088bb83bd505404e672fa8ed058c5fe",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 24054,
+        "upload_time": "2016-04-30T09:18:53",
+        "url": "https://files.pythonhosted.org/packages/ab/44/f3af1d1a266e46c1eb5bc2efc6053f14d1571d335f72cec4b2a3aec0fce1/cymem-1.31.2-cp34-none-win_amd64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "47b2936d8fa6798859da0c46b717d01b",
+          "sha256": "0dd61d05977839a922c0d797c355b98949210575918b1743b41e38ae9fb2c3a7"
+        },
+        "downloads": 595,
+        "filename": "cymem-1.31.2-cp35-cp35m-macosx_10_6_intel.whl",
+        "has_sig": false,
+        "md5_digest": "47b2936d8fa6798859da0c46b717d01b",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 22585,
+        "upload_time": "2016-04-30T09:19:18",
+        "url": "https://files.pythonhosted.org/packages/8c/23/35663f617afdd1cf77d2eaed8694cc45e6fd4fd58471f74d318076219751/cymem-1.31.2-cp35-cp35m-macosx_10_6_intel.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "aa9b6d1f47ebbbdfa9a5588c0eab5b8c",
+          "sha256": "4c5d9ca6ec706792b8d9b1faf6db77b95545c388c768b21d940f197aa7efbb7e"
+        },
+        "downloads": 3078,
+        "filename": "cymem-1.31.2-cp35-cp35m-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "aa9b6d1f47ebbbdfa9a5588c0eab5b8c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 70903,
+        "upload_time": "2016-04-30T09:19:30",
+        "url": "https://files.pythonhosted.org/packages/b6/43/39372a0bc24d336dc88b87262c30f09d0a2c759f32a2965f90fb56da46f1/cymem-1.31.2-cp35-cp35m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7784fee5947011fdd7d14fb8960ca337",
+          "sha256": "00bb3645dfb9a020d735ba3d6f822b04656388180588d8b2cebde967ee678bcc"
+        },
+        "downloads": 473,
+        "filename": "cymem-1.31.2-cp35-none-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "7784fee5947011fdd7d14fb8960ca337",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 25243,
+        "upload_time": "2016-04-30T09:19:40",
+        "url": "https://files.pythonhosted.org/packages/d2/2d/eebfedb0f54598f0edc70efe63b9ff37d9397b465bfa290c33eaf6f3cba7/cymem-1.31.2-cp35-none-win_amd64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "310e54a8408a25775cd3d58c9379518f",
+          "sha256": "f06d9b50da0474d7405674d8101c319d89a17d33792d6d429fe3d5c64f0d9df1"
+        },
+        "downloads": 4542,
+        "filename": "cymem-1.31.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "310e54a8408a25775cd3d58c9379518f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 33771,
+        "upload_time": "2016-04-30T09:13:52",
+        "url": "https://files.pythonhosted.org/packages/f8/9e/273fbea507de99166c11cd0cb3fde1ac01b5bc724d9a407a2f927ede91a1/cymem-1.31.2.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "8a7719f6b6c5b7650dc9c946ffe6a1e8",
+        "sha256": "b6513b2926c60d641f159e79e6fb16460dfb50ebcce31a5af0370c51837c7efc"
+      },
+      "downloads": 1209,
+      "filename": "cymem-1.31.2-cp27-cp27m-macosx_10_6_intel.whl",
+      "has_sig": false,
+      "md5_digest": "8a7719f6b6c5b7650dc9c946ffe6a1e8",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp27",
+      "size": 22091,
+      "upload_time": "2016-04-30T09:15:02",
+      "url": "https://files.pythonhosted.org/packages/a2/41/dc242f063af9aa284089d2a1f5da7d72d2169080651dfdec58f4db162f2b/cymem-1.31.2-cp27-cp27m-macosx_10_6_intel.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "d607b0dd4e387252515319c82b6c6393",
+        "sha256": "616d06333f46dd03c128d97912d361183fc02249e6420a7b7907b41214c51562"
+      },
+      "downloads": 298,
+      "filename": "cymem-1.31.2-cp27-cp27m-manylinux1_x86_64.whl",
+      "has_sig": false,
+      "md5_digest": "d607b0dd4e387252515319c82b6c6393",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp27",
+      "size": 66031,
+      "upload_time": "2016-04-30T09:15:19",
+      "url": "https://files.pythonhosted.org/packages/e2/ef/e1ebaf55e478e1d34c6ac9b0d2fa8678e180542d3bc9398af9e95b546df1/cymem-1.31.2-cp27-cp27m-manylinux1_x86_64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "092f589c235eb51076ce64b155a93593",
+        "sha256": "944af97d4d34a2470b5199f1c31d2dfc79cdec7bd7a41354d839a8ab87fdfaa6"
+      },
+      "downloads": 6226,
+      "filename": "cymem-1.31.2-cp27-cp27mu-manylinux1_x86_64.whl",
+      "has_sig": false,
+      "md5_digest": "092f589c235eb51076ce64b155a93593",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp27",
+      "size": 66028,
+      "upload_time": "2016-04-30T09:17:46",
+      "url": "https://files.pythonhosted.org/packages/b7/a2/76d5031797be8a7881537f1dd658142f993f6a18f0e946caa8ee20b7a2fa/cymem-1.31.2-cp27-cp27mu-manylinux1_x86_64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "520cb8680a83c423dcbec6c524f26619",
+        "sha256": "50292f4dd0d950a8698bae27d71efe59da7ff08e591b735e08b658aae42c4745"
+      },
+      "downloads": 520,
+      "filename": "cymem-1.31.2-cp27-none-win_amd64.whl",
+      "has_sig": false,
+      "md5_digest": "520cb8680a83c423dcbec6c524f26619",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp27",
+      "size": 23610,
+      "upload_time": "2016-04-30T09:17:53",
+      "url": "https://files.pythonhosted.org/packages/39/be/896063d10e227201760cdd05e6dd41ae6c87d2c528d74b6c43b491fc1a8f/cymem-1.31.2-cp27-none-win_amd64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "f615410496f0dfb73df4df86b4c9e49b",
+        "sha256": "daa6003fcc199752ab703142021cff74774872a932303b240dc0ea177adf295d"
+      },
+      "downloads": 203,
+      "filename": "cymem-1.31.2-cp34-cp34m-macosx_10_6_intel.whl",
+      "has_sig": false,
+      "md5_digest": "f615410496f0dfb73df4df86b4c9e49b",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp34",
+      "size": 22536,
+      "upload_time": "2016-04-30T09:18:09",
+      "url": "https://files.pythonhosted.org/packages/e2/b4/d20597d322b62fefea6a77633d09e03083ef1942ad9e25a6e16808f576c8/cymem-1.31.2-cp34-cp34m-macosx_10_6_intel.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "c8adce70280299c0ac6c708834ed8645",
+        "sha256": "b38056efb99078b06c504adb5f03a8d9e822a5543451737b746028a71c4b1ac3"
+      },
+      "downloads": 827,
+      "filename": "cymem-1.31.2-cp34-cp34m-manylinux1_x86_64.whl",
+      "has_sig": false,
+      "md5_digest": "c8adce70280299c0ac6c708834ed8645",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp34",
+      "size": 71858,
+      "upload_time": "2016-04-30T09:18:40",
+      "url": "https://files.pythonhosted.org/packages/b6/89/0f4f338b405c0cc72fd46287f2a1047377062c81875e35a55dadea361877/cymem-1.31.2-cp34-cp34m-manylinux1_x86_64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "d088bb83bd505404e672fa8ed058c5fe",
+        "sha256": "4bc1056b52d959fcbb1e0f32ec84fa131754d6be1e36b65782c6ac86419f4bf3"
+      },
+      "downloads": 202,
+      "filename": "cymem-1.31.2-cp34-none-win_amd64.whl",
+      "has_sig": false,
+      "md5_digest": "d088bb83bd505404e672fa8ed058c5fe",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp34",
+      "size": 24054,
+      "upload_time": "2016-04-30T09:18:53",
+      "url": "https://files.pythonhosted.org/packages/ab/44/f3af1d1a266e46c1eb5bc2efc6053f14d1571d335f72cec4b2a3aec0fce1/cymem-1.31.2-cp34-none-win_amd64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "47b2936d8fa6798859da0c46b717d01b",
+        "sha256": "0dd61d05977839a922c0d797c355b98949210575918b1743b41e38ae9fb2c3a7"
+      },
+      "downloads": 595,
+      "filename": "cymem-1.31.2-cp35-cp35m-macosx_10_6_intel.whl",
+      "has_sig": false,
+      "md5_digest": "47b2936d8fa6798859da0c46b717d01b",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp35",
+      "size": 22585,
+      "upload_time": "2016-04-30T09:19:18",
+      "url": "https://files.pythonhosted.org/packages/8c/23/35663f617afdd1cf77d2eaed8694cc45e6fd4fd58471f74d318076219751/cymem-1.31.2-cp35-cp35m-macosx_10_6_intel.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "aa9b6d1f47ebbbdfa9a5588c0eab5b8c",
+        "sha256": "4c5d9ca6ec706792b8d9b1faf6db77b95545c388c768b21d940f197aa7efbb7e"
+      },
+      "downloads": 3078,
+      "filename": "cymem-1.31.2-cp35-cp35m-manylinux1_x86_64.whl",
+      "has_sig": false,
+      "md5_digest": "aa9b6d1f47ebbbdfa9a5588c0eab5b8c",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp35",
+      "size": 70903,
+      "upload_time": "2016-04-30T09:19:30",
+      "url": "https://files.pythonhosted.org/packages/b6/43/39372a0bc24d336dc88b87262c30f09d0a2c759f32a2965f90fb56da46f1/cymem-1.31.2-cp35-cp35m-manylinux1_x86_64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "7784fee5947011fdd7d14fb8960ca337",
+        "sha256": "00bb3645dfb9a020d735ba3d6f822b04656388180588d8b2cebde967ee678bcc"
+      },
+      "downloads": 473,
+      "filename": "cymem-1.31.2-cp35-none-win_amd64.whl",
+      "has_sig": false,
+      "md5_digest": "7784fee5947011fdd7d14fb8960ca337",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp35",
+      "size": 25243,
+      "upload_time": "2016-04-30T09:19:40",
+      "url": "https://files.pythonhosted.org/packages/d2/2d/eebfedb0f54598f0edc70efe63b9ff37d9397b465bfa290c33eaf6f3cba7/cymem-1.31.2-cp35-none-win_amd64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "310e54a8408a25775cd3d58c9379518f",
+        "sha256": "f06d9b50da0474d7405674d8101c319d89a17d33792d6d429fe3d5c64f0d9df1"
+      },
+      "downloads": 4542,
+      "filename": "cymem-1.31.2.tar.gz",
+      "has_sig": false,
+      "md5_digest": "310e54a8408a25775cd3d58c9379518f",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 33771,
+      "upload_time": "2016-04-30T09:13:52",
+      "url": "https://files.pythonhosted.org/packages/f8/9e/273fbea507de99166c11cd0cb3fde1ac01b5bc724d9a407a2f927ede91a1/cymem-1.31.2.tar.gz"
+    }
+  ]
+}

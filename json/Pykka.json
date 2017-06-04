@@ -1,0 +1,596 @@
+{
+  "info": {
+    "author": "Stein Magnus Jodal",
+    "author_email": "stein.magnus@jodal.no",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 5 - Production/Stable",
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: Apache Software License",
+      "Programming Language :: Python :: 2",
+      "Programming Language :: Python :: 2.6",
+      "Programming Language :: Python :: 2.7",
+      "Programming Language :: Python :: 3",
+      "Programming Language :: Python :: 3.2",
+      "Programming Language :: Python :: 3.3",
+      "Programming Language :: Python :: 3.4",
+      "Programming Language :: Python :: Implementation :: CPython",
+      "Programming Language :: Python :: Implementation :: PyPy",
+      "Topic :: Software Development :: Libraries"
+    ],
+    "description": "=====\nPykka\n=====\n\nPykka is a Python implementation of the `actor model\n<http://en.wikipedia.org/wiki/Actor_model>`_. The actor model introduces some\nsimple rules to control the sharing of state and cooperation between execution\nunits, which makes it easier to build concurrent applications.\n\n\nRules of the actor model\n========================\n\n- An actor is an execution unit that executes concurrently with other actors.\n\n- An actor does not share state with anybody else, but it can have its own\n  state.\n\n- An actor can only communicate with other actors by sending and receiving\n  messages. It can only send messages to actors whose address it has.\n\n- When an actor receives a message it may take actions like:\n\n  - altering its own state, e.g. so that it can react differently to a\n    future message,\n  - sending messages to other actors, or\n  - starting new actors.\n\n  None of the actions are required, and they may be applied in any order.\n\n- An actor only processes one message at a time. In other words, a single actor\n  does not give you any concurrency, and it does not need to use locks\n  internally to protect its own state.\n\n\nThe actor implementations\n=========================\n\nPykka's actor API comes with the following implementations:\n\n- Threads: Each ``ThreadingActor`` is executed by a regular thread, i.e.\n  ``threading.Thread``. As handles for future results, it uses\n  ``ThreadingFuture`` which is a thin wrapper around a ``Queue.Queue``. It has\n  no dependencies outside Python itself. ``ThreadingActor`` plays well\n  together with non-actor threads.\n\n  Note: If you monkey patch the standard library with ``gevent`` or\n  ``eventlet`` you can still use ``ThreadingActor`` and ``ThreadingFuture``.\n  Python's threads will transparently use the underlying implementation\n  provided by gevent or Eventlet.\n\n- gevent: Each ``GeventActor`` is executed by a gevent greenlet. `gevent\n  <http://www.gevent.org/>`_ is a coroutine-based Python networking library\n  built on top of a libevent (in 0.13) or libev (in 1.0) event loop.\n  ``GeventActor`` is generally faster than ``ThreadingActor``, but as of gevent\n  0.13 it doesn't work in processes with other threads, which limits when it\n  can be used. With gevent 1.0, which is currently available as a release\n  candidate, this is no longer an issue. Pykka works with both gevent 0.13 and\n  1.0.\n\n- Eventlet: Each ``EventletActor`` is executed by a Eventlet greenlet. Pykka is\n  tested with Eventlet 0.12.1.\n\nPykka has an extensive test suite, and is tested on CPython 2.6, 2.7, and 3.2+,\nas well as PyPy. gevent and eventlet are currently not available for CPython\n3.x or PyPy.\n\n\nA basic actor\n=============\n\nIn its most basic form, a Pykka actor is a class with an\n``on_receive(message)`` method::\n\n    import pykka\n\n    class Greeter(pykka.ThreadingActor):\n        def on_receive(self, message):\n            print('Hi there!')\n\nTo start an actor, you call the class' method ``start()``, which starts the\nactor and returns an actor reference which can be used to communicate with the\nrunning actor::\n\n    actor_ref = Greeter.start()\n\nIf you need to pass arguments to the actor upon creation, you can pass them to\nthe ``start()`` method, and receive them using the regular ``__init__()``\nmethod::\n\n    import pykka\n\n    class Greeter(pykka.ThreadingActor):\n        def __init__(self, greeting='Hi there!'):\n            super(Greeter, self).__init__()\n            self.greeting = greeting\n\n        def on_receive(self, message):\n            print(self.greeting)\n\n    actor_ref = Greeter.start(greeting='Hi you!')\n\nIt can be useful to know that the init method is run in the execution context\nthat starts the actor. There are also hooks for running code in the actor's own\nexecution context when the actor starts, when it stops, and when an unhandled\nexception is raised. Check out the full API docs for the details.\n\nTo stop an actor, you can either call ``stop()`` on the ``actor_ref``::\n\n    actor_ref.stop()\n\nOr, if an actor wants to stop itself, it can simply do so::\n\n    self.stop()\n\nOnce an actor has been stopped, it cannot be restarted.\n\n\nSending messages\n----------------\n\nTo send a message to the actor, you can either use the ``tell()`` method or the\n``ask()`` method on the ``actor_ref`` object. ``tell()`` will fire of a message\nwithout waiting for an answer. In other words, it will never block. ``ask()``\nwill by default block until an answer is returned, potentially forever. If you\nprovide a ``timeout`` keyword argument to ``ask()``, you can specify for how\nlong it should wait for an answer. If you want an answer, but don't need it\nright away because you have other stuff you can do first, you can pass\n``block=False``, and ``ask()`` will immediately return a \"future\" object.\n\nThe message itself must always be a dict, but you're mostly free to use\nwhatever dict keys you want to.\n\nSummarized in code::\n\n    actor_ref.tell({'msg': 'Hi!'})\n    # => Returns nothing. Will never block.\n\n    answer = actor_ref.ask({'msg': 'Hi?'})\n    # => May block forever waiting for an answer\n\n    answer = actor_ref.ask({'msg': 'Hi?'}, timeout=3)\n    # => May wait 3s for an answer, then raises exception if no answer.\n\n    future = actor_ref.ask({'msg': 'Hi?'}, block=False)\n    # => Will return a future object immediately.\n    answer = future.get()\n    # => May block forever waiting for an answer\n    answer = future.get(timeout=0.1)\n    # => May wait 0.1s for an answer, then raises exception if no answer.\n\nFor performance reasons, Pykka **does not** clone the dict you send before\ndelivering it to the receiver. You are yourself responsible for either using\nimmutable data structures or to ``copy.deepcopy()`` the data you're sending off\nto other actors.\n\n\nReplying to messages\n--------------------\n\nIf a message is sent using ``actor_ref.ask()`` you can reply to the sender of\nthe message by simply returning a value from ``on_receive`` method::\n\n    import pykka\n\n    class Greeter(pykka.ThreadingActor):\n        def on_receive(self, message):\n            return 'Hi there!'\n\n    actor_ref = Greeter.start()\n\n    answer = actor_ref.ask({'msg': 'Hi?'})\n    print(answer)\n    # => 'Hi there!'\n\n``None`` is a valid response so if you return ``None`` explicitly, or don't\nreturn at all, a response containing ``None`` will be returned to the sender.\n\n>From the point of view of the actor it doesn't matter whether the message was\nsent using ``actor_ref.tell()`` or ``actor_ref.ask()`` . When the sender\ndoesn't expect a response the ``on_receive`` return value will be ignored.\n\nThe situation is similar in regard to exceptions: when ``actor_ref.ask()`` is\nused and you raise an exception from within ``on_receive`` method it will\npropagate to the sender::\n\n    import pykka\n\n    class Raiser(pykka.ThreadingActor):\n        def on_receive(self, message):\n            raise Exception('Oops')\n\n    actor_ref = Raiser.start()\n\n    try:\n        actor_ref.ask({'msg': 'How are you?'})\n    except Exception as e:\n        print(repr(e))\n        # => Exception('Oops')\n\n\nActor proxies\n=============\n\nWith the basic building blocks provided by actors and futures, we got\neverything we need to build more advanced abstractions. Pykka provides a single\nabstraction on top of the basic actor model, named \"actor proxies\". You can use\nPykka without proxies, but we've found it to be a very convenient abstraction\nwhen builing `Mopidy <http://www.mopidy.com/>`_.\n\nLet's create an actor and start it::\n\n    import pykka\n\n    class Calculator(pykka.ThreadingActor):\n        def __init__(self):\n            super(Calculator, self).__init__()\n            self.last_result = None\n\n        def add(self, a, b=None):\n            if b is not None:\n                self.last_result = a + b\n            else:\n                self.last_result += a\n            return self.last_result\n\n        def sub(self, a, b=None):\n            if b is not None:\n                self.last_result = a - b\n            else:\n                self.last_result -= a\n            return self.last_result\n\n    actor_ref = Calculator.start()\n\nYou can create a proxy from any reference to a running actor::\n\n    proxy = actor_ref.proxy()\n\nThe proxy object will use introspection to figure out what public attributes\nand methods the actor has, and then mirror the full API of the actor. Any\nattribute or method prefixed with underscore will be ignored, which is the\nconvention for keeping stuff private in Python.\n\nWhen we access attributes or call methods on the proxy, it will ask the actor\nto access the given attribute or call the given method, and return the result\nto us. All results are wrapped in \"future\" objects, so you must use the\n``get()`` method to get the actual data::\n\n    future = proxy.add(1, 3)\n    future.get()\n    # => 4\n\n    proxy.last_result.get()\n    # => 4\n\nSince an actor only processes one message at the time and all messages are kept\nin order, you don't need to add the call to ``get()`` just to block\nprocessing until the actor has completed processing your last message::\n\n    proxy.sub(5)\n    proxy.add(3)\n    proxy.last_result.get()\n    # => 2\n\nSince assignment doesn't return anything, it works just like on regular\nobjects::\n\n    proxy.last_result = 17\n    proxy.last_result.get()\n    # => 17\n\nUnder the hood, the proxy does everything by sending messages to the actor\nusing the regular ``actor_ref.ask()`` method we talked about previously.\nBy doing so, it maintains the actor model restrictions. The only \"magic\"\nhappening here is some basic introspection and automatic building of three\ndifferent message types; one for method calls, one for attribute reads, and one\nfor attribute writes.\n\n\nTraversable attributes on proxies\n---------------------------------\n\nSometimes you'll want to access an actor attribute's methods or attributes\nthrough a proxy. For this case, Pykka supports \"traversable attributes\". By\nmarking an actor attribute as traversable, Pykka will not return the attribute\nwhen accessed, but wrap it in a new proxy which is returned instead.\n\nTo mark an attribute as traversable, simply set the ``pykka_traversable``\nattribute to ``True``::\n\n    import pykka\n\n    class AnActor(pykka.ThreadingActor):\n        playback = Playback()\n\n    class Playback(object):\n        pykka_traversable = True\n\n        def play(self):\n            # ...\n            return True\n\n    proxy = AnActor.start().proxy()\n    play_success = proxy.playback.play().get()\n\nYou can access methods and attributes nested as deep as you like, as long as\nall attributes on the path between the actor and the method or attribute on the\nend is marked as traversable.\n\n\nExamples\n========\n\nSee the ``examples/`` dir in `Pykka's Git repo\n<https://github.com/jodal/pykka/>`_ for some runnable examples.\n\n\nWhat Pykka is not\n=================\n\nMuch of the naming of concepts and methods in Pykka is taken from the `Akka\n<http://akka.io/>`_ project which implements actors on the JVM. Though, Pykka\ndoes not aim to be a Python port of Akka, and supports far fewer features.\n\nNotably, Pykka **does not** support the following features:\n\n- Supervision: Linking actors, supervisors, or supervisor groups.\n\n- Remoting: Communicating with actors running on other hosts.\n\n- Routers: Pykka does not come with a set of predefined message routers, though\n  you may make your own actors for routing messages.\n\n\nInstallation\n============\n\nInstall Pykka's dependencies:\n\n- Python 2.6, 2.7, or 3.2+\n\n- Optionally, Python 2.6/2.7 only:\n\n  - `gevent <http://www.gevent.org/>`_, if you want to use gevent based actors\n    from ``pykka.gevent``.\n\n  - `eventlet <http://eventlet.net/>`_, if you want to use eventlet based actors\n    from ``pykka.eventlet``. Eventlet is known to work with PyPy 2.0 as well\n    but Pykka is not tested with it yet.\n\nTo install Pykka you can use pip::\n\n    pip install pykka\n\nTo upgrade your Pykka installation to the latest released version::\n\n    pip install --upgrade pykka\n\nTo install the latest development snapshot::\n\n    pip install pykka==dev\n\n\nLicense\n=======\n\nPykka is copyright 2010-2015 Stein Magnus Jodal and contributors.\nPykka is licensed under the `Apache License, Version 2.0\n<http://www.apache.org/licenses/LICENSE-2.0>`_.\n\n\nProject resources\n=================\n\n- `Documentation <http://www.pykka.org/>`_\n- `Source code <https://github.com/jodal/pykka>`_\n- `Issue tracker <https://github.com/jodal/pykka/issues>`_\n- `CI server <https://travis-ci.org/jodal/pykka>`_\n- `Download development snapshot\n  <https://github.com/jodal/pykka/tarball/develop#egg=pykka-dev>`_\n\n.. image:: https://img.shields.io/pypi/v/Pykka.svg?style=flat\n    :target: https://pypi.python.org/pypi/Pykka/\n    :alt: Latest PyPI version\n\n.. image:: https://img.shields.io/pypi/dm/Pykka.svg?style=flat\n    :target: https://pypi.python.org/pypi/Pykka/\n    :alt: Number of PyPI downloads\n\n.. image:: https://img.shields.io/travis/jodal/pykka/develop.svg?style=flat\n    :target: https://travis-ci.org/jodal/pykka\n    :alt: Travis CI build status\n\n.. image:: https://img.shields.io/coveralls/jodal/pykka/develop.svg?style=flat\n   :target: https://coveralls.io/r/jodal/pykka?branch=develop\n   :alt: Test coverage",
+    "docs_url": null,
+    "download_url": null,
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "http://www.pykka.org/",
+    "keywords": null,
+    "license": "Apache License, Version 2.0",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "Pykka",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/Pykka/",
+    "release_url": "https://pypi.org/project/Pykka/1.2.1/",
+    "requires_python": null,
+    "summary": "Pykka is a Python implementation of the actor model",
+    "version": "1.2.1"
+  },
+  "releases": {
+    "0.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e860a70ec902ab1ab7c41f4bb4aaf1fc",
+          "sha256": "31a5d9537f1978b7e244924f877c75b9ec3ebf3f95527eb10dbcb2ff2348e9ae"
+        },
+        "downloads": 3418,
+        "filename": "Pykka-0.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e860a70ec902ab1ab7c41f4bb4aaf1fc",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 6914,
+        "upload_time": "2010-11-15T09:33:31",
+        "url": "https://files.pythonhosted.org/packages/76/82/c1aae56257a9a29deb70a99e78e61e9850e062569076d2f30ed34149ebd0/Pykka-0.1.tar.gz"
+      }
+    ],
+    "0.10": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3c95eb639074d7bb57f90638ef2a3086",
+          "sha256": "a0bd4a8d665e5834ca71435a6541d456af322b77fc87e6fcf4d1398977e11890"
+        },
+        "downloads": 3399,
+        "filename": "Pykka-0.10.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3c95eb639074d7bb57f90638ef2a3086",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 23097,
+        "upload_time": "2011-03-08T23:15:33",
+        "url": "https://files.pythonhosted.org/packages/74/4a/aadaccd0d5a04f8193a0ca75edc35d93e311d7f9f4874302743ed6756b9a/Pykka-0.10.tar.gz"
+      }
+    ],
+    "0.11": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ec6833e112c8369d91a252197db8f5d1",
+          "sha256": "d33cdd498b1b10b9f8bb8f41caa3e7b36213104b0e043cea7ece0c00d73a8afb"
+        },
+        "downloads": 3367,
+        "filename": "Pykka-0.11.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ec6833e112c8369d91a252197db8f5d1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 23191,
+        "upload_time": "2011-03-19T23:52:13",
+        "url": "https://files.pythonhosted.org/packages/9f/2a/8e996c6803b5018aa112e3a615fe62d0053bada5352265109218b0b91822/Pykka-0.11.tar.gz"
+      }
+    ],
+    "0.11.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c07c93cc581dd04ce0b671e538034f54",
+          "sha256": "481f3c4b34fe801535439184bb6189540536539ed89330ef7b54e126a0fcace0"
+        },
+        "downloads": 3373,
+        "filename": "Pykka-0.11.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c07c93cc581dd04ce0b671e538034f54",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 23337,
+        "upload_time": "2011-03-20T23:57:43",
+        "url": "https://files.pythonhosted.org/packages/79/9b/7995060bf46ab7c634da0fcde40fc3bf56feafb7bed6f85ff55a6bbfaa82/Pykka-0.11.1.tar.gz"
+      }
+    ],
+    "0.12": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d3576fc0f2ab18f7406e3d0d6cd413f7",
+          "sha256": "b5c165353317150e783ee55e3d008af43919fd05b32f8b4684bb636458aa1fe3"
+        },
+        "downloads": 3579,
+        "filename": "Pykka-0.12.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d3576fc0f2ab18f7406e3d0d6cd413f7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 26219,
+        "upload_time": "2011-03-30T23:30:21",
+        "url": "https://files.pythonhosted.org/packages/c0/d3/d654a227fb85f78584db3a62a470a0a1964302870cd3cade70ed93e035b9/Pykka-0.12.tar.gz"
+      }
+    ],
+    "0.12.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "297b6d99150b6657ac87addc8968caf9",
+          "sha256": "f60fb325e4ec66a8fb73ef642b7e4cda07f13f2556749bdc624817925264b34a"
+        },
+        "downloads": 3370,
+        "filename": "Pykka-0.12.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "297b6d99150b6657ac87addc8968caf9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 26581,
+        "upload_time": "2011-04-25T14:16:16",
+        "url": "https://files.pythonhosted.org/packages/b0/5d/6c455c8f46f55d051feea6157f55a31e8e4d30e4f0ce952630694604c379/Pykka-0.12.1.tar.gz"
+      }
+    ],
+    "0.12.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5521c474f529d2144012fe9a270bcb90",
+          "sha256": "910b76d2baa957c07efc2631dbe077a237a9e99db4e340c0bb36d65a636b70e4"
+        },
+        "downloads": 3485,
+        "filename": "Pykka-0.12.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5521c474f529d2144012fe9a270bcb90",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 26432,
+        "upload_time": "2011-05-05T23:37:08",
+        "url": "https://files.pythonhosted.org/packages/8f/2a/c0fc106da84a60a1c88129ad200f82df78bc60141546db4bee84b61f9690/Pykka-0.12.2.tar.gz"
+      }
+    ],
+    "0.12.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3b1930e0354e675f313545a76410d928",
+          "sha256": "cc70c182539544795a6304f3fca9ce8907a132bc64416783180da20e6b312985"
+        },
+        "downloads": 3401,
+        "filename": "Pykka-0.12.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3b1930e0354e675f313545a76410d928",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 28370,
+        "upload_time": "2011-06-25T23:06:04",
+        "url": "https://files.pythonhosted.org/packages/a5/72/515e33100afcbfd2e64538714fecb03db76ecffa63a15bf86dd9f9283480/Pykka-0.12.3.tar.gz"
+      }
+    ],
+    "0.12.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c247578a431a87db1dac7bd29bf5d604",
+          "sha256": "a4996421861027fa82ec06cbf3a208ce54eef2993987b00cbdcd84d6b1606ba7"
+        },
+        "downloads": 3366,
+        "filename": "Pykka-0.12.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c247578a431a87db1dac7bd29bf5d604",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 28961,
+        "upload_time": "2011-07-30T03:52:23",
+        "url": "https://files.pythonhosted.org/packages/1a/38/9010946dbf52d22cc2df06e76e34b1bebfd136e64762b2b18f49836ab34b/Pykka-0.12.4.tar.gz"
+      }
+    ],
+    "0.13.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ddcf378845dc6fc1f29c3d72e9659a66",
+          "sha256": "5522c6a6e0f61eef780229188b28b75f103597fec3bfcc49c160b1f4c90c86ff"
+        },
+        "downloads": 3764,
+        "filename": "Pykka-0.13.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ddcf378845dc6fc1f29c3d72e9659a66",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 29568,
+        "upload_time": "2011-09-24T19:33:57",
+        "url": "https://files.pythonhosted.org/packages/a4/08/57f1fddeae964373325070466858ca23f71c6478c08c2b3aa84ecab4be1a/Pykka-0.13.0.tar.gz"
+      }
+    ],
+    "0.14": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "26be52c0e199e68c0a1607506ace0e0e",
+          "sha256": "8b00af35dbee6babbb020d92e8553653d8893ed437d440aed7b9e876510bc3c9"
+        },
+        "downloads": 3731,
+        "filename": "Pykka-0.14.tar.gz",
+        "has_sig": false,
+        "md5_digest": "26be52c0e199e68c0a1607506ace0e0e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 29452,
+        "upload_time": "2012-04-22T21:15:52",
+        "url": "https://files.pythonhosted.org/packages/36/a5/88734496e8328c7e92b17989530fa19aa87acd60ea9db7ec22fc15dc85c7/Pykka-0.14.tar.gz"
+      }
+    ],
+    "0.15": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "10a64017e124cdf36eb4f53b21d502f0",
+          "sha256": "442e07600d179d3a45f064a17d5ca7624bb87aeda23e1a1b868d39059cc76cae"
+        },
+        "downloads": 3182,
+        "filename": "Pykka-0.15.tar.gz",
+        "has_sig": false,
+        "md5_digest": "10a64017e124cdf36eb4f53b21d502f0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 30712,
+        "upload_time": "2012-08-11T03:15:15",
+        "url": "https://files.pythonhosted.org/packages/8c/ff/1625bce6a6dc9cccf134a3a8fd975fda609f8b35c3a378ef93a3bd660f00/Pykka-0.15.tar.gz"
+      }
+    ],
+    "0.16": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "833126f2e605c3fc19782695615273f1",
+          "sha256": "0a3d2d3443100285fca0c95bffe1c7b090bdf182556f33a991135840b9e4dd9d"
+        },
+        "downloads": 6187,
+        "filename": "Pykka-0.16.tar.gz",
+        "has_sig": false,
+        "md5_digest": "833126f2e605c3fc19782695615273f1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 31515,
+        "upload_time": "2012-09-19T00:11:11",
+        "url": "https://files.pythonhosted.org/packages/ff/f5/2fe0fdcb78aec9d04b608065e796daa96d1e16704a96e2a5a5b003770ea8/Pykka-0.16.tar.gz"
+      }
+    ],
+    "0.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8b3ad959ecf78b1ff33004ebc48c4ad8",
+          "sha256": "94222d623b9e7f9fff1acc8998e137c4355f3daa5d107e23bfc5a8d6d6e3f85f"
+        },
+        "downloads": 3405,
+        "filename": "Pykka-0.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8b3ad959ecf78b1ff33004ebc48c4ad8",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 7779,
+        "upload_time": "2010-11-21T03:39:55",
+        "url": "https://files.pythonhosted.org/packages/40/f7/4e4c732bcd04b15b77eb27977ef765100d5c5ec487cea9042db91ed3c7c8/Pykka-0.2.tar.gz"
+      }
+    ],
+    "0.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b171241b9f04516cb3624fc201b1bca6",
+          "sha256": "0e7cd99b271c8cc21dc1a4dbadfc1426e4309f822c794dbb539a083fbd590f3b"
+        },
+        "downloads": 3411,
+        "filename": "Pykka-0.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b171241b9f04516cb3624fc201b1bca6",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9219,
+        "upload_time": "2010-11-21T06:11:15",
+        "url": "https://files.pythonhosted.org/packages/51/ed/4714d942ad4cc57c368f9d012fc19d3e918dea262ff2ca48f6f6ac781e3a/Pykka-0.3.tar.gz"
+      }
+    ],
+    "0.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "39fedabbd444c39cb6ce2441d35b94ad",
+          "sha256": "9e994b8f252410759df2b3745cd839627dbef7f0e6c2391bd7e6a1a47f54fa13"
+        },
+        "downloads": 3404,
+        "filename": "Pykka-0.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "39fedabbd444c39cb6ce2441d35b94ad",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 11382,
+        "upload_time": "2010-12-07T09:55:51",
+        "url": "https://files.pythonhosted.org/packages/bc/76/f0437c63986fa72b766893acd910b3367c7cbceec0ade5525347ba0d9185/Pykka-0.4.tar.gz"
+      }
+    ],
+    "0.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4b91892c41e2598745da87f5c91b6083",
+          "sha256": "c3372924134184613832a1b69217e3cff5b39d8c753cb4aeb2779c3b73093043"
+        },
+        "downloads": 3391,
+        "filename": "Pykka-0.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4b91892c41e2598745da87f5c91b6083",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16622,
+        "upload_time": "2010-12-09T22:47:33",
+        "url": "https://files.pythonhosted.org/packages/3e/d7/576b525dee4e68cc3f301b4d96f95a77b03ef5c315c7b1bfcd187599f2ba/Pykka-0.5.tar.gz"
+      }
+    ],
+    "0.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "156de5d0bd0dbc03205cecfead413974",
+          "sha256": "8dd81c43e0526a9908ce7c166ed79ba85b05a287688c660d5f7a0eecdf8d1a75"
+        },
+        "downloads": 3413,
+        "filename": "Pykka-0.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "156de5d0bd0dbc03205cecfead413974",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 18281,
+        "upload_time": "2011-02-13T03:12:30",
+        "url": "https://files.pythonhosted.org/packages/e7/23/2c3d610888b8003685158eb63e23f39670f37a5e65c238de6fb2e458b6b4/Pykka-0.6.tar.gz"
+      }
+    ],
+    "0.7": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f90a7c2e0e5f382c9f4bd263460993bb",
+          "sha256": "566d22536a4a6e1ab7409906729365a2faada7b02656c075dd2f1bc169fbd76a"
+        },
+        "downloads": 3394,
+        "filename": "Pykka-0.7.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f90a7c2e0e5f382c9f4bd263460993bb",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 18838,
+        "upload_time": "2011-02-20T22:55:28",
+        "url": "https://files.pythonhosted.org/packages/a8/3c/c57090677704b413c8b9566831cbe607b55ac6deebc0ac530f24afac4be4/Pykka-0.7.tar.gz"
+      }
+    ],
+    "0.8": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e5217fbae30cd13d60b1e3e9d8004001",
+          "sha256": "0f37ed015d86f33be6631853a53a4961456ff5b96c5bb35ac29f0b9cfa76f9e7"
+        },
+        "downloads": 3402,
+        "filename": "Pykka-0.8.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e5217fbae30cd13d60b1e3e9d8004001",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 19325,
+        "upload_time": "2011-02-26T02:13:06",
+        "url": "https://files.pythonhosted.org/packages/43/3b/4a0ee5b573f0a0a80cb532b451a397476c6a695b487e22b64ad40ff867bf/Pykka-0.8.tar.gz"
+      }
+    ],
+    "0.9": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f4191b358d96f357f87cc1ab82cce007",
+          "sha256": "794b566e22d6758b040d154b654628c1b95d39b06230a358fe919199dd66272b"
+        },
+        "downloads": 3775,
+        "filename": "Pykka-0.9.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f4191b358d96f357f87cc1ab82cce007",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 22593,
+        "upload_time": "2011-03-05T01:04:35",
+        "url": "https://files.pythonhosted.org/packages/06/b2/8f046397ea9bcbaab915739dde3a32126df0971cb8d5c8375f052acfdf22/Pykka-0.9.tar.gz"
+      }
+    ],
+    "0.9.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9f51ed3a75c4201c8d8aafd053f83319",
+          "sha256": "7b2245d046ac1b3db2e3400a2474c3d882ab97817e8cb38489044137c16eb998"
+        },
+        "downloads": 3371,
+        "filename": "Pykka-0.9.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "9f51ed3a75c4201c8d8aafd053f83319",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 22735,
+        "upload_time": "2011-03-05T22:57:12",
+        "url": "https://files.pythonhosted.org/packages/d2/e1/88bbf9404a71926ab4a8f9c82afb8a13a187698d61ac8aa44f433aa4e4c6/Pykka-0.9.1.tar.gz"
+      }
+    ],
+    "1.0.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "67835534897eff680c2499dc6ce870cc",
+          "sha256": "188cdded9a9e5327504520d9fa7ceff14564c6bfb11f1390072ef4e91da0ac43"
+        },
+        "downloads": 3214,
+        "filename": "Pykka-1.0.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "67835534897eff680c2499dc6ce870cc",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 33080,
+        "upload_time": "2012-10-26T20:04:28",
+        "url": "https://files.pythonhosted.org/packages/ed/69/121f92c8e49914a3f912f4c44b07d33c270610bb03129ee80ac8f5898984/Pykka-1.0.0.tar.gz"
+      }
+    ],
+    "1.0.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3a4c1c91274c1825a6e2772e2ccc67a7",
+          "sha256": "85b713d9cbecab0e76f7fc438cf2c998d378547598d0e5a7333b55ff83ba8294"
+        },
+        "downloads": 3141,
+        "filename": "Pykka-1.0.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3a4c1c91274c1825a6e2772e2ccc67a7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 33094,
+        "upload_time": "2012-12-12T23:43:52",
+        "url": "https://files.pythonhosted.org/packages/ff/e6/904d3004ad3a13e400b303d062de01afa40fe8c9591c9c4d4b0db533ca75/Pykka-1.0.1.tar.gz"
+      }
+    ],
+    "1.1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "27ae7dfe793897bcc1e9658166cfa02d",
+          "sha256": "3cfe14a37a3a755797a2ad6acb668ac2f9337a9e51f1d09a12b9747faa0db444"
+        },
+        "downloads": 5010,
+        "filename": "Pykka-1.1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "27ae7dfe793897bcc1e9658166cfa02d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 37345,
+        "upload_time": "2013-01-19T09:54:51",
+        "url": "https://files.pythonhosted.org/packages/c3/10/52922c1cb180bc98bfd4f910f407833c2602874b45b5c2b78a32d7d488e9/Pykka-1.1.0.tar.gz"
+      }
+    ],
+    "1.2.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "402c9029ccef8cb8e5016f990293441e",
+          "sha256": "4eb4fc152bccb491af8456cd22d64f2d9ca6b342e8ba1b3b8e39353429f801bd"
+        },
+        "downloads": 16159,
+        "filename": "Pykka-1.2.0-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "402c9029ccef8cb8e5016f990293441e",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 26857,
+        "upload_time": "2013-11-12T21:58:14",
+        "url": "https://files.pythonhosted.org/packages/6e/bf/53baff9473377915d978398b3ee0fe6126145d5c432358facc6c3f3a8c7d/Pykka-1.2.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "27cb69507f89e34dc1ff34636c4bc165",
+          "sha256": "01cfbfc5a9a32c01ee68303614269b5b1c6e3d698270c92be7488f8c1edb5885"
+        },
+        "downloads": 29502,
+        "filename": "Pykka-1.2.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "27cb69507f89e34dc1ff34636c4bc165",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 41955,
+        "upload_time": "2013-07-18T10:03:48",
+        "url": "https://files.pythonhosted.org/packages/30/45/56fe7170aafff38f0086e2314936c5f15d0709b31a1d320581a8e283d978/Pykka-1.2.0.tar.gz"
+      }
+    ],
+    "1.2.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c25307b1f71eaece8e95b13583bb6313",
+          "sha256": "f811732aa9e8e027db99f41b1e403251c8e1d26addab0161c925fac232e9334c"
+        },
+        "downloads": 16901,
+        "filename": "Pykka-1.2.1-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "c25307b1f71eaece8e95b13583bb6313",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 28306,
+        "upload_time": "2015-07-20T17:47:17",
+        "url": "https://files.pythonhosted.org/packages/66/cd/89889a1b079385ce9c3e6adc447d20c2f77116c1fb08f65bb23a601be8cb/Pykka-1.2.1-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "50e4f2877c0825788219bc442a86a293",
+          "sha256": "e847ffeadee49b563426ab803e8eee67264d773e38ca14763fdcda56411e3c11"
+        },
+        "downloads": 9044,
+        "filename": "Pykka-1.2.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "50e4f2877c0825788219bc442a86a293",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 46252,
+        "upload_time": "2015-07-20T17:47:22",
+        "url": "https://files.pythonhosted.org/packages/70/f7/bb8fc78fc52a50f66dda4260f8726c62267f568066c71e2264b883b70755/Pykka-1.2.1.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "c25307b1f71eaece8e95b13583bb6313",
+        "sha256": "f811732aa9e8e027db99f41b1e403251c8e1d26addab0161c925fac232e9334c"
+      },
+      "downloads": 16901,
+      "filename": "Pykka-1.2.1-py2.py3-none-any.whl",
+      "has_sig": false,
+      "md5_digest": "c25307b1f71eaece8e95b13583bb6313",
+      "packagetype": "bdist_wheel",
+      "python_version": "py2.py3",
+      "size": 28306,
+      "upload_time": "2015-07-20T17:47:17",
+      "url": "https://files.pythonhosted.org/packages/66/cd/89889a1b079385ce9c3e6adc447d20c2f77116c1fb08f65bb23a601be8cb/Pykka-1.2.1-py2.py3-none-any.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "50e4f2877c0825788219bc442a86a293",
+        "sha256": "e847ffeadee49b563426ab803e8eee67264d773e38ca14763fdcda56411e3c11"
+      },
+      "downloads": 9044,
+      "filename": "Pykka-1.2.1.tar.gz",
+      "has_sig": false,
+      "md5_digest": "50e4f2877c0825788219bc442a86a293",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 46252,
+      "upload_time": "2015-07-20T17:47:22",
+      "url": "https://files.pythonhosted.org/packages/70/f7/bb8fc78fc52a50f66dda4260f8726c62267f568066c71e2264b883b70755/Pykka-1.2.1.tar.gz"
+    }
+  ]
+}

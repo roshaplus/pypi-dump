@@ -1,0 +1,261 @@
+{
+  "info": {
+    "author": "Stefan Behnel",
+    "author_email": "stefan_ml@behnel.de",
+    "bugtrack_url": "",
+    "classifiers": [
+      "Intended Audience :: Developers",
+      "Intended Audience :: Information Technology",
+      "License :: OSI Approved :: BSD License",
+      "Operating System :: OS Independent",
+      "Programming Language :: Cython",
+      "Programming Language :: Python :: 2",
+      "Programming Language :: Python :: 2.6",
+      "Programming Language :: Python :: 2.7",
+      "Programming Language :: Python :: 3",
+      "Programming Language :: Python :: 3.2",
+      "Programming Language :: Python :: 3.3",
+      "Programming Language :: Python :: 3.4",
+      "Programming Language :: Python :: 3.5",
+      "Topic :: Text Processing"
+    ],
+    "description": "Acora\n=====\n\n.. contents:: :local:\n\nWhat is Acora?\n--------------\n\nAcora is 'fgrep' for Python, a fast multi-keyword text search engine.\n\nBased on a set of keywords and the\n`Aho-Corasick algorithm <https://en.wikipedia.org/wiki/Aho-Corasick_algorithm>`_,\nit generates a search automaton and runs it over string input, either unicode\nor bytes.\n\nAcora comes with both a pure Python implementation and a fast binary\nmodule written in Cython.  However, note that the current construction\nalgorithm is not suitable for really large sets of keywords (i.e. more\nthan a couple of thousand).\n\nYou can find the `latest source code <https://github.com/scoder/acora>`_\non github.\n\nTo report a bug or request new features, use the `github bug tracker\n<https://github.com/scoder/acora/issues>`_.  Please try to provide a\nshort test case that reproduces the problem without requiring too much\nexperimentation or large amounts of data.  The easier it is to\nreproduce the problem, the easier it is to solve it.\n\n\nFeatures\n--------\n\n* works with unicode strings and byte strings\n* about 2-3x as fast as Python's regular expression engine for most input\n* finds overlapping matches, i.e. all matches of all keywords\n* support for case insensitive search (~10x as fast as 're')\n* frees the GIL while searching\n* additional (slow but short) pure Python implementation\n* support for Python 2.5+ and 3.x\n* support for searching in files\n* permissive BSD license\n\n\nHow do I use it?\n----------------\n\nImport the package::\n\n    >>> from acora import AcoraBuilder\n\nCollect some keywords::\n\n    >>> builder = AcoraBuilder('ab', 'bc', 'de')\n    >>> builder.add('a', 'b')\n\nOr::\n\n    >>> builder.update(['a', 'b'])  # new in version 2.0\n\nGenerate the Acora search engine for the current keyword set::\n\n    >>> ac = builder.build()\n\nSearch a string for all occurrences::\n\n    >>> ac.findall('abc')\n    [('a', 0), ('ab', 0), ('b', 1), ('bc', 1)]\n    >>> ac.findall('abde')\n    [('a', 0), ('ab', 0), ('b', 1), ('de', 2)]\n\nIterate over the search results as they come in::\n\n    >>> for kw, pos in ac.finditer('abde'):\n    ...     print(\"%2s[%d]\" % (kw, pos))\n     a[0]\n    ab[0]\n     b[1]\n    de[2]\n\nAcora also has direct support for parsing files (in binary mode)::\n\n    >>> keywords = ['Import', 'FAQ', 'Acora', 'NotHere'.upper()]\n\n    >>> builder = AcoraBuilder([s.encode('ascii') for s in keywords])\n    >>> ac = builder.build()\n\n    >>> found = set(kw for kw, pos in ac.filefind('README.rst'))\n    >>> len(found)\n    3\n\n    >>> sorted(str(s.decode('ascii')) for s in found)\n    ['Acora', 'FAQ', 'Import']\n\n\nFAQs and recipes\n----------------\n\n#) how do I run a greedy search for the longest matching keywords?\n\n    >>> builder = AcoraBuilder('a', 'ab', 'abc')\n    >>> ac = builder.build()\n\n    >>> for kw, pos in ac.finditer('abbabc'):\n    ...     print(kw)\n    a\n    ab\n    a\n    ab\n    abc\n\n    >>> from itertools import groupby\n    >>> from operator import itemgetter\n\n    >>> def longest_match(matches):\n    ...     for pos, match_set in groupby(matches, itemgetter(1)):\n    ...         yield max(match_set)\n\n    >>> for kw, pos in longest_match(ac.finditer('abbabc')):\n    ...     print(kw)\n    ab\n    abc\n\n#) how do I parse line-by-line with arbitrary line endings?\n\n    >>> def group_by_lines(s, *keywords):\n    ...     builder = AcoraBuilder('\\r', '\\n', *keywords)\n    ...     ac = builder.build()\n    ...\n    ...     current_line_matches = []\n    ...     last_ending = None\n    ...\n    ...     for kw, pos in ac.finditer(s):\n    ...         if kw in '\\r\\n':\n    ...             if last_ending == '\\r' and kw == '\\n':\n    ...                 continue # combined CRLF\n    ...             yield tuple(current_line_matches)\n    ...             del current_line_matches[:]\n    ...             last_ending = kw\n    ...         else:\n    ...             last_ending = None\n    ...             current_line_matches.append(kw)\n    ...     yield tuple(current_line_matches)\n\n    >>> kwds = ['ab', 'bc', 'de']\n    >>> for matches in group_by_lines('a\\r\\r\\nbc\\r\\ndede\\n\\nab', *kwds):\n    ...     print(matches)\n    ()\n    ()\n    ('bc',)\n    ('de', 'de')\n    ()\n    ('ab',)\n\n\n#) how do I find whole lines that contain keywords, as fgrep does?\n\n    >>> def match_lines(s, *keywords):\n    ...     builder = AcoraBuilder('\\r', '\\n', *keywords)\n    ...     ac = builder.build()\n    ...\n    ...     line_start = 0\n    ...     matches = False\n    ...     for kw, pos in ac.finditer(s):\n    ...         if kw in '\\r\\n':\n    ...             if matches:\n    ...                  yield s[line_start:pos]\n    ...                  matches = False\n    ...             line_start = pos + 1\n    ...         else:\n    ...             matches = True\n    ...     if matches:\n    ...         yield s[line_start:]\n\n    >>> kwds = ['x', 'de', '\\nstart']\n    >>> text = 'a line with\\r\\r\\nsome text\\r\\ndede\\n\\nab\\n start 1\\nstart\\n'\n    >>> for line in match_lines(text, *kwds):\n    ...     print(line)\n    some text\n    dede\n    start\n\n\nChangelog\n---------\n\n* 2.0 [2016-03-17]\n\n  - rewrite of the construction algorithm to speed it up and save memory\n\n* 1.9 [2015-10-10]\n\n  - recompiled with Cython 0.23.4 for better compatibility with recent\n    Python versions.\n\n* 1.8 [2014-02-12]\n\n  - pickle support for the pre-built search engines\n  - performance optimisations in builder\n  - Unicode parsing is optimised for Python 3.3 and later\n  - no longer recompiles sources when Cython is installed, unless\n    ``--with-cython`` option is passed to setup.py (requires Cython 0.20+)\n  - build failed with recent Cython versions\n  - built using Cython 0.20.1\n\n* 1.7 [2011-08-24]\n\n  - searching binary strings for byte values > 127 was broken\n  - built using Cython 0.15+\n\n* 1.6 [2011-07-24]\n\n  - substantially faster automaton building\n  - no longer includes .hg repo in source distribution\n  - built using Cython 0.15 (rc0)\n\n* 1.5 [2011-01-24]\n\n  - Cython compiled NFA-2-DFA construction runs substantially faster\n  - always build extension modules even if Cython is not installed\n  - ``--no-compile`` switch in ``setup.py`` to prevent extension module building\n  - built using Cython 0.14.1 (rc2)\n\n* 1.4 [2009-02-10]\n\n  - minor speed-up in inner search engine loop\n  - some code cleanup\n  - built using Cython 0.12.1 (final)\n\n* 1.3 [2009-01-30]\n\n  - major fix for file search\n  - built using Cython 0.12.1 (beta0)\n\n* 1.2 [2009-01-30]\n\n  - deep-copy support for AcoraBuilder class\n  - doc/test fixes\n  - include .hg repo in source distribution\n  - built using Cython 0.12.1 (beta0)\n\n* 1.1 [2009-01-29]\n\n  - doc updates\n  - some cleanup\n  - built using Cython 0.12.1 (beta0)\n\n* 1.0 [2009-01-29]\n\n  - initial release",
+    "docs_url": null,
+    "download_url": "UNKNOWN",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "http://pypi.python.org/pypi/acora",
+    "keywords": null,
+    "license": "UNKNOWN",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "acora",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/acora/",
+    "release_url": "https://pypi.org/project/acora/2.0/",
+    "requires_python": null,
+    "summary": "Fast multi-keyword search engine for text strings",
+    "version": "2.0"
+  },
+  "releases": {
+    "1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "009a1d4f7a73976403b0ce3d60875352",
+          "sha256": "d41650a2087e3f0390fb36ea99410e717db3968b14b1d83d1438cb88f23f49a5"
+        },
+        "downloads": 3383,
+        "filename": "acora-1.0.tar.gz",
+        "has_sig": true,
+        "md5_digest": "009a1d4f7a73976403b0ce3d60875352",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 49376,
+        "upload_time": "2010-01-29T19:09:18",
+        "url": "https://files.pythonhosted.org/packages/82/1d/120b17fb056c188793058f30f8497a61bdb2d0482c79fcf4e914ef07d94d/acora-1.0.tar.gz"
+      }
+    ],
+    "1.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7a29f2652832c987ffa89f4737429f5f",
+          "sha256": "eea5a6bbe82771404fb51bfa8d67bb553352f8412aea7a85ca3ac726634949b3"
+        },
+        "downloads": 3527,
+        "filename": "acora-1.1.tar.gz",
+        "has_sig": true,
+        "md5_digest": "7a29f2652832c987ffa89f4737429f5f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 50700,
+        "upload_time": "2010-01-29T19:32:49",
+        "url": "https://files.pythonhosted.org/packages/26/ac/c483e851d4839afada8e72d517e33c66247e935c6b5f817e607568909a8a/acora-1.1.tar.gz"
+      }
+    ],
+    "1.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8c72ba0b27b1a9842e2e09ed557b4799",
+          "sha256": "81637797270aeddc35a4e20a0df61a639636a1947efa30a581a1fbcb2dab85bf"
+        },
+        "downloads": 3355,
+        "filename": "acora-1.2.tar.gz",
+        "has_sig": true,
+        "md5_digest": "8c72ba0b27b1a9842e2e09ed557b4799",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 78003,
+        "upload_time": "2010-01-30T12:20:39",
+        "url": "https://files.pythonhosted.org/packages/e1/d0/f555522c36a7d418514241cda30fd1c22bf534bac4ed928cacd64d065f0a/acora-1.2.tar.gz"
+      }
+    ],
+    "1.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0c7a0467f4ac4359ca1c8d856231d5ef",
+          "sha256": "74a5b9b19765628d4e900a4dd0e19b72b062bb5171a1920f5c8a55e25b25a406"
+        },
+        "downloads": 3422,
+        "filename": "acora-1.3.tar.gz",
+        "has_sig": true,
+        "md5_digest": "0c7a0467f4ac4359ca1c8d856231d5ef",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 82253,
+        "upload_time": "2010-01-30T15:23:21",
+        "url": "https://files.pythonhosted.org/packages/79/a6/00809238605886aec049cd8002b4ce5043001a4f6319ab9d4fdfde972f87/acora-1.3.tar.gz"
+      }
+    ],
+    "1.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "66d3c71a4b2f8274521539a94a771953",
+          "sha256": "9665562500baafa008e62a9c77bff2d23a222aa582f3b7e3075c6f2be7c12054"
+        },
+        "downloads": 4492,
+        "filename": "acora-1.4.tar.gz",
+        "has_sig": true,
+        "md5_digest": "66d3c71a4b2f8274521539a94a771953",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 83961,
+        "upload_time": "2010-02-10T11:01:27",
+        "url": "https://files.pythonhosted.org/packages/7b/59/1205c5bd7b08372970750047e53e206f7f5e44f816d5e1a3d383b5505106/acora-1.4.tar.gz"
+      }
+    ],
+    "1.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "dc14a5ff9279c1869693bf7cb14933ef",
+          "sha256": "eef6ee443b396a8d03485743e8b651c3840e0a957ea1f496ee6e52f4dc00e221"
+        },
+        "downloads": 3496,
+        "filename": "acora-1.5.tar.gz",
+        "has_sig": true,
+        "md5_digest": "dc14a5ff9279c1869693bf7cb14933ef",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 116304,
+        "upload_time": "2011-01-24T21:55:53",
+        "url": "https://files.pythonhosted.org/packages/2d/9c/45ee1b3f791a6e1c8f08b9ab52848d3da30f21f39717f25a08f78dcc5af7/acora-1.5.tar.gz"
+      }
+    ],
+    "1.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d252a9d263a49a37f38c5d3a9ed3d7bf",
+          "sha256": "4b1af3d75420cbf1e2ce7053cb6f9315b4999a6d9207c5ec8c118d4956b129b7"
+        },
+        "downloads": 3228,
+        "filename": "acora-1.6.tar.gz",
+        "has_sig": true,
+        "md5_digest": "d252a9d263a49a37f38c5d3a9ed3d7bf",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 86557,
+        "upload_time": "2011-07-24T19:26:35",
+        "url": "https://files.pythonhosted.org/packages/2b/fd/c7647b796b0f5f180831345c0a5bf98abc4245d25a4c0d53353d6f3fbaa5/acora-1.6.tar.gz"
+      }
+    ],
+    "1.7": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a92cb519bf3c8f969eddb048a1fdbfe3",
+          "sha256": "058da624214d5a811f7076418e7579d2df3dd60091e976dd7070bb8b84f24519"
+        },
+        "downloads": 8779,
+        "filename": "acora-1.7.tar.gz",
+        "has_sig": true,
+        "md5_digest": "a92cb519bf3c8f969eddb048a1fdbfe3",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 89055,
+        "upload_time": "2011-08-24T19:35:12",
+        "url": "https://files.pythonhosted.org/packages/a6/98/e5be0d5fc615c8456d1a59b70221c2213b1b98baf9f4db8e56f02a658fbd/acora-1.7.tar.gz"
+      }
+    ],
+    "1.8": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "17b1e89033eba975518d6c64a191830b",
+          "sha256": "cfabfbccc31762ae54d05119331051c99837e77e1204c38b9d142f0375c6725b"
+        },
+        "downloads": 50362,
+        "filename": "acora-1.8.tar.gz",
+        "has_sig": true,
+        "md5_digest": "17b1e89033eba975518d6c64a191830b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 123811,
+        "upload_time": "2014-02-12T07:29:45",
+        "url": "https://files.pythonhosted.org/packages/70/4a/7fbe4fef84e6f68d4f1253bd1457887fe5a65813b6625207b07318805296/acora-1.8.tar.gz"
+      }
+    ],
+    "1.9": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "832c4ea5144f9c9cbf1d9da59376596b",
+          "sha256": "b9e180b953c929f2ef4754fe87f708976af9a17054e8f4e9f25c54b6e0f2935c"
+        },
+        "downloads": 16503,
+        "filename": "acora-1.9.tar.gz",
+        "has_sig": true,
+        "md5_digest": "832c4ea5144f9c9cbf1d9da59376596b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 130241,
+        "upload_time": "2015-10-10T13:37:51",
+        "url": "https://files.pythonhosted.org/packages/70/da/4d7880e426f4ef354212cb33d40156f6c5294fe64a3825802739032fd537/acora-1.9.tar.gz"
+      }
+    ],
+    "2.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ba43c40dcc00edf945c17b39da4eb79f",
+          "sha256": "1ef6a512a8db97a2f51bfd7b0fff843a98c4704b933a0f15f93963736a5b0ad2"
+        },
+        "downloads": 6720,
+        "filename": "acora-2.0.tar.gz",
+        "has_sig": true,
+        "md5_digest": "ba43c40dcc00edf945c17b39da4eb79f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 166284,
+        "upload_time": "2016-03-17T18:19:31",
+        "url": "https://files.pythonhosted.org/packages/96/2b/e4dfd6be50b239d45f90f10db6f7fad8ffcb72bc52620a0b2038318152a3/acora-2.0.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "ba43c40dcc00edf945c17b39da4eb79f",
+        "sha256": "1ef6a512a8db97a2f51bfd7b0fff843a98c4704b933a0f15f93963736a5b0ad2"
+      },
+      "downloads": 6720,
+      "filename": "acora-2.0.tar.gz",
+      "has_sig": true,
+      "md5_digest": "ba43c40dcc00edf945c17b39da4eb79f",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 166284,
+      "upload_time": "2016-03-17T18:19:31",
+      "url": "https://files.pythonhosted.org/packages/96/2b/e4dfd6be50b239d45f90f10db6f7fad8ffcb72bc52620a0b2038318152a3/acora-2.0.tar.gz"
+    }
+  ]
+}

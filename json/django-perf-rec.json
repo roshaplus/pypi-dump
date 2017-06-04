@@ -1,0 +1,420 @@
+{
+  "info": {
+    "author": "YPlan",
+    "author_email": "adam@yplanapp.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 5 - Production/Stable",
+      "Framework :: Django :: 1.10",
+      "Framework :: Django :: 1.11",
+      "Framework :: Django :: 1.8",
+      "Framework :: Django :: 1.9",
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: MIT License",
+      "Natural Language :: English",
+      "Operating System :: OS Independent",
+      "Programming Language :: Python :: 2",
+      "Programming Language :: Python :: 2.7",
+      "Programming Language :: Python :: 3",
+      "Programming Language :: Python :: 3.4",
+      "Programming Language :: Python :: 3.5",
+      "Programming Language :: Python :: 3.6"
+    ],
+    "description": "===============\ndjango-perf-rec\n===============\n\n.. image:: https://img.shields.io/pypi/v/django-perf-rec.svg\n    :target: https://pypi.python.org/pypi/django-perf-rec\n\n.. image:: https://img.shields.io/travis/YPlan/django-perf-rec/master.svg\n        :target: https://travis-ci.org/YPlan/django-perf-rec\n\n\"Keep detailed records of the performance of your Django code.\"\n\n**django-perf-rec** is like Django's ``assertNumQueries`` on steroids. It lets\nyou track the individual queries and cache operations that occur in your code.\nUse it in your tests like so:\n\n.. code-block:: python\n\n    def test_home(self):\n        with django_perf_rec.record():\n            self.client.get('/')\n\nIt then stores a YAML file alongside the test file that tracks the queries and\noperations, looking something like:\n\n.. code-block:: yaml\n\n    MyTests.test_home:\n    - cache|get: home_data.user_id.#\n    - db: 'SELECT ... FROM myapp_table WHERE (myapp_table.id = #)'\n    - db: 'SELECT ... FROM myapp_table WHERE (myapp_table.id = #)'\n\nWhen the test is run again, the new record will be compared with the one in the\nYAML file. If they are different, an assertion failure will be raised, failing\nthe test. Magic!\n\nThe queries and keys are 'fingerprinted', replacing information that seems\nvariable with `#` and `...`. This is done to avoid spurious failures when e.g.\nprimary keys are different, random data is used, new columns are added to\ntables, etc.\n\nIf you check the YAML file in along with your tests, you'll have unbreakable\nperformance with much better information about any regressions compared to\n``assertNumQueries``. If you are fine with the changes from a failing test,\njust remove the file and rerun the test to regenerate it.\n\nFor more information, see our `introductory blog\npost <https://tech.yplanapp.com/2016/09/26/introducing-django-perf-rec/>`_ that\nsays a little more about why we made it.\n\nInstallation\n============\n\nUse **pip**:\n\n.. code-block:: bash\n\n    pip install django-perf-rec\n\nRequirements\n============\n\nTested with all combinations of:\n\n* Python: 2.7, 3.6\n* Django: 1.8, 1.9, 1.10, 1.11\n\nN.B. When using Django 1.8 and SQLite the queries won't be rendered in SQL, but\na format like 'QUERY = ... PARAMS = ...'. You can workaround this by\nbackporting the query rendering code from Django 1.9 as `django-perf-rec's test\nsuite does\n<https://github.com/YPlan/django-perf-rec/blob/master/tests/settings.py#L16>`_.\n\nAPI\n===\n\n``record(record_name=None, path=None)``\n---------------------------------------\n\nReturn a context manager that will be used for a single performance test.\n\nThe arguments must be passed as keyword arguments.\n\n``path`` is the path to a directory or file in which to store the record. If it\nends with ``'/'``, or is left as ``None``, the filename will be automatically\ndetermined by looking at the filename the calling code is in and replacing the\n``.py[c]`` extension with ``.perf.yml``. If it points to a directory that\ndoesn't exist, that directory will be created.\n\n``record_name`` is the name of the record inside the performance file to use.\nIf left as ``None``, the code assumes you are inside a Django ``TestCase`` and\nuses magic stack inspection to find that test case, and uses a name based upon\nthe test case name + the test method name + an optional counter if you invoke\n``record()`` multiple times inside the same test method.\n\nWhilst open, the context manager tracks all DB queries on all connections, and\nall cache operations on all defined caches. It names the connection/cache in\nthe tracked operation it uses, except from for the ``default`` one.\n\nWhen the context manager exits, it will use the list of operations it has\ngathered. If the relevant file specified using ``path`` doesn't exist, or\ndoesn't contain data for the specific ``record_name``, it will be created and\nsaved and the test will pass with no assertions. However if the record **does**\nexist inside the file, the collected record will be compared with the original\none, and if different, an ``AssertionError`` will be raised. When running on\npytest, this will use its fancy assertion rewriting; in other test runners/uses\nthe full diff will be attached to the message.\n\nExample:\n\n.. code-block:: python\n\n    import django_perf_rec\n\n    from app.models import Author\n\n    class AuthorPerformanceTests(TestCase):\n\n        def test_special_method(self):\n            with django_perf_rec.record():\n                list(Author.objects.special_method())\n\n\n``TestCaseMixin``\n-----------------\n\nA mixin class to be added to your custom ``TestCase`` subclass so you can use\n**django-perf-rec** across your codebase without needing to import it in each\nindividual test file. It adds one method, ``record_performance()``, whose\nsignature is the same as ``record()`` above.\n\nExample:\n\n.. code-block:: python\n\n    # yplan/test.py\n    from django.test import TestCase as OrigTestCase\n    from django_perf_rec import TestCaseMixin\n\n    class TestCase(TestCaseMixin, OrigTestCase):\n        pass\n\n    # app/tests/models/test_author.py\n    from app.models import Author\n    from yplan.test import TestCase\n\n    class AuthorPerformanceTests(TestCase):\n\n        def test_special_method(self):\n            with self.record_performance():\n                list(Author.objects.special_method())\n\n``get_perf_path(file_path)``\n----------------------------\n\nEncapsulates the logic used in ``record()`` to form ``path`` from the path of\nthe file containing the currently running test, mostly swapping '.py' or '.pyc'\nfor '.perf.yml'. You might want to use this when calling ``record()`` from\nsomewhere other than inside a test (which causes the automatic inspection to\nfail), to match the same filename.\n\n``get_record_name(test_name, class_name=None)``\n-----------------------------------------------\n\nEncapsulates the logic used in ``record()`` to form a ``record_name`` from\ndetails of the currently running test. You might want to use this when calling\n``record()`` from somewhere other than inside a test (which causes the\nautomatic inspection to fail), to match the same ``record_name``.\n\nSettings\n========\n\nBehaviour can be customized with a dictionary called ``PERF_REC`` in your\nDjango settings, for example:\n\n.. code-block:: python\n\n    PERF_REC = {\n        'MODE': 'once'\n    }\n\nThe possible keys to this dictionary are explained below.\n\n``MODE``\n--------\n\nThe ``MODE`` setting may be used to change the way **django-perf-rec** behaves\nwhen a performance record does not exist during a test run.\n\n* ``'once'`` (default) creates missing records silently.\n* ``'none'`` raises ``AssertionError`` when a record does not exist. You\n  probably want to use this mode in CI, to ensure new tests fail if their\n  corresponding performance records were not committed.\n* ``'all'`` creates missing records and then raises ``AssertionError``.\n\n\nUsage in Pytest\n===============\n\nIf you're using Pytest, you might want to call ``record()`` from within a\nPytest fixture and have it automatically apply to all your tests. We have an\nexample of this, see the file `test_pytest_fixture_usage.py\n<https://github.com/YPlan/django-perf-rec/blob/master/tests/test_pytest_fixture_usage.py>`_\nin the test suite.\n\n\n\n\nHistory\n=======\n\nPending release\n---------------\n\n* New release notes go here\n\n2.1.0 (2017-05-29)\n------------------\n\n* Exposed the automatic naming logic used in ``record()`` in two new functions\n  ``get_perf_path()`` and ``get_record_name()``, in order to ease creation of\n  test records from calls outside of tests.\n* Made the automatic test detection work when running under a Pytest fixture.\n* Stopped throwing warnings on Python 3.\n* Fixed loading empty performance record files.\n\n2.0.1 (2017-03-02)\n------------------\n\n* Make cascaded delete queries deterministic on Django <1.10, with another\n  Patchy patch to make it match the order from 1.10+.\n\n2.0.0 (2017-02-09)\n------------------\n\n* Arguments to ``record`` must be passed as keyword arguments.\n* ``file_name`` is removed as an argument to ``record`` following its\n  deprecation in release 1.1.0.\n\n\n1.1.1 (2016-10-30)\n------------------\n\n* Fix django session keys not being fingerprinted.\n* Show diff when records don't match (when not on pytest).\n* Add new 'MODE' setting with three modes. This allows customization of the\n  behaviour for missing performance records. The new ``'none'`` mode is\n  particularly useful for CI servers as it makes tests fail if their\n  corresponding performance records have not been committed.\n\n1.1.0 (2016-10-26)\n------------------\n\n* Fix automatic filenames for tests in ``.pyc`` files.\n* Add the ``path`` argument to ``record`` which allows specifying a relative\n  directory or filename to use. This deprecates the ``file_name`` argument,\n  which will be removed in a future major release. For more info see the\n  README.\n\n1.0.4 (2016-10-23)\n------------------\n\n* Work with ``sqlparse`` 0.2.2\n\n1.0.3 (2016-10-07)\n------------------\n\n* Stopped ``setup.py`` installing ``tests`` module.\n\n1.0.2 (2016-09-23)\n------------------\n\n* Confirmed Django 1.8 and 1.10 support.\n\n1.0.1 (2016-09-20)\n------------------\n\n* Fix ``install_requires`` in ``setup.py``.\n\n1.0.0 (2016-09-19)\n------------------\n\n* Initial version with ``record()`` that can record database queries and cache\n  operations and error if they change between test runs.\n",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/YPlan/django-perf-rec",
+    "keywords": "Django",
+    "license": "MIT",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "django-perf-rec",
+    "platform": "",
+    "project_url": "https://pypi.org/project/django-perf-rec/",
+    "release_url": "https://pypi.org/project/django-perf-rec/2.1.0/",
+    "requires_python": "",
+    "summary": "Keep detailed records of the performance of your Django code.",
+    "version": "2.1.0"
+  },
+  "releases": {
+    "1.0.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "51b7d9c6660798aeffa68232ed8324e8",
+          "sha256": "0324368af8c8e1e64f98297641a0df9b318ba991029b432702aeaaba414f4652"
+        },
+        "downloads": 98,
+        "filename": "django_perf_rec-1.0.0-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "51b7d9c6660798aeffa68232ed8324e8",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 21702,
+        "upload_time": "2016-09-19T14:21:12",
+        "url": "https://files.pythonhosted.org/packages/bc/92/129483ff7568fc81b7bb1a89e9d55b6d70c4de5fcc43379121cb7e163488/django_perf_rec-1.0.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "aaa3461db647c2e889de6329870645fe",
+          "sha256": "03813dc8b8349163fbcf31907f737af8422ae6195b8dba4d4d2d61c17279c2ce"
+        },
+        "downloads": 190,
+        "filename": "django-perf-rec-1.0.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "aaa3461db647c2e889de6329870645fe",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 14147,
+        "upload_time": "2016-09-19T14:21:14",
+        "url": "https://files.pythonhosted.org/packages/fb/8d/e6171e81f66e4f67d28f016df89a6657941aac1c9a5b4c7f3226e25ac453/django-perf-rec-1.0.0.tar.gz"
+      }
+    ],
+    "1.0.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3e5ed5aea648cb347326c6758b18a249",
+          "sha256": "bdb22167d0f8c58417d5700928b5d317ae70bdd2f2e75bd60730126c8c084f0a"
+        },
+        "downloads": 117,
+        "filename": "django_perf_rec-1.0.1-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "3e5ed5aea648cb347326c6758b18a249",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 21826,
+        "upload_time": "2016-09-20T09:41:39",
+        "url": "https://files.pythonhosted.org/packages/88/6f/f68c7938f413f009277bf4f114787f6af83fd29e6e83fbc16484822b93ea/django_perf_rec-1.0.1-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2ed0498eb92f346f918c8ccee694a5a2",
+          "sha256": "50bcbaf0e970bad09352824a15ae96e964f9a94d32c646b53d6795df2f6d3e38"
+        },
+        "downloads": 113,
+        "filename": "django-perf-rec-1.0.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2ed0498eb92f346f918c8ccee694a5a2",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 14230,
+        "upload_time": "2016-09-20T09:41:42",
+        "url": "https://files.pythonhosted.org/packages/66/36/1e9fdf494582098aab0b8411c0d23a8c11936efb52b4290d70c7837fd3fe/django-perf-rec-1.0.1.tar.gz"
+      }
+    ],
+    "1.0.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4c7b78d3949a63b3445e6b1be9c68bdb",
+          "sha256": "107021a3720f7603143c5a0961897a40b69f8c0baa62808a525cc025c6db2e0c"
+        },
+        "downloads": 195,
+        "filename": "django_perf_rec-1.0.2-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "4c7b78d3949a63b3445e6b1be9c68bdb",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 23848,
+        "upload_time": "2016-09-23T12:43:20",
+        "url": "https://files.pythonhosted.org/packages/ce/75/02fb53d34e0f50d2dee4a34d127171eb06029408323e9527de61e6a78fb8/django_perf_rec-1.0.2-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9a0139d1451308fad6fa7efe8ea62d62",
+          "sha256": "d20924ad88eca8257e6b4e17c7aa039a7adf617e89a0990de350ba3802cd5fec"
+        },
+        "downloads": 140,
+        "filename": "django-perf-rec-1.0.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "9a0139d1451308fad6fa7efe8ea62d62",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 15223,
+        "upload_time": "2016-09-23T12:43:18",
+        "url": "https://files.pythonhosted.org/packages/36/68/a894290dc9c531154e756645dc9499c23e158baee044e292049ace1d8a8c/django-perf-rec-1.0.2.tar.gz"
+      }
+    ],
+    "1.0.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c8d7920239c3cb4a2e23431f7b0b7ea7",
+          "sha256": "29a4e11727e39ffdb9d3b1de48a58146e816451448303c750656953cc05c29cb"
+        },
+        "downloads": 198,
+        "filename": "django_perf_rec-1.0.3-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "c8d7920239c3cb4a2e23431f7b0b7ea7",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 24231,
+        "upload_time": "2016-10-07T09:42:44",
+        "url": "https://files.pythonhosted.org/packages/cf/81/ba3bc9210d0e3e226eb0b1a72480180cb03c91fff2e9074882414d63e338/django_perf_rec-1.0.3-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d33edd96ac1bf5c14e404acb95023853",
+          "sha256": "c70f7ad6c2e59ba4515d5f2b779f70ed760e7698c1b31ec86e62fd951e09f436"
+        },
+        "downloads": 89,
+        "filename": "django-perf-rec-1.0.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d33edd96ac1bf5c14e404acb95023853",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 15508,
+        "upload_time": "2016-10-07T09:42:41",
+        "url": "https://files.pythonhosted.org/packages/6d/54/48ced28c4efaf8226554dbcc59c0c02078ad4c8c2a00cc98b5d0aa29bc1e/django-perf-rec-1.0.3.tar.gz"
+      }
+    ],
+    "1.0.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ca2d86801f78c91e0442930cb5bed2b0",
+          "sha256": "914a478b69eb03f8b221872480bc69d001854e3c870fbd2a8292ca11050ef0bb"
+        },
+        "downloads": 317,
+        "filename": "django_perf_rec-1.0.4-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "ca2d86801f78c91e0442930cb5bed2b0",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 14541,
+        "upload_time": "2016-10-23T08:10:14",
+        "url": "https://files.pythonhosted.org/packages/34/72/aaf38f408dec82b22cdf1378ea664799792e390ad7b700518daed88e71cf/django_perf_rec-1.0.4-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "05124e67ad1090d5f492e65dea9af96d",
+          "sha256": "f046502d807cc41742ba12005fd4e3cdd7ef7b5160fea16b672c5113c2d089d8"
+        },
+        "downloads": 326,
+        "filename": "django-perf-rec-1.0.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "05124e67ad1090d5f492e65dea9af96d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 15373,
+        "upload_time": "2016-10-23T08:10:12",
+        "url": "https://files.pythonhosted.org/packages/bb/b0/8095cdfdfa879d3d7cf16547a2b0c2a960363f851f55db76f274f74ae2de/django-perf-rec-1.0.4.tar.gz"
+      }
+    ],
+    "1.1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "be582ef6ba8b7caaf164f8cd9a716058",
+          "sha256": "63260b70c6e827632fa0cd35b27066c18e9a25d14172af903e0a9d465af4f91b"
+        },
+        "downloads": 128,
+        "filename": "django_perf_rec-1.1.0-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "be582ef6ba8b7caaf164f8cd9a716058",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 25150,
+        "upload_time": "2016-10-26T12:55:27",
+        "url": "https://files.pythonhosted.org/packages/84/14/d1f8501e0f0420a25d8e057908e88dc189855bc15fbe36e11173fd433086/django_perf_rec-1.1.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "cfd40eef53e6283edc9df8a5244bbb47",
+          "sha256": "f929b3d4680a0e6190ca0bb241292107e179dafdff59f52df057da8f88ac073e"
+        },
+        "downloads": 124,
+        "filename": "django-perf-rec-1.1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "cfd40eef53e6283edc9df8a5244bbb47",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16404,
+        "upload_time": "2016-10-26T12:55:25",
+        "url": "https://files.pythonhosted.org/packages/4f/ff/d1ea2170ec1ae081105409f2d22ab8aa3fd6f39f54215c8c6c6af0ce3604/django-perf-rec-1.1.0.tar.gz"
+      }
+    ],
+    "1.1.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2cd3b1ac2002d22a4aa1439322df1e19",
+          "sha256": "7a304a7e5ad11338e49a9d4e542abc6990e1b81aef530d031864fcfbbfe07ee4"
+        },
+        "downloads": 283,
+        "filename": "django_perf_rec-1.1.1-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "2cd3b1ac2002d22a4aa1439322df1e19",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 17855,
+        "upload_time": "2016-10-30T11:35:46",
+        "url": "https://files.pythonhosted.org/packages/1d/fb/a940dae3ed321fde4ff713416ed5ac7cb464712f84c6529f4ee30dfe6ef7/django_perf_rec-1.1.1-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e684a5324b09aa36752a81a34cd52ec1",
+          "sha256": "04324e4151ad5231c655a198a67ed53351c88f32e48d728b3a2ae6e16d9248b2"
+        },
+        "downloads": 191,
+        "filename": "django-perf-rec-1.1.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e684a5324b09aa36752a81a34cd52ec1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 17963,
+        "upload_time": "2016-10-30T11:35:43",
+        "url": "https://files.pythonhosted.org/packages/1e/e9/090a1620d1d0acecd597dc37fdcb52f381f0ceffe80d1bbb9cf3c03bae1f/django-perf-rec-1.1.1.tar.gz"
+      }
+    ],
+    "2.0.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "86882a77e6ee45a9ecf7f58a973f691c",
+          "sha256": "ad68ce3250b6f69308ad87c5386299f333d9e1a68e1079cb42742cf912043fb0"
+        },
+        "downloads": 12,
+        "filename": "django_perf_rec-2.0.0-py2.py3-none-any.whl",
+        "has_sig": true,
+        "md5_digest": "86882a77e6ee45a9ecf7f58a973f691c",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 18390,
+        "upload_time": "2017-02-09T19:58:09",
+        "url": "https://files.pythonhosted.org/packages/82/8a/da10553f94c7503ea46b3a8c8c3d1b0c9b5767a760ead9d645a3780168a8/django_perf_rec-2.0.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "bca55ca5172be0dd45c49fb9cbc151bb",
+          "sha256": "be8494c35b771e84ce36f97de001345418d6aac937bbf7675261eed7800d5d7d"
+        },
+        "downloads": 15,
+        "filename": "django-perf-rec-2.0.0.tar.gz",
+        "has_sig": true,
+        "md5_digest": "bca55ca5172be0dd45c49fb9cbc151bb",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 18319,
+        "upload_time": "2017-02-09T19:58:07",
+        "url": "https://files.pythonhosted.org/packages/7b/ea/d903f268cbb0c6d01d2e8afff6f9dd4904f4668608ac414500430e9dd628/django-perf-rec-2.0.0.tar.gz"
+      }
+    ],
+    "2.0.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0bf3043d5ed1ab8e7d748045052926d2",
+          "sha256": "74c9d2fbfd65853692afe6f4f9ebd9bfe404d67dbd3c68e4f193272a64fe14f6"
+        },
+        "downloads": 71,
+        "filename": "django_perf_rec-2.0.1-py2.py3-none-any.whl",
+        "has_sig": true,
+        "md5_digest": "0bf3043d5ed1ab8e7d748045052926d2",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 18902,
+        "upload_time": "2017-03-02T23:17:16",
+        "url": "https://files.pythonhosted.org/packages/49/2a/5f1afb1facaacff6d81b6eec94353c5b3e364963639c7e8e6d7bcefd8d94/django_perf_rec-2.0.1-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "cd4705a594aef37e6af702992044d4dc",
+          "sha256": "2e731ccf666eca429b64a7bb9ee3bd1eb3635f3f9ac44330d1be74358e8037b1"
+        },
+        "downloads": 15,
+        "filename": "django-perf-rec-2.0.1.tar.gz",
+        "has_sig": true,
+        "md5_digest": "cd4705a594aef37e6af702992044d4dc",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 18983,
+        "upload_time": "2017-03-02T23:17:14",
+        "url": "https://files.pythonhosted.org/packages/82/4b/23b64f0ea2f814b2d1992ea743cdef536f7872f45d487d29be0db22074d8/django-perf-rec-2.0.1.tar.gz"
+      }
+    ],
+    "2.1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8b23ed6fdfb90691b8a0f58c862612e4",
+          "sha256": "ccbc9f42112bfd9219329816515f69c831ed7bea22fb87fcbf61084446c8cc54"
+        },
+        "downloads": 0,
+        "filename": "django_perf_rec-2.1.0-py2.py3-none-any.whl",
+        "has_sig": true,
+        "md5_digest": "8b23ed6fdfb90691b8a0f58c862612e4",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 20534,
+        "upload_time": "2017-05-29T10:37:45",
+        "url": "https://files.pythonhosted.org/packages/8f/21/4f6b8d89dc1091015918334427320b60ecefb3bafc16520f12aad6beb309/django_perf_rec-2.1.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "bffcc15810ce52870d06cfa2485eb2b7",
+          "sha256": "6e77cd2eb6ec411bda2c534ceb80f69708932df965831836882034ca2f54137a"
+        },
+        "downloads": 0,
+        "filename": "django-perf-rec-2.1.0.tar.gz",
+        "has_sig": true,
+        "md5_digest": "bffcc15810ce52870d06cfa2485eb2b7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 20557,
+        "upload_time": "2017-05-29T10:37:42",
+        "url": "https://files.pythonhosted.org/packages/0d/35/689bcecb117956b8504b83a982bfc3109c24b000943aaefb3f6ef74c1e34/django-perf-rec-2.1.0.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "8b23ed6fdfb90691b8a0f58c862612e4",
+        "sha256": "ccbc9f42112bfd9219329816515f69c831ed7bea22fb87fcbf61084446c8cc54"
+      },
+      "downloads": 0,
+      "filename": "django_perf_rec-2.1.0-py2.py3-none-any.whl",
+      "has_sig": true,
+      "md5_digest": "8b23ed6fdfb90691b8a0f58c862612e4",
+      "packagetype": "bdist_wheel",
+      "python_version": "2.7",
+      "size": 20534,
+      "upload_time": "2017-05-29T10:37:45",
+      "url": "https://files.pythonhosted.org/packages/8f/21/4f6b8d89dc1091015918334427320b60ecefb3bafc16520f12aad6beb309/django_perf_rec-2.1.0-py2.py3-none-any.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "bffcc15810ce52870d06cfa2485eb2b7",
+        "sha256": "6e77cd2eb6ec411bda2c534ceb80f69708932df965831836882034ca2f54137a"
+      },
+      "downloads": 0,
+      "filename": "django-perf-rec-2.1.0.tar.gz",
+      "has_sig": true,
+      "md5_digest": "bffcc15810ce52870d06cfa2485eb2b7",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 20557,
+      "upload_time": "2017-05-29T10:37:42",
+      "url": "https://files.pythonhosted.org/packages/0d/35/689bcecb117956b8504b83a982bfc3109c24b000943aaefb3f6ef74c1e34/django-perf-rec-2.1.0.tar.gz"
+    }
+  ]
+}

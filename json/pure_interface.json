@@ -1,0 +1,246 @@
+{
+  "info": {
+    "author": "Tim Mitchell",
+    "author_email": "tim.mitchell@aranzgeo.com",
+    "bugtrack_url": null,
+    "classifiers": [],
+    "description": "==============\npure_interface\n==============\n\nA Python interface library that disallows function body content on interfaces and supports adaption.\n\nFeatures:\n    * Prevents implementation code in an interface class\n    * Works just like a python abc abstract classes (to get IDE support)\n    * Allows concrete implementations flexibility to implement abstract properties as attributes.\n    * Treats abc interfaces that do not include any implementation as a pure interface type.\n      This means that ``class C(PureInterface, ABCInterface)`` will be a pure interface if the abc interface meets the\n      no function body content criteria.\n    * Fallback to duck-type checking for ``isinstance(a, Interface)``\n    * Fallback to duck-type checking for ``issubclass(C, Interface)``\n    * Ensure that method overrides have a the same signature (optional)\n    * Option to warn if ``isinstance`` or ``issubclass`` did a duck-type check when inheritance or registering would wok.\n    * Option to turn off method signature checking.\n    * Support interface adapters.\n    * Support python 2.7 and 3.5+\n\nA note on the name\n------------------\nThe phrase *pure interface* applies only to the first design goal - a class that defines only an interface with no\nimplementation is a pure interface.  In every other respect the zen of 'practicality beats purity' applies, particularly\nwith respect to retrofitting interfaces to existing code.\n\nInstallation\n------------\nYou can install released versions of pure_interface using pip::\n\n    pip install pure_interface\n\nor you can grab the source code from GitHub_.\n\n.. _GitHub: https://github.com/aranzgeo/pure_interface\n\nDefining a Pure Interface\n-------------------------\nFor simplicity in these examples we assume that the entire pure_interface namespace has been imported ::\n\n    from pure_interface import *\n\nTo define an interface, simply inherit from the class ``PureInterface`` and leave all method bodies empty::\n\n    class MyInterface(PureInterface):\n        def method_one(self):\n            pass\n\n        @abstractmethod\n        def method_two(self):\n            pass\n\n        @property\n        def property_one(self):\n            pass\n\n        @abstractproperty\n        def property_two(self):\n            pass\n\nAs ``PureInterface`` is a subtype of ``abc.ABC`` the ``abstractmethod`` and ``abstractproperty`` decorators work as expected.\nFor convenience the ``abc`` module abstract decorators are included in the ``pure_interface`` namespace, and on Python 2.7\n``abstractclassmethod`` and ``abstractstaticmethod`` are also available.\n\nHowever these decorators are optional as **ALL** methods and properties on a pure interface are abstract ::\n\n    >>> MyInterface()\n    TypeError: Can't instantiate abstract class MyInterface with abstract methods method_one, method_two, property_one, property_two\n\nIncluding abstract decorators in your code can be useful for reminding yourself (and telling your IDE) that you need\nto override those methods.  Another common way of informing an IDE that a method needs to be overridden is for\nthe method to raise ``NotImplementedError``.  For this reason methods that just raise ``NotImplementedError`` are also\nconsidered empty.\n\nIncluding code in a method will result in an ``InterfaceError`` being raised when the module is imported. For example::\n\n    >>> class BadInterface(PureInterface):\n    >>>     def method_one(self):\n    >>>         print('hello')\n\n    InterfaceError: Function \"method_one\" is not empty\n\nInstance Checking\n-----------------\npure_interface types will fall back to duck-type checking if the instance is not an actual (or registered) subclass.::\n\n    class IAnimal(PureInterface):\n        @abstractproperty\n        def height(self):\n\n        def speak(self, volume):\n            pass\n\n    class Animal2(object):\n        def __init__(self):\n            self.height = 43\n\n        def speak(self, volume):\n            print('hello')\n\n    a = Animal2()\n    isinstance(a, IAnimal) --> True\n\nPureInterface supports the abc ``register`` method to register classes as subtypes of an interface.::\n\n    IAnimal.register(Animal2)\n\nRegistering a class in this way will make ``isinstance`` calls faster.\n\nThe duck-type checking makes working with data transfer objects (DTO's) much easier.::\n\n    class IMyDataType(PureInterface):\n        @property\n        def thing(self):\n            pass\n\n    class DTO(object):\n        pass\n\n    d = DTO()\n    d.thing = 'hello'\n    isinstance(d, IMyDataType) --> True\n    e = DTO()\n    e.something_else = True\n    isinstance(e, IMyDataType) --> False\n\nFor ``PureInterface`` types, ``isinstance(d, IMyDataType)`` means ``d`` provides the interface,\nit does not imply that ``issubclass(type(d), IMyDataType)`` is ``True``.  However this is the case\nwith ``ABC`` interfaces already.\n\nConcrete Implementations\n------------------------\nSimply inheriting from a pure interface and writing a concrete class will result in an ``InterfaceError`` exception as\n``pure_interface`` will assume you are creating a sub-interface. To tell ``pure_interface`` that a type should be concrete\nsimply inherit from object as well (or anything else that isn't a ``PureInterface``).  For example::\n\n    class MyImplementation(object, MyInterface):\n        def method_one(self):\n            print('hello')\n\n**Exception:** Mixing a PureInterface class with an abc.ABC interface class that only defines abstract methods and properties\nthat satisfy the empty method criteria can will result in a type that is considered a pure interface.::\n\n    class ABCInterface(abc.ABC):\n        @abstractmethod\n        def method_one(self):\n            pass\n\n    class MyPureInterface(ABCInterface):\n        def method_two(self):\n            pass\n\nConcrete implementations may implement interface properties as normal attributes,\nprovided that they are all set in the constructor::\n\n  class MyInterface(PureInterface)\n      @property\n      def thing(self):\n         pass\n\n  class MyImplementation(MyInterface):\n      def __init__(self, thing):\n          self.thing = thing\n\nThis can simplify implementations greatly when there are lots of properties on an interface.\n\nAdaption\n--------\nAdapters for an interface are registered with the\n``adapts`` decorator or with the ``register_adapter`` function. Take for example an interface ``ISpeaker`` and a class\n``Talker`` and an adapter class ``TalkerToSpeaker``::\n\n    class ISpeaker(PureInterface):\n        def speak(self, volume):\n            pass\n\n    class Talker(object):\n        def talk(self):\n            return 'talk'\n\n    @adapts(Talker, ISpeaker)\n    class TalkerToSpeaker(object, ISpeaker):\n        def __init__(self, talker):\n            self._talker = talker\n\n        def speak(self, volume):\n            return self._talker.talk()\n\nThe ``adapts`` decorator call above is equivalent to::\n\n    register_adapter(TalkerToSpeaker, Talker, ISpeaker)\n\nAdapter factory functions can be decorated too::\n\n    @adapts(Talker, ISpeaker)\n    def talker_to_speaker(talker):\n        return TalkerToSpeaker(talker)\n\nThe ``adapt_to_interface`` function will adapt an object to the given interface if possible\nand raise ``ValueError`` if not.::\n\n    speaker = adapt_to_interface(talker, ISpeaker)\n\nAlternatively, you can use the ``adapt`` method on the interface class::\n\n    speaker = ISpeaker.adapt(talker)\n\nIf you want to get ``None`` rather than an exception then use::\n\n    speaker = adapt_to_interface_or_none(talker, ISpeaker)\n\nor::\n\n    speaker = ISpeaker.adapt_or_none(talker)\n\nYou can filter a list of objects, returning a generator of those that implement an interface using\n``filter_adapt(objects, interface)``::\n\n   list(filter_adapt([None, Talker(), a_speaker, 'text'], ISpeaker) -> [<TalkerToSpeaker>, a_speaker]\n\nOptions\n-------\nThe ``pure_interface`` module has 4 boolean flags which control optional functionality.\nNote that most of these flags must be set before modules using the ``PureInterface`` type\nare imported or else the changes will not have any effect\n\nADAPT_TO_INTERFACE_ONLY\n    If ``True`` then ``adapt_to_interface`` will return an object which provides ONLY\n    the functions and properties specified by the interface.  For example given the\n    following implementation of the ``ISpeaker`` interface above::\n\n      class TopicSpeaker(ISpeaker):\n          def __init__(self, topic):\n              self.topic = topic\n\n          def speak(self, volume):\n              return 'lets talk about {} very {}'.format(self.topic, volume)\n\n    Then::\n\n      topic_speaker = TopicSpeaker('python')\n      speaker = adapt_to_interface(ts, ISpeaker)\n      speaker is topic_speaker  --> False\n      speaker.topic --> AttributeError(\"ISpeaker interface has no attribute topic\")\n\n    If ``False`` then the object itself, or a registered adapter class is returned::\n\n      topic_speaker = TopicSpeaker('python')\n      speaker = adapt_to_interface(ts, ISpeaker)\n      speaker is topic_speaker  --> True\n      speaker.topic --> 'Python'\n\n    Accessing the ``topic`` attribute on an ``ISpeaker`` may work for all current implementations\n    of ISpeaker, but this code will likely break at some inconvenient time in the future.\n\n    **Default:** ``not hasattr(sys, 'frozen')`` (``True`` if running from source, ``False`` if bundled into an executable)\n\nONLY_FUNCTIONS_AND_PROPERTIES\n    If ``True`` this ensures that interface types only contain\n    functions (methods) and properties and no other class attributes.  For example::\n\n      class MyInterface(PureInterface):\n          disallowed = True\n\n    would not be permitted.\n\n    **Default:** ``False``\n\nCHECK_METHOD_SIGNATURES\n    If ``True`` method overrides are checked for compatibility with the interface.\n    This means that argument names must match exactly and that no new non-optional\n    arguments are present in the override.  This enforces that calling the method\n    with interface parameters will aways work.\n    For example, given the method::\n\n      def speak(self, volume):\n\n    Then these overrides will all fail the checks::\n\n       def speak(self):  # too few parameters\n       def speak(self, loudness):  # name does not match\n       def speak(self, volume, language):  # extra required argument\n\n    However new optional parameters are permitted::\n\n      def speak(self, volume, language='doggy speak')\n\n    **Default:** ``not hasattr(sys, 'frozen')`` (``True`` if running from source, ``False`` if bundled into an executable)\n\nWARN_ABOUT_UNNCESSARY_DUCK_TYPING\n    If ``True`` then when doing ``isinstance(a, Interface)`` or ``issubclass(A, Interface)``,\n    a warning message is emitted if an unnecessary duck-type check is done.\n    For example::\n\n        class ISpeaker(PureInterface):\n            def speak(self, volume):\n                pass\n\n        class Speaker(object):\n            def speak(self, volume):\n                return 'speak'\n\n        s = Speaker()\n        isinstance(s, ISpeaker)  --> True\n        UserWarning: Class Speaker implements ISpeaker.\n        Consider inheriting ISpeaker or using ISpeaker.register(Speaker)\n\n    **Default:** ``not hasattr(sys, 'frozen')`` (``True`` if running from source, ``False`` if bundled into an executable)\n\n\nPyContracts Integration\n-----------------------\n\nYou can use ``pure_interface`` with PyContracts_\n\n.. _PyContracts: https://pypi.python.org/pypi/PyContracts\n\nSimply import the ``pure_contracts`` module and use the ``ContractInterface`` class defined there as you\nwould the ``PureInterface`` class described above.\nFor example::\n\n    from pure_contracts import ContractInterface\n    from contracts import contract\n\n    class ISpeaker(ContractInterface):\n        @contract(volume=int, returns=unicode)\n        def speak(self, volume):\n            pass\n\n",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/tim-mitchell/pure_interface",
+    "keywords": "abc interface adapt adaption mapper",
+    "license": "MIT",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "pure_interface",
+    "platform": "",
+    "project_url": "https://pypi.org/project/pure_interface/",
+    "release_url": "https://pypi.org/project/pure_interface/1.6.0/",
+    "requires_python": "",
+    "summary": "A Python interface library that disallows function body content on interfaces and supports adaption.",
+    "version": "1.6.0"
+  },
+  "releases": {
+    "1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0e719f44f4c802acd40fe116a151e853",
+          "sha256": "6b0462dd868ab0264a531cefeb6e5c0677412fd88a47ec3ab4e62fac6a226388"
+        },
+        "downloads": 18,
+        "filename": "pure_interface-1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0e719f44f4c802acd40fe116a151e853",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 5504,
+        "upload_time": "2017-03-08T20:57:53",
+        "url": "https://files.pythonhosted.org/packages/2b/5b/31d98a8e7d40a7796a4a3e55a368563e661202a92d385953d62ef2c43e3c/pure_interface-1.0.tar.gz"
+      }
+    ],
+    "1.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e599ae144f531c0e6ccf579788f32c09",
+          "sha256": "24da6fa573b4ccbf8668ba9dfb1977648f23421ea77983ba0678862469f0695d"
+        },
+        "downloads": 20,
+        "filename": "pure_interface-1.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e599ae144f531c0e6ccf579788f32c09",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 7854,
+        "upload_time": "2017-03-08T21:03:57",
+        "url": "https://files.pythonhosted.org/packages/71/06/9ccad7a17f4497673d762ef2226a50fcd371b541594ab5859abc15d8c5ad/pure_interface-1.1.tar.gz"
+      }
+    ],
+    "1.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "124acf18d7915f797b45fec0ae05c594",
+          "sha256": "57e248bcf0dd75194371d75cc02aae10a84b7eb4a94191e4d986a2d247718f8b"
+        },
+        "downloads": 19,
+        "filename": "pure_interface-1.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "124acf18d7915f797b45fec0ae05c594",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 8444,
+        "upload_time": "2017-03-08T21:14:58",
+        "url": "https://files.pythonhosted.org/packages/76/86/5b02c7773b58d7117bd911cafdbe7f4c6b8e2bd57b082254bc01a7c32ebf/pure_interface-1.2.tar.gz"
+      }
+    ],
+    "1.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "081f928d41652fe3bc33121f993c07f9",
+          "sha256": "9847b6d56d524fb99eae643312f5b6fae21c8289a7e8d989d6c45cce9de28a44"
+        },
+        "downloads": 30,
+        "filename": "pure_interface-1.3.zip",
+        "has_sig": false,
+        "md5_digest": "081f928d41652fe3bc33121f993c07f9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 14592,
+        "upload_time": "2017-04-04T22:16:17",
+        "url": "https://files.pythonhosted.org/packages/c6/fa/167924e7061e1ce279955a74790cc2f944bfeef9dd4c33531a6c68cd3289/pure_interface-1.3.zip"
+      }
+    ],
+    "1.3.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "94af42d4441d958369b08ec19a99323e",
+          "sha256": "bc59f892195eaf3e0607351a7b7bbd985c1efce633a5b6836fe8d3c72048991f"
+        },
+        "downloads": 30,
+        "filename": "pure_interface-1.3.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "94af42d4441d958369b08ec19a99323e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9103,
+        "upload_time": "2017-04-04T22:18:16",
+        "url": "https://files.pythonhosted.org/packages/ae/73/a0c228376662c8b9af8279870034fb0fcf434c071a21f90b5e2c703a18e0/pure_interface-1.3.1.tar.gz"
+      }
+    ],
+    "1.3.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f75bdc0c9249a9c488d9bd89ab921dc3",
+          "sha256": "86eb7734552964bfdd292f5505cc4aec574f79697ab7a307c5f4191df863fa73"
+        },
+        "downloads": 30,
+        "filename": "pure_interface-1.3.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f75bdc0c9249a9c488d9bd89ab921dc3",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9105,
+        "upload_time": "2017-04-04T22:19:23",
+        "url": "https://files.pythonhosted.org/packages/36/2a/fb37ba62490a614781614501e4f5597956de141a6c29b5f335a9fd733447/pure_interface-1.3.2.tar.gz"
+      }
+    ],
+    "1.3.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "90520bc084a43d56a74454c31b4742af",
+          "sha256": "e37cf767c4e2588ca1c532b529d695857e33e6caab2354507babf6926a88edb8"
+        },
+        "downloads": 31,
+        "filename": "pure_interface-1.3.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "90520bc084a43d56a74454c31b4742af",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9113,
+        "upload_time": "2017-04-04T23:06:25",
+        "url": "https://files.pythonhosted.org/packages/28/60/d211503777fcfe9d46633bbbe3e0c9ecaac4f60206e53e9b3616d00d9871/pure_interface-1.3.3.tar.gz"
+      }
+    ],
+    "1.3.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "bacf611b47df508fb8a9e8b03bb08292",
+          "sha256": "b237e702a565cbea891fc61ad1454c1c3b1d312d6db7caf6e149d84eefa97123"
+        },
+        "downloads": 198,
+        "filename": "pure_interface-1.3.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "bacf611b47df508fb8a9e8b03bb08292",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 11112,
+        "upload_time": "2017-04-07T02:09:56",
+        "url": "https://files.pythonhosted.org/packages/39/d8/43748d590448cadd3b3feb4c8de860b25526913096adc6a4094814f7df08/pure_interface-1.3.4.tar.gz"
+      }
+    ],
+    "1.4.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ccef190e8c5aa528c8acc05a4a44a73d",
+          "sha256": "7ac29ecfa538e9581e3d760667061bea4beddc04cd91203b8ecfde02412c42e3"
+        },
+        "downloads": 0,
+        "filename": "pure_interface-1.4.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ccef190e8c5aa528c8acc05a4a44a73d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 12871,
+        "upload_time": "2017-04-24T05:51:58",
+        "url": "https://files.pythonhosted.org/packages/44/bd/8973a47cfdcc55fe743c8892d01e30d9d97d29ef07c45c3d71d2e5f6b8a6/pure_interface-1.4.0.tar.gz"
+      }
+    ],
+    "1.5.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "53a458b909c1520f120817220287bce7",
+          "sha256": "c07849214f499949e42d7576df007db3456bb5dabec3c1186a940eae10a43b93"
+        },
+        "downloads": 0,
+        "filename": "pure_interface-1.5.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "53a458b909c1520f120817220287bce7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 12899,
+        "upload_time": "2017-05-25T03:32:09",
+        "url": "https://files.pythonhosted.org/packages/be/97/67bfa0bc6ba51ad37c47af051786e27b92d7be04b233f79c9f4c592441e4/pure_interface-1.5.0.tar.gz"
+      }
+    ],
+    "1.6.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "329788bc4100f6ed410c5e94c09a2237",
+          "sha256": "624b85854277776c53d3c77b12009120684209e153fb38803c3f23302a7e481c"
+        },
+        "downloads": 0,
+        "filename": "pure_interface-1.6.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "329788bc4100f6ed410c5e94c09a2237",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 13532,
+        "upload_time": "2017-05-30T03:40:43",
+        "url": "https://files.pythonhosted.org/packages/cf/d4/9386a837850657eae36873651eafbf2517efa6f1c0e5fe546ae93cdbd0d8/pure_interface-1.6.0.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "329788bc4100f6ed410c5e94c09a2237",
+        "sha256": "624b85854277776c53d3c77b12009120684209e153fb38803c3f23302a7e481c"
+      },
+      "downloads": 0,
+      "filename": "pure_interface-1.6.0.tar.gz",
+      "has_sig": false,
+      "md5_digest": "329788bc4100f6ed410c5e94c09a2237",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 13532,
+      "upload_time": "2017-05-30T03:40:43",
+      "url": "https://files.pythonhosted.org/packages/cf/d4/9386a837850657eae36873651eafbf2517efa6f1c0e5fe546ae93cdbd0d8/pure_interface-1.6.0.tar.gz"
+    }
+  ]
+}

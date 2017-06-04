@@ -1,0 +1,490 @@
+{
+  "info": {
+    "author": "Max Sharples",
+    "author_email": "maxsharples@gmail.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 4 - Beta",
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: Apache Software License",
+      "Natural Language :: English",
+      "Operating System :: OS Independent",
+      "Programming Language :: Python",
+      "Programming Language :: Python :: 2.6",
+      "Programming Language :: Python :: 2.7",
+      "Topic :: System :: Distributed Computing"
+    ],
+    "description": "Apiarist\n========\n\nA python 2.5+ package for defining Hive queries which can be run on AWS\nEMR.\n\nIt is, in its current form, only addressing a very narrow use-case.\nReading large text files into a Hive database, running a Hive query, and\noutputting the results to a text file.\n\nFile format can be CSV or similar - other delimiters can be specified.\n\nThe jobs are runnable locally, which is mainly for testing. You will\nneed a local version of Hive which is in your ``PATH`` such that the\ncommand ``hive -f /some/hive/script.hql`` causes hive to execute the\ncontents of the file.\n\nIt is heavily modeled on `mrjob <https://github.com/Yelp/mrjob>`__ and\nattempts to present a similar API and use similar common variables to\ncooperate with ``boto``.\n\nA simple Hive job\n-----------------\n\nYou will need to provide four methods:\n\n-  ``table`` the name of the table that your query will select from.\n-  ``input_columns`` the columns in the source data file.\n-  ``output_columns`` the columns that your query will output.\n-  ``query`` the HiveQL query.\n\nThis code lives in ``/examples``.\n\n.. code:: python\n\n    from apiarist.job import HiveJob\n\n    class EmailRecipientsSummary(HiveJob):\n\n        def table(self):\n            return 'emails_sent'\n\n        def input_columns(self):\n            return [\n                    ('day', 'STRING'),\n                    ('weekday', 'INT'),\n                    ('sent', 'BIGINT')\n                    ]\n\n        def output_columns(self):\n            return [\n                    ('year', 'INT'),\n                    ('weekday', 'INT'),\n                    ('sent', 'BIGINT')\n                    ]\n\n        def query(self):\n            return \"SELECT YEAR(day), weekday, SUM(sent) FROM emails_sent GROUP BY YEAR(day), weekday;\"\n\n    if __name__ == \"__main__\":\n        EmailRecipientsSummary().run()\n\nTry it out\n~~~~~~~~~~\n\nLocally (must have a Hive server available):\n\n::\n\n    python email_recipients_summary.py -r local /path/to/your/local/file.csv\n\nEMR:\n\n::\n\n    python email_recipients_summary.py -r emr s3://path/to/your/S3/files/\n\n*NOTE: for the EMR command, you will need to supply some basic\nconfiguration.*\n\nSerde\n~~~~~\n\nHive allows custom a serde to be used to define data formats in tables.\nApiarist uses `csv-serde <https://github.com/ogrodnek/csv-serde>`__ to\nhandle the CSV format properly.\n\nThis serde also allows configuration of the delimiter, quoting\ncharacter, and escape character. The defaults are, delimiter = ``,``,\nquote character = ``\"``, escape character = ``\\``.\n\nYou can override the defaults in your job. You should be careful about\nescape sequences when doing so because the value needs to be written\ninto a file.\n\nIt is best to define them as string literals. Example:\n\n.. code:: python\n\n    from apiarist.job import HiveJob\n\n    class EmailRecipientsSummary(HiveJob):\n\n        INFILE_DELIMITER_CHAR = r'\\t'\n        INFILE_QUOTE_CHAR = r\"\\'\"\n        INFILE_ESCAPE_CHAR = r'%'\n\n        OUTFILE_DELIMITER_CHAR = r'\\t'\n        OUTFILE_QUOTE_CHAR = r'\\\"'\n        OUTFILE_ESCAPE_CHAR = r\"\\\\\"\n\nConfiguration\n-------------\n\nThere are a range of options for providing job-specific configuration.\n\nCommand-line options\n~~~~~~~~~~~~~~~~~~~~\n\nArguments can be passed to jobs on the command line, or programmatically\nwith an array of options. Argument handling uses the\n`optparse <https://docs.python.org/2/library/optparse.html>`__ module.\n\nVarious options can be passed to control the running of the job. In\nparticular the AWS/EMR options.\n\n-  ``-r`` the run mode. Either ``local`` or ``emr`` (default is\n   ``local``)\n-  ``--conf-path`` use a YAML configuration file.\n-  ``--output-dir`` where the results of the job will go.\n-  ``--s3-scratch-uri`` the bucket in which all the temporary files can\n   go.\n-  ``--local-scratch-dir`` this is where temporary file will be written.\n-  ``--s3-log-uri`` write the logs to this location on S3.\n-  ``--ec2-instance-type`` the base instance type. Default is\n   ``m3.xlarge``\n-  ``--ec2-master-instance-type`` if you want the master type to be\n   different.\n-  ``--num-ec2-instances`` number of instances (including the master).\n   Default is ``2``.\n-  ``--ami-version`` the ami version. Default is ``latest``.\n-  ``--hive-version``. Default is ``latest``.\n-  ``--iam-instance-profile`` role for the EC2 instances on the cluster.\n   Default is ``EMR_EC2_DefaultRole``.\n-  ``--iam-service-role`` role for the Amazon EMR service on the\n   cluster. Default is ``EMR_DefaultRole``.\n-  ``--s3-sync-wait-time`` to configure how long to wait after uploading\n   files to S3.\n-  ``--check-emr-status-every`` configure the interval between each\n   status check on a running job.\n-  ``--quiet`` less logging\n-  ``--verbose`` more logging\n-  ``--retain-hive-table`` for local mode, keep the hive table to run\n   further ad-hoc queries.\n\n*NOTE: IAM roles will be mandatory for all users after June 30, 2015.\nThese are set via the ``--iam-instance-profile`` and\n``--iam-service-role`` options above.*\n\n*See `Configure IAM Roles for Amazon\nEMR <http://docs.aws.amazon.com/ElasticMapReduce/latest/DeveloperGuide/emr-iam-roles.html>`__*\n\nConfiguration file\n~~~~~~~~~~~~~~~~~~\n\nYou can supply arguments to your job in a configuration file. It takes\nthe same format as ``mrjob`` configuration.\n\nThe name of the arguments is different, using underscores instead of\nhyphens and omitting leading hyphens. Config options are divided by the\ntype of runner (local/emr) to allow provision of all options for a job\nin one file.\n\nBelow is a sample config file:\n\n.. code:: yaml\n\n    runners:\n      emr:\n        aws_access_key_id: AABBCCDDEEFF11223344\n        aws_secret_access_key: AABBCCDDEEFF1122334AABBCCDDEEFF\n        ec2_instance_type: m3.xlarge\n        num_ec2_instances: 5\n        s3_scratch_uri: s3://myjobs/scratchspace/\n        ami_version: 3.2.1\n        hive_version: 0.13.1\n      local:\n        local_scratch_dir: /home/apiarist/temp/\n\nArguments supplied on command-line or in application code will override\nthose supplied in the config file.\n\nEnvironment variables\n~~~~~~~~~~~~~~~~~~~~~\n\nSome environment variables are used when the value is not provided in\nother configuration methods.\n\n``AWS_ACCESS_KEY_ID`` and ``AWS_SECRET_ACCESS_KEY`` for connecting to\nAWS.\n\n``S3_SCRATCH_URI`` a S3 base location where all the temporary file for\nthe job will be written.\n\n``APIARIST_TMP_DIR`` where local files will be written during job runs.\n(This is overridden by the ``--local-scratch-dir`` option)\n\n``CSV_SERDE_JAR_S3`` a permanent location of the serde jar. If this is\nnot set, Apiarist will automatically upload a copy of the jar to an S3\nlocation in the scratch space.\n\nPassing options to your jobs\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nJobs can be configured to accept arguments.\n\nTo do this, add the following method to your job class to configutr the\noptions:\n\n.. code:: python\n\n    def configure_options(self):\n        super(EmailRecipientsSummary, self).configure_options()\n        self.add_passthrough_option('--year', dest='year')\n\nAnd then use the option by providing it in the command line arguments,\nlike this:\n\n::\n\n    python email_recipients_summary.py -r local /path/to/your/local/file.csv --year 2014\n\nThen incorporating it into your HiveQL query like this:\n\n.. code:: python\n\n    def query(self):\n        q = \"SELECT YEAR(day), weekday, SUM(sent) \"\n        q += \"FROM emails_sent \"\n        q += \"WHERE YEAR(day) = {0} \".format(self.options.year)\n        q += \"GROUP BY YEAR(day), weekday;\"\n        return q\n\nQuerying Hive locally\n---------------------\n\nWhen developing a new query, you may want to fire up Hive to run it and\ntest your syntax.\n\nTo generate the Hive table, run your job locally with the\n``--retain-hive-table`` argument. After it terminates, run ``hive`` from\nthe command line and you will get a Hive prompt.\n\nBecause ``apiarist`` uses a serde to interpret the text files for Hive,\nyou will need to add this serde to the Hive session before your table\ncan be read.\n\nThe command to do this will be something like:\n\n::\n\n    hive> ADD JAR /Users/max/.virtualenvs/apiarist/lib/python2.7/site-packages/apiarist/jars/csv-serde-1.1.2-0.11.0-all.jar;\n\nObviously, your path will be different, depending on where apiarist is\ninstalled.\n\nOnce this is done you can start running interactive HiveQL queries on\nyour text data.\n\nLicense\n-------\n\nApiarist source code is released under Apache 2 License. Check LICENSE\nfile for more information.",
+    "docs_url": null,
+    "download_url": "UNKNOWN",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "http://github.com/msharp/apiarist",
+    "keywords": null,
+    "license": "Apache",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "apiarist",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/apiarist/",
+    "release_url": "https://pypi.org/project/apiarist/0.1.14/",
+    "requires_python": null,
+    "summary": "Python Hive query framework",
+    "version": "0.1.14"
+  },
+  "releases": {
+    "0.0.10": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "295286fa1f8fbfe890c4d6606134c4ac",
+          "sha256": "254cafaf51c80d416ec928983232cf61f4c9c33742b39fa189c310f61daa4de6"
+        },
+        "downloads": 1809,
+        "filename": "apiarist-0.0.10.tar.gz",
+        "has_sig": false,
+        "md5_digest": "295286fa1f8fbfe890c4d6606134c4ac",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 38596,
+        "upload_time": "2014-08-12T03:50:17",
+        "url": "https://files.pythonhosted.org/packages/0c/de/e0e29f0f9e2485f6598784bdcadce6d9bf1bbc67d49a4b4f1d41d20012a5/apiarist-0.0.10.tar.gz"
+      }
+    ],
+    "0.0.11": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b8605e067e111f7c8488e48fae689f7d",
+          "sha256": "b204f5d6dc8d967ba5d551701befc1b546e1a1df05b0bae92007cc976545c70e"
+        },
+        "downloads": 1825,
+        "filename": "apiarist-0.0.11.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b8605e067e111f7c8488e48fae689f7d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 38593,
+        "upload_time": "2014-08-12T03:56:04",
+        "url": "https://files.pythonhosted.org/packages/8d/77/39f3742da42edfb62cadefd3b64ce69581b14962b6b4adb9983c2d2f77c6/apiarist-0.0.11.tar.gz"
+      }
+    ],
+    "0.0.12": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "af3041566f8b37266e152327996caedb",
+          "sha256": "18faee3bb14d86e77bb07235fa261f9f8be98622b4229262d06cc21691244fc6"
+        },
+        "downloads": 1797,
+        "filename": "apiarist-0.0.12.tar.gz",
+        "has_sig": false,
+        "md5_digest": "af3041566f8b37266e152327996caedb",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 38606,
+        "upload_time": "2014-08-12T04:01:45",
+        "url": "https://files.pythonhosted.org/packages/7d/35/76500653e099cc05a169beacdf4bddc4e21f8306bc03e429b266d409004d/apiarist-0.0.12.tar.gz"
+      }
+    ],
+    "0.0.13": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b4b07f5a427b5a7ba3b8cc73c7ac3d21",
+          "sha256": "e09758adcd35f0263d37c7f7831d1fd57b2fdb68b79341c97585e145fa1f3807"
+        },
+        "downloads": 1813,
+        "filename": "apiarist-0.0.13.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b4b07f5a427b5a7ba3b8cc73c7ac3d21",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 38623,
+        "upload_time": "2014-08-12T04:14:13",
+        "url": "https://files.pythonhosted.org/packages/fa/df/38207081ba7115b541ae95b84aee8ef658068e368b04fc5ac94392067bf4/apiarist-0.0.13.tar.gz"
+      }
+    ],
+    "0.0.14": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d699440ac75fa2306f21fae7bfd9cec4",
+          "sha256": "8d78aaf5f58bd095211dc61f806ef20f0063ff70a7676d81b28ce9edf9818368"
+        },
+        "downloads": 1792,
+        "filename": "apiarist-0.0.14.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d699440ac75fa2306f21fae7bfd9cec4",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 39095,
+        "upload_time": "2014-08-22T07:46:37",
+        "url": "https://files.pythonhosted.org/packages/37/38/e44a0cb256b19a59388d9d7eae4240ef3361a06588a7c3e745c27cd5c811/apiarist-0.0.14.tar.gz"
+      }
+    ],
+    "0.0.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "afa1aa46cbdb2b5ce87f3c8ebd5e212e",
+          "sha256": "02c11b3ed3aefdb73f7122b29042499b7ffd237ea1b8a261798e19d9211743dc"
+        },
+        "downloads": 1950,
+        "filename": "apiarist-0.0.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "afa1aa46cbdb2b5ce87f3c8ebd5e212e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 34063,
+        "upload_time": "2014-07-03T08:24:04",
+        "url": "https://files.pythonhosted.org/packages/7d/a4/eb72abd4fff125478fc1566eff4a8545e12cb6194be7d0055f3e12082e21/apiarist-0.0.3.tar.gz"
+      }
+    ],
+    "0.0.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "58938d8b6cc6f7be9ddebbe39adcf909",
+          "sha256": "430adffe513b12bf7483a33643432726c99e48b60e3e0fac2a3b89c09831f4fe"
+        },
+        "downloads": 1908,
+        "filename": "apiarist-0.0.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "58938d8b6cc6f7be9ddebbe39adcf909",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 37218,
+        "upload_time": "2014-07-29T05:00:32",
+        "url": "https://files.pythonhosted.org/packages/d5/7c/0a2a8ff969b5549e3fea4e8f67dc967ff78f88bee8dbf2e7da212807ef19/apiarist-0.0.6.tar.gz"
+      }
+    ],
+    "0.0.7": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2bd85983c5005dfcc44f5eaa326c340c",
+          "sha256": "6fbd4a0c0ba164d1790b11200b25467da31507ebc663bcf0cb75f67bc3aefc44"
+        },
+        "downloads": 1860,
+        "filename": "apiarist-0.0.7.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2bd85983c5005dfcc44f5eaa326c340c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 38112,
+        "upload_time": "2014-08-04T03:41:25",
+        "url": "https://files.pythonhosted.org/packages/a7/4f/e2670c4f11a3b1ea9c2d2d1995d652fb3cebf2c460a5460d2b7c3d063da3/apiarist-0.0.7.tar.gz"
+      }
+    ],
+    "0.0.8": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b115ce1f8c3cf19dfc3be1a5b39e1fa3",
+          "sha256": "79e6ac83eaf8b57bc7eeb3ae0b381526aae3da049324e40f2e3eb8cab2780a67"
+        },
+        "downloads": 1837,
+        "filename": "apiarist-0.0.8.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b115ce1f8c3cf19dfc3be1a5b39e1fa3",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 39382,
+        "upload_time": "2014-08-11T06:19:58",
+        "url": "https://files.pythonhosted.org/packages/8a/05/e66611a1f0cd3e60b7f419e46b9eead2797c3a0e015f064b1f00edd3ec4e/apiarist-0.0.8.tar.gz"
+      }
+    ],
+    "0.0.9": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ef88b9a4720a7c0fed20717cbe060ddd",
+          "sha256": "f6e657edbf57bef0b6a70f44dfbd28e087fdbdea06b808efe8ae0c3b17891f8e"
+        },
+        "downloads": 1826,
+        "filename": "apiarist-0.0.9.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ef88b9a4720a7c0fed20717cbe060ddd",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 39351,
+        "upload_time": "2014-08-12T03:17:22",
+        "url": "https://files.pythonhosted.org/packages/f1/27/ec3813729b1675c7646dc3457529e51b648490b34ab59a616169928b26b9/apiarist-0.0.9.tar.gz"
+      }
+    ],
+    "0.1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "19632f4548ab859ec3791d56557d515c",
+          "sha256": "34c443746508e2b4770ec90b14b4f81da59e82cb1191be01ad9cbbf2d4094899"
+        },
+        "downloads": 1755,
+        "filename": "apiarist-0.1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "19632f4548ab859ec3791d56557d515c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 40570,
+        "upload_time": "2014-08-25T03:33:16",
+        "url": "https://files.pythonhosted.org/packages/92/0b/6dfc7211e0292e075e0696bb1266c72c00d0fa675d4d867bea62ad5469f9/apiarist-0.1.0.tar.gz"
+      }
+    ],
+    "0.1.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1b80151e62e217c3ce71c09596bf4dcc",
+          "sha256": "f66f79b8ba71cc243c4e598228a1aeb26aabd7dd806a7336c6078738ae14f893"
+        },
+        "downloads": 1731,
+        "filename": "apiarist-0.1.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1b80151e62e217c3ce71c09596bf4dcc",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 41127,
+        "upload_time": "2014-08-27T01:09:55",
+        "url": "https://files.pythonhosted.org/packages/2e/3e/57335f8b42eebbf8c4489dbc8146980bc5500b4468230b2a98c7f4acf185/apiarist-0.1.1.tar.gz"
+      }
+    ],
+    "0.1.10": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "42fc4a09e516fd9cdd7dd83360c7426f",
+          "sha256": "2647f9a4f0c124e67f3729e0ecb6a9152a3fe431b970225129025d79a6bd438d"
+        },
+        "downloads": 1640,
+        "filename": "apiarist-0.1.10.tar.gz",
+        "has_sig": false,
+        "md5_digest": "42fc4a09e516fd9cdd7dd83360c7426f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 41653,
+        "upload_time": "2014-09-16T04:25:30",
+        "url": "https://files.pythonhosted.org/packages/69/95/9bbb8148424ed6e49d6e7518860a34506467d3551ae366b89ee9400f7f66/apiarist-0.1.10.tar.gz"
+      }
+    ],
+    "0.1.11": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ddab590df9185253fddb6f06576ed576",
+          "sha256": "0c20dff876685455a25b3f7c84a77a4497e6caa2b97f662d353b00e5290cf087"
+        },
+        "downloads": 1455,
+        "filename": "apiarist-0.1.11.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ddab590df9185253fddb6f06576ed576",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 42452,
+        "upload_time": "2014-12-12T00:18:25",
+        "url": "https://files.pythonhosted.org/packages/43/41/6035a18ea0ff389b8146dea819f65114388393c2a21f0f0f2d628b3a0359/apiarist-0.1.11.tar.gz"
+      }
+    ],
+    "0.1.12": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "70ee2a8ba57507f5792c7f8456b35fb6",
+          "sha256": "ab65a2f0104f603416eab211d83602db25be74afa215676e97f230213b11450a"
+        },
+        "downloads": 3264,
+        "filename": "apiarist-0.1.12.tar.gz",
+        "has_sig": false,
+        "md5_digest": "70ee2a8ba57507f5792c7f8456b35fb6",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 42912,
+        "upload_time": "2015-06-29T02:07:03",
+        "url": "https://files.pythonhosted.org/packages/81/b6/b08597521d9fa69039ff411ba7359d099e83b1f866617cb6779cf46ff08a/apiarist-0.1.12.tar.gz"
+      }
+    ],
+    "0.1.13": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c1807066aca903226bf938e74974809d",
+          "sha256": "4dcf80766e132687b0148c5d9c9110436fe75235e019bcb7d1c1d6034bf824a0"
+        },
+        "downloads": 514,
+        "filename": "apiarist-0.1.13.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c1807066aca903226bf938e74974809d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 41982,
+        "upload_time": "2015-12-04T00:33:37",
+        "url": "https://files.pythonhosted.org/packages/58/16/55a1f60b86081ed36d15624723e09f970085c9d77ab4315935d8ccb23b24/apiarist-0.1.13.tar.gz"
+      }
+    ],
+    "0.1.14": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "af0adb726b7a2fc82cfd8fa77eb8c794",
+          "sha256": "d1ca46c206f1de38171740bd1a4af1881aa7cc904a38ac92c6c50a187bcae6c2"
+        },
+        "downloads": 568,
+        "filename": "apiarist-0.1.14.tar.gz",
+        "has_sig": false,
+        "md5_digest": "af0adb726b7a2fc82cfd8fa77eb8c794",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 42530,
+        "upload_time": "2015-12-04T00:39:38",
+        "url": "https://files.pythonhosted.org/packages/c8/d1/64fdf157daf9009d79c2ef35a2dc1ea4e8a1360d9386dcd80a34f2380817/apiarist-0.1.14.tar.gz"
+      }
+    ],
+    "0.1.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b1240e7b64b485637d1c122023d32483",
+          "sha256": "e7219a62818410bd65098b5e162db1349babb6600c5b2017bcdfd15c6d60fdfc"
+        },
+        "downloads": 1687,
+        "filename": "apiarist-0.1.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b1240e7b64b485637d1c122023d32483",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 41212,
+        "upload_time": "2014-09-01T02:15:54",
+        "url": "https://files.pythonhosted.org/packages/71/3a/2d7a545a2a6bb5b264ca961006959663de320f33302e27c5bd82a1c93a23/apiarist-0.1.2.tar.gz"
+      }
+    ],
+    "0.1.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "96e83fe5f6d32e9decf252303d46c784",
+          "sha256": "e995b07d08ab30b388606a38afa2a612e30ec222ed86c69be156582f55d32f84"
+        },
+        "downloads": 1706,
+        "filename": "apiarist-0.1.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "96e83fe5f6d32e9decf252303d46c784",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 41258,
+        "upload_time": "2014-09-01T07:44:09",
+        "url": "https://files.pythonhosted.org/packages/44/c2/e8b8b6512a7f79fcb52d95e9b801c57f6ec39da89f3ddc0241c508aa1345/apiarist-0.1.3.tar.gz"
+      }
+    ],
+    "0.1.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a89285d9376f1935c56c536ca66efda8",
+          "sha256": "5338830286e93e4eeb44396558021bc4eca3dca3ac769e001ec0222e376fef62"
+        },
+        "downloads": 1632,
+        "filename": "apiarist-0.1.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a89285d9376f1935c56c536ca66efda8",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 41387,
+        "upload_time": "2014-09-09T23:43:34",
+        "url": "https://files.pythonhosted.org/packages/cb/74/48d7f6ba81d4187bd9f7267b71659d9aa6c486d3b43e0a6039bb86086889/apiarist-0.1.4.tar.gz"
+      }
+    ],
+    "0.1.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "da200de1f814e9c865e7bdfa699e8e80",
+          "sha256": "769f133656babea78c759654b810a834bcaf680bf3e73ef0b43c7f8ad69ed402"
+        },
+        "downloads": 1638,
+        "filename": "apiarist-0.1.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "da200de1f814e9c865e7bdfa699e8e80",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 41380,
+        "upload_time": "2014-09-09T23:46:09",
+        "url": "https://files.pythonhosted.org/packages/11/e7/f8d187814abfaf8aa43e8bf6a5eab35d8669844b21be3be87ce98db5ac42/apiarist-0.1.5.tar.gz"
+      }
+    ],
+    "0.1.7": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "cb8879de5663a4467e169bf258feeeee",
+          "sha256": "80c09652dc1d8507020734c587e0c1009a193c346db729cbbea9cece423531bf"
+        },
+        "downloads": 1614,
+        "filename": "apiarist-0.1.7.tar.gz",
+        "has_sig": false,
+        "md5_digest": "cb8879de5663a4467e169bf258feeeee",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 41569,
+        "upload_time": "2014-09-10T00:43:00",
+        "url": "https://files.pythonhosted.org/packages/3a/64/0361f38d583df248881b80b3a524de33cf362dc6e6c3414d9168e12c466e/apiarist-0.1.7.tar.gz"
+      }
+    ],
+    "0.1.8": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d60bc6fc3026ec17c46f3cbdb8119918",
+          "sha256": "33f41d9399fdf429df12517fa875542a8b8ec0dc6116bafd2be64b0b53fdcf6f"
+        },
+        "downloads": 2034,
+        "filename": "apiarist-0.1.8.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d60bc6fc3026ec17c46f3cbdb8119918",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 41590,
+        "upload_time": "2014-09-10T01:01:12",
+        "url": "https://files.pythonhosted.org/packages/35/04/0a3c57f84512135b88322331c7d7522fd9c363a65cb48e26ab4eb905cf0a/apiarist-0.1.8.tar.gz"
+      }
+    ],
+    "0.1.9": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6bd815a67468e9f19c24aefb58592d0f",
+          "sha256": "f195c051051814df21b1480ac8cfe635bd79643749f5bf19f7badff1d8e1293d"
+        },
+        "downloads": 1564,
+        "filename": "apiarist-0.1.9.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6bd815a67468e9f19c24aefb58592d0f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 41673,
+        "upload_time": "2014-09-16T03:54:33",
+        "url": "https://files.pythonhosted.org/packages/bc/ca/35383ec53754641befa75f88d4b308b69d30a435fa94668fbced4907b8d4/apiarist-0.1.9.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "af0adb726b7a2fc82cfd8fa77eb8c794",
+        "sha256": "d1ca46c206f1de38171740bd1a4af1881aa7cc904a38ac92c6c50a187bcae6c2"
+      },
+      "downloads": 568,
+      "filename": "apiarist-0.1.14.tar.gz",
+      "has_sig": false,
+      "md5_digest": "af0adb726b7a2fc82cfd8fa77eb8c794",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 42530,
+      "upload_time": "2015-12-04T00:39:38",
+      "url": "https://files.pythonhosted.org/packages/c8/d1/64fdf157daf9009d79c2ef35a2dc1ea4e8a1360d9386dcd80a34f2380817/apiarist-0.1.14.tar.gz"
+    }
+  ]
+}

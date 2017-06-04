@@ -1,0 +1,1553 @@
+{
+  "info": {
+    "author": "Greg Leclercq",
+    "author_email": "greg@botify.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 2 - Pre-Alpha",
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: MIT License",
+      "Natural Language :: English",
+      "Programming Language :: Python :: 2",
+      "Programming Language :: Python :: 2.7",
+      "Programming Language :: Python :: 3",
+      "Programming Language :: Python :: 3.3",
+      "Programming Language :: Python :: 3.4",
+      "Programming Language :: Python :: 3.5",
+      "Programming Language :: Python :: 3.6"
+    ],
+    "description": "==========\nsimpleflow\n==========\n\n.. image:: https://badge.fury.io/py/simpleflow.png\n    :target: http://badge.fury.io/py/simpleflow\n\n.. image:: https://travis-ci.org/botify-labs/simpleflow.png?branch=master\n        :target: https://travis-ci.org/botify-labs/simpleflow\n\n.. image:: https://pypip.in/d/simpleflow/badge.png\n        :target: https://crate.io/packages/simpleflow?version=latest\n\n\nSimple Flow is a Python library that provides abstractions to write programs in\nthe `distributed dataflow paradigm\n<https://en.wikipedia.org/wiki/Distributed_data_flow>`_. It relies on futures\nto describe the dependencies between tasks. It coordinates the execution of\ndistributed tasks with Amazon `SWF <https://aws.amazon.com/swf/>`_.\n\nA ``Future`` object models the asynchronous execution of a computation that may\nend.\n\nIt tries to mimics the interface of the Python `concurrent.futures\n<http://docs.python.org/3/library/concurrent.futures>`_ library.\n\nFeatures\n--------\n\n- Provides a ``Future`` abstraction to define dependencies between tasks.\n- Define asynchronous tasks from callables.\n- Handle workflows with Amazon SWF.\n- Implement replay behavior like the Amazon Flow framework.\n- Handle retry of tasks that failed.\n- Automatically register decorated tasks.\n- Handle the completion of a decision with more than 100 tasks.\n- Provides a local executor to check a workflow without Amazon SWF (see\n  ``simpleflow --local`` command).\n- Provides decider and activity worker process for execution with Amazon SWF.\n- Ships with the ``simpleflow`` command. ``simpleflow --help`` for more information\n  about the commands it supports.\n\nQuickstart\n----------\n\nLet's take a simple example that computes the result of ``(x + 1) * 2``. You\nwill find this example in ``examples/basic.py``.\n\nWe need to declare the functions as activities to make them available:\n\n.. code:: python\n\n    from simpleflow import (\n        activity,\n        Workflow,\n        futures,\n    )\n\n    @activity.with_attributes(task_list='quickstart', version='example')\n    def increment(x):\n        return x + 1\n\n    @activity.with_attributes(task_list='quickstart', version='example')\n    def double(x):\n        return x * 2\n\n    @activity.with_attributes(task_list='quickstart', version='example')\n    def delay(t, x):\n        time.sleep(t)\n        return x\n\nAnd then define the workflow itself in a ``example.py`` file:\n\n.. code:: python\n\n    class BasicWorkflow(Workflow):\n        name = 'basic'\n        version = 'example'\n        task_list = 'example'\n\n        def run(self, x, t=30):\n            y = self.submit(increment, x)\n            yy = self.submit(delay, t, y)\n            z = self.submit(double, y)\n\n            print('({x} + 1) * 2 = {result}'.format(\n                x=x,\n                result=z.result))\n            futures.wait(yy, z)\n            return z.result\n\nNow check that the workflow works locally with an integer \"x\" and a wait value \"t\"::\n\n    $ simpleflow workflow.start --local examples.basic.BasicWorkflow --input '[1, 5]'\n    (1 + 1) * 2 = 4\n\n*input* is encoded in JSON format and can contain the list of *positional*\narguments such as ``'[1, 1]`` or a *dict* with the ``args`` and ``kwargs`` keys\nsuch as ``{\"args\": [1], \"kwargs\": {}}``, ``{\"kwargs\": {\"x\": 1}}``, or\n``'{\"args\": [1], \"kwargs\": {\"t\": 5}}'```.\n\nNow that you are confident that the workflow should work, you can run it on\nAmazon SWF with the ``standalone`` command::\n\n   $ simpleflow standalone --domain TestDomain examples.basic.BasicWorkflow --input '[1, 5]'\n\nThe *standalone* command sets an unique task list and manage all the processes\nthat are needed to execute the workflow: decider, activity worker, and a client\nthat starts the workflow. It is very convenient for testing a workflow by\nexecuting it with SWF during the development steps or integration tests.\n\nLet's take a closer look to the workflow definition.\n\nIt is a *class* that inherits from ``simpleflow.Workflow``:\n\n.. code:: python\n\n    class BasicWorkflow(Workflow):\n\nIt defines 3 class attributes:\n\n- *name*, the name of the SWF workflow type.\n- *version*, the version of the SWF workflow type. It is currently provided\n  only for labeling a workflow.\n- *task_list*, the default task list (see it as a dynamically created queue)\n  where decision tasks for this workflow will be sent. Any *decider* that\n  listens on this task list can handle this workflow. This value can be\n  overrided by the simpleflow commands and objects.\n\nIt also implements the ``run`` method that takes two arguments: ``x`` and\n``t=30`` (i.e. ``t`` is optional and has the default value ``30``). These\narguments are passed with the ``--input`` option. The ``run`` method\ndescribes the workflow and how its tasks should execute.\n\nEach time a decider takes a decision task, it executes again the ``run``\nfrom the start. When the workflow execution starts, it evaluates ``y =\nself.submit(increment, x)`` for the first time. *y* holds a future in state\n``PENDING``. The execution continues with the line ``yy = self.submit(delay, t,\ny)``. *yy* holds another future in state ``PENDING``. This state means the task\nhas not been scheduled. Now execution still continue in the ``run`` method\nwith the line ``z = self.submit(double, y)``. Here it needs the value of the\n*y* future to evaluate the ``double`` activity. As the execution cannot\ncontinues, the decider schedules the task ``increment``. *yy* is not a\ndependency for any task so it is not scheduled.\n\nOnce the decider has scheduled the task for *y*, it sleeps and waits for an\nevent to be waken up. This happens when the ``increment`` task completes.\nSWF schedules a decision task. A decider takes it and executes the\n``BasicWorkflow.run`` method again from the start. It evalues the line ``y\n= self.submit(increment, x)``. The task associated with the *y* future has\ncompleted. Hence *y* is in state ``FINISHED`` and contains the value ``2`` in\n``y.result``. The execution continues until it blocks. It goes by ``yy =\nself.submit(delay, t, y)`` that stays the same. Then it reaches ``z =\nself.submit(double, y)``. It gets the value of ``y.result`` and *z* now holds a\nfuture in state ``PENDING``. Execution reaches the line with the ``print``. It\nblocks here because ``z.result`` is not available. The decider schedules the\ntask backs by the *z* future: ``double(y)``. The workflow execution continues\nso forth by evaluating the ``BasicWorkflow.run`` again from the start until\nit finishes.\n\nCommands\n--------\n\nOverview\n~~~~~~~~\n\nPlease read and even run the ``demo`` script to have a quick glance of\n``simpleflow`` commands. To run the ``demo``  you will need to start decider\nand activity worker processes.\n\nStart a decider with::\n\n    $ simpleflow decider.start --domain TestDomain --task-list test examples.basic.BasicWorkflow\n\nStart an activity worker with::\n\n    $ simpleflow worker.start --domain TestDomain --task-list quickstart\n\nThen execute ``./extras/demo``.\n\nControlling SWF access\n~~~~~~~~~~~~~~~~~~~~~~\n\nThe SWF region is controlled by the environment variable ``AWS_DEFAULT_REGION``. This variable\ncomes from the legacy \"simple-workflow\" project. The option might be exposed through a\n``--region`` option in the future (if you want that, please open an issue).\n\nThe SWF domain is controlled by the ``--domain`` on most simpleflow commands. It can also\nbe set via the ``SWF_DOMAIN`` environment variable. In case both are supplied, the\ncommand-line value takes precedence over the environment variable.\n\nNote that some simpleflow commands expect the domain to be passed as a positionnal argument.\nIn that case the environment variable has no effect for now.\n\nThe number of retries for accessing SWF can be controlled via ``SWF_CONNECTION_RETRIES``\n(defaults to 5).\n\nThe identity of SWF activity workers and deciders can be controlled via ``SIMPLEFLOW_IDENTITY``\nwhich should be a JSON-serialized string representing ``{ \"key\": \"value\" }`` pairs that\nadds up (or override) the basic identity provided by simpleflow. If some value is null in\nthis JSON map, then the key is removed from the final SWF identity.\n\n\nList Workflow Executions\n~~~~~~~~~~~~~~~~~~~~~~~~\n\n    $ simpleflow workflow.list TestDomain\n    basic-example-1438722273  basic  OPEN\n\nWorkflow Execution Status\n~~~~~~~~~~~~~~~~~~~~~~~~~\n\n    $ simpleflow --header workflow.info TestDomain basic-example-1438722273\n    domain      workflow_type.name    workflow_type.version      task_list  workflow_id               run_id                                          tag_list      execution_time  input\n    TestDomain  basic                 example                               basic-example-1438722273  22QFVi362TnCh6BdoFgkQFlocunh24zEOemo1L12Yl5Go=                          1.70  {u'args': [1], u'kwargs': {}}\n\nTasks Status\n~~~~~~~~~~~~\n\nYou can check the status of the workflow execution with::\n\n    $ simpleflow --header workflow.tasks DOMAIN WORKFLOW_ID [RUN_ID] --nb-tasks 3\n    $ simpleflow --header workflow.tasks TestDomain basic-example-1438722273\n    Tasks                     Last State    Last State Time             Scheduled Time\n    examples.basic.increment  scheduled     2015-08-04 23:04:34.510000  2015-08-04 23:04:34.510000\n    $ simpleflow --header workflow.tasks TestDomain basic-example-1438722273\n    Tasks                     Last State    Last State Time             Scheduled Time\n    examples.basic.double     completed     2015-08-04 23:06:19.200000  2015-08-04 23:06:17.738000\n    examples.basic.delay      completed     2015-08-04 23:08:18.402000  2015-08-04 23:06:17.738000\n    examples.basic.increment  completed     2015-08-04 23:06:17.503000  2015-08-04 23:04:34.510000\n\nProfiling\n~~~~~~~~~\n\nYou can profile the execution of the workflow with::\n\n    $ simpleflow --header workflow.profile TestDomain basic-example-1438722273\n    Task                                 Last State    Scheduled           Time Scheduled  Start               Time Running  End                 Percentage of total time\n    activity-examples.basic.double-1     completed     2015-08-04 23:06              0.07  2015-08-04 23:06            1.39  2015-08-04 23:06                        1.15\n    activity-examples.basic.increment-1  completed     2015-08-04 23:04            102.20  2015-08-04 23:06            0.79  2015-08-04 23:06                        0.65\n\n\nControlling log verbosity\n~~~~~~~~~~~~~~~~~~~~~~~~~\n\nYou can control log verbosity via the ``LOG_LEVEL`` environment variable. Default is ``INFO``. For instance,\nthe following command will start a decider with ``DEBUG`` logs:\n\n    $ LOG_LEVEL=DEBUG simpleflow decider.start --domain TestDomain --task-list test examples.basic.BasicWorkflow\n\n\nDocumentation\n-------------\n\nFull documentation (work-in-progress) is available at\nhttps://simpleflow.readthedocs.org/.\n\nRequirements\n------------\n\n- Python 2.6.x or 2.7.x\n- Python 3.x compatibility is NOT guaranteed for now: https://github.com/botify-labs/simpleflow/issues/87\n\n\nDevelopment\n-----------\n\nA ``Dockerfile`` is provided to help development on non-Linux machines.\n\nYou can build a ``simpleflow`` image with:\n\n    ./script/docker-build\n\nAnd use it with:\n\n    ./script/docker-run\n\nIt will then mount your current directory inside the container and pass the\nmost relevant variables (your AWS_* credentials for instance).\n\n\nRunning tests\n~~~~~~~~~~~~~\n\nYou can run tests with:\n\n    ./script/test\n\nAny parameter passed to this script is propagated to the underlying call to ``py.test``.\nThis wrapper script sets some environment variables which control the behavior of\nsimpleflow during tests:\n\n- ``SIMPLEFLOW_CLEANUP_PROCESSES``: set to ``\"yes\"`` in tests, so tests will clean up child\n  processes after each test case. You can set it to an empty string (``\"\"``) or omit it if\n  outside ``script/test`` if you want to debug things and take care of it yourself.\n- ``SIMPLEFLOW_ENV``: set to ``\"test\"`` in tests, which changes some constants to ease or\n  speed up tests.\n- ``SWF_CONNECTION_RETRIES``: set to ``\"1\"`` in tests, which avoids having too many retries\n  on the SWF API calls (5 by default in production).\n- ``SIMPLEFLOW_VCR_RECORD_MODE``: set to ``\"none\"`` in tests, which avoids running requests\n  against the real SWF endpoints in tests. If you need to update cassettes, see\n  ``tests/integration/README.md``\n\n\nRelease\n-------\n\nIn order to release a new version, you'll need credentials on pypi.python.org for this\nsoftware, as long as write access to this repository. Ask via an issue if needed.\nRough process:\n\n    git checkout master\n    git pull --rebase\n    v=0.10.0\n    vi simpleflow/__init__.py\n    git add . && git commit -m \"Bump version to $v\"\n    git tag $v\n    git push --tags\n    python setup.py sdist upload -r pypi\n\n\nLicense\n-------\n\nMIT licensed. See the bundled `LICENSE <https://github.com/botify-labs/simpleflow/blob/master/LICENSE>`__ file for more details.\n\n\n======================\nPython Simple Workflow\n======================\n\n(This README was included with python-simple-workflow, now merged here as ``workflow.swf``.)\n\n.. image:: https://travis-ci.org/botify-labs/python-simple-workflow.png?branch=develop\n\npython-simple-workflow is a wrapper for `Amazon Simple Workflow <http://aws.amazon.com/en/swf/>`_ service.\nIt aims to provide some abstractions over the webservice concepts through `Boto <https://boto.readthedocs.org/en/latest/ref/swf.html>`_ library Swf api implementation.\n\nIt aims to provide:\n\n* **Modelisation**: Swf entities and concepts are to be manipulated through `Models <http://test.com>`_ and `QuerySets <http://test.com>`_ (any ressemblance with the `Django <http://test.com>`_ api would not be a coincidence).\n* **High-level Events, History**: A higher level of abstractions over Swf *events* and *history*. Events are implemented as stateful objects aware of their own state and possible transitions. History enhance the events flow description, and can be compiled to check it's integrity and the activities statuses transitions.\n* **Decisions**: Stateful abstractions above the Swf decision making system.\n* **Actors**: Swf actors base implementation such as a `Decider <http://test.com>`_ or an activity task processor `Worker <http://test.com>`_ from which the user can easily inherit to implement it's own decision/processing model.\n\nIt provides querysets and model objects over commonly used concepts: domains, workflow types, activity types, and so on.\n\nIt is under MIT license, and any ideas, features requests, patches, pull requests to improve it are of course welcome.\n\nInstallation\n------------\n\n.. code-block:: shell\n\n    pip install simple-workflow\n\n\nUsage and all the rest\n----------------------\n\nPlease, refer to `Documentation <http://python-simple-workflow.readthedocs.org>`_\n\n\nWhat's left?\n------------\n\nAmazon interface models implementation:\n \u2714 Domain @done (13-04-02 10:01)\n \u2714 Workflow Type @done (13-04-02 10:01)\n \u2714 Workflow Execution @done (13-04-05 10:13)\n \u2610 Activity Type\n \u2610 Decider\n\nAmazon interface querysets implementation:\n \u2714 DomainQuery @done (13-04-02 10:02)\n \u2714 WorkflowTypeQuery @done (13-04-02 10:03)\n \u2714 Workflow Execution @done (13-04-05 10:13)\n \u2610 Activity Type\n \u2610 Decider\n\nGeneral:\n \u2610 Add sphinx doc\n \u2610 Document real world example\n \u2610 TESTS TESTS TESTS!\n\n\nChangelog\n---------\n\n0.16.0\n~~~~~~\n\n- Feature: timers (#258)\n\n0.15.7\n~~~~~~\n\n- Kill worker on UnknownResourceFault's during a heartbeat (#88) (#263)\n- Sort keys by default in json_dumps (#264)\n\n0.15.6\n~~~~~~\n\n- Fix step attribute propagation (#261)\n- Enhancement: get_event_details (#235)\n\n0.15.5\n~~~~~~\n\n- Enhancement: distinguish raises_on_failure between tasks and groups (#255)\n- Add time constants\n- Relax activity.with_attributes timeouts types\n\n0.15.4\n~~~~~~\n\n- Enhancement: add canvas option break_on_failure (#253)\n- Compute task_id from ActivityTask if has get_task_id method (#237)\n- Another case of wrong task list (#234)\n\n0.15.3\n~~~~~~\n\n- make raises_on_failure=True on step activities (#249)\n- SWF: support for non-Python tasks (#219)\n- Fix get_step_path_prefix\n- Make MarkerTask's idempotents\n\n0.15.2\n~~~~~~\n\n- mark when a step is scheduled before it's executed (#243)\n\n0.15.1\n~~~~~~\n\n- Enhancement: better activity type reason (#238)\n- Fix workers not catching errors during dispatch() step (#246)\n- Fix canvas.Chain send_result regression (#247)\n\n0.15.0\n~~~~~~\n\n- Feature: steps (#221)\n- Make activity task result optional (#225)\n- Use details in addition to name to find markers (#227)\n- Logging: add exception information (#163)\n- swf/actors: support 'Message' key (#224)\n- Implement markers (#216) (#217)\n- Add retry on swf.process.Poller.poll and fail (#208)\n\n0.14.2\n~~~~~~\n\n- propagate_attribute: skip signal objects (#215)\n- Local executor: check add_activity_task (#215)\n\n0.14.1\n~~~~~~\n\n- Don't send exception up if raises_on_failure is false (#213)\n- Fix UnicodeDecodeError on windows machine (#211)\n- Try to use less memory (#209)\n- Standalone mode: use created task list for children activities (#207)\n\n0.14.0\n~~~~~~\n\n- Fix workers not stopping in case they start during a shutdown (#205)\n- Add support for SWF signals (#188)\n- Improvements on canvas.Group (#204)\n\n0.13.4\n~~~~~~\n\n- Implement metrology on SWF and local workflows (#186)\n\n0.13.3\n~~~~~~\n\n- Try..except pass for NoSuchProcess (#182)\n\n0.13.2\n~~~~~~\n\n- Add optional canvas (#193)\n- Reorganize tests/ directory (#198)\n- Relax DeciderPoller task list check (#201)\n- Implement priorities on SWF tasks (#199)\n\n0.13.1\n~~~~~~\n\n- Fix SWF executor not accepting ActivityTask's in submit() method (#196)\n\n0.13.0\n~~~~~~\n\n- Implement child workflow (#74)\n- Don't schedule idempotent tasks multiple times (#107)\n- Child workflow ID: use parent's id to generate\n\n0.12.7\n~~~~~~\n\n- Control SWF processes identity via environment (#184)\n\n0.12.6\n~~~~~~\n\n- Replace ``execution`` object with a more flexible ``get_execution_method()`` (#177)\n- Fix README_SWF.rst format (#175)\n- Fix CONTRIBUTING.rst format\n- docs/conf.py: remove relative import\n\n0.12.5\n~~~~~~\n\n- Executor: expose workflow execution (#172)\n\n0.12.4\n~~~~~~\n\n- Avoid returning too big responses to RespondDecisionTaskCompleted endpoint (#166)\n- Worker: remove useless monitor_child (#168)\n\n0.12.3\n~~~~~~\n\n- Add max_parallel option in Group (#164)\n\n0.12.2\n~~~~~~\n\n- Make the dynamic dispatcher more flexible (#161)\n- Fix README.rst format (#160)\n- Tiny command-line usability fixes (#158)\n\n0.12.1\n~~~~~~\n\n- Don't override passed \"default\" in json_dumps() (#155)\n- Expose activity context (#156)\n\n0.12.0\n~~~~~~\n\n- Improve process management (#142)\n\n0.11.17\n~~~~~~~\n\n- Don't reap children in the back of multiprocessing (#141)\n- Don't force to pass a workflow to activity workers (#133)\n- Don't override the task list if not standalone (#139)\n- Split FuncGroup submit (#146)\n- CI: Test on python 3 (#144)\n- Decider: use workflow's task list if unset (#148)\n\n0.11.16\n~~~~~~~\n\n- Refactor: cleanups and many python 3 compatibility issues fixed (#135)\n- Introduce AggregationException to inspect exceptions inside canvas.Group/Chain (#92)\n- Improve heartbeating, now enabled by default on activity workers (#136)\n\n0.11.15\n~~~~~~~\n\n- Fix tag_list declaration in case no tag is associated with the workflow\n- Fix listing workflow tasks not handling \"scheduled\" (not started) tasks correctly\n- Fix CSV formatter outputing an extra \"None\" at the end of the output\n- Fix 'simpleflow activity.rerun' resolving the bad function name if not the last event\n\n0.11.14\n~~~~~~~\n\n- Various little fixes around process management, heartbeat, logging (#110)\n\n0.11.13\n~~~~~~~\n\n- Add ability to provide a 'run ID' with 'simpleflow standalone --repair'\n\n0.11.12\n~~~~~~~\n\n- Fix --tags argument for simpleflow standalone (#114)\n- Improve tests and add integration tests (#116)\n- Add 'simpleflow activity.rerun' command (#117)\n\n0.11.11\n~~~~~~~\n\n- Fix a circular import on simpleflow.swf.executor\n\n0.11.10\n~~~~~~~\n\n- Fix previous_history initialization (#106)\n- Improve WorkflowExecutionQueryset default date values (#111)\n\n0.11.9\n~~~~~~\n\n- Add a --repair option to simpleflow standalone (#100)\n\n0.11.8\n~~~~~~\n\n- Retry boto.swf connection to avoid frequent errors when using IAM roles (#99)\n\n0.11.7\n~~~~~~\n\nSame as 0.11.6 but the 0.11.6 on pypi is broken (pushed something similar to 0.11.5 by mistake)\n\n0.11.6\n~~~~~~\n\n- Add ``issubclass_`` method (#96)\n- Avoid duplicate logs if root logger has an handler (#97)\n- Allow passing SWF domain via the SWF_DOMAIN environment variable (#98)\n\n0.11.5\n~~~~~~\n\n- Don't mask activity cancel exception (#84)\n- Propagate all decision response attributes up to Executor.replay() (#76, #94)\n\n0.11.4\n~~~~~~\n\n- ISO dates in workflow history #91\n- Fix potential infinite retry loop #90\n\n0.11.3\n~~~~~~\n\n- Fix replay hooks introduced in 0.11.2 (#86)\n- Remove python3 compatibility from README (which was not working for a long time)\n\n0.11.2\n~~~~~~\n\n- Add new workflow hooks (#79)\n\n0.11.1\n~~~~~~\n\n- Fix logging when an exception occurs\n\n0.11.0\n~~~~~~\n\n- Merge ``swf`` package into simplefow for easier maintenance.\n\n\n0.10.4 and below\n~~~~~~~~~~~~~~~~\n\nSorry changes were not documented for simpleflow <= 0.10.x.\n",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/botify-labs/simpleflow",
+    "keywords": "simpleflow amazon swf simple workflow",
+    "license": "Copyright 2014 Greg Leclercq\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in\nall copies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN\nTHE SOFTWARE.",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "simpleflow",
+    "platform": "",
+    "project_url": "https://pypi.org/project/simpleflow/",
+    "release_url": "https://pypi.org/project/simpleflow/0.16.0/",
+    "requires_python": "",
+    "summary": "Python library for dataflow programming with Amazon SWF",
+    "version": "0.16.0"
+  },
+  "releases": {
+    "0.1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e3eb39ff86b93fd6e7e9fd0e4e603b99",
+          "sha256": "cc62d0c61e6a2448795b309118c3ed8e973af0c1dbddc3e3af6ac3aa47aca541"
+        },
+        "downloads": 1681,
+        "filename": "simpleflow-0.1.0-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "e3eb39ff86b93fd6e7e9fd0e4e603b99",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 6441,
+        "upload_time": "2014-02-19T13:53:34",
+        "url": "https://files.pythonhosted.org/packages/96/87/916b0e6f20427a0c29433851dddddfd2acf962215e75283907bb7ddd8def/simpleflow-0.1.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b00e02f618dfd0715dd34f50bb0746e5",
+          "sha256": "a40ae5f56dc189999c9e2c238d194c9c9d32da14afd96d3ea83df06a9796306b"
+        },
+        "downloads": 1818,
+        "filename": "simpleflow-0.1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b00e02f618dfd0715dd34f50bb0746e5",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 5573,
+        "upload_time": "2014-02-19T13:53:32",
+        "url": "https://files.pythonhosted.org/packages/31/83/b075b297d4578fae7c355258c685f5fa449a71b2e9aa6f08f951fe23b4ad/simpleflow-0.1.0.tar.gz"
+      }
+    ],
+    "0.10.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4f06b3ee64a904bb42f92c8ddc1da6ec",
+          "sha256": "293d4a074c866b5b608caf039ef725e439c0e7e57b6a5ca28a67ed4cac45eb82"
+        },
+        "downloads": 901,
+        "filename": "simpleflow-0.10.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4f06b3ee64a904bb42f92c8ddc1da6ec",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 41647,
+        "upload_time": "2015-12-16T14:54:04",
+        "url": "https://files.pythonhosted.org/packages/5b/1f/c21653cd0207cd4a9055226dd023ad5ed8379be5d8b7a1b3229c10a6f62a/simpleflow-0.10.0.tar.gz"
+      }
+    ],
+    "0.10.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "568166a4cad7734d1e6795b695153b68",
+          "sha256": "ce17672a63747b803c4e1a1baf09c80e4e408c42655a0874d3af7aacaeb061f0"
+        },
+        "downloads": 521,
+        "filename": "simpleflow-0.10.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "568166a4cad7734d1e6795b695153b68",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 43587,
+        "upload_time": "2016-01-28T10:47:56",
+        "url": "https://files.pythonhosted.org/packages/44/3f/d2390694b0372152b0436da77078c867bc7bf9df41f1eac5fe9b38b44c5b/simpleflow-0.10.1.tar.gz"
+      }
+    ],
+    "0.10.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "10e41ca4a1803c0e92f517cec1b288cb",
+          "sha256": "39237a558b993f9100cf91cea7e954e754f7d0ebf33a732fbc060ca67e85e273"
+        },
+        "downloads": 116,
+        "filename": "simpleflow-0.10.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "10e41ca4a1803c0e92f517cec1b288cb",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 43598,
+        "upload_time": "2016-03-18T16:21:41",
+        "url": "https://files.pythonhosted.org/packages/a3/9d/4cab556b0acc6887b96f786a37e1a9b908da1be7924359654d90d3620028/simpleflow-0.10.2.tar.gz"
+      }
+    ],
+    "0.10.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3f3ba5e80c9d9938f4f88d484f33c9ae",
+          "sha256": "476efcc4fba6f28882927013509d40a009e416336b8933161c8d089a7232c6a7"
+        },
+        "downloads": 113,
+        "filename": "simpleflow-0.10.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3f3ba5e80c9d9938f4f88d484f33c9ae",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 43598,
+        "upload_time": "2016-03-21T09:01:21",
+        "url": "https://files.pythonhosted.org/packages/8f/ec/41f2fc4ec705f978ab8f67b48863609278b46eefabd5f992c9dd2f45a6e9/simpleflow-0.10.3.tar.gz"
+      }
+    ],
+    "0.11.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ccd6983aedd952cff90b10f8bd5a05bb",
+          "sha256": "c0438db87ea468e08c960bc691e115b428d7c0ea1a4a6fd0ec9dce143200dec9"
+        },
+        "downloads": 121,
+        "filename": "simpleflow-0.11.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ccd6983aedd952cff90b10f8bd5a05bb",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 97883,
+        "upload_time": "2016-03-22T12:08:12",
+        "url": "https://files.pythonhosted.org/packages/46/4b/b91b573a64466e2f334377afc20ec08d4ec41e4da56cf5c63a14a8463ec5/simpleflow-0.11.0.tar.gz"
+      }
+    ],
+    "0.11.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1e27c07b88aa4b612990591a21b800aa",
+          "sha256": "7e4cccb843b795d6e31ef7c70a0be7b36b32faa320fcda4f8c4ffca00debc9de"
+        },
+        "downloads": 121,
+        "filename": "simpleflow-0.11.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1e27c07b88aa4b612990591a21b800aa",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 97945,
+        "upload_time": "2016-03-25T14:01:37",
+        "url": "https://files.pythonhosted.org/packages/f8/1d/ff70c9af065d101c5630ef07711e5f510dcd9774e2a7e4d5abad1b2585b9/simpleflow-0.11.1.tar.gz"
+      }
+    ],
+    "0.11.10": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ddbf409699bfd6076c430915211cd494",
+          "sha256": "38b0671a4441e69700347cbaaff7d4aa0b36bc0c614436de26680b637b9ed028"
+        },
+        "downloads": 346,
+        "filename": "simpleflow-0.11.10.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ddbf409699bfd6076c430915211cd494",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 107330,
+        "upload_time": "2016-08-29T09:48:58",
+        "url": "https://files.pythonhosted.org/packages/54/1d/cd1e167d6be436d940f722d83e571ec0b2d31335bee0cfafbe1d01e9073c/simpleflow-0.11.10.tar.gz"
+      }
+    ],
+    "0.11.11": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2c323395115bedf9a30d863158d19e93",
+          "sha256": "55a301984b95830bd3a13a7cda9522c9581550be24ed4acfbd4344a84bbafea2"
+        },
+        "downloads": 294,
+        "filename": "simpleflow-0.11.11.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2c323395115bedf9a30d863158d19e93",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 107470,
+        "upload_time": "2016-08-30T10:11:18",
+        "url": "https://files.pythonhosted.org/packages/ff/0d/b69449c80bdd01e961789c189ab49a4fff6a79f3111bf5df40af5838cd3b/simpleflow-0.11.11.tar.gz"
+      }
+    ],
+    "0.11.12": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "59633fa51c471eda165bff8342038b9f",
+          "sha256": "08ec66268a16a5e287b7d0862f8c1c1db1151930eb646acae4051a315817ebe6"
+        },
+        "downloads": 305,
+        "filename": "simpleflow-0.11.12.tar.gz",
+        "has_sig": false,
+        "md5_digest": "59633fa51c471eda165bff8342038b9f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 109222,
+        "upload_time": "2016-09-02T17:10:25",
+        "url": "https://files.pythonhosted.org/packages/29/06/41dbe320b3a3821c1b62a335fd56c3095361a7827bb297ff3b2e1753aff1/simpleflow-0.11.12.tar.gz"
+      }
+    ],
+    "0.11.13": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1afeae10d414b846267bcdca3970811d",
+          "sha256": "0d61d7ef69f6bbe17b16a973a7a560933754a6b5588c04a717cda93524f3ab09"
+        },
+        "downloads": 112,
+        "filename": "simpleflow-0.11.13.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1afeae10d414b846267bcdca3970811d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 109320,
+        "upload_time": "2016-09-06T00:43:55",
+        "url": "https://files.pythonhosted.org/packages/d8/58/3981bfb6f6c7d5cbcd356440f01d2c2352272cdef763fb5d15b5b83b1e50/simpleflow-0.11.13.tar.gz"
+      }
+    ],
+    "0.11.14": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "08759fd97ffb07f816aa072657498870",
+          "sha256": "66b26a59caa75e71a35e73948b234ab27ed26f5c29a2e741e4e74d8f62ffac86"
+        },
+        "downloads": 75,
+        "filename": "simpleflow-0.11.14.tar.gz",
+        "has_sig": false,
+        "md5_digest": "08759fd97ffb07f816aa072657498870",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 112322,
+        "upload_time": "2016-09-13T08:15:46",
+        "url": "https://files.pythonhosted.org/packages/5e/23/4af9c70593cfa076c364bf39eee265ecbb39fbc8ec9a4ef4a83b4484d9ad/simpleflow-0.11.14.tar.gz"
+      }
+    ],
+    "0.11.15": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1295784e45724c573ecdce5d790b78f1",
+          "sha256": "d78e6e8c1d805642fb62d60315ea181cd13607d98128f4433103c24c42813157"
+        },
+        "downloads": 79,
+        "filename": "simpleflow-0.11.15.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1295784e45724c573ecdce5d790b78f1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 112744,
+        "upload_time": "2016-09-27T17:03:48",
+        "url": "https://files.pythonhosted.org/packages/fa/0d/685e134870019ee508b1ca38e4b7a798be06caa5682af8337cc5d5b62519/simpleflow-0.11.15.tar.gz"
+      }
+    ],
+    "0.11.16": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6fd60743a8c88a95f6d008f3189c3ab8",
+          "sha256": "2e95db5b1d44f53b9f13846255591874ab3f591e00285eaf54c6bc2584e3cd76"
+        },
+        "downloads": 337,
+        "filename": "simpleflow-0.11.16.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6fd60743a8c88a95f6d008f3189c3ab8",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 112946,
+        "upload_time": "2016-10-20T14:18:36",
+        "url": "https://files.pythonhosted.org/packages/cb/ad/74e2eedd88c28b7c27eadae691d0bad49a2420fecace4a397429a1993931/simpleflow-0.11.16.tar.gz"
+      }
+    ],
+    "0.11.17": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "48d1341d9a63ff893d7e172e111b158e",
+          "sha256": "7b8f8127e856523ff3acdbfc4eb5958bbaf337d56e47df4555418490cc0048e4"
+        },
+        "downloads": 41,
+        "filename": "simpleflow-0.11.17.tar.gz",
+        "has_sig": false,
+        "md5_digest": "48d1341d9a63ff893d7e172e111b158e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 113344,
+        "upload_time": "2016-11-03T21:09:45",
+        "url": "https://files.pythonhosted.org/packages/66/87/6b59d31111a37eae40fbb96f1eb60a80b73a583d09bcfd20d81cc159aa6d/simpleflow-0.11.17.tar.gz"
+      }
+    ],
+    "0.11.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "724c6c380fb1e900cc7139a5aa175362",
+          "sha256": "6445a8cd93decbaeab6da2d79e2cfd4d2d1760c6582be150cf9fd8ae34eef563"
+        },
+        "downloads": 118,
+        "filename": "simpleflow-0.11.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "724c6c380fb1e900cc7139a5aa175362",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 98589,
+        "upload_time": "2016-04-26T09:57:24",
+        "url": "https://files.pythonhosted.org/packages/44/06/31e091293d7f5374978c88a40e571c0db9819afee998db017a47f5cbb95c/simpleflow-0.11.2.tar.gz"
+      }
+    ],
+    "0.11.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f17a0884cd2d48faa5995a5235db1678",
+          "sha256": "fe9a787de90a61c74df4d740be68eaa50ec4f3834ba8f3a886a462fd08021d5a"
+        },
+        "downloads": 114,
+        "filename": "simpleflow-0.11.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f17a0884cd2d48faa5995a5235db1678",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 98800,
+        "upload_time": "2016-04-26T13:08:12",
+        "url": "https://files.pythonhosted.org/packages/e1/29/9a07754fe537f60054c6998e6a00d248bc0c748d9dbdd729f5a5b5bf2477/simpleflow-0.11.3.tar.gz"
+      }
+    ],
+    "0.11.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2068a5e7971db68354c6776263f9c299",
+          "sha256": "6c738eaf77c936b43b2c05d92247e35459c9a28266548154c6c9b94ae0079ab3"
+        },
+        "downloads": 121,
+        "filename": "simpleflow-0.11.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2068a5e7971db68354c6776263f9c299",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 99137,
+        "upload_time": "2016-05-10T09:17:50",
+        "url": "https://files.pythonhosted.org/packages/42/f7/63617835eb347d71859fdc081f7536c0ad52cd62f7735a506ec65aa99795/simpleflow-0.11.4.tar.gz"
+      }
+    ],
+    "0.11.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d8d4be848e567057800a4135dc5efdcc",
+          "sha256": "05f3be68ebc3f9b8184ea1f0d81680d65cfef8d3ec9619523b676007aa3b5387"
+        },
+        "downloads": 304,
+        "filename": "simpleflow-0.11.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d8d4be848e567057800a4135dc5efdcc",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 99267,
+        "upload_time": "2016-05-23T09:22:34",
+        "url": "https://files.pythonhosted.org/packages/e8/f4/e6ba30b2f86707b26d6aa34dfa55a31203160cd647db4ac8ffab68de5bf6/simpleflow-0.11.5.tar.gz"
+      }
+    ],
+    "0.11.6": [],
+    "0.11.7": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e47cc03274cc0500d03a5ecc29611731",
+          "sha256": "963dd40d16fd403b05ed85bd9a4d8d0df7c768f6e30ed878f28dd27065633c17"
+        },
+        "downloads": 428,
+        "filename": "simpleflow-0.11.7.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e47cc03274cc0500d03a5ecc29611731",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 100124,
+        "upload_time": "2016-05-31T15:56:04",
+        "url": "https://files.pythonhosted.org/packages/40/75/4b0c11694b9c7ac109d89af7b9dce8f4c97b32c16b303d54c33575a53801/simpleflow-0.11.7.tar.gz"
+      }
+    ],
+    "0.11.8": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b3b5d92c5cccb722aade6df6ea011505",
+          "sha256": "d09158b2a35ee3a6035fa7b5ace34d9e2e012ac82637726c3fd7295d7733d27e"
+        },
+        "downloads": 191,
+        "filename": "simpleflow-0.11.8.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b3b5d92c5cccb722aade6df6ea011505",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 100326,
+        "upload_time": "2016-06-23T14:02:56",
+        "url": "https://files.pythonhosted.org/packages/ed/37/9f61acdd2cff63a19a6fe692be377b92d4292ee71b09710ab3245170bcf9/simpleflow-0.11.8.tar.gz"
+      }
+    ],
+    "0.11.9": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "efaf958282c2aece1dda3350308adf95",
+          "sha256": "7bb1c4e6a057453bd2cc1629a59008946b7bf6238a942bccbdf1df4ee2db135d"
+        },
+        "downloads": 142,
+        "filename": "simpleflow-0.11.9.tar.gz",
+        "has_sig": false,
+        "md5_digest": "efaf958282c2aece1dda3350308adf95",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 103519,
+        "upload_time": "2016-08-02T12:20:33",
+        "url": "https://files.pythonhosted.org/packages/71/d2/0969b2ea268a4d79014c72682b7a2c2dc0c7c099f5c0fedaa61ed6e1e467/simpleflow-0.11.9.tar.gz"
+      }
+    ],
+    "0.12.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "796f8c9fd60636a33a979358c86275f2",
+          "sha256": "dc5bf409e21d958b52e55a7b35463bca731b37485f9618b2c4fd12f1aa8d6589"
+        },
+        "downloads": 84,
+        "filename": "simpleflow-0.12.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "796f8c9fd60636a33a979358c86275f2",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 114919,
+        "upload_time": "2016-11-07T12:28:49",
+        "url": "https://files.pythonhosted.org/packages/c5/d4/4f850bfded3f9fc1963322da0f8e5391e441d5e636b08accd5e8355d99ee/simpleflow-0.12.0.tar.gz"
+      }
+    ],
+    "0.12.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c98d4fe6830c08a6861d3c4548f67335",
+          "sha256": "f1747543bb82dcce21c8fbfa6b3f3ab5036cd0018ef77c5c2b9b9889bd967d19"
+        },
+        "downloads": 80,
+        "filename": "simpleflow-0.12.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c98d4fe6830c08a6861d3c4548f67335",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 115595,
+        "upload_time": "2016-11-22T09:43:44",
+        "url": "https://files.pythonhosted.org/packages/aa/cb/490f7bd0304ad2af554c8b79138128ae9ad4acf0c47b9e4c5b281c1f3e4b/simpleflow-0.12.1.tar.gz"
+      }
+    ],
+    "0.12.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0b768445346f6467b11d98989fc6395d",
+          "sha256": "d5ca3bc2d095419167713f7407807d79af31cab1f44f0b6474950c876a1c12ff"
+        },
+        "downloads": 205,
+        "filename": "simpleflow-0.12.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0b768445346f6467b11d98989fc6395d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 115968,
+        "upload_time": "2016-11-23T12:18:53",
+        "url": "https://files.pythonhosted.org/packages/0a/dd/3a0911e6655f3d7a63c291919ac2792fd269105b107f3cfa2254e8cfa9ee/simpleflow-0.12.2.tar.gz"
+      }
+    ],
+    "0.12.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f4ac504da697a762e181b343115c7d2a",
+          "sha256": "b60d1a150ebd6c5ba66a3fc382f4cedb2e69f3b312eaa286ab6b0aeeab9700d9"
+        },
+        "downloads": 337,
+        "filename": "simpleflow-0.12.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f4ac504da697a762e181b343115c7d2a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 116281,
+        "upload_time": "2016-11-24T15:04:37",
+        "url": "https://files.pythonhosted.org/packages/b9/16/79863e06904359948905b377c7e11eb1382e68e963d13e1427691c3a8bc6/simpleflow-0.12.3.tar.gz"
+      }
+    ],
+    "0.12.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d1c956941dc73da31b66aa4cca66f0a3",
+          "sha256": "be58c53c45daf3bb04d698efc70c6885b54ec90ae7d9a8dd59a769d657739a0e"
+        },
+        "downloads": 91,
+        "filename": "simpleflow-0.12.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d1c956941dc73da31b66aa4cca66f0a3",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 116938,
+        "upload_time": "2016-11-30T18:05:14",
+        "url": "https://files.pythonhosted.org/packages/71/e1/03ec67f173c385780cb814b5b2d7d7a5255295a444d19169107d3d9b6793/simpleflow-0.12.4.tar.gz"
+      }
+    ],
+    "0.12.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "841d155dc11d32c8caa0d58a08897116",
+          "sha256": "b6ae65280638287d917b2f5622cf1f27022552546cf0edb674a6637db540a720"
+        },
+        "downloads": 38,
+        "filename": "simpleflow-0.12.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "841d155dc11d32c8caa0d58a08897116",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 117066,
+        "upload_time": "2016-12-07T17:56:35",
+        "url": "https://files.pythonhosted.org/packages/fc/18/56fd5ecfb421c4c3c24429d6efd47a7653c797ee8f9bfb4f62aac3948266/simpleflow-0.12.5.tar.gz"
+      }
+    ],
+    "0.12.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "bb62ef538fe8e6f71d7acaf127c74b80",
+          "sha256": "c4af1b71b23bf2310dfaf995fb22de6f2eeee17d15aa363ad2cd98e1745db47a"
+        },
+        "downloads": 53,
+        "filename": "simpleflow-0.12.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "bb62ef538fe8e6f71d7acaf127c74b80",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 121615,
+        "upload_time": "2016-12-13T12:46:34",
+        "url": "https://files.pythonhosted.org/packages/e3/ab/1de08ed65038ba6cf8a0c4e0f901c2f13613300641bec93b4b7ce5798de8/simpleflow-0.12.6.tar.gz"
+      }
+    ],
+    "0.12.7": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1ad997d2f7330c386445b6d48b6a38ca",
+          "sha256": "f2ceef3fd1e740215982ce169ab68177bbb931acead79bc118ef6c05714bc306"
+        },
+        "downloads": 150,
+        "filename": "simpleflow-0.12.7.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1ad997d2f7330c386445b6d48b6a38ca",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 118377,
+        "upload_time": "2016-12-15T15:15:19",
+        "url": "https://files.pythonhosted.org/packages/a4/3d/6ba312239ac190bb6c8ab8fa9b56c3a96bee78b8abb110e5594a391994e1/simpleflow-0.12.7.tar.gz"
+      }
+    ],
+    "0.13.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "72b7e6fb2f7d0716a49a210458a29dd9",
+          "sha256": "dcb45faf7db1a48b5db113cd4b13ca7b27ba0f6050a74374624c252054808896"
+        },
+        "downloads": 105,
+        "filename": "simpleflow-0.13.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "72b7e6fb2f7d0716a49a210458a29dd9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 131205,
+        "upload_time": "2016-12-20T18:28:08",
+        "url": "https://files.pythonhosted.org/packages/57/6a/03b018dc233d95fd7792ddcbd368051901ed33f168ce6581fdc27f127c09/simpleflow-0.13.0.tar.gz"
+      }
+    ],
+    "0.13.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0e15e08a62ef511233d75337d3a5206d",
+          "sha256": "ea5d57ea7b5a125969cc4a54c6c456a194809d6c1aebf87898a9aa390a664ad4"
+        },
+        "downloads": 273,
+        "filename": "simpleflow-0.13.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0e15e08a62ef511233d75337d3a5206d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 123227,
+        "upload_time": "2017-01-05T14:40:43",
+        "url": "https://files.pythonhosted.org/packages/64/69/cbdb9a0920ddee1b8a767643bb335741129f2af4a4610496ff1ff49c0924/simpleflow-0.13.1.tar.gz"
+      }
+    ],
+    "0.13.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "07bcd8104bc988f49789551ca61619ae",
+          "sha256": "e48e9cb4ee5a410661ae1b18ae42af07e53c1e3818e4fc63fb00f9874ac93b4e"
+        },
+        "downloads": 8,
+        "filename": "simpleflow-0.13.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "07bcd8104bc988f49789551ca61619ae",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 115267,
+        "upload_time": "2017-01-11T10:22:21",
+        "url": "https://files.pythonhosted.org/packages/cc/b1/9d9a6d33396edd601a8f5957f9f1d2683b85d7fc0fbf6cd78497cb793ca7/simpleflow-0.13.2.tar.gz"
+      }
+    ],
+    "0.13.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5cf51a47ea61b40f32ef2ceefa1d3f6e",
+          "sha256": "8177f209d86df8461457d7d04141f2f8a3545d7c4bcbfc94456e5fc647c8fc0e"
+        },
+        "downloads": 10,
+        "filename": "simpleflow-0.13.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5cf51a47ea61b40f32ef2ceefa1d3f6e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 115372,
+        "upload_time": "2017-01-17T08:46:55",
+        "url": "https://files.pythonhosted.org/packages/84/54/48be7b667e3c84147b13f9c6557ca85ac0481247da1dffa90a2157a46936/simpleflow-0.13.3.tar.gz"
+      }
+    ],
+    "0.13.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c51752f1f3c022b8f106cd5ba820b9ca",
+          "sha256": "c11265eb071076f8f36ad1cf4fbeb4f0668a5108789067468d1d4672aefb149f"
+        },
+        "downloads": 9,
+        "filename": "simpleflow-0.13.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c51752f1f3c022b8f106cd5ba820b9ca",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 118735,
+        "upload_time": "2017-01-18T15:53:11",
+        "url": "https://files.pythonhosted.org/packages/2d/f2/bd2df716fdf8974cacb3ce2e07593f7844d5f5c4712a9fe44e314763f6d0/simpleflow-0.13.4.tar.gz"
+      }
+    ],
+    "0.14.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a1dfe4153a06dde7f63cb1d813fec70a",
+          "sha256": "5498106663d3cb33660b62c727f34ff40bef6f53a4ba4cf7ad0137a0cf506b1a"
+        },
+        "downloads": 9,
+        "filename": "simpleflow-0.14.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a1dfe4153a06dde7f63cb1d813fec70a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 124258,
+        "upload_time": "2017-01-31T14:02:24",
+        "url": "https://files.pythonhosted.org/packages/ca/a0/3547e227fb9a4e1e46407a5a2f4e794fe9f7b34a3cdc933449e14aaacae0/simpleflow-0.14.0.tar.gz"
+      }
+    ],
+    "0.14.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0ca35d0daea7a58ee92b1088c8c9a203",
+          "sha256": "c91c656a97ae7abcddf2fcdb8b5986bff73452ce609774162f52f7932e1cd1c3"
+        },
+        "downloads": 8,
+        "filename": "simpleflow-0.14.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0ca35d0daea7a58ee92b1088c8c9a203",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 132966,
+        "upload_time": "2017-02-17T16:49:09",
+        "url": "https://files.pythonhosted.org/packages/02/2b/03d95852fb5770849d6fd4a9c9d4266b511168c2ec05546b08fe54c6d7bd/simpleflow-0.14.1.tar.gz"
+      }
+    ],
+    "0.14.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "525295e5b884ef5b6499276fd6d65aee",
+          "sha256": "475d9e5cbb6f5068f7bf544278ce05b597d3d9b6cf2a91af1a73511bc2ed5f89"
+        },
+        "downloads": 35,
+        "filename": "simpleflow-0.14.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "525295e5b884ef5b6499276fd6d65aee",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 124113,
+        "upload_time": "2017-02-20T15:18:48",
+        "url": "https://files.pythonhosted.org/packages/06/4a/ad3986dba12d3ea6fd2d239aaf7fb840d978a89a2df84f1ec0c36a4da746/simpleflow-0.14.2.tar.gz"
+      }
+    ],
+    "0.15.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6fff6bb0972f0e231b046d8d39f5fc39",
+          "sha256": "9d4a8b8ccc9d149dc2b20fe14379fc1604183777e3f0b08a673ac5e9e8668716"
+        },
+        "downloads": 16,
+        "filename": "simpleflow-0.15.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6fff6bb0972f0e231b046d8d39f5fc39",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 125769,
+        "upload_time": "2017-03-07T14:41:49",
+        "url": "https://files.pythonhosted.org/packages/33/8c/002decd6ae4d405fdf3548fefc3c052589ddd9b293d83318fdac7d2d3b96/simpleflow-0.15.0.tar.gz"
+      }
+    ],
+    "0.15.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "70746cf7b9695d8de2fe3d5cddafc7a6",
+          "sha256": "2cbc8b920502ec9423c846a68ef0ac538d5e7441dd9c141179a4db2f0331ccaf"
+        },
+        "downloads": 14,
+        "filename": "simpleflow-0.15.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "70746cf7b9695d8de2fe3d5cddafc7a6",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 130725,
+        "upload_time": "2017-03-27T13:57:50",
+        "url": "https://files.pythonhosted.org/packages/9a/4b/753a7478f2a57acb7b0da18e7c2771536a63b958a15ba01a9f7d78f9f920/simpleflow-0.15.1.tar.gz"
+      }
+    ],
+    "0.15.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6608ac57855568a707c8b86601891fc3",
+          "sha256": "3663f2f6725553b1a1f4dbcb42ced2e5e7a06960f88932dd28fcb6491e5f3dd1"
+        },
+        "downloads": 14,
+        "filename": "simpleflow-0.15.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6608ac57855568a707c8b86601891fc3",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 138179,
+        "upload_time": "2017-03-28T08:43:28",
+        "url": "https://files.pythonhosted.org/packages/9b/f4/a6afdd120514a178f3d303c3118a2a0cf2b420491ebb4afcec2231abc6ea/simpleflow-0.15.2.tar.gz"
+      }
+    ],
+    "0.15.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5f82b799c4de1d1a3f209334e5a03b46",
+          "sha256": "780f40a1fb93c9ac5e0d38e022f4a0b875eb4e2b86105e025d41e1ce87d49c01"
+        },
+        "downloads": 219,
+        "filename": "simpleflow-0.15.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5f82b799c4de1d1a3f209334e5a03b46",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 126899,
+        "upload_time": "2017-03-30T12:52:53",
+        "url": "https://files.pythonhosted.org/packages/e1/58/766c0270bee34bec5b03485df1f56a9cba12d4c617a80c5b4f26291035fd/simpleflow-0.15.3.tar.gz"
+      }
+    ],
+    "0.15.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0bf5dc10fd1a2bec9d282f891da9e8da",
+          "sha256": "90c529ef44b0acfa19caf3760feeb8913bae2d8cd46c3e47fe30796f6799b7d0"
+        },
+        "downloads": 91,
+        "filename": "simpleflow-0.15.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0bf5dc10fd1a2bec9d282f891da9e8da",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 127365,
+        "upload_time": "2017-04-05T14:22:28",
+        "url": "https://files.pythonhosted.org/packages/28/31/d3e7a90efd6eab7d1259645692a24a061112da0b932364c4135691fdf99b/simpleflow-0.15.4.tar.gz"
+      }
+    ],
+    "0.15.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b52a9c61d508716941a2cd5efc20a67d",
+          "sha256": "fecc6c52e55bc8eaddce1e3e92882429ad5c7d51a8eac11f745eeb1c477a9a35"
+        },
+        "downloads": 0,
+        "filename": "simpleflow-0.15.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b52a9c61d508716941a2cd5efc20a67d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 132142,
+        "upload_time": "2017-04-12T16:19:46",
+        "url": "https://files.pythonhosted.org/packages/0b/e3/d5c561ec0bbefbab1e05fb9c912bbb5929202cede07d723056389b55f461/simpleflow-0.15.5.tar.gz"
+      }
+    ],
+    "0.15.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7a59ff6b56e968707637b9da74763bdf",
+          "sha256": "e8791e2b06ad065b38eda29fd4be17d83194d492d3944baeb863914524387afe"
+        },
+        "downloads": 0,
+        "filename": "simpleflow-0.15.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7a59ff6b56e968707637b9da74763bdf",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 133303,
+        "upload_time": "2017-05-09T08:54:22",
+        "url": "https://files.pythonhosted.org/packages/a7/5d/49809f21c70ff850c8ab283bc8853e2213037da52a2e71df07edde1dde44/simpleflow-0.15.6.tar.gz"
+      }
+    ],
+    "0.15.7": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4f5ec7cb3b5fe36663ae723c20f613c7",
+          "sha256": "749b25506994e3730f31d20e9d74c93955abee9d910c73694045b25022e6d6d9"
+        },
+        "downloads": 0,
+        "filename": "simpleflow-0.15.7.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4f5ec7cb3b5fe36663ae723c20f613c7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 133598,
+        "upload_time": "2017-05-19T09:33:57",
+        "url": "https://files.pythonhosted.org/packages/15/39/d8519bba778fdd314729f9b2c67422a8ae26b3ca19b56332c28990d30623/simpleflow-0.15.7.tar.gz"
+      }
+    ],
+    "0.16.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "fa4a50fb735db0045cfc5c4c89314e7f",
+          "sha256": "bbaa269dbaf1c8b4e7f4dd24fa1530f270c77421b1126b5733437b3a6ede0919"
+        },
+        "downloads": 0,
+        "filename": "simpleflow-0.16.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "fa4a50fb735db0045cfc5c4c89314e7f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 142176,
+        "upload_time": "2017-05-23T16:01:04",
+        "url": "https://files.pythonhosted.org/packages/3d/33/3fe37be20de549efb5c793d38ba30034311d0d655250e6e12a640301ad75/simpleflow-0.16.0.tar.gz"
+      }
+    ],
+    "0.2.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "bfeee20b9ed218fd34ecfebd598b812d",
+          "sha256": "957ee3a948698b2b0c0f2469a9384138a775cb0427e18fb9b5540bb08f54e391"
+        },
+        "downloads": 1377,
+        "filename": "simpleflow-0.2.0-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "bfeee20b9ed218fd34ecfebd598b812d",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 18594,
+        "upload_time": "2014-07-16T15:51:12",
+        "url": "https://files.pythonhosted.org/packages/17/b4/b1cfd1a4db4306a82d0c0295ae369c7b7721daf5852a6e401ad68f006a61/simpleflow-0.2.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d60a99e4d186a8ee1a5e303762ad17ee",
+          "sha256": "6f0bfbaf189ea3ddb1b5eb409a51e39d61da6f901586fced5a87d8d272e14bff"
+        },
+        "downloads": 1451,
+        "filename": "simpleflow-0.2.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d60a99e4d186a8ee1a5e303762ad17ee",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 13773,
+        "upload_time": "2014-07-16T15:51:08",
+        "url": "https://files.pythonhosted.org/packages/9f/61/3b96b08ebaac1d6c7b112e875c5a15f457d0cc0ea15a5b9dc2c822f0206f/simpleflow-0.2.0.tar.gz"
+      }
+    ],
+    "0.2.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1272b5e4695644c2d35062d257d88c6d",
+          "sha256": "1fdc07481b7608bccac9bebcb771ac645fd888b96053da7ee6f7efa07eef45c1"
+        },
+        "downloads": 1390,
+        "filename": "simpleflow-0.2.1-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "1272b5e4695644c2d35062d257d88c6d",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 18609,
+        "upload_time": "2014-07-17T21:33:33",
+        "url": "https://files.pythonhosted.org/packages/bd/46/62727e0441991fa4f38a9108ddea8d9ca3909268b4e992a18128aceb4c7c/simpleflow-0.2.1-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "441d95389c64051bb46ba10e4d2fb647",
+          "sha256": "fd3fb1415af47a5d234d5ff03de70537e6b3923ec379db9d2e632300991d8496"
+        },
+        "downloads": 1469,
+        "filename": "simpleflow-0.2.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "441d95389c64051bb46ba10e4d2fb647",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 13798,
+        "upload_time": "2014-07-17T21:33:31",
+        "url": "https://files.pythonhosted.org/packages/61/02/820b1883a89851f6dd9acd8d1c63cf8175212e7c5453d4cef3343ef1b2e1/simpleflow-0.2.1.tar.gz"
+      }
+    ],
+    "0.2.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d7a093dc08606e09dbcbcd20ecd1c51a",
+          "sha256": "d690081361f45aff9024b42759f17dda2fb3edd6d52411d33a0393b03fabf862"
+        },
+        "downloads": 1400,
+        "filename": "simpleflow-0.2.2.tar.gz",
+        "has_sig": true,
+        "md5_digest": "d7a093dc08606e09dbcbcd20ecd1c51a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 13872,
+        "upload_time": "2014-08-05T09:29:27",
+        "url": "https://files.pythonhosted.org/packages/0d/2e/dd9101b10c525081e0a68f2d6b25434ea32d48ab64c2388a71283216d201/simpleflow-0.2.2.tar.gz"
+      }
+    ],
+    "0.2.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c8da00283853a9ef76bdaeafac8c00ba",
+          "sha256": "48926f16a586fab4dc421c23a299a148061f7030d384dff8f8642497c1937a28"
+        },
+        "downloads": 1373,
+        "filename": "simpleflow-0.2.3.tar.gz",
+        "has_sig": true,
+        "md5_digest": "c8da00283853a9ef76bdaeafac8c00ba",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 14046,
+        "upload_time": "2014-08-05T15:56:05",
+        "url": "https://files.pythonhosted.org/packages/b6/f8/04fda6468c5ca10a27f235ee00f83ca20431452f1eb1e239cacffd6ce8c3/simpleflow-0.2.3.tar.gz"
+      }
+    ],
+    "0.3.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "af2435ebddf6c39a5eba0618dedc1855",
+          "sha256": "7d41aa9a00c09cd3c97ade1e4c7203f4f6dd61d4079e570a2894c81885db6e7b"
+        },
+        "downloads": 1371,
+        "filename": "simpleflow-0.3.0.tar.gz",
+        "has_sig": true,
+        "md5_digest": "af2435ebddf6c39a5eba0618dedc1855",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 14332,
+        "upload_time": "2014-08-06T16:43:10",
+        "url": "https://files.pythonhosted.org/packages/25/88/4d4e34162b2ccf95d687eaa4e4b1f5b0e4f0ed3d061182a0455014c0550b/simpleflow-0.3.0.tar.gz"
+      }
+    ],
+    "0.3.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c0adb73dd346a7e8af0d8201bbca65ab",
+          "sha256": "532c48492de949f9bb15e51fef16b53e414424ff7eaf075ed26517b773b16e78"
+        },
+        "downloads": 1949,
+        "filename": "simpleflow-0.3.1.tar.gz",
+        "has_sig": true,
+        "md5_digest": "c0adb73dd346a7e8af0d8201bbca65ab",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 14396,
+        "upload_time": "2014-08-07T14:11:34",
+        "url": "https://files.pythonhosted.org/packages/fb/4c/ca24c6a4647e635c27c8b589a98ac102dfbdee5fae322b9e6ea20f3ad0f6/simpleflow-0.3.1.tar.gz"
+      }
+    ],
+    "0.3.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6c8ac53e1bafc03e75a05ea5014b1f9e",
+          "sha256": "2a7909c5e0b78fb80e1dc0fb2ee39a6f90d976b5a81f7d7bf06b688923b0436b"
+        },
+        "downloads": 1085,
+        "filename": "simpleflow-0.3.2.tar.gz",
+        "has_sig": true,
+        "md5_digest": "6c8ac53e1bafc03e75a05ea5014b1f9e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 14435,
+        "upload_time": "2015-01-16T14:55:17",
+        "url": "https://files.pythonhosted.org/packages/03/e1/77ea5468b0f5f0d4835228b83460494f203bfc9db5aee47998fedf6f3e98/simpleflow-0.3.2.tar.gz"
+      }
+    ],
+    "0.4.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d94cee94cf44aa59294efd8a74eaf54e",
+          "sha256": "27db929fd512bcbb3d2b60f302e636533a325753833183ae3125a802a39632a5"
+        },
+        "downloads": 898,
+        "filename": "simpleflow-0.4.0-py2.py3-none-any.whl",
+        "has_sig": true,
+        "md5_digest": "d94cee94cf44aa59294efd8a74eaf54e",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 25835,
+        "upload_time": "2015-03-12T23:08:56",
+        "url": "https://files.pythonhosted.org/packages/f6/57/f1f8cacb65a665bda35f88192446fd718fd6db7a1bf7a3272a5c2b5d6b15/simpleflow-0.4.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0c0f0e8bf3fada8d9f103382fdfa63fd",
+          "sha256": "415bbfc981c1bbfb7555aa4921843fda6ac6d5a7cad2671c40dba5f8ef771eae"
+        },
+        "downloads": 886,
+        "filename": "simpleflow-0.4.0.tar.gz",
+        "has_sig": true,
+        "md5_digest": "0c0f0e8bf3fada8d9f103382fdfa63fd",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16186,
+        "upload_time": "2015-03-12T23:08:05",
+        "url": "https://files.pythonhosted.org/packages/b2/65/c4df695a7754f5c61dfeb478d538ec7ea7dd4ba38ec0fb8b3733d4b47deb/simpleflow-0.4.0.tar.gz"
+      }
+    ],
+    "0.5.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0e16396d7a82a9fd49b742483b519f6d",
+          "sha256": "d53b3a315cf5b4f87027d6c48f07333882aac63c82b403a54e16a3f413e558eb"
+        },
+        "downloads": 946,
+        "filename": "simpleflow-0.5.0-py2.py3-none-any.whl",
+        "has_sig": true,
+        "md5_digest": "0e16396d7a82a9fd49b742483b519f6d",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 25940,
+        "upload_time": "2015-03-16T15:49:48",
+        "url": "https://files.pythonhosted.org/packages/11/da/9c55ecbb377840ae76021c2652b3189f76a53b760d1ad46fc34adc0d8119/simpleflow-0.5.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "bea44a3738cc13dc28129933e856d45c",
+          "sha256": "2b67ccfabe8eafc45ad8d52717f9084dd2acafa8ae556f899c675f032e2b9977"
+        },
+        "downloads": 970,
+        "filename": "simpleflow-0.5.0.tar.gz",
+        "has_sig": true,
+        "md5_digest": "bea44a3738cc13dc28129933e856d45c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16298,
+        "upload_time": "2015-03-16T15:49:29",
+        "url": "https://files.pythonhosted.org/packages/dd/82/f39d612c0b69fa96bf70aeaf3132844ae10865a399cbabeaa0ea5dee7908/simpleflow-0.5.0.tar.gz"
+      }
+    ],
+    "0.5.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "50f9085888c5ab09acf614ca07b25315",
+          "sha256": "26c817004847131f35b60601cfafa54748ff6e69e9687cb1e701b0592348b00a"
+        },
+        "downloads": 955,
+        "filename": "simpleflow-0.5.1-py2.py3-none-any.whl",
+        "has_sig": true,
+        "md5_digest": "50f9085888c5ab09acf614ca07b25315",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 25943,
+        "upload_time": "2015-03-16T15:57:26",
+        "url": "https://files.pythonhosted.org/packages/65/d4/93e529497f1edad3cab598116cdd5948b93a703257af5d7849db9840d539/simpleflow-0.5.1-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6a964740b076ba22002bfcc0ceef132d",
+          "sha256": "0a4464af36dc06c8bfa2bc91a6ee4e7c4a17ee3f3656908c886e37e756dae0cc"
+        },
+        "downloads": 1018,
+        "filename": "simpleflow-0.5.1.tar.gz",
+        "has_sig": true,
+        "md5_digest": "6a964740b076ba22002bfcc0ceef132d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16298,
+        "upload_time": "2015-03-16T15:57:13",
+        "url": "https://files.pythonhosted.org/packages/34/af/6170eacc61c0b6c5ecd49b996c1166ac4737e28e930ddb7faba772cda687/simpleflow-0.5.1.tar.gz"
+      }
+    ],
+    "0.5.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2ef823cc6abf3d64b4d0bc91e803b45a",
+          "sha256": "24c61bec1964501c4a7735425f1671a88d6f888136468f665c2f68d9462202ea"
+        },
+        "downloads": 972,
+        "filename": "simpleflow-0.5.2-py2.py3-none-any.whl",
+        "has_sig": true,
+        "md5_digest": "2ef823cc6abf3d64b4d0bc91e803b45a",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 25944,
+        "upload_time": "2015-03-17T09:22:09",
+        "url": "https://files.pythonhosted.org/packages/da/7b/5b9da788bcc7f48437bff63171f9bdaa0aec1eeb5573b467e87b892944f7/simpleflow-0.5.2-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f7a7548640728420896662543c1d23b3",
+          "sha256": "a0b4ba8d433f6c161d9c103ab5e06e22827d2026951f91617a71619d57358189"
+        },
+        "downloads": 1116,
+        "filename": "simpleflow-0.5.2.tar.gz",
+        "has_sig": true,
+        "md5_digest": "f7a7548640728420896662543c1d23b3",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16299,
+        "upload_time": "2015-03-17T09:22:19",
+        "url": "https://files.pythonhosted.org/packages/43/91/153e77aaf39974686ec5958bb9cabbcdaaa42cbda1de199d2d323358b86a/simpleflow-0.5.2.tar.gz"
+      }
+    ],
+    "0.5.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "37e25f7204ddf97d3a415a1d9ade3d08",
+          "sha256": "67821ca8dc85e9b5de76ac6844f68175b5427bf3a72d02cee3612b1268a4b7e9"
+        },
+        "downloads": 939,
+        "filename": "simpleflow-0.5.3-py2.py3-none-any.whl",
+        "has_sig": true,
+        "md5_digest": "37e25f7204ddf97d3a415a1d9ade3d08",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 26040,
+        "upload_time": "2015-03-20T11:04:20",
+        "url": "https://files.pythonhosted.org/packages/a6/61/392bc38b3f1f5e81757e6190b493158f56da2aca2f3002b9899d3c156e44/simpleflow-0.5.3-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7178ca06d1d0677aed03e9aa80c6ddd2",
+          "sha256": "3deb254ad00379be2d602e7e05119585956e76cb315dc53ac954c0ae61ff23c4"
+        },
+        "downloads": 1285,
+        "filename": "simpleflow-0.5.3.tar.gz",
+        "has_sig": true,
+        "md5_digest": "7178ca06d1d0677aed03e9aa80c6ddd2",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16390,
+        "upload_time": "2015-03-20T11:04:34",
+        "url": "https://files.pythonhosted.org/packages/e1/7c/3116d33aa3aceb95d12168b6447d189d9fb7e8deb367bba5a899ce155311/simpleflow-0.5.3.tar.gz"
+      }
+    ],
+    "0.6.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "67c744571f70ce0692a8ab9530577a0c",
+          "sha256": "ba44364819475794abddc5a0bf119bddbf569c9946b8f2b5679bcdf4def6df28"
+        },
+        "downloads": 1576,
+        "filename": "simpleflow-0.6.0-py2.py3-none-any.whl",
+        "has_sig": true,
+        "md5_digest": "67c744571f70ce0692a8ab9530577a0c",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 35050,
+        "upload_time": "2015-03-26T14:33:06",
+        "url": "https://files.pythonhosted.org/packages/b2/e7/24cd53b6b80887b3603a6067cebbfc351e2960ef9fa06ef9fe8f0470f165/simpleflow-0.6.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3bc07de59737f52a53c8d84381b76b71",
+          "sha256": "0738bab4fe89d92a95c93b5fd3a64e63d8cd0143400ecf32e045242271395056"
+        },
+        "downloads": 1175,
+        "filename": "simpleflow-0.6.0.tar.gz",
+        "has_sig": true,
+        "md5_digest": "3bc07de59737f52a53c8d84381b76b71",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 19982,
+        "upload_time": "2015-03-26T14:34:02",
+        "url": "https://files.pythonhosted.org/packages/95/21/129365ebda17dc70922c0697671a6449dada43193b1a65e6e34ba60deac9/simpleflow-0.6.0.tar.gz"
+      }
+    ],
+    "0.6.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ecbb82dc7f58a179281d1bc154411cf1",
+          "sha256": "1b2c25fe8e5b0251cd46fcc69763761db87fd518c820212998faafead6532d89"
+        },
+        "downloads": 1794,
+        "filename": "simpleflow-0.6.1-py2.py3-none-any.whl",
+        "has_sig": true,
+        "md5_digest": "ecbb82dc7f58a179281d1bc154411cf1",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 44711,
+        "upload_time": "2015-05-06T09:37:18",
+        "url": "https://files.pythonhosted.org/packages/41/a2/0773ef30b89b50c61825edf9dd3f842ee1bc5a03ac05cb561646916f26f4/simpleflow-0.6.1-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b4853ec7bee274d660f56caa3dac4bb1",
+          "sha256": "08a6eb6bb6d7970bdc12f4e048f8d296ceba4a6a16202b8668a171027cc76474"
+        },
+        "downloads": 930,
+        "filename": "simpleflow-0.6.1.tar.gz",
+        "has_sig": true,
+        "md5_digest": "b4853ec7bee274d660f56caa3dac4bb1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 24460,
+        "upload_time": "2015-05-06T09:37:07",
+        "url": "https://files.pythonhosted.org/packages/18/ad/f9f44625c72ce5d3356822959fe7e83a24f1a115e5acbb16749ae9136b44/simpleflow-0.6.1.tar.gz"
+      }
+    ],
+    "0.6.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d2fa498d67636359fd832b2653cb3dff",
+          "sha256": "311f20bd07e3e575dc3e7927f96508842df8dc2927e8e292d48fabbc53cf5393"
+        },
+        "downloads": 717,
+        "filename": "simpleflow-0.6.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d2fa498d67636359fd832b2653cb3dff",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 18908,
+        "upload_time": "2015-08-28T15:30:26",
+        "url": "https://files.pythonhosted.org/packages/a5/82/d4865187fc38ecc8a15b1a98b9873291b28ef778592706c1c8a20ac9a8a5/simpleflow-0.6.2.tar.gz"
+      }
+    ],
+    "0.6.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7cb6033b6357fa5ccc4ae69e36fb79f3",
+          "sha256": "547f5c19f2d38fc2e51c682b03bf6afc94a1d4b5a23d29bf5d77597ba4069796"
+        },
+        "downloads": 779,
+        "filename": "simpleflow-0.6.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7cb6033b6357fa5ccc4ae69e36fb79f3",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 18988,
+        "upload_time": "2015-09-10T12:31:33",
+        "url": "https://files.pythonhosted.org/packages/0f/1d/6b3dcb0c6ba57abc2304dd85c75b9f6745657c636c283c32128fb47194c9/simpleflow-0.6.3.tar.gz"
+      }
+    ],
+    "0.6.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d6b630009cc500f272fe8150441e285d",
+          "sha256": "9133f9b9424cc73d862621b6d8346e0f0ff62547be29b7e6885bb55c181cdb61"
+        },
+        "downloads": 641,
+        "filename": "simpleflow-0.6.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d6b630009cc500f272fe8150441e285d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 18984,
+        "upload_time": "2015-09-10T15:40:47",
+        "url": "https://files.pythonhosted.org/packages/c4/11/a309632e0eefe11fd35cf57a3db1b08410b425860e7b29c2a322e046d5d4/simpleflow-0.6.4.tar.gz"
+      }
+    ],
+    "0.7.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "701472bd94764ba96a870282002d29d1",
+          "sha256": "bb37ec0f62e0793682581fbfedc7f947fd110563b7a1ca3d149578142a25284e"
+        },
+        "downloads": 1097,
+        "filename": "simpleflow-0.7.0.tar.gz",
+        "has_sig": true,
+        "md5_digest": "701472bd94764ba96a870282002d29d1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 34251,
+        "upload_time": "2015-08-05T12:51:06",
+        "url": "https://files.pythonhosted.org/packages/ca/56/5452fb93d641f4e85dbe2522b014946b0f456c5b28d56d93d65e22cd9c31/simpleflow-0.7.0.tar.gz"
+      }
+    ],
+    "0.8.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2fa2ac6950ef2632cb8b09cc4e019467",
+          "sha256": "3722595599a61952c7db72f2349977afaf76b1b0c4848be172bfd2217de944c7"
+        },
+        "downloads": 725,
+        "filename": "simpleflow-0.8.0.tar.gz",
+        "has_sig": true,
+        "md5_digest": "2fa2ac6950ef2632cb8b09cc4e019467",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 34516,
+        "upload_time": "2015-08-14T22:30:33",
+        "url": "https://files.pythonhosted.org/packages/42/7c/079ba809d1dabb949175cd50f7beb1c8ed65cafd3a10aa99aaa21dac2103/simpleflow-0.8.0.tar.gz"
+      }
+    ],
+    "0.9.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4072e22a285be9d87c2e15507e6bcc33",
+          "sha256": "788adec0236574136e4d546184f19cd632e64a9710cb60824727dce43030df45"
+        },
+        "downloads": 693,
+        "filename": "simpleflow-0.9.0.tar.gz",
+        "has_sig": true,
+        "md5_digest": "4072e22a285be9d87c2e15507e6bcc33",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 34607,
+        "upload_time": "2015-08-24T14:03:54",
+        "url": "https://files.pythonhosted.org/packages/2f/38/396c7d4cf7face552ddb529b75428c66544df8872223d5895381ed7a6974/simpleflow-0.9.0.tar.gz"
+      }
+    ],
+    "0.9.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f558bee77025d8b9492042ae6211440d",
+          "sha256": "5b84b1219cd5eabba7bab3fd7a49e67befd7a03f8582458515a09be30a8b8e7d"
+        },
+        "downloads": 645,
+        "filename": "simpleflow-0.9.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f558bee77025d8b9492042ae6211440d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 37994,
+        "upload_time": "2015-09-16T11:07:46",
+        "url": "https://files.pythonhosted.org/packages/87/8b/c61c82734d386dfbeed04f6465584a2f164236066e93f8a2b24d7ca0cc97/simpleflow-0.9.1.tar.gz"
+      }
+    ],
+    "0.9.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f1136dceab22c71cfeb26bbce4c70415",
+          "sha256": "6a1b26aa79a59bcf39e029a9cd6c7fa286dd13a5c315ea1948041d0980bab028"
+        },
+        "downloads": 585,
+        "filename": "simpleflow-0.9.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f1136dceab22c71cfeb26bbce4c70415",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 39328,
+        "upload_time": "2015-09-22T15:22:51",
+        "url": "https://files.pythonhosted.org/packages/cd/79/7ff5bb1f410e0b93d649d2458783db6f183aeb795cc1439ad2ecedb601f6/simpleflow-0.9.2.tar.gz"
+      }
+    ],
+    "0.9.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "fbb59debeab9abc3f62a3eaeacae4d28",
+          "sha256": "e1c795d67c705c242caa49c3b49de8e913a225389f513c08d02c86c02a1a8643"
+        },
+        "downloads": 625,
+        "filename": "simpleflow-0.9.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "fbb59debeab9abc3f62a3eaeacae4d28",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 39608,
+        "upload_time": "2015-09-22T15:44:13",
+        "url": "https://files.pythonhosted.org/packages/1c/e4/394a2d921bca4b28823e451ea9c1306f58d5ef1bb6298a023c6f7f9bbe07/simpleflow-0.9.3.tar.gz"
+      }
+    ],
+    "0.9.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "738588d6754fcb0d74a0ce762100bc75",
+          "sha256": "2f7b3b2ff714ef31ac366d992504d05552403b10a38603ec776ba1bfacd13343"
+        },
+        "downloads": 576,
+        "filename": "simpleflow-0.9.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "738588d6754fcb0d74a0ce762100bc75",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 38434,
+        "upload_time": "2015-10-07T08:49:43",
+        "url": "https://files.pythonhosted.org/packages/2a/41/893a6df1774d6ae8431527f097c36c3da35d4aabe5b7bfcdf075dbb02da9/simpleflow-0.9.4.tar.gz"
+      }
+    ],
+    "0.9.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c6c941807946a0b6e0e95fcfc2096007",
+          "sha256": "0f413b92866140b66f400d08ca175a43eb0726d80aecaf485e4f12909d253bdf"
+        },
+        "downloads": 882,
+        "filename": "simpleflow-0.9.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c6c941807946a0b6e0e95fcfc2096007",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 38392,
+        "upload_time": "2015-10-08T12:22:35",
+        "url": "https://files.pythonhosted.org/packages/57/b4/5dfa007284bb73072a7420412a88b127da4b8e81c964a742d76c24f1e7c4/simpleflow-0.9.5.tar.gz"
+      }
+    ],
+    "0.9.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9d12b820023f657ed25599f654893126",
+          "sha256": "832be132aa4c1de2c453e49a96b89dc30b87e5ef159640262973c5212b19277f"
+        },
+        "downloads": 493,
+        "filename": "simpleflow-0.9.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "9d12b820023f657ed25599f654893126",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 39420,
+        "upload_time": "2015-10-22T09:40:11",
+        "url": "https://files.pythonhosted.org/packages/8f/92/f959ab0a49ae67b4b4826ccb8898cd5e1be9fe11921b8ac4c930fb4eb0b9/simpleflow-0.9.6.tar.gz"
+      }
+    ],
+    "0.9.7": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "901f133e59f55f3d56ac44d6ff851871",
+          "sha256": "56a512e127eda2d892272c8d71f288419d2d272801ff1bb6b281d2f7960f8df7"
+        },
+        "downloads": 1027,
+        "filename": "simpleflow-0.9.7.tar.gz",
+        "has_sig": false,
+        "md5_digest": "901f133e59f55f3d56ac44d6ff851871",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 39428,
+        "upload_time": "2015-10-22T14:54:47",
+        "url": "https://files.pythonhosted.org/packages/a0/79/de24855ad4b72a81b096f80770f29894c4d78acb0452fcd6b71e4fe700d3/simpleflow-0.9.7.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "fa4a50fb735db0045cfc5c4c89314e7f",
+        "sha256": "bbaa269dbaf1c8b4e7f4dd24fa1530f270c77421b1126b5733437b3a6ede0919"
+      },
+      "downloads": 0,
+      "filename": "simpleflow-0.16.0.tar.gz",
+      "has_sig": false,
+      "md5_digest": "fa4a50fb735db0045cfc5c4c89314e7f",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 142176,
+      "upload_time": "2017-05-23T16:01:04",
+      "url": "https://files.pythonhosted.org/packages/3d/33/3fe37be20de549efb5c793d38ba30034311d0d655250e6e12a640301ad75/simpleflow-0.16.0.tar.gz"
+    }
+  ]
+}

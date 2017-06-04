@@ -1,0 +1,281 @@
+{
+  "info": {
+    "author": "Michael Merickel",
+    "author_email": "pylons-discuss@googlegroups.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 5 - Production/Stable",
+      "Framework :: Pyramid",
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: MIT License",
+      "Programming Language :: Python",
+      "Programming Language :: Python :: 2.7",
+      "Programming Language :: Python :: 3",
+      "Programming Language :: Python :: 3.4",
+      "Programming Language :: Python :: 3.5",
+      "Programming Language :: Python :: 3.6",
+      "Programming Language :: Python :: Implementation :: CPython",
+      "Programming Language :: Python :: Implementation :: PyPy"
+    ],
+    "description": "================\npyramid_services\n================\n\n.. image:: https://travis-ci.org/mmerickel/pyramid_services.svg?branch=master\n   :alt: Travis-CI Build Status\n   :target: https://travis-ci.org/mmerickel/pyramid_services\n\nThe core of a service layer that integrates with the\n`Pyramid Web Framework <https://docs.pylonsproject.org/projects/pyramid>`__.\n\n``pyramid_services`` defines a pattern and helper methods for accessing a\npluggable service layer from within your Pyramid apps.\n\nInstallation\n============\n\nInstall from `PyPI <https://pypi.python.org/pypi/pyramid_services>`__ using\n``pip`` or ``easy_install`` inside a virtual environment.\n\n.. code-block:: bash\n\n  $ $VENV/bin/pip install pyramid_services\n\nOr install directly from source.\n\n.. code-block:: bash\n\n  $ git clone https://github.com/mmerickel/pyramid_services.git\n  $ cd pyramid_services\n  $ $VENV/bin/pip install -e .\n\nSetup\n=====\n\nActivate ``pyramid_services`` by including it into your pyramid application.\n\n.. code-block:: python\n\n  config.include('pyramid_services')\n\nThis will add some new directives to your ``Configurator``.\n\n- ``config.register_service(obj, iface=Interface, context=Interface, name='')``\n\n  This method will register a service object for the supplied\n  ``iface``, ``context``, and ``name``. This effectively registers a\n  singleton for your application as the ``obj`` will always be returned when\n  looking for a service.\n\n- ``config.register_service_factory(factory, iface=Interface, context=Interface, name='')``\n\n  This method will register a factory for the supplied ``iface``,\n  ``context``, and ``name``. The factory should be a callable accepting a\n  ``context`` and a ``request`` and should return a service object. The\n  factory will be used at most once per ``request``/``context``/``name``\n  combination.\n\nUsage\n=====\n\nAfter registering services with the ``Configurator``, they are now\naccessible from the ``request`` object during a request lifecycle via the\n``request.find_service(iface=Interface, context=_marker, name='')``\nmethod. Unless a custom ``context`` is passed to ``find_service``, the\nlookup will default to using ``request.context``. The ``context`` will default\nto ``None`` if a service is searched for during or before traversal in Pyramid\nwhen there may not be a ``request.context``.\n\n.. code-block:: python\n\n  svc = request.find_service(ILoginService)\n\nExamples\n========\n\nLet's create a login service by progressively building up from scratch what\nwe want to use in our app.\n\nBasically all of the steps in configuring an interface are optional, but\nthey are shown here as best practices.\n\n.. code-block:: python\n\n  # myapp/interfaces.py\n\n  from zope.interface import Interface\n\n  class ILoginService(Interface):\n    def create_token_for_login(name):\n      pass\n\nWith our interface we can now define a conforming instance.\n\n.. code-block:: python\n\n  # myapp/services.py\n\n  class DummyLoginService(object):\n    def create_token_for_login(self, name):\n      return 'u:{0}'.format(name)\n\nLet's hook it up to our application.\n\n.. code-block:: python\n\n  # myapp/main.py\n\n  from pyramid.config import Configurator\n\n  from myapp.services import DummyLoginService\n\n  def main(global_config, **settings):\n    config = Configurator()\n    config.include('pyramid_services')\n\n    config.register_service(DummyLoginService(), ILoginService)\n\n    config.add_route('home', '/')\n    config.scan('.views')\n    return config.make_wsgi_app()\n\nFinally, let's create our view that utilizes the service.\n\n.. code-block:: python\n\n  # myapp/views.py\n\n  @view_config(route_name='home', renderer='json')\n  def home_view(request):\n    name = request.params.get('name', 'bob')\n\n    login_svc = request.find_service(ILoginService)\n    token = login_svc.create_token_for_login(name)\n\n    return {'access_token': token}\n\nIf you start up this application, you will find that you can access\nthe home url and get custom tokens!\n\nThis is cool, but what's even better is swapping in a new service without\nchanging our view at all. Let's define a new ``PersistentLoginService``\nthat gets tokens from a database. We're going to need to setup some\ndatabase handling, but again nothing changes in the view.\n\n.. code-block:: python\n\n  # myapp/services.py\n\n  from uuid import uuid4\n\n  from myapp.model import AccessToken\n\n  class PersistentLoginService(object):\n    def __init__(self, dbsession):\n      self.dbsession = dbsession\n\n    def create_token_for_login(self, name):\n      token = AccessToken(key=uuid4(), user=name)\n      self.dbsession.add(token)\n      return token.key\n\nBelow is some boilerplate for configuring a model using the excellent\n`SQLAlchemy ORM <http://docs.sqlalchemy.org>`__.\n\n.. code-block:: python\n\n  # myapp/model.py\n\n  from sqlalchemy import engine_from_config\n  from sqlalchemy.ext.declarative import declarative_base\n  from sqlalchemy.orm import sessionmaker\n  from sqlalchemy.schema import Column\n  from sqlalchemy.types import Text\n\n  Base = declarative_base()\n\n  def init_model(settings):\n    engine = engine_from_config(settings)\n    dbmaker = sessionmaker()\n    dbmaker.configure(bind=engine)\n    return dbmaker\n\n  class AccessToken(Base):\n    __tablename__ = 'access_token'\n\n    key = Column(Text, primary_key=True)\n    user = Column(Text, nullable=False)\n\nNow we will update the application to use the new ``PersistentLoginService``.\nHowever, we may have other services and it'd be silly to create a new\ndatabase connection for each service in a request. So we'll also add a\nservice that encapsulates the database connection. Using this technique\nwe can wire services together in the service layer.\n\n.. code-block:: python\n\n  # myapp/main.py\n\n  from pyramid.config import Configurator\n  import transaction\n  import zope.sqlalchemy\n\n  from myapp.model import init_model\n  from myapp.services import PersistentLoginService\n\n  def main(global_config, **settings):\n    config = Configurator()\n    config.include('pyramid_services')\n    config.include('pyramid_tm')\n\n    dbmaker = init_model(settings)\n\n    def dbsession_factory(context, request):\n      dbsession = dbmaker()\n      # register the session with pyramid_tm for managing transactions\n      zope.sqlalchemy.register(dbsession, transaction_manager=request.tm)\n      return dbsession\n\n    config.register_service_factory(dbsession_factory, name='db')\n\n    def login_factory(context, request):\n      dbsession = request.find_service(name='db')\n      svc = PersistentLoginService(dbsession)\n      return svc\n\n    config.register_service_factory(login_factory, ILoginService)\n\n    config.add_route('home', '/')\n    config.scan('.views')\n    return config.make_wsgi_app()\n\nAnd finally the home view will remain unchanged.\n\n.. code-block:: python\n\n  # myapp/views.py\n\n  @view_config(route_name='home', renderer='json')\n  def home_view(request):\n    name = request.params.get('name', 'bob')\n\n    login_svc = request.find_service(ILoginService)\n    token = login_svc.create_token_for_login(name)\n\n    return {'access_token': token}\n\nHopefully this pattern is clear. It has several advantages over most basic\nPyramid tutorials.\n\n- The model is completely abstracted from the views, making both easy to\n  test on their own.\n\n- The service layer can be developed independently of the views, allowing\n  for dummy implementations for easy creation of templates and frontend\n  logic. Later, the real service layer can be swapped in as it's developed,\n  building out the backend functionality.\n\n- Most services may be implemented in such a way that they do not depend on\n  Pyramid or a particular request object.\n\n- Different services may be returned based on a context, such as the\n  result of traversal or some other application-defined discriminator.\n\nTesting Examples\n================\n\nIf you are writing an application that uses ``pyramid_services`` you may want\nto do some integration testing that verifies that your application has\nsuccessfully called ``register_service`` or ``register_service_factory``. Using\n``Pyramid``'s ``testing`` module to create a ``Configurator`` and after calling\n``config.include('pyramid_services')`` you may use ``find_service_factory`` to\nget information about a registered service.\n\nTake as an example this test that verifies that ``dbsession_factory`` has been\ncorrectly registered. This assumes you have a ``myapp.services`` package that\ncontains an ``includeme()`` function.\n\n.. code-block:: python\n\n  # myapp/tests/test_integration.py\n\n  from myapp.services import dbsession_factory, login_factory, ILoginService\n\n  class TestIntegration_services(unittest.TestCase):\n    def setUp(self):\n      self.config = pyramid.testing.setUp()\n      self.config.include('pyramid_services')\n      self.config.include('myapp.services')\n\n    def tearDown(self):\n      pyramid.testing.tearDown()\n\n    def test_db_maker(self):\n      result = self.config.find_service_factory(name='db')\n      self.assertEqual(result, dbsession_factory)\n\n    def test_login_factory(self):\n      result = self.config.find_service_factory(ILoginService)\n      self.assertEqual(result, login_factory)\n\n\n1.1 (2017-05-31)\n================\n\nFeatures\n--------\n\n- If the ``iface`` is a class then it must be the exact class that was\n  registered originally. Subclasses are not identified as implementing\n  the same interface at this time due to internal limitations.\n\n1.0 (2017-05-11)\n================\n\nFeatures\n--------\n\n- Allow the ``iface`` argument to be an arbitrary Python object / class.\n  See https://github.com/mmerickel/pyramid_services/pull/10\n\nBackward Incompatibilities\n--------------------------\n\n- Drop Python 2.6 and Python 3.3 support.\n\n0.4 (2016-02-03)\n================\n\nBackward Incompatibilities\n--------------------------\n\n- Drop Python 3.2 support.\n\n- Use the original service context interface as the cache key instead\n  of the current context. This means the service will be properly created\n  only once for any context satisfying the original interface.\n\n  Previously, if you requested the same service from 2 different contexts\n  in the same request you would receive 2 service objects, instead of\n  a cached version of the original service, assuming the service was\n  registered to satisfy both contexts.\n  See https://github.com/mmerickel/pyramid_services/pull/12\n\n0.3 (2015-12-13)\n================\n\n- When using ``request.find_service`` during or before traversal the\n  ``request.context`` is not valid. In these situations the ``context``\n  parameter will default to ``None`` instead of raising an exception.\n  See https://github.com/mmerickel/pyramid_services/pull/8\n\n- Add ``config.find_service_factory`` and ``request.find_service_factory``.\n  See https://github.com/mmerickel/pyramid_services/pull/4\n\n0.2 (2015-03-13)\n================\n\n- Change ``find_service(..., context=None)`` to use a context of ``None``.\n  Previously this would fallback to using ``request.context`` if the\n  ``context`` was ``None``. Now ``find_service`` will only fallback to\n  ``request.context`` when no ``context`` argument is specified.\n  See https://github.com/mmerickel/pyramid_services/pull/3\n\n- Support ``introspectable`` for services so that they show up in the\n  pyramid_debugtoolbar and elsewhere.\n  See https://github.com/mmerickel/pyramid_services/pull/2\n\n0.1.1 (2015-02-17)\n==================\n\n- Support for ``request.find_service``, ``config.register_service``, and\n  ``config.register_service_factory``.\n- Initial commits.\n\n\n",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/mmerickel/pyramid_services",
+    "keywords": "pyramid services service layer",
+    "license": "MIT",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "pyramid_services",
+    "platform": "",
+    "project_url": "https://pypi.org/project/pyramid_services/",
+    "release_url": "https://pypi.org/project/pyramid_services/1.1/",
+    "requires_python": ">=2.7,!=3.0.*,!=3.1.*,!=3.2.*,!=3.3.*",
+    "summary": "A service layer abstraction for the Pyramid Web Framework.",
+    "version": "1.1"
+  },
+  "releases": {
+    "0.1.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "81128c876f5028ebf4d63ca482534d73",
+          "sha256": "235bf3515fca3de8a616bd7e403282c96d63007aa68ec7c1f9fa9c7f736685ab"
+        },
+        "downloads": 1417,
+        "filename": "pyramid_services-0.1.1-py2.py3-none-any.whl",
+        "has_sig": true,
+        "md5_digest": "81128c876f5028ebf4d63ca482534d73",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 9475,
+        "upload_time": "2015-02-17T08:24:43",
+        "url": "https://files.pythonhosted.org/packages/58/81/fe308d76ff8001bacc3eb8397c9e442d0b08495e3f3f3b9e7da62568e170/pyramid_services-0.1.1-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "609ea9706057f34b7bdfa38f20e80f99",
+          "sha256": "fe7ac835895c178e075afccd4cc269a9889ee82a721f06f705421c905e55abd8"
+        },
+        "downloads": 950,
+        "filename": "pyramid_services-0.1.1.tar.gz",
+        "has_sig": true,
+        "md5_digest": "609ea9706057f34b7bdfa38f20e80f99",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 7008,
+        "upload_time": "2015-02-17T08:24:45",
+        "url": "https://files.pythonhosted.org/packages/ec/8f/5892e65608d1e00a0e9d125b0ab80a95e2cc33994918adfa32bbd40aff65/pyramid_services-0.1.1.tar.gz"
+      }
+    ],
+    "0.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "689c7c6bf07192136aa0dd014147aa5a",
+          "sha256": "c25e9928b05d5306c84618fe6d3600ec7176be56888b58355be348fcf021a3ad"
+        },
+        "downloads": 2143,
+        "filename": "pyramid_services-0.2-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "689c7c6bf07192136aa0dd014147aa5a",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 10468,
+        "upload_time": "2015-03-13T18:32:12",
+        "url": "https://files.pythonhosted.org/packages/ed/94/ef286f88b5e161f7b426a3067dd11bf25a0ca6e3be4103b72f4766452ef4/pyramid_services-0.2-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1c8b41cb1c72906792b4b3b0a6a1c2bf",
+          "sha256": "2f69a37ae24f82c90a2cfd576476de042eee2a60cb72ce080376b01798e26b26"
+        },
+        "downloads": 1179,
+        "filename": "pyramid_services-0.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1c8b41cb1c72906792b4b3b0a6a1c2bf",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 7789,
+        "upload_time": "2015-03-13T18:32:15",
+        "url": "https://files.pythonhosted.org/packages/a3/a3/9dff35dc4fbbfa4aad9a12e4bbdddbf1669ef3bd9c32c9acb1f8dc6bcc93/pyramid_services-0.2.tar.gz"
+      }
+    ],
+    "0.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b371fe350d67d0c03856281a531e0bd0",
+          "sha256": "d8558f22a586da032f4e780e6b4801bf63d73c6fa7a25b7be5e47e29acae64e6"
+        },
+        "downloads": 839,
+        "filename": "pyramid_services-0.3-py2.py3-none-any.whl",
+        "has_sig": true,
+        "md5_digest": "b371fe350d67d0c03856281a531e0bd0",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 11818,
+        "upload_time": "2015-12-13T19:33:49",
+        "url": "https://files.pythonhosted.org/packages/3e/f7/a82099470cd36492bad0215e75ba38ad8682206c3fa92eaffb4f7a0013bf/pyramid_services-0.3-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f35e706922b64decf061013d72ddb19a",
+          "sha256": "849a856888560f0ca83ef9e1b8afeb607ed783cf99cd73b136d8dd86240f59d7"
+        },
+        "downloads": 480,
+        "filename": "pyramid_services-0.3.tar.gz",
+        "has_sig": true,
+        "md5_digest": "f35e706922b64decf061013d72ddb19a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 11779,
+        "upload_time": "2015-12-13T19:33:59",
+        "url": "https://files.pythonhosted.org/packages/47/d7/f54a3e04cb201727f7c577559a078b54bf54ac1d1549992f7d71d40ba21a/pyramid_services-0.3.tar.gz"
+      }
+    ],
+    "0.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a0a541d82ea5736a2aba262e49dffde8",
+          "sha256": "f538a5e7902026902c66a0f1254c4078fce39958e5217ef6d9dfe2704560fa24"
+        },
+        "downloads": 1694,
+        "filename": "pyramid_services-0.4-py2.py3-none-any.whl",
+        "has_sig": true,
+        "md5_digest": "a0a541d82ea5736a2aba262e49dffde8",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 12416,
+        "upload_time": "2016-02-04T00:26:00",
+        "url": "https://files.pythonhosted.org/packages/23/9f/02e4a8a49a87aef6286be20d162a117d946985b134c58f0f9306d8278ed4/pyramid_services-0.4-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "cb079e07f640bf8a583d988e1e6889bc",
+          "sha256": "96c307cc9932c5ba269cceaa9b66ddbd0d864646052c141cfa3c0ba1ee4f518f"
+        },
+        "downloads": 169,
+        "filename": "pyramid_services-0.4.tar.gz",
+        "has_sig": true,
+        "md5_digest": "cb079e07f640bf8a583d988e1e6889bc",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 13291,
+        "upload_time": "2016-02-04T00:26:12",
+        "url": "https://files.pythonhosted.org/packages/68/d5/49f40b00bacb29a608e5aa9b2633507f81af6197c334b3661301f7360d39/pyramid_services-0.4.tar.gz"
+      }
+    ],
+    "1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "dcc287e47f022b906666efd629484afe",
+          "sha256": "ac05be4fb7c3fe0c7aa015d2d3b5b68b08fa700bb11ec5a7d118c470fe4ca934"
+        },
+        "downloads": 0,
+        "filename": "pyramid_services-1.0-py2.py3-none-any.whl",
+        "has_sig": true,
+        "md5_digest": "dcc287e47f022b906666efd629484afe",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 12044,
+        "upload_time": "2017-05-11T20:48:18",
+        "url": "https://files.pythonhosted.org/packages/e2/cf/71123abd1932cd591092fb4fa8874087d16db055835145934df610796b14/pyramid_services-1.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3483a1c2bd551357655faae15a39436d",
+          "sha256": "a54d528b0a941886f7a2fd0953c6a42c64e53674910c4a1bd8b4f8f07fcc48f3"
+        },
+        "downloads": 0,
+        "filename": "pyramid_services-1.0.tar.gz",
+        "has_sig": true,
+        "md5_digest": "3483a1c2bd551357655faae15a39436d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 12096,
+        "upload_time": "2017-05-11T20:48:20",
+        "url": "https://files.pythonhosted.org/packages/77/e7/e9ef03ec3eba773524eeb70154ba49fa419c81766854d304cf3651a7ab34/pyramid_services-1.0.tar.gz"
+      }
+    ],
+    "1.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b218e5b4930bc24a73dbe1b30de3dbc5",
+          "sha256": "533e67659224c2064ed4ffa803c30adb99e6288c2a2c31d7e7447a8a4f19d7b4"
+        },
+        "downloads": 0,
+        "filename": "pyramid_services-1.1-py2.py3-none-any.whl",
+        "has_sig": true,
+        "md5_digest": "b218e5b4930bc24a73dbe1b30de3dbc5",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 12229,
+        "upload_time": "2017-05-31T21:09:15",
+        "url": "https://files.pythonhosted.org/packages/2a/57/470bd74380d38279e0eb70147542dc34c0886cf3bf3295b2edab6be5458b/pyramid_services-1.1-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3175b5c044e84d9d864a8f994efeff29",
+          "sha256": "adff1063ddf86e16c9c3d32e160c7b8b44ad28a0831333446fdf7bba8aa7146c"
+        },
+        "downloads": 0,
+        "filename": "pyramid_services-1.1.tar.gz",
+        "has_sig": true,
+        "md5_digest": "3175b5c044e84d9d864a8f994efeff29",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 12318,
+        "upload_time": "2017-05-31T21:09:18",
+        "url": "https://files.pythonhosted.org/packages/27/bf/3eddae79d802dd814793ea9a7d404e06fa7070ded2c52d4f17b1724ae0ff/pyramid_services-1.1.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "b218e5b4930bc24a73dbe1b30de3dbc5",
+        "sha256": "533e67659224c2064ed4ffa803c30adb99e6288c2a2c31d7e7447a8a4f19d7b4"
+      },
+      "downloads": 0,
+      "filename": "pyramid_services-1.1-py2.py3-none-any.whl",
+      "has_sig": true,
+      "md5_digest": "b218e5b4930bc24a73dbe1b30de3dbc5",
+      "packagetype": "bdist_wheel",
+      "python_version": "py2.py3",
+      "size": 12229,
+      "upload_time": "2017-05-31T21:09:15",
+      "url": "https://files.pythonhosted.org/packages/2a/57/470bd74380d38279e0eb70147542dc34c0886cf3bf3295b2edab6be5458b/pyramid_services-1.1-py2.py3-none-any.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "3175b5c044e84d9d864a8f994efeff29",
+        "sha256": "adff1063ddf86e16c9c3d32e160c7b8b44ad28a0831333446fdf7bba8aa7146c"
+      },
+      "downloads": 0,
+      "filename": "pyramid_services-1.1.tar.gz",
+      "has_sig": true,
+      "md5_digest": "3175b5c044e84d9d864a8f994efeff29",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 12318,
+      "upload_time": "2017-05-31T21:09:18",
+      "url": "https://files.pythonhosted.org/packages/27/bf/3eddae79d802dd814793ea9a7d404e06fa7070ded2c52d4f17b1724ae0ff/pyramid_services-1.1.tar.gz"
+    }
+  ]
+}

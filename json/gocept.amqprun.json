@@ -1,0 +1,768 @@
+{
+  "info": {
+    "author": "",
+    "author_email": "",
+    "bugtrack_url": null,
+    "classifiers": [],
+    "description": "==============\ngocept.amqprun\n==============\n\ngocept.amqprun helps you writing and running AMQP consumers, and sending AMQP\nmessages. It currently only supports AMQP 0-8 and integrates with the Zope Tool\nKit (ZTK) so you can use adapters, utilities and all the buzz.\n\n.. contents:: :depth: 1\n\n\nBasic concepts and terms\n========================\n\n* A *message handler* is a function which is bound with a routing key to\n  exactly one queue. It is called for each message on that queue, and may\n  return a list of messages as a result.\n\n* The result messages of one handled message are sent in one transaction\n  together with the ACK of the handled message.\n\n* When an exception is raised during message processing, the transaction is\n  aborted. (The received message would be NACKed if RabbitMQ was supporting\n  it.)\n\n* A message handler handles exactly one message at a time. Multiple messages\n  can be processed at the same time using threads. Those threads are called\n  *workers*.\n\n\nThings you don't need to take care of\n=====================================\n\n* Threading of multiple workers\n\n* Socket handling and locking for communicating with the AMQP broker\n\n* Transaction handling\n\n* Message ids\n\n  * Each outgoing message gets an email-like message id.\n\n  * The correlation id of each outgoing message is set to the message id of\n    the incoming message.\n\n  * Each outgoing message gets a custom references header which is set to the\n    incoming message's reference header plus the incoming message's message\n    id.\n\n\nGetting started: receiving messages\n===================================\n\nTo get started, define a function which does the work. In this example, we log\nthe message body and send a message. The ``declare`` decorator takes two\narguments, the queue name and the routing key (you can also pass in a list to\nbind the function to multiple routing keys). The ``declare`` decorator also\nsupports an optional ``arguments`` argument that is a dictionary to be passed\nto the AMQP queue_declare call to, e.g., support mirrored queues on RabbitMQ.\nThe optional argument ``principal`` specifies to wrap the handler call into a\nzope.security interaction using the given principal id (you need the\n``[security]`` extra to use this integration functionality).\n\n::\n\n    import logging\n    import gocept.amqprun.handler\n    import gocept.amqprun.message\n\n    log = logging.getLogger(__name__)\n\n    @gocept.amqprun.handler.declare('test.queue', 'test.routing')\n    def log_message_body(message):\n        log.info(message.body)\n        msg = gocept.amqprun.message.Message(\n            header=dict(content_type='text/plain'),\n            body=u'Thank you for your message.',\n            routing_key='test.thank.messages')\n        return [msg]\n\n\nThe handler function needs to be registered as a named utility. With ZCML this\nlooks like this [#grok]_::\n\n    <configure xmlns=\"http://namespaces.zope.org/zope\">\n      <include package=\"gocept.amqprun\" />\n      <utility component=\"path.to.package.log_message_body\" name=\"basic\" />\n    </configure>\n\nTo set up a server, it's recommended to create a buildout. The following\nbuildout creates a config file for gocept.amqprun as well as a ZCML file for\nthe component configuration and uses ZDaemon to daemonize the process::\n\n    [buildout]\n    parts =\n            config\n            zcml\n            app\n            server\n\n    [deployment]\n    name = queue\n    recipe = gocept.recipe.deploymentsandbox\n    root = ${buildout:directory}\n\n    [config]\n    recipe = lovely.recipe:mkfile\n    path = ${deployment:etc-directory}/queue.conf\n\n    amqp-hostname = localhost\n    amqp-username = guest\n    amqp-password = guest\n    amqp-virtualhost = /\n\n    eventlog =\n        <eventlog>\n          level DEBUG\n          <logfile>\n            formatter zope.exceptions.log.Formatter\n            path STDOUT\n          </logfile>\n        </eventlog>\n    amqp-server =\n        <amqp-server>\n          hostname ${:amqp-hostname}\n          username ${:amqp-username}\n          password ${:amqp-password}\n          virtual_host ${:amqp-virtualhost}\n        </amqp-server>\n\n    content =\n        ${:eventlog}\n        ${:amqp-server}\n        <worker>\n          amount 10\n          component-configuration ${zcml:path}\n        </worker>\n        <settings>\n          your.custom.settings here\n        </settings>\n\n    [zcml]\n    recipe = lovely.recipe:mkfile\n    path = ${deployment:etc-directory}/queue.zcml\n    content =\n        <configure xmlns=\"http://namespaces.zope.org/zope\">\n          <include package=\"gocept.amqprun\" />\n          <include package=\"your.package\" />\n        </configure>\n\n    [app]\n    recipe = zc.recipe.egg:script\n    eggs =\n       gocept.amqprun\n       your.package\n       zope.exceptions\n    arguments = '${config:path}'\n    scripts = server=app\n\n    [server]\n    recipe = zc.zdaemonrecipe\n    deployment = deployment\n    program = ${buildout:bin-directory}/app\n\n\n.. [#grok] It's likely that there will be a special ZCML statement and/or grok\n   support to make registering of handlers easier.\n\n\nSending messages\n================\n\nIf all you want to do is send messages, you don't have to register any\nhandlers, but can use ``gocept.amqprun.server.Server.send()`` directly. While\nthe handlers usually run in their own process, started by the ``server``\nentrypoint (as described above), if you're just sending messages, you can also\nskip the extra process and run the ``gocept.amqprun.server.Server`` in your\noriginal process, in its own thread. Here is some example code to do that::\n\n    def start_server(**kw):\n        parameters = gocept.amqprun.connection.Parameters(**kw)\n        server = gocept.amqprun.server.Server(parameters)\n        server_thread = threading.Thread(target=server.start)\n        server_thread.daemon = True\n        server_thread.start()\n        import time\n        time.sleep(0.1)\n        return server\n\n(When you're using the ZCA, you'll probably want to register the ``Server`` as\na utility at that point, too, so clients can access it to send messages\neasily.)\n\n\nSettings\n========\n\nFor application-specific settings gocept.amqprun makes the ``<settings>``\nsection from the configuration available via an ``ISettings`` utility::\n\n    settings = zope.component.getUtility(\n        gocept.amqprun.interfaces.ISettings)\n    settings.get('your.settings.key')\n\n\nLimitations\n===========\n\n* Currently all messages are sent and received through the `amq.topic`\n  exchange. Other exchanges are not supported at the moment.\n\n\nInterfacing with the file system\n================================\n\nWriting\n-------\n\ngocept.amqprun provides a quick way to set up a handler that writes incoming\nmessages as individual files to a given directory, using the\n``<amqp:writefiles>`` ZCML directive. You need the `writefiles` extra to\nenable this directive::\n\n    <configure xmlns=\"http://namespaces.zope.org/zope\"\n               xmlns:amqp=\"http://namespaces.gocept.com/amqp\">\n\n      <include package=\"gocept.amqprun\" file=\"meta.zcml\" />\n\n      <amqp:writefiles\n        routing_key=\"test.data\"\n        queue_name=\"test.queue\"\n        directory=\"/path/to/output-directory\"\n        />\n    </configure>\n\nAll messages with routing key 'test.data' would then be written to\n'output-directory', two files per message, one containing the body and the\nother containing the headers (in ``zope.xmlpickle`` format).\n(Note that in the buildout example above, you would need to put the writefiles\ndirective into the ``[zcml]`` section, not the ``[config]`` section.)\n\nYou can specify multiple routing keys separated by spaces::\n\n    <amqp:writefiles\n      routing_key=\"test.foo test.bar\"\n      queue_name=\"test.queue\"\n      directory=\"/path/to/output-directory\"\n      />\n\nYou can configure the way files are named with the ``pattern`` parameter, for\nexample::\n\n    <amqp:writefiles\n      routing_key=\"test.data\"\n      queue_name=\"test.queue\"\n      directory=\"/path/to/output-directory\"\n      pattern=\"${routing_key}/${date}/${msgid}-${unique}.xml\"\n      />\n\n``pattern`` performs a ``string.Template`` substitution. The following\nvariables are available:\n\n  :date: The date the message arrived, formatted ``%Y-%m-%d``\n  :msgid: The value of the message-id header\n  :xfilename: The value of the X-Filename header\n  :routing_key: The routing key of the message\n  :unique: A token that guarantees the filename will be unique in its directory\n\nThe default value for ``pattern`` is ``${routing_key}-${unique}``.\n\nTo support zc.buildout, ``{variable}`` is accepted as an alternative syntax to\n``${variable}``. (zc.buildout uses ``${}`` for its own substitutions, but\nunfortunately does not support escaping them.)\n\nIf ``pattern`` contains slashes, intermediate directories will be created below\n``directory``, so in the example, messages would be stored like this::\n\n    /path/to/output-directory/example.route/2011-04-07/asdf998-1234098791.xml\n\nJust like the ``declare`` decorator, the ``<amqp:writefiles>`` ZCML directive\nalso supports an optional ``arguments`` parameter that is passed to the AMQP\n``queue_declare`` call to, e.g., support RabbitMQ mirrored queues::\n\n    <amqp:writefiles\n      routing_key=\"test.foo test.bar\"\n      queue_name=\"test.queue\"\n      directory=\"/path/to/output-directory\"\n      arguments=\"\n      x-ha-policy = all\n      \"\n      />\n\nReading\n-------\n\nYou can also set up a thread to read files from a directory and publish them\nonto the queue, using the ``<amqp:readfiles>`` ZCML directive (the filename\nwill be transmitted in the ``X-Filename`` header). You need the `readfiles`\nextra to enable this directive::\n\n    <configure xmlns=\"http://namespaces.zope.org/zope\"\n               xmlns:amqp=\"http://namespaces.gocept.com/amqp\">\n\n      <include package=\"gocept.amqprun\" file=\"meta.zcml\" />\n\n      <amqp:readfiles\n        directory=\"/path/to/input-directory\"\n        routing_key=\"test.data\"\n        />\n    </configure>\n\nThe input-directory is expected to be a Maildir, i.e. files to be read should\nappear in ``input-directory/new` which will be polled every second. After the\nfiles have been published to the given routing key, they will be moved to\n``input-directory/cur``.\n\n\nDevelopment\n===========\n\nYou can set the AMQP server parameters for running the tests via environment\nvariables:\n\n:AMQP_HOSTNAME:\n    default: localhost\n\n:AMQP_USERNAME:\n    default: guest\n\n:AMQP_PASSWORD:\n    default: guest\n\n:AMQP_VIRTUALHOST:\n    default: None, so a vhost with a temporary name is created and\n    deleted automatically (using ``AMQP_RABBITMQCTL`` command)\n\n:AMQP_RABBITMQCTL:\n   default: 'sudo rabbitmqctl'\n\nThe source code is available in the mercurial repository at\nhttps://bitbucket.org/gocept/gocept.amqprun\n\nPlease report any bugs you find at\nhttps://bitbucket.org/gocept/gocept.amqprun/issues\n\n.. vim: set ft=rst:\n",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "",
+    "keywords": "",
+    "license": "",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "gocept.amqprun",
+    "platform": null,
+    "project_url": "https://pypi.org/project/gocept.amqprun/",
+    "release_url": "https://pypi.org/project/gocept.amqprun/1.7.1/",
+    "requires_python": "",
+    "summary": "gocept.amqprun helps you writing and running AMQP consumers, and sending AMQP",
+    "version": "1.7.1"
+  },
+  "releases": {
+    "0.10": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c019774fb347b05014e81d11191e0932",
+          "sha256": "6bca380bb18799075737384e14092f512dc154e0762ccf63d1069d9c0a512005"
+        },
+        "downloads": 2089,
+        "filename": "gocept.amqprun-0.10.zip",
+        "has_sig": false,
+        "md5_digest": "c019774fb347b05014e81d11191e0932",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 71956,
+        "upload_time": "2013-05-28T09:55:57",
+        "url": "https://files.pythonhosted.org/packages/ad/8b/df4541a6a70cbaf9cb4cf9ef86c0c1f900ef4f44ed852dd805f94231a98f/gocept.amqprun-0.10.zip"
+      }
+    ],
+    "0.11": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a1e44085c73c9ebddb9a7f9bd7bc88b6",
+          "sha256": "6d92a5cd74fda84851eb9df80487fbe17625d76f80e8dbaed50f4bd85458fe39"
+        },
+        "downloads": 1925,
+        "filename": "gocept.amqprun-0.11.zip",
+        "has_sig": false,
+        "md5_digest": "a1e44085c73c9ebddb9a7f9bd7bc88b6",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 73341,
+        "upload_time": "2014-01-21T09:06:48",
+        "url": "https://files.pythonhosted.org/packages/76/e8/6c62f76fcb0c57b40715349126214c51c85122868314a80b2e3fe1d1e665/gocept.amqprun-0.11.zip"
+      }
+    ],
+    "0.12": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "23ec5945a6dce79adc8b8978b3ca85f3",
+          "sha256": "9087b056034bb6e50726ff0ff617ee35adaa0391f541c7f9cbe44e6450620fad"
+        },
+        "downloads": 1890,
+        "filename": "gocept.amqprun-0.12.zip",
+        "has_sig": false,
+        "md5_digest": "23ec5945a6dce79adc8b8978b3ca85f3",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 75212,
+        "upload_time": "2014-02-13T09:57:31",
+        "url": "https://files.pythonhosted.org/packages/ad/bb/8a320d27110bafd9dc089eb30fb34a2676c0b0ec411cddfc252b10ae5a02/gocept.amqprun-0.12.zip"
+      }
+    ],
+    "0.12.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "095381d75eda704a0b841daba570fe20",
+          "sha256": "c27dbb3ebcc34a835ff496c89ff1133b42972d64edd9cea467e9a6c83fe16102"
+        },
+        "downloads": 1855,
+        "filename": "gocept.amqprun-0.12.1.zip",
+        "has_sig": false,
+        "md5_digest": "095381d75eda704a0b841daba570fe20",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 75740,
+        "upload_time": "2014-02-20T07:10:26",
+        "url": "https://files.pythonhosted.org/packages/d2/8e/532049273bbef390f3403fc03c6fc5c6d07641218d33b16edb399fc4df21/gocept.amqprun-0.12.1.zip"
+      }
+    ],
+    "0.12.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "76b0728c7e9fd6ad034d4fe140df69fe",
+          "sha256": "1f7ffceae133616ae4de4a0c572f7df127d7e22fb60c12d8bd07187155dd7174"
+        },
+        "downloads": 1934,
+        "filename": "gocept.amqprun-0.12.2.zip",
+        "has_sig": false,
+        "md5_digest": "76b0728c7e9fd6ad034d4fe140df69fe",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 75928,
+        "upload_time": "2014-02-20T09:29:03",
+        "url": "https://files.pythonhosted.org/packages/ae/82/8c1abfa81f5877c02ddecbba2325f018cc6affcff8dd2a5154eaa601b999/gocept.amqprun-0.12.2.zip"
+      }
+    ],
+    "0.13.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f26d72da3d962c17c1549c543f9ed2b5",
+          "sha256": "ea4d9966fd26be5c4546ed4ae12c6304ca3d0e2db3317a3c73feedf17d4182c2"
+        },
+        "downloads": 1795,
+        "filename": "gocept.amqprun-0.13.0.zip",
+        "has_sig": false,
+        "md5_digest": "f26d72da3d962c17c1549c543f9ed2b5",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 77523,
+        "upload_time": "2014-04-16T13:59:55",
+        "url": "https://files.pythonhosted.org/packages/10/7f/880c35ddafbde4be49e78735979115dcf6717ec241b2d455a91cb3c90ef4/gocept.amqprun-0.13.0.zip"
+      }
+    ],
+    "0.14.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "561e5fa62e7e431cdf1726ab8fca0f34",
+          "sha256": "2100fe22b173156211eeaecaaabec8c3f0174c4bd190e5562dad75dd4c784390"
+        },
+        "downloads": 1454,
+        "filename": "gocept.amqprun-0.14.0.zip",
+        "has_sig": false,
+        "md5_digest": "561e5fa62e7e431cdf1726ab8fca0f34",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 79847,
+        "upload_time": "2014-09-09T13:21:10",
+        "url": "https://files.pythonhosted.org/packages/cd/84/7586263feb03917f04ad50983c8c1bf2f90b7a4f1db65c5393ebc8e832f4/gocept.amqprun-0.14.0.zip"
+      }
+    ],
+    "0.15.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "351c5fe3dc04f4b05f34ab77e053112d",
+          "sha256": "11c4f835cbded0ff6ec07bdbe64a060d65c3ca0d92184d200eda5d162551e805"
+        },
+        "downloads": 1386,
+        "filename": "gocept.amqprun-0.15.0.zip",
+        "has_sig": false,
+        "md5_digest": "351c5fe3dc04f4b05f34ab77e053112d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 80182,
+        "upload_time": "2014-10-08T13:23:35",
+        "url": "https://files.pythonhosted.org/packages/4c/09/409cdc238ff4e1e9c698c1a27c4ded9b4b952691a8675463630f219a6ac5/gocept.amqprun-0.15.0.zip"
+      }
+    ],
+    "0.15.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a33d477b85e07a2a921725957fc6109a",
+          "sha256": "d1b0f694b1517ae9c9e57b21fb7f1290484b84197491d141c461136d7291fba3"
+        },
+        "downloads": 1151,
+        "filename": "gocept.amqprun-0.15.1.zip",
+        "has_sig": false,
+        "md5_digest": "a33d477b85e07a2a921725957fc6109a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 78868,
+        "upload_time": "2015-01-21T07:17:36",
+        "url": "https://files.pythonhosted.org/packages/d8/30/f4ce3051b406cb14aea6f76dd4982a36a2951982970a2f70731d306128ed/gocept.amqprun-0.15.1.zip"
+      }
+    ],
+    "0.15.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9698cad6105e2aec44dc7966fb761da0",
+          "sha256": "35ac6ee510e5f04fd7a51d2ac7a0f9d8421c5dc34aa2005682591a669ea19679"
+        },
+        "downloads": 1101,
+        "filename": "gocept.amqprun-0.15.2.zip",
+        "has_sig": false,
+        "md5_digest": "9698cad6105e2aec44dc7966fb761da0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 79004,
+        "upload_time": "2015-02-24T09:53:26",
+        "url": "https://files.pythonhosted.org/packages/30/6d/e899875f8314a367c102af2808c94d8532c5e8efb16c846a8e79fcb19982/gocept.amqprun-0.15.2.zip"
+      }
+    ],
+    "0.16.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a05f2313ac1eada23f44a0385ead4b83",
+          "sha256": "7799f7f05bef74331702d7e0921475ee21a349c7ff42b05a990dab43332aeb84"
+        },
+        "downloads": 1075,
+        "filename": "gocept.amqprun-0.16.0.zip",
+        "has_sig": false,
+        "md5_digest": "a05f2313ac1eada23f44a0385ead4b83",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 79507,
+        "upload_time": "2015-03-25T14:52:37",
+        "url": "https://files.pythonhosted.org/packages/a0/a1/066f1e71fcdb7fbf31a3edc4f572298b8a2715d2947f7f98ad7fc73c6c68/gocept.amqprun-0.16.0.zip"
+      }
+    ],
+    "0.16.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b7bf9fd54a91d4f8fcfa6b91dbbc262d",
+          "sha256": "7cb61c9f3a614481735c1f9090bef7d327114f43b5eec9be88bfb108f4561c76"
+        },
+        "downloads": 256,
+        "filename": "gocept.amqprun-0.16.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b7bf9fd54a91d4f8fcfa6b91dbbc262d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 49956,
+        "upload_time": "2016-02-01T10:50:19",
+        "url": "https://files.pythonhosted.org/packages/37/88/b7419bb199dcd4cf4e7a77ee9b4d7f40d3a209964474837e480e3672729f/gocept.amqprun-0.16.1.tar.gz"
+      }
+    ],
+    "0.17.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "63298a69040f3cc88a2c850e1eee36f2",
+          "sha256": "fd17fb0e87ed13494b3974f5905ee06b3d861f614121e77e591246cf5b92133b"
+        },
+        "downloads": 1032,
+        "filename": "gocept.amqprun-0.17.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "63298a69040f3cc88a2c850e1eee36f2",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 49983,
+        "upload_time": "2015-04-09T09:09:13",
+        "url": "https://files.pythonhosted.org/packages/5b/47/63a3f951391f8e263abe3dc7ec6d852ab975d5779373c5e778523cda89dd/gocept.amqprun-0.17.0.tar.gz"
+      }
+    ],
+    "0.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0f1ebf4c92bc0942a06642a15c9fb96c",
+          "sha256": "8a27db921cbd53d474f32b91b5c8f016b83bc2cec7739a34c4c6531e442042a8"
+        },
+        "downloads": 3183,
+        "filename": "gocept.amqprun-0.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0f1ebf4c92bc0942a06642a15c9fb96c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 21068,
+        "upload_time": "2010-09-14T15:48:24",
+        "url": "https://files.pythonhosted.org/packages/31/db/c9245c4d65b58cb0f4f66082d507a83163a0b3a0dde3cd194d58a12baaf5/gocept.amqprun-0.2.tar.gz"
+      }
+    ],
+    "0.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7cfa22e0c0b98a6d9129c8a0a5a41ff0",
+          "sha256": "291d4179ed23bbe9d353c650b497c34a49c4f5d467bcb737428245551be48642"
+        },
+        "downloads": 3178,
+        "filename": "gocept.amqprun-0.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7cfa22e0c0b98a6d9129c8a0a5a41ff0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 23700,
+        "upload_time": "2011-02-05T16:19:15",
+        "url": "https://files.pythonhosted.org/packages/1f/a8/cec95a4e37a3552f5d093feea71fb3e5d9f172c0abaaa94ff3fd663f70ec/gocept.amqprun-0.3.tar.gz"
+      }
+    ],
+    "0.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4a8af6cc7a5b2c0d42e7ae775ef09553",
+          "sha256": "8e51cc81a770056501aa2f826e64c8e772cb06d62eb619a7a2b0e6cf10ed9f8e"
+        },
+        "downloads": 3080,
+        "filename": "gocept.amqprun-0.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4a8af6cc7a5b2c0d42e7ae775ef09553",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 28094,
+        "upload_time": "2011-07-25T13:33:55",
+        "url": "https://files.pythonhosted.org/packages/81/5a/1e4fef56d1c2d0386c7672733a62616f6db93d87ad054bbe735e041abf44/gocept.amqprun-0.4.tar.gz"
+      }
+    ],
+    "0.4.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "10afc1f431e717d32a71ecdf6bfe7518",
+          "sha256": "9c12e9dac9e2ec53dc9f8d7090a062044e348750a5a161a63e1a360b1ded59b4"
+        },
+        "downloads": 3076,
+        "filename": "gocept.amqprun-0.4.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "10afc1f431e717d32a71ecdf6bfe7518",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 28179,
+        "upload_time": "2011-08-22T11:14:06",
+        "url": "https://files.pythonhosted.org/packages/b9/e9/2928c40af59af0c404db604610bc2ba060c443c76838c72a64486196213a/gocept.amqprun-0.4.1.tar.gz"
+      }
+    ],
+    "0.4.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "316f5888f5b8375784f86b1bcff0e190",
+          "sha256": "2601b77e43ff5ad25ecbd35f7c5a0b40c6d8f6aa73f979cf3d30c9aa306a1fdd"
+        },
+        "downloads": 3059,
+        "filename": "gocept.amqprun-0.4.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "316f5888f5b8375784f86b1bcff0e190",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 28315,
+        "upload_time": "2011-08-23T08:31:34",
+        "url": "https://files.pythonhosted.org/packages/5b/51/31e8746eb2d5ddcb381599bd9bbbaf809ac9d31859102cc7b28f752eb3f7/gocept.amqprun-0.4.2.tar.gz"
+      }
+    ],
+    "0.4.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ea75b6ed975ab2d30f514e2ee3f2c812",
+          "sha256": "fdb18eba7e10a6f17c9acecfa0952be1a12a723ca5347e4532f251c3b6214fda"
+        },
+        "downloads": 2994,
+        "filename": "gocept.amqprun-0.4.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ea75b6ed975ab2d30f514e2ee3f2c812",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 29442,
+        "upload_time": "2012-01-09T08:59:21",
+        "url": "https://files.pythonhosted.org/packages/de/95/44a6db8538ef09b193af32aa2f5c8ca0e91d85ec09352f2d1cb0660d2d98/gocept.amqprun-0.4.4.tar.gz"
+      }
+    ],
+    "0.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9dc70cbb03df3f8dcf8f69c31e07142f",
+          "sha256": "72bfe3f9b74154785060399211a313bbcf58c3e8460fe57a9a8f24dd9fa27ae8"
+        },
+        "downloads": 3038,
+        "filename": "gocept.amqprun-0.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "9dc70cbb03df3f8dcf8f69c31e07142f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 31264,
+        "upload_time": "2011-12-08T13:46:45",
+        "url": "https://files.pythonhosted.org/packages/b9/63/0b9497cdf6d2f94aeef0d9a83df2c1095655169dc7601a29810fef0ce4fb/gocept.amqprun-0.5.tar.gz"
+      }
+    ],
+    "0.5.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c53e44b14af34e64b0eefc561f0c5380",
+          "sha256": "d693eea26644877707b6a50f0c9a3de1ae6d9f9e7fdef241314f1c759cfd70c3"
+        },
+        "downloads": 2979,
+        "filename": "gocept.amqprun-0.5.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c53e44b14af34e64b0eefc561f0c5380",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 38543,
+        "upload_time": "2012-01-09T08:58:41",
+        "url": "https://files.pythonhosted.org/packages/0f/2d/9d56995bd36f43f6367357c66572ec5dc41b8fe3d81584cf89a5f083b18e/gocept.amqprun-0.5.1.tar.gz"
+      }
+    ],
+    "0.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1d6c25f70d2e3e186db072c6a0ec8818",
+          "sha256": "5b1cca06678678ba6be4cb9e3d546462071be02f357fa84d9e6b94719d27abbe"
+        },
+        "downloads": 2941,
+        "filename": "gocept.amqprun-0.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1d6c25f70d2e3e186db072c6a0ec8818",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 40333,
+        "upload_time": "2012-02-22T08:04:57",
+        "url": "https://files.pythonhosted.org/packages/9a/e9/95800006afd43d41105925d8e74adff65a5a6e838376dfed40c6ad3131d0/gocept.amqprun-0.6.tar.gz"
+      }
+    ],
+    "0.6.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "cda72eb97bf24a1176a065b5393ed322",
+          "sha256": "0649f3206ea073bc809fa7954ccdaa21c116c60b235b3562d3902a5fc4f27bdf"
+        },
+        "downloads": 2934,
+        "filename": "gocept.amqprun-0.6.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "cda72eb97bf24a1176a065b5393ed322",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 40472,
+        "upload_time": "2012-02-23T08:23:59",
+        "url": "https://files.pythonhosted.org/packages/b3/43/cf1c343572f11463ca75b85393afcf42e5a7b8a51006bd92f939ed15a18b/gocept.amqprun-0.6.1.tar.gz"
+      }
+    ],
+    "0.7": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "80a5df2af888925ca09de556c40a7b1f",
+          "sha256": "9a06aa27b29d395f7660ad93e1822ed1cecf601693b6118412d38a7e883d1c29"
+        },
+        "downloads": 2917,
+        "filename": "gocept.amqprun-0.7.tar.gz",
+        "has_sig": false,
+        "md5_digest": "80a5df2af888925ca09de556c40a7b1f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 41114,
+        "upload_time": "2012-03-22T12:54:54",
+        "url": "https://files.pythonhosted.org/packages/c9/9f/ca83caecd0762bf7dad0debba913574f8694147007052f9953e316ee4fd8/gocept.amqprun-0.7.tar.gz"
+      }
+    ],
+    "0.8": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ca679a9afd0202f2312d268d4c1bbac5",
+          "sha256": "3a368de4d0abfa086cb686fd7e0f2fa86bc56889dd1155de2777d5f9c66cbaad"
+        },
+        "downloads": 2907,
+        "filename": "gocept.amqprun-0.8.zip",
+        "has_sig": false,
+        "md5_digest": "ca679a9afd0202f2312d268d4c1bbac5",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 68314,
+        "upload_time": "2012-04-04T15:05:48",
+        "url": "https://files.pythonhosted.org/packages/24/72/3130fa639eac6777b694511dfab18019b820c374ac3221a045085d3acdd6/gocept.amqprun-0.8.zip"
+      }
+    ],
+    "0.9": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "af9a76ab179ab512a93e4b1dfe64812e",
+          "sha256": "7f3af724b994815a050c82064654297174c56ae8bf3eb420158d70969edcc8d9"
+        },
+        "downloads": 2753,
+        "filename": "gocept.amqprun-0.9.zip",
+        "has_sig": false,
+        "md5_digest": "af9a76ab179ab512a93e4b1dfe64812e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 69244,
+        "upload_time": "2012-08-31T08:55:48",
+        "url": "https://files.pythonhosted.org/packages/f4/5d/500eed866941ad6f945e34054ad177c19dd7b9389e2666eb469a916b48a6/gocept.amqprun-0.9.zip"
+      }
+    ],
+    "0.9.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5c838ae8be1d107802c722029faed368",
+          "sha256": "6abd6039134f6a9790141aa01c56f57f28a30a73ed903463b94f3ee2ae109f2b"
+        },
+        "downloads": 2651,
+        "filename": "gocept.amqprun-0.9.1.zip",
+        "has_sig": false,
+        "md5_digest": "5c838ae8be1d107802c722029faed368",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 69921,
+        "upload_time": "2012-09-06T13:32:54",
+        "url": "https://files.pythonhosted.org/packages/7a/60/23013c4a701b667c83529b50dd99615ecafa3d4febb7ca175cdbf259b0fe/gocept.amqprun-0.9.1.zip"
+      }
+    ],
+    "0.9.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5559b64b9264c998d662e3d47887a492",
+          "sha256": "4ea5d9b19cf9dab5034bf4615b4b9314e62897155d33748197d025aded5ea294"
+        },
+        "downloads": 2629,
+        "filename": "gocept.amqprun-0.9.2.zip",
+        "has_sig": false,
+        "md5_digest": "5559b64b9264c998d662e3d47887a492",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 70115,
+        "upload_time": "2012-09-07T09:04:53",
+        "url": "https://files.pythonhosted.org/packages/7c/6c/05a22bcf6bba7e7d0c978b14d0d916901d45e922f5013e98ecb70be794f6/gocept.amqprun-0.9.2.zip"
+      }
+    ],
+    "0.9.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "19cf8b4aaba0ae126613fe11b2b75baa",
+          "sha256": "1d957ad44c33206da07f068a1935411f66911091b3026a548fd5dc41b0229b27"
+        },
+        "downloads": 2593,
+        "filename": "gocept.amqprun-0.9.3.zip",
+        "has_sig": false,
+        "md5_digest": "19cf8b4aaba0ae126613fe11b2b75baa",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 70276,
+        "upload_time": "2012-09-07T09:42:54",
+        "url": "https://files.pythonhosted.org/packages/55/86/2f2329ffbff88e6d8a906d2f0a4bc92b674de784d394b4c8a8e95295b1ff/gocept.amqprun-0.9.3.zip"
+      }
+    ],
+    "0.9.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "67e058d651bbce4164520806b751e0b4",
+          "sha256": "c7755f245a4b53ed0a1af503d20ffacb53373719455d29147fda0b7338532683"
+        },
+        "downloads": 2628,
+        "filename": "gocept.amqprun-0.9.4.zip",
+        "has_sig": false,
+        "md5_digest": "67e058d651bbce4164520806b751e0b4",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 70583,
+        "upload_time": "2012-09-07T10:42:54",
+        "url": "https://files.pythonhosted.org/packages/ac/72/53f962192538ab69f63798640c4d0c362f5fdd82f70765e1374d36178003/gocept.amqprun-0.9.4.zip"
+      }
+    ],
+    "0.9.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5d314eea57d436f40bf4c6d210559ccb",
+          "sha256": "8cc11ef32e0ee9511fa9a344eff579bc54a719f10e63f0a7a816e9838b1e4170"
+        },
+        "downloads": 2221,
+        "filename": "gocept.amqprun-0.9.5.zip",
+        "has_sig": false,
+        "md5_digest": "5d314eea57d436f40bf4c6d210559ccb",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 70896,
+        "upload_time": "2013-04-16T09:48:27",
+        "url": "https://files.pythonhosted.org/packages/cf/45/855f639b8cac8ea3756c31c4cf06de52f65517573dd010445e7ccf77795f/gocept.amqprun-0.9.5.zip"
+      }
+    ],
+    "1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "383e9ce6e27ec90b47d7ad858318236b",
+          "sha256": "e90a0c921540538218d48b7c96d7d9a99395fb8af430d0fae069acd508136a73"
+        },
+        "downloads": 1797,
+        "filename": "gocept.amqprun-1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "383e9ce6e27ec90b47d7ad858318236b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 50654,
+        "upload_time": "2015-04-10T07:09:28",
+        "url": "https://files.pythonhosted.org/packages/86/09/18b7ff206a745515feb452cd58f0d54e2ccaa020fba15c518526100738f0/gocept.amqprun-1.0.tar.gz"
+      }
+    ],
+    "1.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "20541ec027b7be6535d6f99c0559584a",
+          "sha256": "3de68a4dbc630326e85c3018d536020069ec998910c62efe9206f7011c2c655b"
+        },
+        "downloads": 625,
+        "filename": "gocept.amqprun-1.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "20541ec027b7be6535d6f99c0559584a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 50907,
+        "upload_time": "2015-09-01T09:18:35",
+        "url": "https://files.pythonhosted.org/packages/78/fe/364a0791208938ce1cd7e8960b19b54df7f5aafeed37ca5e77951de64bce/gocept.amqprun-1.1.tar.gz"
+      }
+    ],
+    "1.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "95435df6bc85b935add445e0c4f682f7",
+          "sha256": "0add0e01ba5f113210fbf980f3aa42db70dae200c8cb7890d685dc158030feb5"
+        },
+        "downloads": 650,
+        "filename": "gocept.amqprun-1.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "95435df6bc85b935add445e0c4f682f7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 51352,
+        "upload_time": "2015-09-11T07:07:56",
+        "url": "https://files.pythonhosted.org/packages/0d/64/96b867ddec789f0eae2b88ea4dce2c716519ae215aec974276820f671612/gocept.amqprun-1.2.tar.gz"
+      }
+    ],
+    "1.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b032ac2b408ead230e6fb5350119d168",
+          "sha256": "5d6c64a361623180690b35af6e4f83fc2886aca9d71a927b529069562bf11044"
+        },
+        "downloads": 714,
+        "filename": "gocept.amqprun-1.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b032ac2b408ead230e6fb5350119d168",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 51485,
+        "upload_time": "2015-09-11T09:04:36",
+        "url": "https://files.pythonhosted.org/packages/e0/6d/bddfdab797a8e03e8fec52fd1e60f8cbdc6b8f6e28b6b60be703ec8fef38/gocept.amqprun-1.3.tar.gz"
+      }
+    ],
+    "1.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9659977046d6d0f436d64996750ca6f3",
+          "sha256": "2d29b2f1e2c21c9882886949d91277da9f58761debfb21326062328ae7df75e6"
+        },
+        "downloads": 950,
+        "filename": "gocept.amqprun-1.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "9659977046d6d0f436d64996750ca6f3",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 52091,
+        "upload_time": "2015-11-20T12:34:36",
+        "url": "https://files.pythonhosted.org/packages/f3/94/7b3567410fb2b4d4e1a24669f04d160a7a74afe79d26edc77d43a34f552e/gocept.amqprun-1.4.tar.gz"
+      }
+    ],
+    "1.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a3030a84a9a6e4c090353e1d6a421623",
+          "sha256": "32f227702ce2890e198cd732a19acea7241724d17ecc89eda018b6b52c7a8884"
+        },
+        "downloads": 269,
+        "filename": "gocept.amqprun-1.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a3030a84a9a6e4c090353e1d6a421623",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 52486,
+        "upload_time": "2016-02-01T12:50:03",
+        "url": "https://files.pythonhosted.org/packages/99/96/93c1b4df2f7c002bd6f7d5bfa818fe8481881c8b6affb97a4c90425e609f/gocept.amqprun-1.5.tar.gz"
+      }
+    ],
+    "1.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a25a9f321ebbe45c3e0927070538312c",
+          "sha256": "195d3f41898cb62d1ac48d3463a1f42a8ca3e4398bcfc87e1bebc2b3b1ad64b8"
+        },
+        "downloads": 126,
+        "filename": "gocept.amqprun-1.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a25a9f321ebbe45c3e0927070538312c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 56413,
+        "upload_time": "2016-04-04T09:47:15",
+        "url": "https://files.pythonhosted.org/packages/d1/42/f0ed880daccbd8d3bf3c5470399d0c0cd6840c104ef60998e424ae6c8eb7/gocept.amqprun-1.6.tar.gz"
+      }
+    ],
+    "1.7": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3cb41fb83089566f6ff3201b7c368da3",
+          "sha256": "504d90a5b36eb34d6dfbe2a8eec3b8ba431ba01462b7f5dff30764b3c5112d8c"
+        },
+        "downloads": 132,
+        "filename": "gocept.amqprun-1.7.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3cb41fb83089566f6ff3201b7c368da3",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 57635,
+        "upload_time": "2016-05-31T11:03:09",
+        "url": "https://files.pythonhosted.org/packages/c2/e7/3e4aeeed9c491726cd9c036aacc7d2c294ca0a356ccc01b2435a57f879a6/gocept.amqprun-1.7.tar.gz"
+      }
+    ],
+    "1.7.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "64debc5971af4a2bb5ecc5891feceb6e",
+          "sha256": "78f210b33949cb92f34400d3ecca4f18a3596e7e92c8d95fed3b5f12ff01c047"
+        },
+        "downloads": 154,
+        "filename": "gocept.amqprun-1.7.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "64debc5971af4a2bb5ecc5891feceb6e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 54256,
+        "upload_time": "2016-08-22T09:33:05",
+        "url": "https://files.pythonhosted.org/packages/5d/6d/9269656227adbaa7d4abeb8dd8112c428fb2180730a23e952fc97f134cd1/gocept.amqprun-1.7.1.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "64debc5971af4a2bb5ecc5891feceb6e",
+        "sha256": "78f210b33949cb92f34400d3ecca4f18a3596e7e92c8d95fed3b5f12ff01c047"
+      },
+      "downloads": 154,
+      "filename": "gocept.amqprun-1.7.1.tar.gz",
+      "has_sig": false,
+      "md5_digest": "64debc5971af4a2bb5ecc5891feceb6e",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 54256,
+      "upload_time": "2016-08-22T09:33:05",
+      "url": "https://files.pythonhosted.org/packages/5d/6d/9269656227adbaa7d4abeb8dd8112c428fb2180730a23e952fc97f134cd1/gocept.amqprun-1.7.1.tar.gz"
+    }
+  ]
+}

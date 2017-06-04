@@ -1,0 +1,928 @@
+{
+  "info": {
+    "author": "MOJDS",
+    "author_email": "tools@digital.justice.gov.uk",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 5 - Production/Stable",
+      "Environment :: Web Environment",
+      "Intended Audience :: Developers",
+      "Intended Audience :: System Administrators",
+      "Operating System :: OS Independent",
+      "Programming Language :: Python",
+      "Programming Language :: Python :: 2",
+      "Programming Language :: Python :: 2.6",
+      "Programming Language :: Python :: 2.7",
+      "Topic :: Software Development :: Libraries :: Python Modules"
+    ],
+    "description": "# flake8: noqa\n.. image:: https://travis-ci.org/ministryofjustice/bootstrap-cfn.svg\n    :target: https://travis-ci.org/ministryofjustice/bootstrap-cfn\n\n.. image:: https://coveralls.io/repos/ministryofjustice/bootstrap-cfn/badge.svg?branch=master\n    :target: https://coveralls.io/r/ministryofjustice/bootstrap-cfn?branch=master\n\nMinistry of Justice - Cloudformation\n====================================\n\nThe objective of this repo is to enable MoJ teams to create project infrastructure in a uniform manner. Currently this includes the following AWS services:\n\n- EC2 Servers via Auto-Scaling Groups\n- Elastic Load Balancers (ELB)\n- Relational Database Service (RDS)\n- S3 Storage for web static content\n- `VPC Configuration <docs/vpc-configuration.md>`_\n\nInstallation\n============\n\n.. code:: bash\n\n    git clone git@github.com:ministryofjustice/bootstrap-cfn.git\n    cd bootstrap-cfn\n    pip install -r requirements.txt\n\n\nDeveloping and running tests\n============================\n\nThe test suite can be run via setup.py as follows\n\n.. code:: bash\n\n    python -m unittest discover\n\nor\n\n.. code:: bash\n\n    python setup.py test\n\nExample Usage\n=============\n\nBootstrap-cfn uses `fabric <http://www.fabfile.org/>`_, so if your ``$CWD`` is the root directory of bootstrap-cfn then you can run\n\n.. code:: bash\n\n    fab application:courtfinder aws:my_project_prod environment:dev config:/path/to/courtfinder-dev.yaml cfn_create\n\n\nIf your ``$CWD`` is anywhere else, you need to pass in a path to particular fabric file\n\n.. code:: bash\n\n    fab -f /path/to/bootstrap-cfn/fabfile.py application:courtfinder aws:prod environment:dev config:/path/to/courtfinder-dev.yaml tag:test cfn_create\n\n\n- **application:courtfinder** - is just a name to associate with Cloudformation stack\n- **aws:dev** - is a way to differentiate between AWS accounts (defined in ``~/.aws/credentials.yaml``)\n- **environment:dev** - The key name to read in the file specified to the ``config`` task\n- **config:/path/to/file.yaml** - The location to the project YAML file\n- **tag:test** - stack tag to differentiate between stacks\n- **keyname:keyname** - the name of the keypair you uploaded in AWS which should store your SSH public key.\n\nMultiple Stacks\n===============\n\nMultiple stacks feature is supported in bootstrap-cfn version greater than 1.0.0. It is similar to Blue/Green deploy.\nFor each application and each environment of the application, we could have more than one stack independently running on AWS differentiated by tags we give.\nAny existing stack of same application in same environment can be switched to 'active' via operations on R53 records, which is used as actioning stack.\n\nHere are the steps to create a new stack, we will explain them one by one later:\n\n- **fab-env keyname:keyops tag:mytag cfn_create:** create a new stack with a tag and keyname specified.\n- **fab-env -u ubuntu salt.wait_for_minions:** (optional) wait until instances are ready\n- **fab-env -i ~/.ssh/id_your_ssh_private_key -u ubuntu update:** install salt on the stack, add admins from keys.sls, to make the stack ready\n- **fab-env -u [your-ssh-name] update:** remove `ubuntu` user from the instances for security reason\n\nHere `fab-env` refers to `fab application:courtfinder aws:prod environment:dev config:/path/to/courtfinder-dev.yaml passwords:/path/to/courfinder-dev-secrets.yaml`.\n\nIf you would like to set the stack you just created as the active stack of that environment, run the following:\n\n- **fab-env set_active_stack:mytag** to switch DNS entry to this stack\n\n\nNB: If you want to have your multiple stacks under the same zone, make sure specify it in the yaml configuration\n\n.. code:: yaml\n\n    master_zone:\n      my-zone.dsd.io\n\ncfn_create\n----------\n\nThis is to create a stack based on your yaml configuration.\n\n.. code:: bash\n\n    fab application:app aws:my_project_prod environment:dev config:/path/to/courtfinder-dev.yaml tag:mytag cfn_create\n\n\nAfter running the above, stack `app-dev-e21e5110` should be created, where 'e21e5110' is an auto-generated stack-id,\nalong with two DNS records in Route 53 that looks like:\n\n+------------------------------+------------+------------------------------------------------------------------------------------------------+\n| Name                         | Type       | Value                                                                                          |\n+==============================+============+================================================================================================+\n| stack.mytag.blah-dev.dsd.io.  | **TXT**    | \"e21e5110\"                                                                                     |\n+------------------------------+------------+------------------------------------------------------------------------------------------------+\n| elbname-e21e5110.dsd.io.     | **A**      | ALIAS app-dev-elbname-1ocl2znar6wtc-1854012795.eu-west-1.elb.amazonaws.com. (z32o12xqlntsw2)   |\n+------------------------------+------------+------------------------------------------------------------------------------------------------+\n\nNote that:\n\n- `mytag` in **TXT** record name is the tag for the stack. An auto-generated stack id that's saved in Value is used as the tag if it's not specified.\n- `active` tag is **preserved** for setting the main entry point, so you should not use it as a customised tag.\n- If the tag you specified already exists (may due to improper clean up in last creation), you could manually run `fab tag:[tag-name] cfn_delete` to remove the leftover.\n\nNB fab task `get_stack_list` returns all stacks of that application in case if you forgot your tag name :)\n\n\n\nset_active_stack(tag_name)\n--------------------------\n\nActive records indicate where an app's DNS entry is.\n\nyou can set whichever existing stack to be the active stack simply by specifying the tag name in ``set_active_stack(tag_name)``\n\n.. code:: bash\n\n    fab application:courtfinder aws:my_project_prod environment:dev config:/path/to/courtfinder-dev.yaml set_active_stack:[tag_name]\n\nwhere [tag_name] would be the stack you would like to switch to.\nNB this process will also automatically set deployarn record accordingly.\n\n\ncfn_delete\n----------\n\nYou can also delete any stack you want no more by specifying the tag, or remove active records (entry points) by putting active as the tag.\n\n.. code:: bash\n\n    fab application:courtfinder aws:my_project_prod environment:dev config:/path/to/courtfinder-dev.yaml tag:[tag_name] cfn_delete\n\nNB ``tag_name`` can be any existing tag. It defaults to `active`.\nWhen deleting an active stack, only active DNS records will be removed without harming any existing stacks. Otherwise the whole stack along with dns records are being removed.\n\ncfn_update\n----------\n\nPartial support for cloudformation updates is also supported on the EC2 and ELB sections of the configuration file.\n\n.. code:: bash\n\n    fab application:courtfinder aws:my_project_prod environment:dev config:/path/to/courtfinder-dev.yaml tag:[tag_name] cfn_update\n\nNB Running this command will show you some structured output of what\nchanges and how. Also a unified diff is printed on output between the\nold and the new Launch Configuration sections. Although we have gone\nto great lengths with this command, it can result in destructive\noperations, particularly if one reduced the desired/max/min capacities\nof the Auto Scaling Group.\n\n\nget_stack_list\n---------------\n\nThis returns a list of all available stacks for specified application.\n\n.. code:: bash\n\n    fab application:courtfinder aws:my_project_prod environment:dev config:/path/to/courtfinder-dev.yaml get_stack_list\n\nsupport_old_bootstrap_cfn\n-------------------------\n\nAfter bootstrap-cfn 1.0.0, we suggest multiple stacks which add another set of R53 records to each stack.\nFor stacks created by old bootstrap-cfn which possibly only has active records, `support_old_bootstrap_cfn` adds what's missing in R53\nso that you are able to use other commands in bootstrap-cfn>=v1.0.0. It basically automates the manual operations of adding missing R53 records.\n\n.. code:: bash\n\n    fab application:courtfinder aws:my_project_prod environment:dev config:/path/to/courtfinder-dev.yaml support_old_bootstrap_cfn\n\nNB: after running this command, you will be asked to give the name of the stack you would like to operate on and also give a tag to the stack.\n\nswap_tags\n+++++++++\n\nThen you can refer to this stack by its tag in the future. In this way it is easier to bring up two stacks from the same config. If you want to swap the names of the stacks you can do the following\n\n.. code:: bash\n\n    fab application:courtfinder aws:my_project_prod environment:dev config:/path/to/courtfinder-dev.yaml swap_tags:inactive, active\n\n\nothers\n++++++\n\nThere are also some fab tasks for example ``get_active_stack`` that returns active stack for this application and environment; ``get_stack_list`` returns any related stacks.\n\nExample Configuration\n=====================\nAWS Account Configuration\n-------------------------\n\nThis tool needs AWS credentials to create stacks and the credentials should be placed in the ``~/.aws/credentials`` file (which is the same one used by the AWS CLI tools). You should create named profiles like this (and the section names should match up with what you specify to the fabric command with the ``aws:my_project_prod`` flag) ::\n\n\n    [my_project_dev]\n    aws_access_key_id = AKIAI***********\n    aws_secret_access_key = *******************************************\n    [my_project_prod]\n    aws_access_key_id = AKIAI***********\n    aws_secret_access_key = *******************************************\n\nIf you wish to authenticate to a separate AWS account using cross account IAM roles you should create a profile called `cross-account` with the access keys of the user with permission to assume roles from the second account::\n\n    [cross-account]\n    aws_access_key_id = AKIAI***********\n    aws_secret_access_key = *******************************************\n\nAnd when you run the tool you must set the ARN ID of the role in the separate account which you wish to assume. For example::\n\n    AWS_ROLE_ARN_ID='arn:aws:iam::123456789012:role/S3Access' fab application:courtfinder aws:prod environment:dev config:/path/to/courtfinder-dev.yaml cfn_create\n\nProject specific YAML file\n--------------------------\nThe `YAML file <https://github.com/ministryofjustice/bootstrap-cfn/blob/master/docs/sample-project.yaml>`_ highlights what is possible with all the bootstrap-cfn features available to date. The minimum requirement is that it must contain an *ec2* block, you **do not** have to use RDS, S3 or ELB's.\n\nEC2 Auto-Scaling Groups\n-----------------------\n\nThe ``ec2`` key configures the EC2 instances created by auto-scaling groups (ASG) and their configuration. Note that we don't currently support auto-scaling properly, so if a scaling event happens the instances that come up will be unconfigured.\n\n:``auto_scaling``:\n  Configure the size of the auto scaling groups.\n\n  ``desired``\n    Target number of instances\n  ``max``\n    Maximum number of instances to scale up to\n  ``min``\n    Minimum number of instances to maintain.\n  ``health_check_grace_period``\n    Seconds before running the healthcheck on an instance. Default 300\n  ``health_check_type``\n    Use EC2 or ELB healthcheck types. Default EC2\n\n  Example\n\n.. code:: yaml\n\n    dev:\n      ec2:\n        # \u2026\n        auto_scaling:\n          desired: 1\n          max: 3\n          min: 0\n          health_check_grace_period: 360\n          health_check_type: ELB\n\n:``tags``:\n  A dictionary of tag name to value to apply to all instances of the ASG. Note that the environment you select via ``fab aws`` will be applied as a tag with a name of ``Env``.\n\n  Example\n\n.. code:: yaml\n\n    dev:\n      ec2:\n        # \u2026\n        tags:\n          Role: docker\n          Apps: test\n          # Env: dev # This is default if we are in the `dev` environment block.\n\n:``parameters``:\n  Configuration parameters to the ASG. Known keys:\n\n  ``KeyName``\n    Name of an existing key-pair in the SSH account to create add to the intial ssh user on instances\n  ``InstanceType``\n    The size of the EC2 instances to create\n\n  Example\n\n.. code:: yaml\n\n    dev:\n      ec2:\n        # \u2026\n        parameters:\n          KeyName: default\n          InstanceType: t2.micro\n\n:``ami``:\n  Selects which AWS AMI to use. This can be a AWS-provided AMI, a community one, or one which exists under the account in which you're building the stack. The ``ami-`` prefix is required. If not specified then a suitable default will be chosen for the ``os`` in use. If this value is present then it is recommended to specify the ``os`` too, so that other areas of the cloud formation template are correctly generated.\n\n\n  Example\n\n.. code:: yaml\n\n    dev:\n      ec2:\n        ami: ami-7943ec0a\n        os: windows2012\n\n:``os``:\n  Which operating system to use.  This selects a default AMI and also builds relevant user_data for use by instances when spun up by the ASG. Only 2 values are recognised: ``windows2012`` and ``ubuntu-1404``. The default is ``ubuntu-1404``.  If you wish to specify an AMI manually then use ``ami`` in addition.\n\n\n  Example\n\n.. code:: yaml\n\n    dev:\n      ec2:\n        os: windows2012\n\n:``block_devices``:\n  A list of EBS volumes to create and attach to per instance. Each list should have\n\n  ``DeviceName``\n    The path of the linux device to attach the instance to\n  ``VolumeSize``\n    Size in gigabytes of the EBS volume\n  ``VolumeType (optional)``\n    The type of the volume to create. One of standard (default), gp2 or io1 (see `AWS API reference <http://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_CreateVolume.html>`_)\n  ``Iops (Required for io1 type)``\n    The Iops value to assign to the io1 volume type.\n\n\n  Example\n\n.. code:: yaml\n\n    dev:\n      ec2:\n        # \u2026\n        block_devices:\n          - DeviceName: /dev/sda1\n            VolumeSize: 10\n          - DeviceName: /dev/sdf\n            VolumeType: gp2\n            VolumeSize: 100\n          - DeviceName: /dev/sdh\n            VolumeType: io1\n            VolumeSize: 80\n            Iops: 1200\n\n:``security_groups``:\n  Dictionary of security groups to create and add the EC2 instances to. The key is the name of the security group and the value is a list of ingress rules following the `Cloudformation reference <http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-ec2-security-group-ingress.html>`_\n\n  Common options are\n\n  ``IpProtocol``\n    ``tcp``, ``udp``, or ``icmp``\n  ``FromPort``\n    Start of the port range or ICMP type to allow\n  ``ToPort``\n    End of the port range/ICMP type. Often the same as ``FromPort``\n  ``CidrIp``\n    An IP range to allow access to this port range.\n  ``SourceSecurityGroupId``\n    Allow access from members of this security group - which must exist in the same VPC. Use Ref (see example) to refer to a security group by name. Can be another SG referenced elsewhere or the same security group.\n\n  One of ``CidrIp`` and ``SourceSecurityGroupId`` must be specified per rule (but not both).\n\n\n  Example\n\n.. code:: yaml\n\n    dev:\n      ec2:\n        # \u2026\n        security_groups:\n          # Don't to this - it's too wide open\n          SSH-from-anywhere:\n            - IpProtocol: tcp\n              FromPort: 22\n              ToPort: 22\n              CidrIp: 0.0.0.0/0\n            - IpProtocol: tcp\n              FromPort: 2222\n              ToPort: 2222\n              CidrIp: 0.0.0.0/0\n          WebServer:\n            # Allow acces to port 80 from the SG \n            - IpProtocol: tcp\n              FromPort: 80\n              ToPort: 80\n              SourceSecurityGroupId: { Ref: DefaultSGtestdevexternal }\n          Salt:\n            # Allow all other members of the Salt sg to speak to us on 4505 and 4506\n            - IpProtocol: tcp\n              FromPort: 4505\n              ToPort: 4506\n              SourceSecurityGroupId: { Ref: Salt }\n\n:``cloud_config``:\n  Dictionary to be feed in via userdata to drive `cloud-init <http://cloudinit.readthedocs.org/en/latest/>`_ to set up the initial configuration of the host upon creation. Using cloud-config you can run commands, install packages\n\n  There doesn't appear to be a definitive list of the possible config options but the examples are quite exhaustive:\n\n  - `http://bazaar.launchpad.net/~cloud-init-dev/cloud-init/trunk/files/head:/doc/examples/`\n  - `http://cloudinit.readthedocs.org/en/latest/topics/examples.html` (similar list but all on one page so easier to read)\n\n:``hostname_pattern``:\n  A python-style string format to set the hostname of the instance upon creation.\n\n  The default is ``{instance_id}.{environment}.{application}``. To disable this entirely set this field explicitly to null/empty\n\n  Example\n\n.. code:: yaml\n\n    dev:\n      ec2:\n        hostname_pattern:\n\nFor ``sudo`` to not misbehave initially (because it cannot look up its own hostname) you will likely want to set ``manage_etc_hosts`` to true in the cloud_config section so that it will regenerate ``/etc/hosts`` with the new hostname resolving to 127.0.0.1.\n\nSetting the hostname is achived by adding a boothook into the userdata that will interpolate the instance_id correctly on the machine very soon after boottime.\n\nThe currently support interpolations are:\n\n  ``instance_id``\n    The amazon instance ID\n  ``environment``\n    The enviroment currently selected (from the fab task)\n  ``application``\n    The application name (taken from the fab task)\n  ``stack_name``\n    The full stack name being created\n  ``tags``\n    A value from a tag for this autoscailing group. For example use ``tags[Role]`` to access the value of the ``Role`` tag.\n\n  For example given this incomplete config\n\n.. code:: yaml\n\n    dev:\n      ec2:\n        # \u2026\n        hostname_pattern: \"{instance_id}.{tags[Role]}.{environment}.{application}\"\n        tags:\n          Role: docker\n        cloud_config:\n          manage_etc_hosts: true\n\nan instance created with ``fab application:myproject \u2026 cfn_create`` would get a hostname something like ``i-f623cfb9.docker.dev.my-project``.\n\nELBs\n----\nBy default the ELBs will have a security group opening them to the world on 80 and 443. You can replace this default SG with your own (see example ``ELBSecGroup`` above).\n\nIf you set the protocol on an ELB to HTTPS you must include a key called ``certificate_name`` in the ELB block (as example above) and matching cert data in a key with the same name as the cert under ``ssl`` (see example above). The ``cert`` and ``key`` are required and the ``chain`` is optional.\n\nIt is possilbe to define a custom health check for an ELB like follows\n\n.. code:: yaml\n\n    health_check:\n      HealthyThreshold: 5\n      Interval: 10\n      Target: HTTP:80/ping.json\n      Timeout: 5\n      UnhealthyThreshold: 2\n\nELB Certificates\n++++++++++++++++\n\nACM\n~~~\n\nThis section defines certificates for the AWS Certificate Manager. For verification, these will require the setting up of SES for the ValidationDomain so that emails to admin@<validation_domain> can be received.\n\n.. code:: yaml\n        acm:\n          <certificate_name>:                           # (required) Alphanumeric resource name for the certificate\n            domain: <domain_name>                       # (required) The domain name or wildcard the certificate should cover\n                subject_alternative_names:              # (optional) List of alternative names the certificate should cover.\n                    - <alternative_name_1>\n                    - <alternative_name_2>\n                validation_domain: <validation_domain>  # (optional) The domain name the verfication email should go to. The default is the domain name.\n                tags:\n                    <key>: <val>                      # (optional) Dictionary of keypairs to tag the resource with.\n\nFor example,\n\n.. code:: yaml\n\n        acm:\n          mycert:\n            domain: helloworld.test.dsd.io\n            subject_alternative_names:\n                - goodbye.test.dsd.io\n            validation_domain: dsd.io\n            tags:\n                site: testsite\n\nManual SSL\n~~~~~~~~~~\n\nThe SSL certificate will be uploaded before the stack is created and removed after it is deleted.\nTo update the SSL certificate on ELB listeners run the fab task below, this uploads and updates the\ncertificate on each HTTPS listener on your ELBs, by default the old certificate is deleted.\n\n.. code:: bash\n\n   fab load_env:<env_data> update_certs\n\nNote that some errors appear in the log due to the time taken for AWS changes to propogate across infrastructure\nelements, these are handled internally and are not neccessarily a sign of failure.\n\nELB Policies\n++++++++++++\n\nPolicies can be defined within an ELB block, and optionally applied to a list of \ninstance ports or load balancer ports.\nThe below example enable proxy protocol support on instance ports 80 and 443\n\n\n.. code:: yaml\n\n policies:\n   - name: EnableProxyProtocol\n     type: ProxyProtocolPolicyType\n     attributes:\n       - ProxyProtocol: True\n     # We can optionally define the instance or load_balancer ports\n     # to here that the policy will be applied on\n     instance_ports:\n       - 80\n       - 443\n     #load_balancer_ports:\n     #  - 80\n     #  - 443\n\nElasticache\n-----------\n\nBy specifying an elasticache section, a redis-backed elasticache replication group will be created. The group name will be available as an output.\n\n::\n\n   elasticache:                     # (REQUIRED) Main elasticache key, use {} for all default settings. Defaults are shown\n      clusters: 3                   # (OPTIONAL) Number of one-node clusters to create\n      node_type: cache.m1.small     # (OPTIONAL) The node type of the clusters nodes\n      port: 6379                    # (OPTIONAL) Port number \n      seeds:                        # (OPTIONAL) List of arns to seed the database with\n         s3:                        # (OPTIONAL) List of S3 bucket seeds in <bucket>/<filepath> format\n            - \"test-bucket-947923urhiuy8923d/redis.rdb\"\n\n\nS3\n--\n\nAn s3 section can be used to create a StaticBucket, which is exposed by nginx, but default as /assets.\nThe bucket location will be by default public, with an output available of 'StaticBucketName'.\nWe can create the static bucket without any arguments, though this requires the use of {} as below.\n\n::\n\n   s3: {}   # Required if we have no keys and use all defaults\n     \nOr we can specify the name, and optionally a custom policy file if we want to to override bootstrap-cfn's default settings.\nFor example, the sample custom policy defined in this `json file <https://github.com/ministryofjustice/bootstrap-cfn/blob/master/tests/sample-custom-s3-policy.json>`_ can be configured as follows:\n\n\n.. code:: yaml\n\n   s3:\n        static-bucket-name: moj-test-dev-static\n        policy: tests/sample-custom-s3-policy.json\n    \nWe can also supply a list of buckets to create a range of s3 buckets, these require a name. \nThese entries can also specify their own policies or use the default, vpc limited one.\n\n.. code:: yaml\n\n   s3:\n      buckets:\n         - name: mybucketid\n           policy: some_policy\n           lifecycles:\n             /prefix1:\n               expirationdays: 60\n             /prefix2:\n               expirationdays: 30\n         - name: myotherbucketid\n           lifecycles:\n             /:\n             expirationdays: 5\n\nThe outputs of these buckets will be the bucket name postfixed by 'BucketName', ie, mybucketidBucketName. Additionally, and as shown above, one can define a list of Lifecycle rules on a per prefix basis. If a root rule is defined, the rest of the rules are ignored.\n\nCurrently, only non-versioned buckets are supported. \n\nIncludes\n--------\nIf you wish to include some static cloudformation json and have it merged with the template generated by bootstrap-cfn. You can do the following in your template yaml file\n\n.. code:: yaml\n\n    includes:\n      - /path/to/cloudformation.json\n\nThe tool will then perform a deep merge of the includes with the generated template dictionary. Any keys or subkeys in the template dictionary that clash will have their values **overwritten** by the included dictionary or recursively merged if the value is itself a dictionary.\n\nConfigParser\n------------\nIf you want to include or modify cloudformation resources but need to include some logic and not a static include. You can subclass the ConfigParser and set the new class as `env.cloudformation_parser` in your fabfile.\n\n\nEnabling RDS encryption\n-----------------------\nYou can enable encryption for your DB by adding the following\n \n.. code:: yaml\n\n  rds:\n     storage-encrypted: true\n     instance-class: db.m3.medium\n\n**NOTE:** AWS does not support RDS encryption for the *db.t2.** instance classes. More details on supported instance classes are available `here <http://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/Overview.Encryption.html>`_\n\n\nSSL cipher list pindown (updated 29/06/2015)\n============================================\nAmazon provides default policies for cipher lists:\n\n* Type: SSLNegotiationPolicyType\n* Name: Reference-Security-Policy\n\nMore info:\n\n* https://aws.amazon.com/blogs/aws/elastic-load-balancing-perfect-forward-secrecy-and-other-security-enhancements/\n* http://docs.aws.amazon.com/ElasticLoadBalancing/latest/DeveloperGuide/elb-security-policy-options.html\n* http://docs.aws.amazon.com/ElasticLoadBalancing/latest/DeveloperGuide/elb-ssl-security-policy.html\n* http://docs.aws.amazon.com/ElasticLoadBalancing/latest/DeveloperGuide/elb-security-policy-table.html\n\nThe policy currently in use by default is: ELBSecurityPolicy-2015-05.\n\n",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "http://github.com/ministryofjustice/bootstrap_cfn/",
+    "keywords": "",
+    "license": "LICENSE",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "bootstrap_cfn",
+    "platform": "any",
+    "project_url": "https://pypi.org/project/bootstrap_cfn/",
+    "release_url": "https://pypi.org/project/bootstrap_cfn/1.5.2/",
+    "requires_python": "",
+    "summary": "MOJDS cloudformation bootstrap tool",
+    "version": "1.5.2"
+  },
+  "releases": {
+    "0.10.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "793085994b3afdb82ce989f93ac19f63",
+          "sha256": "a3b7ec6d1e2c10f6f1803faa44d76aa036e304389400946b6efc74838e837e70"
+        },
+        "downloads": 187,
+        "filename": "bootstrap_cfn-0.10.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "793085994b3afdb82ce989f93ac19f63",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 40085,
+        "upload_time": "2016-06-15T12:54:58",
+        "url": "https://files.pythonhosted.org/packages/c6/6b/d3edd355d380ab727d78811b9453fae12bbf9ce505bb7653ee807ef50fb0/bootstrap_cfn-0.10.0.tar.gz"
+      }
+    ],
+    "0.11.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "64aa6f73cd12af9f7d7b849beb5419a8",
+          "sha256": "d633357e0898f33c8a90eeb8b0a9a9be2be205c888f9630099d4df217fc49f8b"
+        },
+        "downloads": 353,
+        "filename": "bootstrap_cfn-0.11.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "64aa6f73cd12af9f7d7b849beb5419a8",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 40983,
+        "upload_time": "2016-07-08T14:33:03",
+        "url": "https://files.pythonhosted.org/packages/03/8c/228039bf7e5d5f0a6dd4bf0f0431e0e73af180d5d5352f6c641318e4a790/bootstrap_cfn-0.11.0.tar.gz"
+      }
+    ],
+    "0.11.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "19ba5ce057367f66bd82df3941a43d97",
+          "sha256": "780ac602d5bd5a0a54c9930e9e673932bbea9be1847a5af785dc41db69349f1b"
+        },
+        "downloads": 188,
+        "filename": "bootstrap_cfn-0.11.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "19ba5ce057367f66bd82df3941a43d97",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 41530,
+        "upload_time": "2016-07-11T09:04:13",
+        "url": "https://files.pythonhosted.org/packages/71/56/613514de13c5fce4dddb52891bd6f9c63fdb87750fb117a73e728ddae873/bootstrap_cfn-0.11.1.tar.gz"
+      }
+    ],
+    "0.11.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "507e03277596b7244480de76edef4b16",
+          "sha256": "f2e3cee5fa587ca238adf0633e940388c0af69218670fdd33fd7b26fb7a33144"
+        },
+        "downloads": 71,
+        "filename": "bootstrap_cfn-0.11.2-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "507e03277596b7244480de76edef4b16",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2",
+        "size": 41280,
+        "upload_time": "2016-11-14T18:00:35",
+        "url": "https://files.pythonhosted.org/packages/1a/e3/65bd0b47a77b2f9630cefd29b5ee4841396bd0b47bafb62896b16d7daef0/bootstrap_cfn-0.11.2-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "afe51a6c636ceed5ac9f3198f37626f1",
+          "sha256": "c3d7e70d1dfa0dc772df8f3efe3e39cb683d5be62ce71a1bf0ed22795055b70c"
+        },
+        "downloads": 63,
+        "filename": "bootstrap_cfn-0.11.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "afe51a6c636ceed5ac9f3198f37626f1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 41482,
+        "upload_time": "2016-11-14T18:00:38",
+        "url": "https://files.pythonhosted.org/packages/65/8b/730783cf8ac4fd0ec83bd621f11308cae29b6f9637866e4e9e5e9d4009c1/bootstrap_cfn-0.11.2.tar.gz"
+      }
+    ],
+    "0.4.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "604d7b9baf81547da86621fc74e83b28",
+          "sha256": "851396f3a97ff60616d4b5dd3bbee9f0489eb96365d794da6716f34a7913544c"
+        },
+        "downloads": 1055,
+        "filename": "bootstrap_cfn-0.4.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "604d7b9baf81547da86621fc74e83b28",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 36067,
+        "upload_time": "2015-05-07T11:38:18",
+        "url": "https://files.pythonhosted.org/packages/7b/29/fcfdd1fdb0d6c3fdbec7f5c95b9ad650dc1838934d0492f3f4ac89f42f55/bootstrap_cfn-0.4.0.tar.gz"
+      }
+    ],
+    "0.4.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "bd9411a510faca931e56edbe3311f468",
+          "sha256": "be44c7d87fb985bb465ae8e4c63585b0f0c03a9b328d1eb19952a3a83c4e836c"
+        },
+        "downloads": 1771,
+        "filename": "bootstrap_cfn-0.4.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "bd9411a510faca931e56edbe3311f468",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16345,
+        "upload_time": "2015-05-07T12:57:50",
+        "url": "https://files.pythonhosted.org/packages/97/92/d27f98fad58ea7f81fe8ce2bccfbde4a71bac2751d9607e0e1794d6121c0/bootstrap_cfn-0.4.1.tar.gz"
+      }
+    ],
+    "0.5.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f3ed06e70519eef82e8264fe18806c2d",
+          "sha256": "a0635651565a6faca8742002d4994b2bffaecdba1066c317351939233f9af495"
+        },
+        "downloads": 1327,
+        "filename": "bootstrap_cfn-0.5.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f3ed06e70519eef82e8264fe18806c2d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 17097,
+        "upload_time": "2015-05-26T11:22:04",
+        "url": "https://files.pythonhosted.org/packages/25/bc/a15cf3109b96ea1c0ede3a89efdab891a9106a09c9c291260551b92dd568/bootstrap_cfn-0.5.0.tar.gz"
+      }
+    ],
+    "0.5.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a9de2b303f8c97f9388d255edfd7a356",
+          "sha256": "8e68f703908f189a4122196a319e5ee8f8de85f6d78c5004c81c272fa3af731c"
+        },
+        "downloads": 999,
+        "filename": "bootstrap_cfn-0.5.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a9de2b303f8c97f9388d255edfd7a356",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 18481,
+        "upload_time": "2015-06-01T14:23:14",
+        "url": "https://files.pythonhosted.org/packages/2b/f1/b0caac0d72018e5e22bf62e65d920f07f7f701f0bcfda7965f2e909b1168/bootstrap_cfn-0.5.1.tar.gz"
+      }
+    ],
+    "0.5.10": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8797ace8a3a944fc95bce37d0680ad11",
+          "sha256": "5e9392bec3f100e5f05e149fcbfbd1406d55411546416c0c7a92919772c6d328"
+        },
+        "downloads": 960,
+        "filename": "bootstrap_cfn-0.5.10.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8797ace8a3a944fc95bce37d0680ad11",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 24164,
+        "upload_time": "2015-09-11T13:31:37",
+        "url": "https://files.pythonhosted.org/packages/92/35/c57016ba57a4ac0c7b29ec776976c4920a6a5d26e33189d17208af682f8d/bootstrap_cfn-0.5.10.tar.gz"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "64ab0d45cc24c4ca019fd3a1432269f3",
+          "sha256": "5b631efb0bcbe9f398c2c20d1eadc1e2fdac40c689c50f67304f48be6d679d93"
+        },
+        "downloads": 735,
+        "filename": "bootstrap_cfn-0.5.10.zip",
+        "has_sig": false,
+        "md5_digest": "64ab0d45cc24c4ca019fd3a1432269f3",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 30170,
+        "upload_time": "2015-09-11T13:38:55",
+        "url": "https://files.pythonhosted.org/packages/7a/bb/1726114fd1f85932ec481d9164a65f695e8eaeed7d89ac67b8b328ca8227/bootstrap_cfn-0.5.10.zip"
+      }
+    ],
+    "0.5.11": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1b99615657f1343a6ddf4a3b94f6adf8",
+          "sha256": "b1fcc86014f6b2c79d89f9d91c0f58c81c6a4f292305a2f85afbf71877b61a82"
+        },
+        "downloads": 712,
+        "filename": "bootstrap_cfn-0.5.11.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1b99615657f1343a6ddf4a3b94f6adf8",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 27156,
+        "upload_time": "2015-11-02T13:04:57",
+        "url": "https://files.pythonhosted.org/packages/7d/5f/fbcf90ae01687a334ee76fb09acb7ac6454e684b91fc132a0ccd26dd7d39/bootstrap_cfn-0.5.11.tar.gz"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "499a4c31ca72255081e3ed25e9231797",
+          "sha256": "c9ff8fa4f8118c5d6aa2fddb398aa74a4dd0de4a1dbc671c8b18e3c59c2cc045"
+        },
+        "downloads": 585,
+        "filename": "bootstrap_cfn-0.5.11.zip",
+        "has_sig": false,
+        "md5_digest": "499a4c31ca72255081e3ed25e9231797",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 33404,
+        "upload_time": "2015-11-02T13:05:02",
+        "url": "https://files.pythonhosted.org/packages/f0/96/95bfc179b1154f5db6810a9927e593c9fc78f532979829d8ec66bc0e6445/bootstrap_cfn-0.5.11.zip"
+      }
+    ],
+    "0.5.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "da04edc0f97216b58a1167b339ec7d29",
+          "sha256": "2bce890d099279af4621d5b516e66e262a490bdb221d80227bde73f8c6b01375"
+        },
+        "downloads": 1979,
+        "filename": "bootstrap_cfn-0.5.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "da04edc0f97216b58a1167b339ec7d29",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 17576,
+        "upload_time": "2015-06-11T07:34:54",
+        "url": "https://files.pythonhosted.org/packages/b4/6c/e19b092455c76e31be1b7d2d5e8d35bb71509b37558574e19e59dfaf8eea/bootstrap_cfn-0.5.2.tar.gz"
+      }
+    ],
+    "0.5.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "575785ec0e9e6db5accf5903f7e44574",
+          "sha256": "5a0871212985848ca352aceb55cc5d7c4bce87f4f848e7cfaa8f1f4d35d352e0"
+        },
+        "downloads": 1042,
+        "filename": "bootstrap_cfn-0.5.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "575785ec0e9e6db5accf5903f7e44574",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 17686,
+        "upload_time": "2015-06-23T14:18:52",
+        "url": "https://files.pythonhosted.org/packages/df/2e/95aedb6f149d17ec3cb15465cc61d82b09b21871f1f483fe502c38376a08/bootstrap_cfn-0.5.3.tar.gz"
+      }
+    ],
+    "0.5.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8bf27897e550f5a5d52fb4e13489e702",
+          "sha256": "7a9b72fc91908802a2a5a88f9813804f3ec5fe1a7b6cb8bb30a9d71de5fdef7c"
+        },
+        "downloads": 1972,
+        "filename": "bootstrap_cfn-0.5.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8bf27897e550f5a5d52fb4e13489e702",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 22347,
+        "upload_time": "2015-07-22T09:58:58",
+        "url": "https://files.pythonhosted.org/packages/41/52/128e7cd5595ae30228dca57540f472ccdb906df87358d2cc8e87d9c3f19c/bootstrap_cfn-0.5.4.tar.gz"
+      }
+    ],
+    "0.5.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ee38e05a922a5fced1766912517166fb",
+          "sha256": "84958fe203ced6e0c52d0f0942b78ec010cd25304f7ad4ef15250eac92d15b31"
+        },
+        "downloads": 844,
+        "filename": "bootstrap_cfn-0.5.5.zip",
+        "has_sig": false,
+        "md5_digest": "ee38e05a922a5fced1766912517166fb",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 29319,
+        "upload_time": "2015-07-28T10:53:47",
+        "url": "https://files.pythonhosted.org/packages/ba/b4/483d926f8dccb45d5cc398deb166165a1692a6d009279d7def154d94341a/bootstrap_cfn-0.5.5.zip"
+      }
+    ],
+    "0.5.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b62bea67019b8013e9b0ed358c854f53",
+          "sha256": "ff89e9cab5e908e361b3353c1c727023d3006440b0bbadb72ad173c75d58f915"
+        },
+        "downloads": 879,
+        "filename": "bootstrap_cfn-0.5.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b62bea67019b8013e9b0ed358c854f53",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 23303,
+        "upload_time": "2015-07-28T21:21:21",
+        "url": "https://files.pythonhosted.org/packages/bd/4f/a845395c4c025f6cebf4a4d4156acb2d46caaddb8b64ba77bb95b91a3a98/bootstrap_cfn-0.5.6.tar.gz"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9c46194a74de538adc8c13e49690ce21",
+          "sha256": "d377025aa46bee5a26c0c91ea8dda17129302f8c9e4f2b424c5c703d1d48f100"
+        },
+        "downloads": 940,
+        "filename": "bootstrap_cfn-0.5.6.zip",
+        "has_sig": false,
+        "md5_digest": "9c46194a74de538adc8c13e49690ce21",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 29368,
+        "upload_time": "2015-07-28T21:21:12",
+        "url": "https://files.pythonhosted.org/packages/9b/19/1e763af6154e8b9210a2e4cae11b4f378b6e51b2ff7aea22e30c1f03c53f/bootstrap_cfn-0.5.6.zip"
+      }
+    ],
+    "0.5.7": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "82373d227022d0d37ef8e975d0162272",
+          "sha256": "bc75d4efa8ebbc6c9256702395f0aa963aa1f0c68049f93776de818115611738"
+        },
+        "downloads": 862,
+        "filename": "bootstrap_cfn-0.5.7.tar.gz",
+        "has_sig": false,
+        "md5_digest": "82373d227022d0d37ef8e975d0162272",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 24003,
+        "upload_time": "2015-08-10T09:39:32",
+        "url": "https://files.pythonhosted.org/packages/21/8d/09ad63c2a939f427e7273203b95463f81348c2218972eb7ebd2b1a374f4b/bootstrap_cfn-0.5.7.tar.gz"
+      }
+    ],
+    "0.5.9": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4c48e888fdd5d2f368e3498147cbdb76",
+          "sha256": "8f5e79099269d88f8a0f9e1c91770d7ddf7343249038fd8b9d5dd4451ba7a44e"
+        },
+        "downloads": 864,
+        "filename": "bootstrap_cfn-0.5.9.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4c48e888fdd5d2f368e3498147cbdb76",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 24072,
+        "upload_time": "2015-08-13T10:30:39",
+        "url": "https://files.pythonhosted.org/packages/ff/52/36c302bf593a8e9525bb26921c5bbe9551ab7b2cbcb964c79a94132e5fdb/bootstrap_cfn-0.5.9.tar.gz"
+      }
+    ],
+    "0.6.0": [
+      {
+        "comment_text": "built for Darwin-15.0.0",
+        "digests": {
+          "md5": "2be3f1bebc4f2bce2542f047a05fa66f",
+          "sha256": "88fdce3892a829e8344d66df63c2c037384cc29fe22d3573a9c8f02ad1bdd252"
+        },
+        "downloads": 834,
+        "filename": "bootstrap_cfn-0.6.0.macosx-10.11-intel.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2be3f1bebc4f2bce2542f047a05fa66f",
+        "packagetype": "bdist_dumb",
+        "python_version": "any",
+        "size": 46661,
+        "upload_time": "2015-11-04T16:05:59",
+        "url": "https://files.pythonhosted.org/packages/70/f4/bf6a6ac1fc73c632864ca024b816c9b06425b8cfc9744f1441b54b86058f/bootstrap_cfn-0.6.0.macosx-10.11-intel.tar.gz"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6d07957c7a4c99788306c726ec768531",
+          "sha256": "30ef15cfe14cc5353268efe7a368fbce614d2cb3c58bc6583a38387be871aa6e"
+        },
+        "downloads": 647,
+        "filename": "bootstrap_cfn-0.6.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6d07957c7a4c99788306c726ec768531",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 27612,
+        "upload_time": "2015-11-04T16:05:41",
+        "url": "https://files.pythonhosted.org/packages/cd/9f/64e1b96e2080152a116d1ff3af5660d306f3fca42308a154237e538ec483/bootstrap_cfn-0.6.0.tar.gz"
+      }
+    ],
+    "0.6.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4a182b703cf9ab4190b2c8570204177a",
+          "sha256": "a8522d06b30e94a004561fdaf807cb483f87d04e74a8b1d2c19a891e97c1b81c"
+        },
+        "downloads": 480,
+        "filename": "bootstrap_cfn-0.6.2-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "4a182b703cf9ab4190b2c8570204177a",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 28472,
+        "upload_time": "2015-12-03T12:41:07",
+        "url": "https://files.pythonhosted.org/packages/2b/b7/1dba6fda62c0c2a889d7b04d31aac839364908f402f89ce43cd830d22cbd/bootstrap_cfn-0.6.2-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ca877527c86df3a1911323a7f3d119f2",
+          "sha256": "6b9ba28444e2e8370b412d83f7b9063721eec89d1b4ac38b64c31063c8a56fb3"
+        },
+        "downloads": 489,
+        "filename": "bootstrap_cfn-0.6.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ca877527c86df3a1911323a7f3d119f2",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 28922,
+        "upload_time": "2015-12-03T12:41:03",
+        "url": "https://files.pythonhosted.org/packages/95/fe/7d247414d72a0521ba47404e43b1af609e80e42ca99591588063ef694d93/bootstrap_cfn-0.6.2.tar.gz"
+      }
+    ],
+    "0.6.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "167288034f7ef2f49821c2140b110f1f",
+          "sha256": "13ad2002fffde390079e485a66f354930344d1fecc657a1834505bd9ce6eff4c"
+        },
+        "downloads": 503,
+        "filename": "bootstrap_cfn-0.6.3-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "167288034f7ef2f49821c2140b110f1f",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 28160,
+        "upload_time": "2015-12-08T13:23:57",
+        "url": "https://files.pythonhosted.org/packages/b7/3e/077abeab21a54796bf9b806fbc2bfd18596f5f527b8101ed3ba62e0e1554/bootstrap_cfn-0.6.3-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b7ead360227be77a4fab5ee7b1e3c214",
+          "sha256": "9f3ad227414643bc6c71f04cdf785fd0eb0b9c4d24cc97aa8b16f7f646f077a8"
+        },
+        "downloads": 490,
+        "filename": "bootstrap_cfn-0.6.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b7ead360227be77a4fab5ee7b1e3c214",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 28361,
+        "upload_time": "2015-12-08T13:23:38",
+        "url": "https://files.pythonhosted.org/packages/c0/7f/a0cadb3b0f039a651e29786b15f97b9c28efaec90eb78ec6233e705cf2ad/bootstrap_cfn-0.6.3.tar.gz"
+      }
+    ],
+    "0.7.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ea5fb0983467a0d978aa474d40c5e980",
+          "sha256": "3ab77c62745978fe2047f0e9102953aed320d99b62ebffec0808cdb457a87a35"
+        },
+        "downloads": 320,
+        "filename": "bootstrap_cfn-0.7.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ea5fb0983467a0d978aa474d40c5e980",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 34753,
+        "upload_time": "2016-01-21T13:35:32",
+        "url": "https://files.pythonhosted.org/packages/51/db/9b1bb21d8508b4df2735d6e5338beab0826bccee67371878879b7594c407/bootstrap_cfn-0.7.0.tar.gz"
+      }
+    ],
+    "0.7.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "21405c68ed669aa6c5b8de2c808d4aea",
+          "sha256": "340b6ac222f5768905ed1b7e1ae2488cf15f2e775eeb0d44d907b0691e07e769"
+        },
+        "downloads": 319,
+        "filename": "bootstrap_cfn-0.7.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "21405c68ed669aa6c5b8de2c808d4aea",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 35597,
+        "upload_time": "2016-01-21T14:25:56",
+        "url": "https://files.pythonhosted.org/packages/8a/da/84ff412c739ef89955a3094bf86e1167d69e19cb41e30ced56701ebb8d90/bootstrap_cfn-0.7.1.tar.gz"
+      }
+    ],
+    "0.7.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5cb1bc4682c19ff976d7e8967fdef290",
+          "sha256": "f98fd959432e748787b17329e4f6d1567fcddcba718268b45e03197900c3bcd4"
+        },
+        "downloads": 337,
+        "filename": "bootstrap_cfn-0.7.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5cb1bc4682c19ff976d7e8967fdef290",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 35661,
+        "upload_time": "2016-01-21T15:02:22",
+        "url": "https://files.pythonhosted.org/packages/d6/69/483bcf57de190b8874b8658942031935d93455437bc61624c8cbcc094505/bootstrap_cfn-0.7.2.tar.gz"
+      }
+    ],
+    "0.7.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a15eb07770199e11b8ab025a47087934",
+          "sha256": "7d69e7fdf867db4cb7606d2ac93e079bef0ca1f3c3eaf288715bde245efec1fc"
+        },
+        "downloads": 325,
+        "filename": "bootstrap_cfn-0.7.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a15eb07770199e11b8ab025a47087934",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 35707,
+        "upload_time": "2016-01-21T15:38:27",
+        "url": "https://files.pythonhosted.org/packages/f0/5d/d3870d63402f2e8dc4f67b29e7cf33f6753f9b9aedf88c7e4ba82748258b/bootstrap_cfn-0.7.3.tar.gz"
+      }
+    ],
+    "0.7.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7d5dee406881e044a253f89076d8ab15",
+          "sha256": "e5291ab641f9cd6b55f3fb192b6926ac492d42090dcdbc364651c4447f323aa1"
+        },
+        "downloads": 331,
+        "filename": "bootstrap_cfn-0.7.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7d5dee406881e044a253f89076d8ab15",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 36270,
+        "upload_time": "2016-01-23T11:16:39",
+        "url": "https://files.pythonhosted.org/packages/8c/58/dbb8e9f7fdaacf0f2f5df4e9108711e27da56a26c8d6aeeef9392d2f5d94/bootstrap_cfn-0.7.4.tar.gz"
+      }
+    ],
+    "0.7.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "17884a7e3067771c083bcb9f269a78d5",
+          "sha256": "36b92adc34d13127fc748d9e7cd5568a4aea9d738ec52ee60e4559d22a15706a"
+        },
+        "downloads": 361,
+        "filename": "bootstrap_cfn-0.7.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "17884a7e3067771c083bcb9f269a78d5",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 36287,
+        "upload_time": "2016-01-23T11:29:40",
+        "url": "https://files.pythonhosted.org/packages/96/50/aa84995179b6f78504f621a444752d440968f05f0f8bc6d68259c404f47e/bootstrap_cfn-0.7.5.tar.gz"
+      }
+    ],
+    "0.7.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "85a9f081dd7e2d1968679e6e219efb74",
+          "sha256": "4f9bc86bcb549517c47a9d2d6b5c277e36a3dad2cc1206ec8a937ac46ca98f03"
+        },
+        "downloads": 149,
+        "filename": "bootstrap_cfn-0.7.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "85a9f081dd7e2d1968679e6e219efb74",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 35666,
+        "upload_time": "2016-02-11T13:46:49",
+        "url": "https://files.pythonhosted.org/packages/fa/6a/38dcc27129307d8e65613dbbbb422888567ce89138828f8837f4eccc4d1e/bootstrap_cfn-0.7.6.tar.gz"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "db84b6918e9aafb9778724780c56b296",
+          "sha256": "94879744b319ae00b8f889546696554609178872d43028d2ce1dc655b07b3d21"
+        },
+        "downloads": 167,
+        "filename": "bootstrap_cfn-0.7.6.zip",
+        "has_sig": false,
+        "md5_digest": "db84b6918e9aafb9778724780c56b296",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 42374,
+        "upload_time": "2016-02-11T13:46:59",
+        "url": "https://files.pythonhosted.org/packages/57/af/a55ebeeba970859788f1ec77e2cb8e149116dba669d5f907a5f9890102fc/bootstrap_cfn-0.7.6.zip"
+      }
+    ],
+    "0.7.7": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4efcb94dd8ad5fdd20f86953a45570a8",
+          "sha256": "e848a498482c386835e9ea1690f00be53a4518370d240088de779417ecfeda43"
+        },
+        "downloads": 152,
+        "filename": "bootstrap_cfn-0.7.7.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4efcb94dd8ad5fdd20f86953a45570a8",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 35974,
+        "upload_time": "2016-02-18T16:28:51",
+        "url": "https://files.pythonhosted.org/packages/6d/30/66f0e9f04d7e981c181cd67038ad1718e3e60f59b23d634e304f8e34eade/bootstrap_cfn-0.7.7.tar.gz"
+      }
+    ],
+    "0.8.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "277d6174d5c8a2cd06d11053ebac03bd",
+          "sha256": "13f3e22333eb67b5a509171ece99b38d3ae988b327cb41ce044163e1dbb8f3c3"
+        },
+        "downloads": 164,
+        "filename": "bootstrap_cfn-0.8.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "277d6174d5c8a2cd06d11053ebac03bd",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 39675,
+        "upload_time": "2016-03-01T14:26:25",
+        "url": "https://files.pythonhosted.org/packages/3b/18/491c7967e5d7ed648abfa8443d232debef27ca2eaaffe10812910c9d6319/bootstrap_cfn-0.8.1.tar.gz"
+      }
+    ],
+    "0.8.2": [],
+    "0.8.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1848117f0aa786ea9c52632a0fc8e7c9",
+          "sha256": "1924709ea5205160eac607ead8d1e56ec43fb1686744ff3b8af5232bfbea3d7f"
+        },
+        "downloads": 161,
+        "filename": "bootstrap_cfn-0.8.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1848117f0aa786ea9c52632a0fc8e7c9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 39976,
+        "upload_time": "2016-03-08T18:27:43",
+        "url": "https://files.pythonhosted.org/packages/d6/7d/2aec45ebd5f4b2db3d5d188133b71f4c5ce6e62e66a6388fd841a061898f/bootstrap_cfn-0.8.3.tar.gz"
+      }
+    ],
+    "0.8.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "31c34531834de40686f537b119b83890",
+          "sha256": "74f4e58ad5bc2a765743967fae71436b25cda19be055a70820dc155dafbecae8"
+        },
+        "downloads": 152,
+        "filename": "bootstrap_cfn-0.8.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "31c34531834de40686f537b119b83890",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 39929,
+        "upload_time": "2016-03-21T10:45:59",
+        "url": "https://files.pythonhosted.org/packages/cb/0f/647afeb7f2b2c1ce6e0aec6483b14e7f9b8dfc2d8beebe2707564a2b5efc/bootstrap_cfn-0.8.4.tar.gz"
+      }
+    ],
+    "0.8.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "74622e00e7895a8f171cfecfc3502ed7",
+          "sha256": "c162a636805169f13429d81f6139c45353b1a99b293c08656e9021f8e0aaa9aa"
+        },
+        "downloads": 151,
+        "filename": "bootstrap_cfn-0.8.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "74622e00e7895a8f171cfecfc3502ed7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 39973,
+        "upload_time": "2016-04-14T12:02:41",
+        "url": "https://files.pythonhosted.org/packages/7f/f0/c4e9fcda4dfa2df376b13deaabea7c60f743fd5f044d41e4c00a0d510861/bootstrap_cfn-0.8.5.tar.gz"
+      }
+    ],
+    "0.8.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "402468e764a289967b86068bbcf4222a",
+          "sha256": "5616d59c893c5c76a1c197cf39ab50a452a834e37a9e67e86915bc1435a38e43"
+        },
+        "downloads": 160,
+        "filename": "bootstrap_cfn-0.8.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "402468e764a289967b86068bbcf4222a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 40059,
+        "upload_time": "2016-05-11T18:05:11",
+        "url": "https://files.pythonhosted.org/packages/41/61/c183c6044306900fbd56a3fcd707a0ca7148fbec5b38d3278355405f4db4/bootstrap_cfn-0.8.6.tar.gz"
+      }
+    ],
+    "0.9.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ddb909f61123f9ab5b5cd4978b0a97b9",
+          "sha256": "867e3677f0cb2b831514f94821acdc78de0e3593e693b8064f07df02f7ff12e1"
+        },
+        "downloads": 175,
+        "filename": "bootstrap_cfn-0.9.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ddb909f61123f9ab5b5cd4978b0a97b9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 40076,
+        "upload_time": "2016-05-12T14:52:44",
+        "url": "https://files.pythonhosted.org/packages/09/b8/6f12b586fbe6ef6e4110f14e2268ccffb4ec42744206c1cf2707c93bda40/bootstrap_cfn-0.9.0.tar.gz"
+      }
+    ],
+    "1.0.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b46849a4d6e462c161a50e5848bcd8f7",
+          "sha256": "67912634d0b5689a2224977ab565af16cc16a63532de5d7c4aea883b673b889b"
+        },
+        "downloads": 120,
+        "filename": "bootstrap_cfn-1.0.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b46849a4d6e462c161a50e5848bcd8f7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 45053,
+        "upload_time": "2016-09-13T11:48:04",
+        "url": "https://files.pythonhosted.org/packages/99/c8/a9cf2dba8cb503faeed4b2da96c298f08b7776e0ac02c0a0669933ccc647/bootstrap_cfn-1.0.0.tar.gz"
+      }
+    ],
+    "1.1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "058bd54cdbd8c7154bf2865a992b184a",
+          "sha256": "8bdc80e871345439bf8a737501a9ca6eb794cfa8febf4023a9c7ff0fe1ea33b2"
+        },
+        "downloads": 243,
+        "filename": "bootstrap_cfn-1.1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "058bd54cdbd8c7154bf2865a992b184a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 45431,
+        "upload_time": "2016-09-15T13:35:00",
+        "url": "https://files.pythonhosted.org/packages/45/fb/44ab1fcbb2952a8a297edb23e8929ab366bf6af95f1a737fddded53cd9fa/bootstrap_cfn-1.1.0.tar.gz"
+      }
+    ],
+    "1.3.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7c48544182351b65049fd600ff256ab7",
+          "sha256": "5c3b0dd8b5140afd7a11c556c1d1dc7b552d98586d19dbd448d58bf80056c9d6"
+        },
+        "downloads": 13,
+        "filename": "bootstrap_cfn-1.3.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7c48544182351b65049fd600ff256ab7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 47624,
+        "upload_time": "2017-02-17T11:47:46",
+        "url": "https://files.pythonhosted.org/packages/94/4c/17269efce3201798413d4f66ec1ea9cd9dc54ecf52556d71fe488c7b29f6/bootstrap_cfn-1.3.0.tar.gz"
+      }
+    ],
+    "1.3.0rc1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6e35c187d818fdf10a080a57c0e600df",
+          "sha256": "1138e65e124906d3aa6c98bc2f70681052dc793059651d964b5a85569ae45ad8"
+        },
+        "downloads": 97,
+        "filename": "bootstrap_cfn-1.3.0rc1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6e35c187d818fdf10a080a57c0e600df",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 47615,
+        "upload_time": "2016-12-21T19:19:06",
+        "url": "https://files.pythonhosted.org/packages/78/79/c1afc1a2c64fd828e38867f1f558421a87bc77e5b2d6d9ae31b2db6f416a/bootstrap_cfn-1.3.0rc1.tar.gz"
+      }
+    ],
+    "1.4.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a087f503817453319e5365236b729620",
+          "sha256": "9da9e480c4ffd89a9f00d0e7dbca85c60482b42176cd6a099381db59795c292e"
+        },
+        "downloads": 17,
+        "filename": "bootstrap_cfn-1.4.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a087f503817453319e5365236b729620",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 48523,
+        "upload_time": "2017-02-17T17:16:48",
+        "url": "https://files.pythonhosted.org/packages/d9/91/0e05320d526209de2d85c62f09d79708695240ba2f3a0df3b6f4bcce4eff/bootstrap_cfn-1.4.0.tar.gz"
+      }
+    ],
+    "1.4.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f5e02e8b4217af4e340aab19c4b1ef65",
+          "sha256": "01456cd39728d32de77d82b6c5583e31dd8c86cd7e35712b0df99f83114dc433"
+        },
+        "downloads": 28,
+        "filename": "bootstrap_cfn-1.4.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f5e02e8b4217af4e340aab19c4b1ef65",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 48915,
+        "upload_time": "2017-02-27T08:38:15",
+        "url": "https://files.pythonhosted.org/packages/f8/c1/ed177fc03afd0319c07f37429ac3882834525954ffba392974fc01006803/bootstrap_cfn-1.4.1.tar.gz"
+      }
+    ],
+    "1.5.0": [],
+    "1.5.1": [],
+    "1.5.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "df00985a9bd928c94a722736d4c86caf",
+          "sha256": "beede6d0ab961ce28ac9b3c55d8786196bb148dba98213cedd5c869e929b2a0f"
+        },
+        "downloads": 0,
+        "filename": "bootstrap_cfn-1.5.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "df00985a9bd928c94a722736d4c86caf",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 53704,
+        "upload_time": "2017-06-01T12:09:57",
+        "url": "https://files.pythonhosted.org/packages/32/43/cb8670e7a13917836c4ce04cbb31161103cffc818bab9a300ff6283b1bdb/bootstrap_cfn-1.5.2.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "df00985a9bd928c94a722736d4c86caf",
+        "sha256": "beede6d0ab961ce28ac9b3c55d8786196bb148dba98213cedd5c869e929b2a0f"
+      },
+      "downloads": 0,
+      "filename": "bootstrap_cfn-1.5.2.tar.gz",
+      "has_sig": false,
+      "md5_digest": "df00985a9bd928c94a722736d4c86caf",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 53704,
+      "upload_time": "2017-06-01T12:09:57",
+      "url": "https://files.pythonhosted.org/packages/32/43/cb8670e7a13917836c4ce04cbb31161103cffc818bab9a300ff6283b1bdb/bootstrap_cfn-1.5.2.tar.gz"
+    }
+  ]
+}

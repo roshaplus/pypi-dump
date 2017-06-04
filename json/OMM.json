@@ -1,0 +1,143 @@
+{
+  "info": {
+    "author": "Hiroaki Yamamoto",
+    "author_email": "hiroaki@hysoftware.net",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 5 - Production/Stable",
+      "License :: OSI Approved :: MIT License",
+      "Programming Language :: Python :: 2.7",
+      "Programming Language :: Python :: 3.5"
+    ],
+    "description": "Object Model Mapper\n===================\n\n|Build Status| |Coverage Status| |Code Health| |PyPI version|\n\nWhat This?\n----------\n\nThis script enables to flat/bump the model depth.\n\nWhy I Make This?\n----------------\n\nWhen I used MongoEngine, I needed to design the model like this:\n\n.. code:: python\n\n    import mongoengine as db\n\n    class RecentPrevAmount(db.EmbeddedDocument):\n      recent = db.FloatField()\n      prev = db.FloatField()\n\n    class AssetInfo(db.Document):\n      assets = db.EmbeddedDocumentField(RecentPrevAmount)\n      cash = db.EmbeddedDocumentField(RecentPrevAmount)\n      receivable = db.EmbeddedDocumentField(RecentPrevAmount)\n      revenue = db.EmbeddedDocumentField(RecentPrevAmount)\n      cogs = db.EmbeddedDocumentField(RecentPrevAmount)\n\nAnd creating RestAPI in above order without \"Undefiend property\" error,\nit is needed to create 5 CRUD resources:\n\n-  ``[GET, POST, PUT, DELETE] /assets``\n-  ``[GET, POST, PUT, DELETE] /cash``\n-  ``[GET, POST, PUT, DELETE] /receivable``\n-  ``[GET, POST, PUT, DELETE] /revenue``\n-  ``[GET, POST, PUT, DELETE] /cogs``\n\nFor each resource, the text like following is output/input:\n\n.. code:: json\n\n    {\"recent\": 10.0, \"prev\": 14.0}\n\nThis means, sending tons of requests is needed to file asset information\nand it may have frontend slow. To avoid the problem, the number of\nrequest to send should be reduced as far as possible. The ideal resource\nis one resource with the following format:\n\n.. code:: json\n\n    {\n      \"assets_recent\": 10.0,\n      \"assets_prev\": 11.0,\n      \"cash_recent\": 12.0,\n      \"receivable_prev\": 13.0,\n      \"revenue_recent\": 14.0,\n      \"cogs_prev\": 15.0\n    }\n\nOf course, above is not good for public api (On public api, recent and\nprev should be embedded in a field), but above structure reduces the\nnumber of requests.\n\nHow to use\n----------\n\nI think you must need example code than the doc.\n\nFlat the model\n~~~~~~~~~~~~~~\n\n.. code:: python\n\n    #!/usr/bin/env python\n    # coding=utf-8\n\n    \"\"\"\n    Example code.\n\n    Note that this is just an example.\n    \"\"\"\n    import mongoengine as db\n    import omm\n    import wtforms.forms as forms\n    import wtforms.fields as fld\n    import wtforms.validators as vld\n    from ..api import api, render, login_only\n\n    # First, let's define the target models as usual.\n    class Address(db.EmbeddedDocument):\n      street = db.ListField(db.StringField, required=True)\n      city = db.StringField(required=True)\n      state = db.StringField(required=True)\n      country = db.StringField(required=True)\n\n    class User(db.Document):\n      email = EmailField(primary_key=True)\n      first_name = StringField(required=True)\n      last_name = StringField(required=True)\n      address = db.EmbeddedDocument(Address, required=True)\n\n      @property\n      def full_name(self):\n        return (\" \").join([self.first_name, self.last_name])\n\n      @full_name.setter\n      def full_name(self, value):\n        try:\n          (self.first_name, self.last_name) = value.split(\" \")\n        except ValueError:\n          pass\n\n    # Then, define the map.\n    class UserMapper(omm.Mapper):\n      # Note that set_cast can be non-list, i.e. str. However, in this case,\n      # we use User because the root object type is User.\n      fullname = omm.MapField(\"full_name\", set_cast=[User, str])\n      email = omm.MapField(\"email\", set_cast=[User, str])\n      # For third element should be list or any class that inherits list because\n      # the target is typed as list.\n      street1 = omm.MapField(\n        \"address.street[0]\", set_cast=[User, Address, list, str]\n      )\n      street2 = omm.MapField(\n        \"address.street[1]\", set_cast=[User, Address, list, str]\n      )\n      # Note that dot-notation is used to specify the member.\n      city = omm.MapField(\"address.city\", set_cast=[User, Address, str])\n      state = omm.MapField(\"address.state\", set_cast=[User, Address, str])\n      country = omm.MapField(\"address.country\", set_cast=[User, Address, str])\n\n    class UserForm(forms.Form):\n      fullname = fld.StringField(validators=[vld.DataRequired()])\n      email = fld.StringField(validators=[vld.Email()])\n      street1 = fld.StringField(validators=[vld.DataRequired()])\n      street2 = fld.StringField(validators=[vld.Optional()])\n      city = fld.StringField(validators=[vld.DataRequired()])\n      state = fld.StringField(validators=[vld.DataRequired()])\n      country = fld.StringField(validators=[vld.DataRequired()])\n\n    class UserController(object):\n      # User API\n\n      def get(self, id):\n        # GET request.\n        user = User.objects()\n        mapper = UserMapper(user)\n        return render(mapper.to_json(), mimetype=\"application/json\")\n\n      def post(self):\n        # POST request.\n        form = UserForm(api.request.json())\n        if not form.validate():\n          return render(\n            api.jsonify(form.errors),\n            mimetype=\"application/json\",\n            code=417\n          )\n        mapper = UserMapper()\n        form.populate_obj(mapper)\n        mapper.connected_object.save()\n\n      @login_only\n      def put(self, uid):\n        # PUT request.\n        form = UserForm(api.request.json())\n        if not form.validate():\n          return render(\n            api.jsonify(form.errors),\n            mimetype=\"application/json\",\n            code=417\n          )\n        mapper = UserMapper(User.objects(uid))\n        form.populate_obj(mapper)\n        mapper.connected_object.save()\n\n    api.register(UserController)\n\nIncrement the model depth\n~~~~~~~~~~~~~~~~~~~~~~~~~\n\nCurrently, I'm considering (and designing) the way to access multiple\nmodels thru the mapper. Unfortunately the functionalities are not\nimplemented yet.\n\nOther functionalities\n~~~~~~~~~~~~~~~~~~~~~\n\nRead the `code <omm>`__\n\nLicense (MIT License)\n---------------------\n\nCopyright (c) 2016 Hiroaki Yamamoto\n\nPermission is hereby granted, free of charge, to any person obtaining a\ncopy of this software and associated documentation files (the\n\"Software\"), to deal in the Software without restriction, including\nwithout limitation the rights to use, copy, modify, merge, publish,\ndistribute, sublicense, and/or sell copies of the Software, and to\npermit persons to whom the Software is furnished to do so, subject to\nthe following conditions:\n\nThe above copyright notice and this permission notice shall be included\nin all copies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS\nOR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF\nMERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.\nIN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY\nCLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,\nTORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE\nSOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n\n.. |Build Status| image:: https://travis-ci.org/hiroaki-yamamoto/omm.svg?branch=master\n   :target: https://travis-ci.org/hiroaki-yamamoto/omm\n.. |Coverage Status| image:: https://coveralls.io/repos/github/hiroaki-yamamoto/omm/badge.svg?branch=master\n   :target: https://coveralls.io/github/hiroaki-yamamoto/omm?branch=master\n.. |Code Health| image:: https://landscape.io/github/hiroaki-yamamoto/omm/master/landscape.svg?style=flat\n   :target: https://landscape.io/github/hiroaki-yamamoto/omm/master\n.. |PyPI version| image:: https://badge.fury.io/py/OMM.svg\n   :target: https://badge.fury.io/py/OMM",
+    "docs_url": null,
+    "download_url": "UNKNOWN",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/hiroaki-yamamoto/omm.git",
+    "keywords": "json OMM Object Model Mapper Relational Document",
+    "license": "MIT",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "OMM",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/OMM/",
+    "release_url": "https://pypi.org/project/OMM/1.0.0/",
+    "requires_python": null,
+    "summary": "Object Model Mapper for Python-based web apps and/or APIs",
+    "version": "1.0.0"
+  },
+  "releases": {
+    "0.5.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3ff176455e3b61069fc9584770222365",
+          "sha256": "b992ab1717699954ad55e7a6b7f6a21f6968ff420a35a6f250b9bff60878f93b"
+        },
+        "downloads": 245,
+        "filename": "OMM-0.5.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3ff176455e3b61069fc9584770222365",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16325,
+        "upload_time": "2016-05-23T04:56:13",
+        "url": "https://files.pythonhosted.org/packages/45/b0/9a34568af41df811ce393b16078e6659c9e62156e19a9ad16044bfe0d1a1/OMM-0.5.0.tar.gz"
+      }
+    ],
+    "0.5.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3bf9b93fd07a431f67621d094b572230",
+          "sha256": "625bdc34e1da3b03c9d431761c3d3f4ea0ef779cfb85426dee332f89bedc5a79"
+        },
+        "downloads": 146,
+        "filename": "OMM-0.5.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3bf9b93fd07a431f67621d094b572230",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 13599,
+        "upload_time": "2016-07-20T10:02:44",
+        "url": "https://files.pythonhosted.org/packages/4d/58/a0e8aa27f83cccf24950da4372a0c7bda09bb924d45b8083561c572a0dda/OMM-0.5.2.tar.gz"
+      }
+    ],
+    "0.5.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "60e8ac88ec47dcf2368159fe81542c3d",
+          "sha256": "ae736023068f3cd2aea8f864fbcb125708b946a1713f3df97dbaa8d13b020c7e"
+        },
+        "downloads": 155,
+        "filename": "OMM-0.5.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "60e8ac88ec47dcf2368159fe81542c3d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16888,
+        "upload_time": "2016-07-20T10:05:10",
+        "url": "https://files.pythonhosted.org/packages/f7/a8/d460aed9a428944cd4c9753c438d6df5b47e79b25e7747d6c5d704e4c4e5/OMM-0.5.3.tar.gz"
+      }
+    ],
+    "0.8.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "db4dbb231611453ecd07cbe713998b3e",
+          "sha256": "a5ed76f7da2aaa9637a38e5d394afb61956680bcea0c228a7ccb807f9225c300"
+        },
+        "downloads": 157,
+        "filename": "OMM-0.8.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "db4dbb231611453ecd07cbe713998b3e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 17366,
+        "upload_time": "2016-07-21T04:56:50",
+        "url": "https://files.pythonhosted.org/packages/bf/0a/6c2c846e45973786f753ae60112ce0fcd0359eafbb9a880af52136809e77/OMM-0.8.0.tar.gz"
+      }
+    ],
+    "1.0.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5127df99ffd76581ebb19947efc18c88",
+          "sha256": "c032f574d502fc4f2b9574f74a108c8fc5ff536daf40b088d1286f571f07f0c2"
+        },
+        "downloads": 401,
+        "filename": "OMM-1.0.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5127df99ffd76581ebb19947efc18c88",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 20760,
+        "upload_time": "2016-07-24T09:40:23",
+        "url": "https://files.pythonhosted.org/packages/b5/93/b271914aa35a9e8f466806feebfba1f4cd88e2b3112159b88674ed4cf0d7/OMM-1.0.0.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "5127df99ffd76581ebb19947efc18c88",
+        "sha256": "c032f574d502fc4f2b9574f74a108c8fc5ff536daf40b088d1286f571f07f0c2"
+      },
+      "downloads": 401,
+      "filename": "OMM-1.0.0.tar.gz",
+      "has_sig": false,
+      "md5_digest": "5127df99ffd76581ebb19947efc18c88",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 20760,
+      "upload_time": "2016-07-24T09:40:23",
+      "url": "https://files.pythonhosted.org/packages/b5/93/b271914aa35a9e8f466806feebfba1f4cd88e2b3112159b88674ed4cf0d7/OMM-1.0.0.tar.gz"
+    }
+  ]
+}

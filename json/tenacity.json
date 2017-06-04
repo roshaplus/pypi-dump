@@ -1,0 +1,328 @@
+{
+  "info": {
+    "author": "Julien Danjou",
+    "author_email": "julien@danjou.info",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: Apache Software License",
+      "Programming Language :: Python",
+      "Programming Language :: Python :: 2.7",
+      "Programming Language :: Python :: 3.4",
+      "Programming Language :: Python :: 3.5",
+      "Programming Language :: Python :: 3.6",
+      "Topic :: Utilities"
+    ],
+    "description": "Tenacity\n========\n.. image:: https://img.shields.io/pypi/v/tenacity.svg\n    :target: https://pypi.python.org/pypi/tenacity\n\n.. image:: https://img.shields.io/travis/jd/tenacity.svg\n    :target: https://travis-ci.org/jd/tenacity\n\n.. image:: https://img.shields.io/badge/SayThanks.io-%E2%98%BC-1EAEDB.svg\n    :target: https://saythanks.io/to/jd\n\nTenacity is an Apache 2.0 licensed general-purpose retrying library, written in\nPython, to simplify the task of adding retry behavior to just about anything.\nIt originates from a fork of `Retrying`_\n\n.. _Retrying: https://github.com/rholder/retrying\n\nThe simplest use case is retrying a flaky function whenever an `Exception`\noccurs until a value is returned.\n\n.. code-block:: python\n\n    import random\n    from tenacity import retry\n\n    @retry\n    def do_something_unreliable():\n        if random.randint(0, 10) > 1:\n            raise IOError(\"Broken sauce, everything is hosed!!!111one\")\n        else:\n            return \"Awesome sauce!\"\n\n    print(do_something_unreliable())\n\n\nFeatures\n--------\n\n- Generic Decorator API\n- Specify stop condition (i.e. limit by number of attempts)\n- Specify wait condition (i.e. exponential backoff sleeping between attempts)\n- Customize retrying on Exceptions\n- Customize retrying on expected returned result\n- Retry on coroutines\n\n\nInstallation\n------------\n\nTo install *tenacity*, simply:\n\n.. code-block:: bash\n\n    $ pip install tenacity\n\n\nExamples\n----------\n\nAs you saw above, the default behavior is to retry forever without waiting when\nan exception is raised.\n\n.. code-block:: python\n\n    @retry\n    def never_give_up_never_surrender():\n        print(\"Retry forever ignoring Exceptions, don't wait between retries\")\n        raise Exception\n\nLet's be a little less persistent and set some boundaries, such as the number\nof attempts before giving up.\n\n.. code-block:: python\n\n    @retry(stop=stop_after_attempt(7))\n    def stop_after_7_attempts():\n        print(\"Stopping after 7 attempts\")\n        raise Exception\n\nWe don't have all day, so let's set a boundary for how long we should be\nretrying stuff.\n\n.. code-block:: python\n\n    @retry(stop=stop_after_delay(10))\n    def stop_after_10_s():\n        print(\"Stopping after 10 seconds\")\n        raise Exception\n\nMost things don't like to be polled as fast as possible, so let's just wait 2\nseconds between retries.\n\n.. code-block:: python\n\n    @retry(wait=wait_fixed(2))\n    def wait_2_s():\n        print(\"Wait 2 second between retries\")\n        raise Exception\n\nSome things perform best with a bit of randomness injected.\n\n.. code-block:: python\n\n    @retry(wait=wait_random(min=1, max=2))\n    def wait_random_1_to_2_s():\n        print(\"Randomly wait 1 to 2 seconds between retries\")\n        raise Exception\n\nThen again, it's hard to beat exponential backoff when retrying distributed\nservices and other remote endpoints.\n\n.. code-block:: python\n\n    @retry(wait=wait_exponential(multiplier=1, max=10))\n    def wait_exponential_1():\n        print(\"Wait 2^x * 1 second between each retry, up to 10 seconds, then 10 seconds afterwards\")\n        raise Exception\n\n\nThen again, it's also hard to beat combining fixed waits and jitter (to\nhelp avoid thundering herds) when retrying distributed services and other\nremote endpoints.\n\n.. code-block:: python\n\n    @retry(wait=wait_fixed(3) + wait_random(0, 2))\n    def wait_fixed_jitter():\n        print(\"Wait at least 3 seconds, and add up to 2 seconds of random delay\")\n        raise Exception\n\n\nSometimes it's necessary to build a chain of backoffs.\n\n.. code-block:: python\n\n    @retry(wait=wait_chain(*[wait_fixed(3) for i in range(3)] +\n                           [wait_fixed(7) for i in range(2)] +\n                           [wait_fixed(9)]))\n    def wait_fixed_chained():\n        print(\"Wait 3s for 3 attempts, 7s for the next 2 attempts and 9s for all attempts thereafter\")\n        raise Exception\n\nWe have a few options for dealing with retries that raise specific or general\nexceptions, as in the cases here.\n\n.. code-block:: python\n\n    @retry(retry=retry_if_exception_type(IOError))\n    def might_io_error():\n        print(\"Retry forever with no wait if an IOError occurs, raise any other errors\")\n        retry Exception\n\nWe can also use the result of the function to alter the behavior of retrying.\n\n.. code-block:: python\n\n    def is_none_p(value):\n        \"\"\"Return True if value is None\"\"\"\n        return value is None\n\n    @retry(retry=retry_if_result(is_none_p))\n    def might_return_none():\n        print(\"Retry with no wait if return value is None\")\n\nWe can also combine several conditions:\n\n.. code-block:: python\n\n    def is_none_p(value):\n        \"\"\"Return True if value is None\"\"\"\n        return value is None\n\n    @retry(retry=(retry_if_result(is_none_p) | retry_if_exception_type()))\n    def might_return_none():\n        print(\"Retry forever ignoring Exceptions with no wait if return value is None\")\n\nAny combination of stop, wait, etc. is also supported to give you the freedom\nto mix and match.\n\nIt's also possible to retry explicitly at any time by raising the `TryAgain`\nexception:\n\n.. code-block:: python\n\n   @retry\n   def do_something():\n       result = something_else()\n       if result == 23:\n          raise TryAgain\n\nWhile callables that \"timeout\" retrying raise a `RetryError` by default,\nwe can reraise the last attempt's exception if needed:\n\n.. code-block:: python\n\n    @retry(reraise=True, stop=stop_after_attempt(3))\n    def raise_my_exception():\n        raise MyException(\"Fail\")\n\n    try:\n        raise_my_exception()\n    except MyException:\n        # timed out retrying\n\nIt's possible to execute an action before any attempt of calling the function\nby using the before callback function:\n\n.. code-block:: python\n\n    logger = logging.getLogger(__name__)\n\n    @retry(stop=stop_after_attempt(3), before=before_log(logger, logging.DEBUG))\n    def raise_my_exception():\n        raise MyException(\"Fail\")\n\nIn the same spirit, It's possible to execute after a call that failed:\n\n.. code-block:: python\n\n    logger = logging.getLogger(__name__)\n\n    @retry(stop=stop_after_attempt(3), after=after_log(logger, logging.DEBUG))\n    def raise_my_exception():\n        raise MyException(\"Fail\")\n\nYou can access the statistics about the retry made over a function by using the\n`retry` attribute attached to the function and its `statistics` attribute:\n\n.. code-block:: python\n\n    @retry(stop=stop_after_attempt(3)\n    def raise_my_exception():\n        raise MyException(\"Fail\")\n\n    try:\n        raise_my_exception()\n    except Exception:\n        pass\n\n    print(raise_my_exception.retry.statistics)\n\n\nFinally, ``retry`` works also on asyncio coroutines. Sleeps are done\nasynchronously too.\n\n.. code-block:: python\n\n    @retry\n    async def my_async_function(loop):\n        await loop.getaddrinfo('8.8.8.8', 53)\n\n\nContribute\n----------\n\n#. Check for open issues or open a fresh issue to start a discussion around a\n   feature idea or a bug.\n#. Fork `the repository`_ on GitHub to start making your changes to the\n   **master** branch (or branch off of it).\n#. Write a test which shows that the bug was fixed or that the feature works as\n   expected.\n#. Make the docs better (or more detailed, or more easier to read, or ...)\n\n.. _`the repository`: https://github.com/jd/tenacity\n\n",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/jd/tenacity",
+    "keywords": "",
+    "license": "",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "tenacity",
+    "platform": "",
+    "project_url": "https://pypi.org/project/tenacity/",
+    "release_url": "https://pypi.org/project/tenacity/4.1.0/",
+    "requires_python": "",
+    "summary": "Retry code until it succeeeds",
+    "version": "4.1.0"
+  },
+  "releases": {
+    "0.0.1.dev101": [],
+    "2.0.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3ba878640f6955629c0a1810cec23781",
+          "sha256": "ef1254ed452a72842eb09bea09cb002640d5e1630f9fe96704715543e4ba4ecc"
+        },
+        "downloads": 357,
+        "filename": "tenacity-2.0.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3ba878640f6955629c0a1810cec23781",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 18981,
+        "upload_time": "2016-08-25T15:40:17",
+        "url": "https://files.pythonhosted.org/packages/7d/48/8a62f4cea08d612190953385b7eaea7873a259dd2c65745bb7287579539d/tenacity-2.0.0.tar.gz"
+      }
+    ],
+    "3.0.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "09a6c9e1e4c2792c8dd8c74ddc39c7f0",
+          "sha256": "60a1438645e26324ac8eefa4748561a866d007b9243d906bd631bb5c70ce7e32"
+        },
+        "downloads": 693,
+        "filename": "tenacity-3.0.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "09a6c9e1e4c2792c8dd8c74ddc39c7f0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 19064,
+        "upload_time": "2016-08-26T08:10:15",
+        "url": "https://files.pythonhosted.org/packages/20/bb/f3d1ec11221f7b1610da86cc3d6cb1cbe74d45d073d16832900d81b60e4c/tenacity-3.0.0.tar.gz"
+      }
+    ],
+    "3.1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c4f57183a8b06df56d7f40de380968fc",
+          "sha256": "f6ee080d222554be93d4603e6db9010d68e199683250ac5feeb185272297efbb"
+        },
+        "downloads": 188,
+        "filename": "tenacity-3.1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c4f57183a8b06df56d7f40de380968fc",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 19812,
+        "upload_time": "2016-09-16T10:36:51",
+        "url": "https://files.pythonhosted.org/packages/05/8d/ea0b500282bccc423d5a1cc088b168c1a5ba7ad2e81356c52b95c55aaad9/tenacity-3.1.0.tar.gz"
+      }
+    ],
+    "3.1.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "fbcb28328f3cf715654f998cbe285121",
+          "sha256": "53271258ae7849f6a85a998dc12e91b6d30422d7399f4cb7590d322dfcc12634"
+        },
+        "downloads": 579,
+        "filename": "tenacity-3.1.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "fbcb28328f3cf715654f998cbe285121",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 19847,
+        "upload_time": "2016-09-23T11:02:45",
+        "url": "https://files.pythonhosted.org/packages/1d/51/dc743d253901f1fc22bb132b46bdd78032b8e974806390bf675ed3e00dae/tenacity-3.1.1.tar.gz"
+      }
+    ],
+    "3.2.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "01e83c10944bb647f08093ef493a968d",
+          "sha256": "1a5ab9f88524c5b577bc7d2ad01f7d08c94b22121fe5abf36ff730350316153d"
+        },
+        "downloads": 308,
+        "filename": "tenacity-3.2.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "01e83c10944bb647f08093ef493a968d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 20185,
+        "upload_time": "2016-10-04T15:47:13",
+        "url": "https://files.pythonhosted.org/packages/b0/3c/33484a9d18df82421e3b90cb750a68a7e3d8835fb7c34115ddb89cb41599/tenacity-3.2.0.tar.gz"
+      }
+    ],
+    "3.2.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d5b706fab76eb2e198ece432a833390f",
+          "sha256": "fe1ddf6792dd297da2ddac6450d8bd277b2579574bdfe268c2fd13e74fc8f705"
+        },
+        "downloads": 4515,
+        "filename": "tenacity-3.2.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d5b706fab76eb2e198ece432a833390f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 20209,
+        "upload_time": "2016-10-04T16:04:50",
+        "url": "https://files.pythonhosted.org/packages/49/4e/fc48f9f7543208b2cba9a4ece316ac928359c39433ef6e01e5a0b93f8973/tenacity-3.2.1.tar.gz"
+      }
+    ],
+    "3.3.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "bbbd6e76c255daaf7b89a58c1b858cdc",
+          "sha256": "56faedf1062ceb9faccbfdde848cf4b2aceb34ccac885cdcbcb8c34ed5085866"
+        },
+        "downloads": 6383,
+        "filename": "tenacity-3.3.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "bbbd6e76c255daaf7b89a58c1b858cdc",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 20475,
+        "upload_time": "2016-10-24T14:50:26",
+        "url": "https://files.pythonhosted.org/packages/53/26/f5cd22ab973526638fd507ddcfb3dfd628702acce8fe62e2df4eccca57ba/tenacity-3.3.0.tar.gz"
+      }
+    ],
+    "3.4.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "499dab3b08705bb2e531b874c82b3843",
+          "sha256": "72918085efeaaebcfd241ea04256151935826e428b81d1e18f3e924cb7a1f4c4"
+        },
+        "downloads": 613,
+        "filename": "tenacity-3.4.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "499dab3b08705bb2e531b874c82b3843",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 21074,
+        "upload_time": "2016-11-25T16:05:53",
+        "url": "https://files.pythonhosted.org/packages/7f/12/055a427058f259c5cfe9e706834d2eae8ef4bf50c7ec15000e6b721e138c/tenacity-3.4.0.tar.gz"
+      }
+    ],
+    "3.5.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "426e6cadaec928efd2d671c235b3501e",
+          "sha256": "f0ca98c94e5350614fa1621a73a7687f97ac6bcbeb3a17e55201826caafa97a9"
+        },
+        "downloads": 4055,
+        "filename": "tenacity-3.5.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "426e6cadaec928efd2d671c235b3501e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 21671,
+        "upload_time": "2016-12-08T12:36:28",
+        "url": "https://files.pythonhosted.org/packages/db/7a/d96512cad81accf7a0cb19b13e7fd4ec817a188e53f25a608238bea8aee1/tenacity-3.5.0.tar.gz"
+      }
+    ],
+    "3.6.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "245d502f934b95d68532c0165624aa79",
+          "sha256": "896caff1fbfb8616de1445ad6c70b13e5a3d29aa0eb6d5d2629c5b69c668487b"
+        },
+        "downloads": 24009,
+        "filename": "tenacity-3.6.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "245d502f934b95d68532c0165624aa79",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 22771,
+        "upload_time": "2016-12-13T15:08:38",
+        "url": "https://files.pythonhosted.org/packages/6d/74/8d94850688afc84827f9b85005d6a69c0587b656a7ba1eb7527ed6a52678/tenacity-3.6.0.tar.gz"
+      }
+    ],
+    "3.7.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2de6a4124170faf3042bb512051ad67f",
+          "sha256": "4afe64e2fce6fde42807163ad07e7835592a72c6d2c611d1024db9f9dd94f137"
+        },
+        "downloads": 250,
+        "filename": "tenacity-3.7.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2de6a4124170faf3042bb512051ad67f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 22914,
+        "upload_time": "2017-01-04T15:27:24",
+        "url": "https://files.pythonhosted.org/packages/83/9b/80397c36b74d0b78a3a0241e6272bc73e7b470fbb964ccb38a291e35448f/tenacity-3.7.0.tar.gz"
+      }
+    ],
+    "3.7.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b4d231e7942961531b69bd806343f846",
+          "sha256": "86cae49f4334277164b97a1871828e9173d669b9bb223de44ba8c1cee787bbfa"
+        },
+        "downloads": 2439,
+        "filename": "tenacity-3.7.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b4d231e7942961531b69bd806343f846",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 22915,
+        "upload_time": "2017-01-04T15:41:11",
+        "url": "https://files.pythonhosted.org/packages/b2/06/e8ec6db77855577840ce15327d97a11d4c1c1f5d2bf31271d8d6a507f44f/tenacity-3.7.1.tar.gz"
+      }
+    ],
+    "4.0.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "822bcc468d5dc337bc416cb5b1408022",
+          "sha256": "2bec6433d345bb1541f11387a04436d6b8e56671478b4edfac9e471d5b97d711"
+        },
+        "downloads": 1910,
+        "filename": "tenacity-4.0.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "822bcc468d5dc337bc416cb5b1408022",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 23191,
+        "upload_time": "2017-03-06T16:49:23",
+        "url": "https://files.pythonhosted.org/packages/a2/98/cf94a37f636814ad7317f513165755eefcc3db064db73c8ff5ff2726f2c9/tenacity-4.0.0.tar.gz"
+      }
+    ],
+    "4.0.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "65e78f3f01adc7641c71beafbdac2d78",
+          "sha256": "f1aff41a2ce733ef9daaac9941323d8f03f4ba08d6b9f60b8936a66c68c208a6"
+        },
+        "downloads": 8091,
+        "filename": "tenacity-4.0.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "65e78f3f01adc7641c71beafbdac2d78",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 23222,
+        "upload_time": "2017-03-24T09:03:36",
+        "url": "https://files.pythonhosted.org/packages/cb/e9/f2fda321628cf41057c7afab089bae05b14d1c25c64c26a059ca6f696f87/tenacity-4.0.1.tar.gz"
+      }
+    ],
+    "4.1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "03086f36d155559bf77b9eb770dc24ed",
+          "sha256": "9d800437c8495c78c54615d7f839725afd8858d7f8bb360ee03addb90039fe96"
+        },
+        "downloads": 0,
+        "filename": "tenacity-4.1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "03086f36d155559bf77b9eb770dc24ed",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 23385,
+        "upload_time": "2017-04-24T09:05:35",
+        "url": "https://files.pythonhosted.org/packages/42/e7/1b5acde23073873a3f463ed4da538e7457113d1e2ff58256fc6bf18bc72b/tenacity-4.1.0.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "03086f36d155559bf77b9eb770dc24ed",
+        "sha256": "9d800437c8495c78c54615d7f839725afd8858d7f8bb360ee03addb90039fe96"
+      },
+      "downloads": 0,
+      "filename": "tenacity-4.1.0.tar.gz",
+      "has_sig": false,
+      "md5_digest": "03086f36d155559bf77b9eb770dc24ed",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 23385,
+      "upload_time": "2017-04-24T09:05:35",
+      "url": "https://files.pythonhosted.org/packages/42/e7/1b5acde23073873a3f463ed4da538e7457113d1e2ff58256fc6bf18bc72b/tenacity-4.1.0.tar.gz"
+    }
+  ]
+}

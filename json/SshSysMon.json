@@ -1,0 +1,84 @@
+{
+  "info": {
+    "author": "Chris LaPointe",
+    "author_email": "chris@zdyn.net",
+    "bugtrack_url": null,
+    "classifiers": [],
+    "description": "Unix System Monitoring Over SSH\n===============================\n\nSshSysMon is a system/server monitoring tool that executes all of its\noperations over SSH without the need for installing agents across\nmachines.\n\nIts goal is to provide simple self-hosted monitoring and alerting for\nsmall numbers of lightweight servers without the traditional overhead of\na monitoring system.\n\nIt monitors things in /proc and with simple command executions to\nmonitor system vitals such as: memory, cpu load, drive space, swap, etc.\n\nSetup\n-----\n\nInstallation\n~~~~~~~~~~~~\n\nVia PyPi\n^^^^^^^^\n\n.. code:: bash\n\n    pip install sshsysmon\n\nManually (No Install)\n^^^^^^^^^^^^^^^^^^^^^\n\n.. code:: bash\n\n    # Requires python 2.x and pip:\n    sudo apt-get install -y python python-pip python-dev\n\n    # Download the latest SshSysMon:\n    wget -O - https://github.com/zix99/sshsysmon/archive/master.tar.gz | tar xzv\n\n    # Make sure the dependencies are installed:\n    cd sshsysmon-master/\n    sudo pip install -r requirements.txt\n\n    # Test it out!\n    ./sshmon summary examples/starter.yml\n\nSetting up a ssh key pair\n~~~~~~~~~~~~~~~~~~~~~~~~~\n\n**You only need to do this if you are monitoring a remote server.**\n\nThe best way to connect to remote servers is with private key created\nand added to the ``authorized_hosts`` file on all systems you are\ninterested in monitoring. While password authentication is supported,\nthis is the easiest way to guarantee continued authentication to other\nhosts.\n\nOn debian-based linux systems, setting up a key-pair to use with SSH is\neasy. I would recommend you make a new linux user to only do monitoring\non each machine, but it isn't required.\n\n.. code:: bash\n\n    # 1. Create a new SSH key if you don't already have one. Follow the prompts, but leave the password blank\n    ssh-keygen\n\n    # 2. Install it on a user on another machine that you want to monitor\n    ssh-copy-id username@remotehost\n\nRunning\n~~~~~~~\n\nThe service has two commands, ``summary`` and ``check``.\n\nSummary\n^^^^^^^\n\n``summary`` will print out a human-readable summary of all servers\nspecified in the config. It is a great way to validate your config.\n\nIt can be executed with:\n\n::\n\n    ./sshmon.py summary examples/starter.yml\n\nIt also can be told to use various templates. See templating section\nbelow. Eg, to use the html template:\n\n::\n\n    ./sshmon.py -f html summary examples/starter.yml\n\nCheck\n^^^^^\n\n``check`` is meant to be executed as part of a scheduled job, and will\nnotify all channels in the config if a condition is unmet.\n\nIt can be excuted with:\n\n::\n\n    ./sshmon.py check <myconfig.yml>\n\nRunning Scheduled Job\n~~~~~~~~~~~~~~~~~~~~~\n\nThe best way to run the service automatically is with a cron job.\n\nEdit your cron jobs with\n\n::\n\n    crontab -e\n\nAdd an entry that runs the script every few hours: (or minutes, whatever\nyou like)\n\n::\n\n    0 */4 * * * /path/to/sshmon.py check /path/to/config.yml\n\nConfiguration\n~~~~~~~~~~~~~\n\nConfiguration is written in yaml and is a set of servers, with a list of\nmonitors with alarms, notification channels and connection details.\n\nSee the `Examples </examples>`__ folder for more sample configs.\n\nAn example simple configuration might look something like this:\n\n::\n\n    meta: #Meta section (Optional). Used by summary templates\n      title: \"My Cluster Summary\"\n      author: \"Me\"\n\n    servers:\n      \"Name of server\":\n        driver: ssh\n        config:\n          host: myhostname.com\n          username: myuser\n        channels: # Notification targets\n          - type: email\n            config:\n              toAddr: myemail@gmail.com\n              subject: \"Something went wrong on {server}\"\n        monitors: # All alerts and inspectors\n          - type: memory\n            alarms:\n              \"Low Swap\": \"swap_free.mb < 50\"\n              \"Low Memory\": \"mem_free.mb < 5\"\n          - type: disk\n            alarms:\n              \"Low Disk Space\": \"disk_free.gb < 5\"\n            summarize: false # Optional, use if you don't want a monitor to show up in the summary\n\nYou can often use YAML's inheritance to simplify your config for more\nthan 1 server. Each config section also has a corresponding ``+``\nversion to add more in addition to something merged in. eg.\n``monitors+``.\n\nAll servers are iterated through, and queried for given inspector types.\nThe resulting ``metrics`` are compared to the ``alarms``, and if any of\nthem are unmet, a notification it sent to all configured ``channels``.\n\nData Format\n^^^^^^^^^^^\n\nAll sizes (that is, number of bytes), is enapsulated by the ``ByteSize``\nclass, which has helper methods for both friendly output, and size\ncasting in the form of ``b``, ``kb``, ``mb``, etc. eg, you can write\n``mem_free.mb > 50``.\n\nPercentages will always be presented in their 0-100 form.\n\n--------------\n\nApplication\n-----------\n\nComponents\n~~~~~~~~~~\n\nThe applications is built on three components: ``Drivers``,\n``Inspectors``, and ``Channels``.\n\nEach has its corresponding folder with abstract implementation. They are\nloaded dynamically with their name or path provided in the\nconfiguration.\n\nDrivers\n^^^^^^^\n\nDrivers are classes that define how to read information from a server.\nBy default, there are two drivers:\n\nLocal\n'''''\n\nThe local driver is only for your local machine. There is no config for\nthis driver.\n\nSSH\n'''\n\nThe SSH driver is for reaching out to remote machines. There are several\nconfig paramters for this driver:\n\n-  host - The hostname of the machine (IP or Domain)\n-  username - The username to connect with\n-  password - (Not recommended, use key instead) The ssh user's password\n-  key - The path to the private key to use to connect (Default:\n   ~/.ssh/id\\_rsa)\n-  port - The port to connect to the machine on (Default: 22)\n-  path - The path which proc is located (Default: /proc)\n\n--\n\nChannels\n^^^^^^^^\n\nChannels define what can happen if an alert fires. There a few built-in.\n\nThere are a few variables passed in that can be used to format part of\nthe commands:\n\n-  server - The server that the alert triggered on\n-  alert - The alert that triggered\n-  metric - The metric that triggered the alert\n\nstdout\n''''''\n\nWrites tab-separated data to stdout. Can be appended to file with bash\n``>>`` operator.\n\nArguments:\n\n-  timeFormat - Either ``ctime`` or ``epoch``, the format which time is\n   output. Default: ``ctime``\n-  format - The format string used to write output. Default:\n   ``{time}\\t{server}\\t{inspector}\\t{alert}``\n\ncommand\n'''''''\n\nExecutes a shell command on the machine in which the script is running.\n\nArguments:\n\n-  command - The shell command to execute\n\nemail\n'''''\n\nSends an email via a SMTP server.\n\nBy default, it assumes a local SMTP server is setup. For more complex\nconfigs, such as how to use gmail, see the examples.\n\nArguments:\n\n-  toAddr - The address to send the email to\n-  fromAddr - The address the email should come from (default:\n   username@hostname)\n-  host - The SMTP host (default: localhost)\n-  port - The SMTP port (default: 25)\n-  subject - Subject line of email (has reasonable default)\n-  username - Username to authenticate with smtp server (default: none)\n-  password - Password to authenticate with smtp server (default: none)\n-  tls - Should use tls (default: false)\n-  ssl - Should use ssl (default: false)\n\n--\n\nInspectors (Alert Types)\n^^^^^^^^^^^^^^^^^^^^^^^^\n\nInspects are parsers that know how to read data from a driver and make\nsense of it.\n\nMemory (memory)\n'''''''''''''''\n\nThe memory driver returns metrics about the systems memory:\n\nMetrics: mem\\_total, mem\\_free, cached, swap\\_total, swap\\_free\n\nDisk Space (disk)\n'''''''''''''''''\n\nThe Disk driver returns status of the disk space (in GB)\n\nConfig:\n\n-  device - The name of the device (Optional, eg /dev/sda)\n-  mount - The mount point of the device (default: /)\n\nMetrics: size, used, available, percent\\_full\n\nLoad Average (loadavg)\n''''''''''''''''''''''\n\nThe load average inspector returns the system's current 1/5/15 minute\n`load\naverage <http://blog.scoutapp.com/articles/2009/07/31/understanding-load-averages>`__.\n\nMetrics: load\\_1m, load\\_5m, load\\_15m\n\nProcess Monitor (process)\n'''''''''''''''''''''''''\n\nThis inspector will allow you monitor a process on the given machine.\n\nIt takes in one **required** config ``name``. This will use `wildcard\nmatching <https://docs.python.org/2/library/fnmatch.html>`__ with ``*``\nand ``?``.\n\nMetrics: user, pid, cpu, mem, tty\n\nTCP (tcp)\n'''''''''\n\nThe TCP inspector will try to establish a connection on a given port\nwith the same remote as the driver. It's important to note that this\ndoes **not** go over SSH, and will not verify anything more than that\nthe port is willing to establish a connection.\n\nConfig:\n\n-  ports: A list, single port, or CSV of ports to check\n\nMetrics:\n\n-  A dictionary of the requested ports, prefixed with ``port_``, and\n   true if they are open, otherwise false (eg ``port_22``)\n-  A special ``all`` metric which will be true if all ports are open\n\nHTTP (http)\n'''''''''''\n\nThe Http connector will attempt to do a GET request on a http/https\nendpoint, and return the data if able.\n\nConfig:\n\n-  path: The path to request on (default '/')\n-  port: The port to request at (default 80 for http, 443 for https)\n-  https: True/false if https (default: http)\n-  json: true/false if it should attempt to parse the response as json\n   (Default: false)\n-  match: A regex to match against (default: None)\n\nMetrics:\n\n-  success: A true/false whether the request returns a 2xx, and all\n   requirements were met (matches, or parses)\n-  match: Whether or not the regex matched. ``None`` if no match\n   requested\n-  json: The parsed json, if requested\n-  url: The requested url\n\nCustom Command (exec)\n'''''''''''''''''''''\n\n``exec`` runs a custom command and returns ``stdout``, ``stderr``, and\n``status`` (returncode).\n\nConfig:\n\n-  command: The shell command to execute\n\nMetrics:\n\n-  stdout: The out string of the command\n-  stderr: The err string of the command\n-  status: The returncode of the command (0 means normal)\n\nTemplating\n~~~~~~~~~~\n\nSshSysMon uses handlebars to template its summary output. See the\n`templating </templates>`__ for more information.\n\nWriting Your Own Component\n~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nTo learn how to write a specific type of component, visit its readme in\nthe appropriate subfolder.\n\nAll components must define ``def create(args):`` as a well-known method\nto instantiate the class. ``args`` will be the configuration ``dict``\ngiven in the configuration.",
+    "docs_url": null,
+    "download_url": "UNKNOWN",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/zix99/sshsysmon",
+    "keywords": "monitoring,ssh,linux,unix",
+    "license": "MIT",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "SshSysMon",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/SshSysMon/",
+    "release_url": "https://pypi.org/project/SshSysMon/0.2.1/",
+    "requires_python": null,
+    "summary": "Ssh Unix System Monitoring",
+    "version": "0.2.1"
+  },
+  "releases": {
+    "0.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7c67e96f2e8f2ef47c6c1a6cd6efad8e",
+          "sha256": "15cc4290733fda2f813d2bcb3f712276d88441cc051b21ce83d26323a1afe273"
+        },
+        "downloads": 439,
+        "filename": "SshSysMon-0.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7c67e96f2e8f2ef47c6c1a6cd6efad8e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 18089,
+        "upload_time": "2016-05-08T01:03:09",
+        "url": "https://files.pythonhosted.org/packages/32/fa/22369116b3aa05169c20c3969eb6d8cc20e45f9fd8efc2d98767004ed982/SshSysMon-0.2.tar.gz"
+      }
+    ],
+    "0.2.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5fefb212311e675e059213134d249d4a",
+          "sha256": "ff35f80456bd75055dfe0e75110e8674fda584ac83bde6a6018adf2580ac13d5"
+        },
+        "downloads": 194,
+        "filename": "SshSysMon-0.2.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5fefb212311e675e059213134d249d4a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 47018,
+        "upload_time": "2016-05-08T01:17:25",
+        "url": "https://files.pythonhosted.org/packages/90/4f/2283301aed448f62f7e885adf7565f8fb191b91fd8c3d1f0e622080e2e37/SshSysMon-0.2.1.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "5fefb212311e675e059213134d249d4a",
+        "sha256": "ff35f80456bd75055dfe0e75110e8674fda584ac83bde6a6018adf2580ac13d5"
+      },
+      "downloads": 194,
+      "filename": "SshSysMon-0.2.1.tar.gz",
+      "has_sig": false,
+      "md5_digest": "5fefb212311e675e059213134d249d4a",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 47018,
+      "upload_time": "2016-05-08T01:17:25",
+      "url": "https://files.pythonhosted.org/packages/90/4f/2283301aed448f62f7e885adf7565f8fb191b91fd8c3d1f0e622080e2e37/SshSysMon-0.2.1.tar.gz"
+    }
+  ]
+}

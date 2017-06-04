@@ -1,0 +1,264 @@
+{
+  "info": {
+    "author": "Gavin Ballard",
+    "author_email": "gavin@discolabs.com",
+    "bugtrack_url": null,
+    "classifiers": [],
+    "description": "Django Shopify Auth\n===================\n\n[![PyPI version](https://badge.fury.io/py/django-shopify-auth.svg)](http://badge.fury.io/py/django-shopify-auth)\n[![Build Status](https://travis-ci.org/discolabs/django-shopify-auth.svg?branch=master)](https://travis-ci.org/discolabs/django-shopify-auth)\n\nThis Django package makes it easy to integrate Shopify authentication into your Django app. It shares some similarities\nwith the [shopify_django_app](https://github.com/Shopify/shopify_django_app) project, but with a couple of key\ndifferences:\n\n\n* It provides a custom Django Authentication scheme based on `AbstractBaseUser` and `RemoteUserBackend`, meaning shops\n  will be authenticated as \"users\" of your Django app. This makes it easier to use common Django patterns and libraries\n  (such as accessing the currently authenticated store as `request.user`).\n\n* It persists users' Shopify access tokens in the database, rather than in the Session, meaning your app will be able\n  to make API calls on behalf of a user when they're not logged in.\n\n* It supports the authentication flow for new-style \"Embedded SDK\" Shopify apps.\n\n\nThis project provides one package, `shopify_auth`.\nA demonstration Django project using this package is available [here](https://github.com/discolabs/auth_demo).\n\nIf you'd like a detailed breakdown of how to set up an app from scratch using this package, I've recorded a a short\nseries of [five minute screencasts](http://gavinballard.com/shopify-app-in-15-minutes-with-django/) showing how to get\nan app using `django-shopify-auth` up and running in under 15 minutes.\n\n\nRequirements\n------------\nDjango v1.7 - v1.9 is required. Django 1.10 support is not guaranteed but things\nshould work.\n\nAs with the original `shopify_django_app` package, you'll need a [Shopify partner account](http://shopify.com/partners)\nand to have created an app in order to get an API key and secret.\n\n\nPackage Installation and Setup\n------------------------------\nThere are a few moving parts to set up, but hopefully the following instructions will make things straightforward.\n\nWe're assuming in this setup that you're using a standard Django project layout (the sort that's created with the\n`django-admin.py startproject` command). We're also assuming that our project is called `auth_demo` and that the primary\nDjango app inside our project is going to be called `auth_app`.\n\nIf you ever get lost or aren't really sure what to do, you can refer to the [demo app](https://github.com/discolabs/auth_demo).\n\n\n### 1. Install package\nInstallation is super easy via `pip`:\n\n```shell\n> pip install django-shopify-auth\n```\n\nOnce you have the package installed, add `shopify_auth` to your `INSTALLED_APPS`.\n\n\n### 2. Add custom user model\nBecause `shopify_auth` makes use of Django's authentication system, it provides a custom authentication backend\n(`shopify_auth.backends.ShopUserBackend`) which allows authentication through Shopify's OAuth flow.\n\nThis backend requires that the user model for your app (specified by `AUTH_USER_MODEL` in your `settings.py`) inherits\nfrom `shopify_auth.models.AbstractShopUser`. To do this, just add something like this to the `models.py` for your\nDjango app:\n\n```python\n# auth_demo/auth_app/models.py\nfrom shopify_auth.models import AbstractShopUser\n\nclass AuthAppShopUser(AbstractShopUser):\n    pass\n```\n\nThen make sure that you have the following line or similar in `settings.py`:\n\n```python\nAUTH_USER_MODEL = 'auth_app.AuthAppShopUser'\n```\n\n\n### 3. Configure settings\nIn addition to setting `AUTH_USER_MODEL`, there are a few more required additions to `settings.py`:\n\n```python\n# Configure Shopify Application settings\nSHOPIFY_APP_NAME = 'Your App Name'\nSHOPIFY_APP_API_KEY = os.environ.get('SHOPIFY_APP_API_KEY')\nSHOPIFY_APP_API_SECRET = os.environ.get('SHOPIFY_APP_API_SECRET')\nSHOPIFY_APP_API_SCOPE = ['read_products', 'read_orders']\nSHOPIFY_APP_IS_EMBEDDED = True\nSHOPIFY_APP_DEV_MODE = False\n\n# Use the Shopify Auth authentication backend as the sole authentication backend.\nAUTHENTICATION_BACKENDS = (\n    'shopify_auth.backends.ShopUserBackend',\n)\n\n# Add the Shopify Auth template context processor to the list of processors.\n# Note that this assumes you've defined TEMPLATE_CONTEXT_PROCESSORS earlier in your settings.\nTEMPLATE_CONTEXT_PROCESSORS += (\n    'shopify_auth.context_processors.shopify_auth',\n)\n\n# Use the Shopify Auth user model.\nAUTH_USER_MODEL = 'auth_app.AuthAppShopUser'\n\n# Set the login redirect URL to the \"home\" page for your app (where to go after logging on).\nLOGIN_REDIRECT_URL = '/'\n\n# Set secure proxy header to allow proper detection of secure URLs behind a proxy.\n# This ensures that correct 'https' URLs are generated when our Django app is running behind a proxy like nginx, or is\n# being tunneled (by ngrok, for example).\nSECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')\n```\n\nNote that in the example above, the application API key and API secret are pulled from environment settings, which is a\nbest practice for Django apps that helps avoid the accidental check-in of sensitive information to source files.\n\nSet `SHOPIFY_APP_IS_EMBEDDED` to `True` if your app has been configured as an Embedded app (you choose this option at\nthe time of app creation). Setting this will make the app provide a Javascript-based redirect that breaks out of an\nembedded app's `<iframe>` during the authentication flow as per [the Shopify documentation](http://docs.shopify.com/embedded-app-sdk).\nIf `SHOPIFY_APP_IS_EMBEDDED` is `False`, the normal authentication flow for non-Embedded apps will be used.\n\nSetting `SHOPIFY_APP_DEV_MODE` to `True` allows you to test your apps locally by skipping the external OAuth phase for\nyour app. As it means you can log into your app as any store, you should obviously ***never*** set this to `True` in\nproduction.\n\nNow that all of the settings are configured, you can run `migrate` to set up the database for your new user model:\n\n```shell\n> python manage.py migrate\n```\n\n\n### 4. Configure URL mappings\nInclude `shopify_auth` URLs in your project's `urls.py`:\n\n```python\n# urls.py\nfrom django.conf.urls import patterns, include, url\n\nurlpatterns = patterns('',\n    url(r'login/', include('shopify_auth.urls')),\n\n    # ... remaining configuration here ...\n)\n\n```\n\n\n### 5. Create application views\nNow that you've gotten the configuration out of the way, you can start building your application.\n\nAll views inside your application should be decorated with `@login_required`.\nThis decorator will check that a user has authenticated through the Shopify OAuth flow.\nIf they haven't, they'll be redirected to the login screen.\n\n```python\nfrom django.shortcuts import render\nfrom shopify_auth.decorators import login_required\n\n@login_required\ndef home(request, *args, **kwargs):\n    return render(request, \"my_app/home.html\")\n```\n\n\n### 6. Using the Embedded App SDK\nIf you're using the Embedded App SDK, be aware that the HTML your views return must contained some Javascript in the\n`<head>` to properly frame your app within the Shopify Admin.\n\nGenerally, all pages you'd like embedded in the Shopify Admin should contain something like this in `<head>`:\n\n```html\n<script type=\"text/javascript\" src=\"https://cdn.shopify.com/s/assets/external/app.js\"></script>\n<script type=\"text/javascript\">\n    ShopifyApp.init({\n        apiKey: '{{ SHOPIFY_APP_API_KEY }}',\n        shopOrigin: 'https://{{ user.myshopify_domain }}'\n    });\n    ShopifyApp.ready(function() {\n        ShopifyApp.Bar.initialize({\n            title: '{{ SHOPIFY_APP_NAME }}',\n            buttons: {}\n        });\n    });\n</script>\n```\n\nRecent versions of Django's `startproject` add `django.middleware.clickjacking.XFrameOptionsMiddleware` to the\n`MIDDLEWARE_CLASSES` list in `settings.py`. This prevents pages being loading in an `<iframe>`, meaning your app pages\nwill not be displayed in the Shopify admin.\n\nTo resolve this issue, you should either remove `XFrameOptionsMiddleware` from your `MIDDLEWARE_CLASSES`, or ensure that\nall of your app views make use of the `@xframe_options_exempt` decorator.\n\n\n### 7. Making Shopify API calls\nTo make Shopify API calls on behalf of a user, we can use the user's `session` property inside a `with` statement:\n\n```python\ndef view(request, *args, **kwargs):\n\n    # Get a list of the user's products.\n    with request.user.session:\n        products = shopify.Product.find()\n\n    # ... remaining view code ...\n```\n\nBehind the scenes, using `with request.user.session` sets up a temporary Shopify API session using the OAuth token we\nobtained for that specific user during authentication.\n\nAll code wrapped within the `with` statement is executed in the context of the specified user. You should always wrap\ncalls to the Shopify API using this pattern.\n\n\nPartner Application Setup\n-------------------------\nIn addition to getting the package up and running in your local Django project, you'll need to configure your\napplication via the Shopify Partner dashboard. The first part of my brief [screencast series](http://gavinballard.com/shopify-app-in-15-minutes-with-django/)\nwalks you through the setup of a Shopify Partner application.\n  \nAn ***important omission*** from the screencast series is that Shopify now requires applications to provide a list of\nauthorized \"Redirection URLs\" from the partner dashboard for enhanced security (this wasn't a required setting at the\ntime of recording the screencasts).\n\nTo avoid getting an OAuth error while customers try to install your application, make sure your application's settings\ninclude the absolute URL to `/login/finalize/` (including the trailing slash) in their whitelisted URLs. For example,\nif your application resides at `https://myapp.example.com`, then you should include\n`https://myapp.example.com/login/finalize/` in the \"Redirection URL\" section of your application settings. \n\n\nQuestions or Problems?\n----------------------\n\nBrowse through the code for the demo app:\n<https://github.com/discolabs/auth_demo>\n\nRead up on the possible API calls:\n<http://api.shopify.com>\n\nLearn how to use the `shopify_python_api` library:\n<http://wiki.shopify.com/Using_the_shopify_python_api>\n\nAsk technical questions on Stack Overflow:\n<http://stackoverflow.com/questions/tagged/shopify>\n\nEmail me:\n[gavin@gavinballard.com](mailto:gavin@gavinballard.com)\n\n\nRelease History\n---------------\n\nRefer to the [change log](https://github.com/discolabs/django-shopify-auth/blob/master/CHANGELOG.md) for a full list of changes.\n",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/discolabs/django-shopify-auth",
+    "keywords": "",
+    "license": "MIT",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "django-shopify-auth",
+    "platform": "",
+    "project_url": "https://pypi.org/project/django-shopify-auth/",
+    "release_url": "https://pypi.org/project/django-shopify-auth/0.5.0/",
+    "requires_python": "",
+    "summary": "A simple package for adding Shopify authentication to Django apps.",
+    "version": "0.5.0"
+  },
+  "releases": {
+    "0.2.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6d777da0c9a2cfe60d59b7d59c71fa3d",
+          "sha256": "e5827c82bdc52988d29f3b1d8740a78e933f776b2ccf35a0fc318c7b49859212"
+        },
+        "downloads": 1426,
+        "filename": "django-shopify-auth-0.2.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6d777da0c9a2cfe60d59b7d59c71fa3d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 6874,
+        "upload_time": "2014-10-18T20:22:35",
+        "url": "https://files.pythonhosted.org/packages/59/23/7909c8f1dd742de23e6ae4a101736920a82b2d443719fc6088f709ad826a/django-shopify-auth-0.2.5.tar.gz"
+      }
+    ],
+    "0.3.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ec5b7490add65c6f0ee746409bcac66f",
+          "sha256": "23b83ba17056ab5d64927f70c31b6c1fc623e3a956f25d754d20724f20ee4a3c"
+        },
+        "downloads": 1865,
+        "filename": "django-shopify-auth-0.3.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ec5b7490add65c6f0ee746409bcac66f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 8674,
+        "upload_time": "2014-10-22T17:05:13",
+        "url": "https://files.pythonhosted.org/packages/f3/ea/ebd9fa8616334e66726ae511829b75d6349c0829a47121c77f88bc4eef7c/django-shopify-auth-0.3.0.tar.gz"
+      }
+    ],
+    "0.4.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "63b838fa7991d6d67f15e923a85f39be",
+          "sha256": "2903a2f0c066bdcaa2336af2cadb2e655026ce04bde32d9ea2d81e352203fd3d"
+        },
+        "downloads": 1087,
+        "filename": "django-shopify-auth-0.4.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "63b838fa7991d6d67f15e923a85f39be",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9192,
+        "upload_time": "2015-05-07T15:24:24",
+        "url": "https://files.pythonhosted.org/packages/0a/9e/520ef954ba54d4cc66021368131dfa68ced1b350560da9ff792170f257e8/django-shopify-auth-0.4.0.tar.gz"
+      }
+    ],
+    "0.4.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "bd7655ac8292247a6d57143a3a60455c",
+          "sha256": "9f817c2632b4dda54e9efe79c6e8cd2869a65b29c235def2c6ea58b62c9a3f41"
+        },
+        "downloads": 11444,
+        "filename": "django-shopify-auth-0.4.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "bd7655ac8292247a6d57143a3a60455c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9508,
+        "upload_time": "2015-05-17T12:37:14",
+        "url": "https://files.pythonhosted.org/packages/d5/2f/d9e6fb744a43537bd9aac7e343c82d90463e6c9c4e5097034670343e65c7/django-shopify-auth-0.4.1.tar.gz"
+      }
+    ],
+    "0.4.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "cf30bacc8845a312351fb475d525f770",
+          "sha256": "5a9dce1b9479ce631a746a162120c9797c19965a0a93ba33a1de606d268983aa"
+        },
+        "downloads": 1493,
+        "filename": "django-shopify-auth-0.4.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "cf30bacc8845a312351fb475d525f770",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9741,
+        "upload_time": "2015-05-17T20:28:07",
+        "url": "https://files.pythonhosted.org/packages/30/9f/707ab6221d899892f18638f1229354a956ba18b454b0daad95f560e9477d/django-shopify-auth-0.4.2.tar.gz"
+      }
+    ],
+    "0.4.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a49221c37f38e620196ee2d6cb748ee7",
+          "sha256": "e23cfd4d9f0285b19041647c5ee69918c134fc374b067a2f2426f7df08686680"
+        },
+        "downloads": 447,
+        "filename": "django-shopify-auth-0.4.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a49221c37f38e620196ee2d6cb748ee7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10018,
+        "upload_time": "2015-12-19T15:15:28",
+        "url": "https://files.pythonhosted.org/packages/90/0a/3a662a1e3267d7dfdfec92b5a7b8155a1d94f55976d5264ab0828a569d09/django-shopify-auth-0.4.3.tar.gz"
+      }
+    ],
+    "0.4.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "91161f3f697223d219f912706bcdbe03",
+          "sha256": "449bf8bdfe71929940ee36eae14e0f333dd5808e3cf60c0114854e2fa8a1677e"
+        },
+        "downloads": 488,
+        "filename": "django-shopify-auth-0.4.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "91161f3f697223d219f912706bcdbe03",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10229,
+        "upload_time": "2015-12-19T16:24:34",
+        "url": "https://files.pythonhosted.org/packages/ea/98/6dfed9a46ebb2db98a9da20a6713680d79d46bdca23800ede96cc37e3650/django-shopify-auth-0.4.4.tar.gz"
+      }
+    ],
+    "0.4.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "dc751f55fc8969a13dd4195280ea1c35",
+          "sha256": "38b299692c12566d7b3c5fed06a68781669b56e1f31c8d14beffa6c6127ee02b"
+        },
+        "downloads": 480,
+        "filename": "django-shopify-auth-0.4.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "dc751f55fc8969a13dd4195280ea1c35",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10575,
+        "upload_time": "2015-12-23T14:31:43",
+        "url": "https://files.pythonhosted.org/packages/ea/0a/d5828fbb0a87c8160684808d550d94ab7c0b97cb85707ab7c7484c428775/django-shopify-auth-0.4.5.tar.gz"
+      }
+    ],
+    "0.4.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "06ab707de1d24de5449b5398eb360793",
+          "sha256": "cd6b907fd36c473c8a6d53bddc9dfa09a2527e5c7a79db1ec3b7ce3cd969f8cb"
+        },
+        "downloads": 559,
+        "filename": "django-shopify-auth-0.4.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "06ab707de1d24de5449b5398eb360793",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10579,
+        "upload_time": "2015-12-25T10:45:06",
+        "url": "https://files.pythonhosted.org/packages/ad/69/0105f55003879d146e977214971c744b76249841a8871518289217472595/django-shopify-auth-0.4.6.tar.gz"
+      }
+    ],
+    "0.4.7": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "05105d28331b3124391c90395f021585",
+          "sha256": "f2025857e1a6f5c6853814f29497a0cd994df8a7206bd221ff14718023169a64"
+        },
+        "downloads": 209,
+        "filename": "django-shopify-auth-0.4.7.tar.gz",
+        "has_sig": false,
+        "md5_digest": "05105d28331b3124391c90395f021585",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10616,
+        "upload_time": "2016-10-19T04:29:45",
+        "url": "https://files.pythonhosted.org/packages/c0/bb/a17c125661cde35e6b02552a68ff4831213cc0565e1e8519f744a110f952/django-shopify-auth-0.4.7.tar.gz"
+      }
+    ],
+    "0.4.8": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "00758e368a973ac972e00dd49f2c661c",
+          "sha256": "a6ebb3ec0bf657d07f2a0f38dc514bd716672607d1eacb1135f4af10388b7dbe"
+        },
+        "downloads": 98,
+        "filename": "django-shopify-auth-0.4.8.tar.gz",
+        "has_sig": false,
+        "md5_digest": "00758e368a973ac972e00dd49f2c661c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10606,
+        "upload_time": "2016-11-11T06:12:11",
+        "url": "https://files.pythonhosted.org/packages/a0/d5/ace95df2ea41f6c96a23ad2a3f289e50dd18e4d8d22e095d1008fffd41eb/django-shopify-auth-0.4.8.tar.gz"
+      }
+    ],
+    "0.5.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "16929d1cf286727e819afa6268d33471",
+          "sha256": "0032ab56586ce8f2b009d0a982d114aab55ad70643cf78f817f888d309db5c59"
+        },
+        "downloads": 19,
+        "filename": "django-shopify-auth-0.5.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "16929d1cf286727e819afa6268d33471",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10871,
+        "upload_time": "2017-03-01T05:21:42",
+        "url": "https://files.pythonhosted.org/packages/33/2b/e47b8cd4750eb459dbdac56f4b89064f7eb84634e0710e7ebbc03734d2d3/django-shopify-auth-0.5.0.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "16929d1cf286727e819afa6268d33471",
+        "sha256": "0032ab56586ce8f2b009d0a982d114aab55ad70643cf78f817f888d309db5c59"
+      },
+      "downloads": 19,
+      "filename": "django-shopify-auth-0.5.0.tar.gz",
+      "has_sig": false,
+      "md5_digest": "16929d1cf286727e819afa6268d33471",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 10871,
+      "upload_time": "2017-03-01T05:21:42",
+      "url": "https://files.pythonhosted.org/packages/33/2b/e47b8cd4750eb459dbdac56f4b89064f7eb84634e0710e7ebbc03734d2d3/django-shopify-auth-0.5.0.tar.gz"
+    }
+  ]
+}

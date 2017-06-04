@@ -1,0 +1,162 @@
+{
+  "info": {
+    "author": "Brian Warner",
+    "author_email": "warner-pyspake2@lothar.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: MIT License",
+      "Programming Language :: Python",
+      "Programming Language :: Python :: 2.6",
+      "Programming Language :: Python :: 2.7",
+      "Programming Language :: Python :: 3.3",
+      "Programming Language :: Python :: 3.4",
+      "Programming Language :: Python :: 3.5",
+      "Topic :: Security :: Cryptography"
+    ],
+    "description": "\n# Pure-Python SPAKE2\n\n* License: MIT\n* Dependencies: none (pure-python)\n* Compatible With: Python 2.6, 2.7, 3.3, 3.4, 3.5, pypy2\n* [![Build Status](https://travis-ci.org/warner/python-spake2.png?branch=master)](https://travis-ci.org/warner/python-spake2) [![Coverage Status](https://coveralls.io/repos/warner/python-spake2/badge.svg)](https://coveralls.io/r/warner/python-spake2)\n\nThis library implements the SPAKE2 password-authenticated key exchange\n(\"PAKE\") algorithm. This allows two parties, who share a weak password, to\nsafely derive a strong shared secret (and therefore build an\nencrypted+authenticated channel).\n\nA passive attacker who eavesdrops on the connection learns no information\nabout the password or the generated secret. An active attacker\n(man-in-the-middle) gets exactly one guess at the password, and unless they\nget it right, they learn no information about the password or the generated\nsecret. Each execution of the protocol enables one guess. The use of a weak\npassword is made safer by the rate-limiting of guesses: no off-line\ndictionary attack is available to the network-level attacker, and the\nprotocol does not depend upon having previously-established confidentiality\nof the network (unlike e.g. sending a plaintext password over TLS).\n\nThe protocol requires the exchange of one pair of messages, so only one round\ntrip is necessary to establish the session key. If key-confirmation is\nnecessary, that will require a second round trip.\n\nAll messages are bytestrings. For the default security level (using the\nEd25519 elliptic curve, roughly equivalent to an 128-bit symmetric key), the\nmessage is 33 bytes long.\n\n## What Is It Good For?\n\nPAKE can be used in a pairing protocol, like the initial version of Firefox\nSync (the one with J-PAKE), to introduce one device to another and help them\nshare secrets. In this mode, one device creates a random code, the user\ncopies that code to the second device, then both devices use the code as a\none-time password and run the PAKE protocol. Once both devices have a shared\nstrong key, they can exchange other secrets safely.\n\nPAKE can also be used (carefully) in a login protocol, where SRP is perhaps\nthe best-known approach. Traditional non-PAKE login consists of sending a\nplaintext password through a TLS-encrypted channel, to a server which then\nchecks it (by hashing/stretching and comparing against a stored verifier). In\na PAKE login, both sides put the password into their PAKE protocol, and then\nconfirm that their generated key is the same. This nominally does not require\nthe initial TLS-protected channel. However note that it requires other,\ndeeper design considerations (the PAKE protocol must be bound to whatever\nprotected channel you end up using, else the attacker can wait for PAKE to\ncomplete normally and then steal the channel), and is not simply a drop-in\nreplacement. In addition, the server cannot hash/stretch the password very\nmuch (see the note on \"Augmented PAKE\" below), so unless the client is\nwilling to perform key-stretching before running PAKE, the server's stored\nverifier will be vulnerable to a low-cost dictionary attack.\n\n## Usage\n\nAlice and Bob both initialize their SPAKE2 instances with the same (weak)\npassword. They will exchange messages to (hopefully) derive a shared secret\nkey. The protocol is symmetric: for each operation that Alice does, Bob will\ndo the same.\n\nHowever, there are two roles in the SPAKE2 protocol, \"A\" and \"B\". The two\nsides must agree ahead of time which one will play which role (the messages\nthey generate depend upon which side they play). There are two separate\nclasses, `SPAKE2_A` and `SPAKE2_B`, and a complete interaction will use one\nof each (one `SPAKE2_A` on one computer, and one `SPAKE2_B` on the other\ncomputer).\n\nEach instance of a SPAKE2 protocol uses a set of shared parameters. These\ninclude a group, a generator, and a pair of arbitrary group elements. This\nlibrary comes with several pre-generated parameter sets, with various\nsecurity levels.\n\nYou start by creating an instance (either `SPAKE2_A` or `SPAKE2_B`) with the\npassword. Then you ask the instance for the outbound message by calling\n`msg_out=s.start()`, and send it to your partner. Once you receive the\ncorresponding inbound message, you pass it into the instance and extract the\n(shared) key bytestring with `key=s.finish(msg_in)`. For example, the\nclient-side might do:\n\n```python\nfrom spake2 import SPAKE2_A\ns = SPAKE2_A(b\"our password\")\nmsg_out = s.start()\nsend(msg_out) # this is message A->B\nmsg_in = receive()\nkey = s.finish(msg_in)\n```\n\nwhile the server-side might do:\n\n```python\nfrom spake2 import SPAKE2_B\nq = SPAKE2_B(b\"our password\")\nmsg_out = q.start()\nsend(msg_out)\nmsg_in = receive() # this is message A->B\nkey = q.finish(msg_in)\n```\n\nIf both sides used the same password, and there is no man-in-the-middle, then\nboth sides will obtain the same `key`. If not, the two sides will get\ndifferent keys, so using \"key\" for data encryption will result in garbled\ndata.\n\nThe shared \"key\" can be used as an HMAC key to provide data integrity on\nsubsequent messages, or as an authenticated-encryption key (e.g.\nnacl.secretbox). It can also be fed into [HKDF] [1] to derive other session\nkeys as necessary.\n\nThe `SPAKE2` instances, and the messages they create, are single-use. Create\na new one for each new session.\n\n### Key Confirmation\n\nTo safely test for identical keys before use, you can perform a second\nmessage exchange at the end of the protocol, before actually using the key\n(be careful to not simply send the shared key over the wire: this would allow\na MitM to learn the key that they could otherwise not guess).\n\nAlice does this:\n\n```python\n...\nkey = s.finish(msg_in)\nconfirm_A = HKDF(key, info=\"confirm_A\", length=32)\nexpected_confirm_B = HKDF(key, info=\"confirm_B\", length=32)\nsend(confirm_A)\nconfirm_B = receive()\nassert confirm_B == expected_confirm_B\n```\n\nAnd Bob does this:\n```python\n...\nkey = q.finish(msg_in)\nexpected_confirm_A = HKDF(key, info=\"confirm_A\", length=32)\nconfirm_B = HKDF(key, info=\"confirm_B\", length=32)\nsend(confirm_B)\nconfirm_A = receive()\nassert confirm_A == expected_confirm_A\n```\n\n## Symmetric Usage\n\nA single SPAKE2 instance must be used asymmetrically: the two sides must\nsomehow decide (ahead of time) which role they will each play. The\nimplementation includes the side identifier in the exchanged message to guard\nagainst an `SPAKE2_A` talking to another `SPAKE2_A`. Typically a \"client\"\nwill take on the `A` role, and the \"server\" will be `B`.\n\nThis is a nuisance for more egalitarian protocols, where there's no clear way\nto assign these roles ahead of time. In this case, use `SPAKE2_Symmetric` on\nboth sides. This uses a different set of parameters (so it is not\ninteroperable with `SPAKE2_A` or `SPAKE2_B`, but should otherwise behave the\nsame way.\n\nCarol does:\n\n```python\ns1 = SPAKE2_Symmetric(pw)\noutmsg1 = s1.start()\nsend(outmsg1)\n```\n\nDave does the same:\n```python\ns2 = SPAKE2_Symmetric(pw)\noutmsg2 = s2.start()\nsend(outmsg2)\n```\n\nCarol then processes Dave's incoming message:\n```python\ninmsg2 = receive() # this is outmsg1\nkey = s1.finish(inmsg2)\n```\n\nAnd Dave does the same:\n```python\ninmsg1 = receive() # this is outmsg2\nkey = s2.finish(inmsg1)\n```\n\n## Identifier Strings\n\nThe SPAKE2 protocol includes a pair of \"identity strings\" `idA` and `idB`\nthat are included in the final key-derivation hash. This binds the key to a\nsingle pair of parties, or for some specific purpose.\n\nFor example, when user \"alice\" logs into \"example.com\", both sides should set\n`idA = b\"alice\"` and `idB = b\"example.com\"`. This prevents an attacker from\nsubstituting messages from unrelated login sessions (other users on the same\nserver, or other servers for the same user).\n\nThis also makes sure the session is established with the correct service. If\nAlice has one password for \"example.com\" but uses it for both login and\nfile-transfer services, `idB` should be different for the two services.\nOtherwise if Alice is simultaneously connecting to both services, and\nattacker could rearrange the messages and cause her login client to connect\nto the file-transfer server, and vice versa.\n\nIf provided, `idA` and `idB` must be bytestrings. They default to an empty\nstring.\n\n`SPAKE2_Symmetric` uses a single `idSymmetric=` string, instead of `idA` and\n`idB`. Both sides must provide the same `idSymmetric=`, or leave it empty.\n\n## Serialization\n\nSometimes, you can't hold the SPAKE2 instance in memory for the whole\nnegotiation: perhaps all your program state is stored in a database, and\nnothing lives in RAM for more than a few moments. You can persist the data\nfrom a SPAKE2 instance with `data = p.serialize()`, after the call to\n`start`. Then later, when the inbound message is received, you can\nreconstruct the instance with `p = SPAKE2_A.from_serialized(data)` before\ncalling `p.finish(msg)`.\n\n```python\ndef first():\n    p = SPAKE2_A(password)\n    send(p.start())\n    open('saved','w').write(p.serialize())\n \ndef second(inbound_message):\n    p = SPAKE2_A.from_serialized(open('saved').read())\n    key = p.finish(inbound_message)\n    return key\n```\n\nThe instance data is highly sensitive and includes the password: protect it\ncarefully. An eavesdropper who learns the instance state from just one side\nwill be able to reconstruct the shared key. `data` is a printable ASCII\nbytestring (the JSON-encoding of a small dictionary). For `ParamsEd25519`,\nthe serialized data requires 221 bytes.\n\nNote that you must restore the instance with the same side (`SPAKE2_A` vs\n`SPAKE2_B`) and `params=` (if overridden) as you used when first creating it.\nOtherwise `from_serialized()` will throw an exception. If you use non-default\nparameters, you might want to store an indicator along with the serialized\nstate.\n\nAlso remember that you must never re-use a SPAKE2 instance for multiple key\nagreements: that would reveal the key and/or password. Never use\n`.from_serialized()` more than once on the same saved state, and delete the\nstate as soon as the incoming message is processed. SPAKE2 has internal\nchecks to throw exceptions when instances are used multiple times, but the\nserialize/restore process can bypass those checks, so use with care.\n\nDatabase-backed applications should store the outbound message (`p.start()`)\nin the DB next to the serialized SPAKE2 state, so they can re-send the same\nmessage if the application crashes before it has been successfully delivered.\n`p.start()` cannot be called on the instance that `.from_serialized()`\nproduces.\n\n## Security\n\nSPAKE2's strength against cryptographic attacks depends upon the parameters\nyou use, which also influence the execution speed. Use the strongest\nparameters your time budget can afford.\n\nThe library defaults to the fast and secure Ed25519 elliptic-curve group\nthrough the `ParamsEd25519` parameter set. This offers a 128-bit security\nlevel, small messages, and fairly fast execution speed.\n\nIf for some reason you don't care for elliptic curves, the `spake2.params`\nmodule includes three integer-group parameter sets: `Params1024`,\n`Params2048`, `Params3072`, offering 80-bit, 112-bit, and 128-bit security\nlevels respectively.\n\nTo override the default parameters, include a `params=` value when you create\nthe SPAKE2 instance. Both sides must use the same parameters.\n\n```python\nfrom spake2 import SPAKE2_A, params\ns = SPAKE2_A(b\"password\", params=params.Params3072)\n```\n\nNote that if you serialize an instance with non-default `params=`, you must\nrestore it with the same parameters, otherwise you will get an exception:\n\n```python\ns = SPAKE2_A.from_serialized(data, params=params.Params3072)\n```\n\nThis library is very much *not* constant-time, and does not protect against\ntiming attacks. Do not allow attackers to measure how long it takes you to\ncreate or respond to a message.\n\nThis library depends upon a strong source of random numbers. Do not use it on\na system where os.urandom() is weak.\n\n## Speed\n\nTo run the built-in speed tests, just run `python setup.py speed`.\n\nSPAKE2 consists of two phases, separated by a single message exchange. The\ntime these phases take is split roughly 40/60. On my 2012 Mac Mini (2.6GHz\nCore-i7), the default `ParamsEd25519` security level takes about 14ms to\ncomplete both phases. For the integer groups, larger groups are slower and\nrequire larger messages (and their serialized state is larger), but are more\nsecure. The complete output of `python setup.py speed` is:\n\n    ParamsEd25519: msglen= 33, statelen=221, full=13.9ms, start= 5.5ms\n    Params1024   : msglen=129, statelen=197, full= 4.3ms, start= 1.8ms\n    Params2048   : msglen=257, statelen=213, full=20.8ms, start= 8.5ms\n    Params3072   : msglen=385, statelen=221, full=41.5ms, start=16.5ms\n\nA slower CPU (1.8GHz Intel Atom) takes about 8x as long (76/32/157/322ms).\n\nThis library uses only Python. A version which used C speedups for the large\nmodular multiplication operations would probably be an order of magnitude\nfaster.\n\n## Testing\n\nTo run the built-in test suite from a source directory, for all supported\npython versions, do:\n\n    tox\n\nOn my computer, the tests take approximately two seconds (per version).\n\n## History\n\nThe protocol was described as \"PAKE2\" in [\"cryptobook\"] [2] from Dan Boneh\nand Victor Shoup. This is a form of \"SPAKE2\", defined by Abdalla and\nPointcheval at [RSA 2005] [3]. Additional recommendations for groups and\ndistinguished elements were published in [Ladd's IETF draft] [4].\n\nThe Ed25519 implementation uses code adapted from Daniel Bernstein (djb),\nMatthew Dempsky, Daniel Holth, Ron Garret, with further optimizations by\nBrian Warner[5]. The \"arbitrary element\" computation, which must be the same\nfor both participants, is from python-pure25519 version 0.5.\n\nThe Boneh/Shoup chapter that defines PAKE2 also defines an augmented variant\nnamed \"PAKE2+\", which changes one side (typically a server) to record a\nderivative of the password instead of the actual password. In PAKE2+, a\nserver compromise does not immediately give access to the passwords: instead,\nthe attacker must perform an offline dictionary attack against the stolen\ndata before they can learn the passwords. PAKE2+ support is planned, but not\nyet implemented.\n\nThe security of the symmetric case was proved by Kobara/Imai[6] in 2003, and\nuses different (slightly weaker?) reductions than that of the asymmetric\nform. See also Mike Hamburg's analysis[7] from 2015.\n\nBrian Warner first wrote this Python version in July 2010.\n\n#### footnotes\n\n[1]: https://tools.ietf.org/html/rfc5869 \"HKDF\"\n[2]: http://crypto.stanford.edu/~dabo/cryptobook/  \"cryptobook\"\n[3]: http://www.di.ens.fr/~pointche/Documents/Papers/2005_rsa.pdf \"RSA 2005\"\n[4]: https://tools.ietf.org/html/draft-ladd-spake2-01 \"Ladd's IETF draft\"\n[5]: https://github.com/warner/python-pure25519\n[6]: http://eprint.iacr.org/2003/038.pdf \"Pretty-Simple Password-Authenticated Key-Exchange Under Standard Assumptions\"\n[7]: https://moderncrypto.org/mail-archive/curves/2015/000419.html \"PAKE questions\"\n",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "http://github.com/warner/python-spake2",
+    "keywords": "",
+    "license": "MIT",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "spake2",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/spake2/",
+    "release_url": "https://pypi.org/project/spake2/0.7/",
+    "requires_python": "",
+    "summary": "SPAKE2 password-authenticated key exchange (pure python)",
+    "version": "0.7"
+  },
+  "releases": {
+    "0.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0c76374218d3d27018d1c8ff6aebdc4e",
+          "sha256": "cef80066cd9870ce7c7ff14721637f4228727710bb4b441fec267b8da3b6c1d5"
+        },
+        "downloads": 1388,
+        "filename": "spake2-0.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0c76374218d3d27018d1c8ff6aebdc4e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 36414,
+        "upload_time": "2015-02-13T21:18:40",
+        "url": "https://files.pythonhosted.org/packages/22/af/7848f1cd17a3e1aeeaf3556b52a9c1a255b79f5a83944e9333777d7bb2bc/spake2-0.1.tar.gz"
+      }
+    ],
+    "0.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "06c8c52bbeca0e308ea3ed23fe345c7a",
+          "sha256": "c521ed36a667eedab62f72aec05d204bc5ff0e2fc2def1acd32b3e46e65ebdbe"
+        },
+        "downloads": 1830,
+        "filename": "spake2-0.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "06c8c52bbeca0e308ea3ed23fe345c7a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 41673,
+        "upload_time": "2015-04-08T20:57:08",
+        "url": "https://files.pythonhosted.org/packages/40/38/1b9b10f5f3c51fa373fc80f1e3e4c7b0b57e79a6a756d2dc41bb9c296725/spake2-0.2.tar.gz"
+      }
+    ],
+    "0.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "33faef2e7b900bf6e0ab60f12410d435",
+          "sha256": "d7239a65ea721268e1374b45b23c624cd683071a8868237338190b8eb46ca152"
+        },
+        "downloads": 1405,
+        "filename": "spake2-0.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "33faef2e7b900bf6e0ab60f12410d435",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 47300,
+        "upload_time": "2015-09-22T07:52:44",
+        "url": "https://files.pythonhosted.org/packages/1f/63/55a72d5a12bb48353f7403ace6aff4d5607a6168bd97a4767306cfa580f4/spake2-0.3.tar.gz"
+      }
+    ],
+    "0.7": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "952735a0c8a64e8d40619773659d4cd9",
+          "sha256": "1ebca575c4c2b11b10d3d92df75b9207c063eb1ad0e3a32dc010afd9b797843d"
+        },
+        "downloads": 1416,
+        "filename": "spake2-0.7-py2.py3-none-any.whl",
+        "has_sig": true,
+        "md5_digest": "952735a0c8a64e8d40619773659d4cd9",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 37752,
+        "upload_time": "2016-05-12T20:58:27",
+        "url": "https://files.pythonhosted.org/packages/5d/05/984435c00ddb882d6f19ff6e9f97f39aafb01e1757ed910f585c15fd0b6f/spake2-0.7-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "53bb859d1dff2830b26b6d5852801c5a",
+          "sha256": "d2281458eed1048cb12fbab6ac02b06a8520ae9f2c30be330ea4c5b558a4b766"
+        },
+        "downloads": 341,
+        "filename": "spake2-0.7.tar.gz",
+        "has_sig": true,
+        "md5_digest": "53bb859d1dff2830b26b6d5852801c5a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 56186,
+        "upload_time": "2016-05-12T20:58:39",
+        "url": "https://files.pythonhosted.org/packages/10/7d/7e815d8e25ddd08edd46dc5202e3b30c61d15a68c0166e03a4dd37a18466/spake2-0.7.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "952735a0c8a64e8d40619773659d4cd9",
+        "sha256": "1ebca575c4c2b11b10d3d92df75b9207c063eb1ad0e3a32dc010afd9b797843d"
+      },
+      "downloads": 1416,
+      "filename": "spake2-0.7-py2.py3-none-any.whl",
+      "has_sig": true,
+      "md5_digest": "952735a0c8a64e8d40619773659d4cd9",
+      "packagetype": "bdist_wheel",
+      "python_version": "py2.py3",
+      "size": 37752,
+      "upload_time": "2016-05-12T20:58:27",
+      "url": "https://files.pythonhosted.org/packages/5d/05/984435c00ddb882d6f19ff6e9f97f39aafb01e1757ed910f585c15fd0b6f/spake2-0.7-py2.py3-none-any.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "53bb859d1dff2830b26b6d5852801c5a",
+        "sha256": "d2281458eed1048cb12fbab6ac02b06a8520ae9f2c30be330ea4c5b558a4b766"
+      },
+      "downloads": 341,
+      "filename": "spake2-0.7.tar.gz",
+      "has_sig": true,
+      "md5_digest": "53bb859d1dff2830b26b6d5852801c5a",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 56186,
+      "upload_time": "2016-05-12T20:58:39",
+      "url": "https://files.pythonhosted.org/packages/10/7d/7e815d8e25ddd08edd46dc5202e3b30c61d15a68c0166e03a4dd37a18466/spake2-0.7.tar.gz"
+    }
+  ]
+}

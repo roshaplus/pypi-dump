@@ -1,0 +1,181 @@
+{
+  "info": {
+    "author": "Claudio Freire",
+    "author_email": "klauss@jampp.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 4 - Beta",
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: BSD License",
+      "Operating System :: OS Independent",
+      "Programming Language :: Python",
+      "Topic :: Software Development :: Libraries :: Python Modules"
+    ],
+    "description": "sharedbuffers\n=============\n\nThis library implements shared-memory typed buffers that can be read and manipulated (and we'll eventually \nsupport writes too) efficiently without serialization or deserialization.\n\nThe main supported implementation of obtaining shared memory is by memory-mapping files, but the library also supports\nmapping buffers (anonymous mmap objects) as well, albeit they're harder to share among processes.\n\nCurrently, most primitive types and collections are supported, except `dicts`.\n\nSupported primivite types:\n\n    * int (up to 64 bit precision)\n    * str (bytes)\n    * unicode\n    * frozenset\n    * tuple / list\n\nPrimitive types are cloned into their actual builtin objects when accessed. Although fast, it does imply that contianers\nwill take up a lot of process-local memory when accessed. Support for collection proxies that take the place of\nbuiltin containers is planned for a future release.\n\nObjects can be registered with schema serializers and thus composite types can be mapped as well. For this to function\nproperly, objects need a class attribute specifying the attributes it holds and the type of the attributes. When an\nattribute doesn't have a clearly defined type, it can be wrapped in a RTTI-containing container by specifying it as\ntype `object`.\n\nFor example:\n\n.. code:: python\n\n    class SomeStruct(object):\n        __slot_types__ = {\n            'a' : int,\n            'b' : float,\n            's' : str,\n            'u' : unicode,\n            'fset' : frozenset,\n            'l' : list,\n            'o' : object,\n        }\n        __slots__ = __slot_types__.keys()\n\nAdding `__slot_types__`, however, isn't enough to make the object mappable. A schema definition needs to be created,\nwhich can be used to map files or buffers and obtain proxies to the information within:\n\n.. code:: python\n\n    class SomeStruct(object):\n        __slot_types__ = {\n            'a' : int,\n            'b' : float,\n            's' : str,\n            'u' : unicode,\n            'fset' : frozenset,\n            'l' : list,\n            'o' : object,\n        }\n        __slots__ = __slot_types__.keys()\n        __schema__ = mapped_struct.Schema.from_typed_slots(__slot_types__)\n\nUsing the schema is thus straightforward:\n\n.. code:: python\n\n    s = SomeStruct()\n    s.a = 3\n    s.s = 'blah'\n    s.fset = frozenset([1,3])\n    s.o = 3\n    s.__schema__.pack(s) # returns a bytearray\n\n    buf = bytearray(1000)\n    s.__schema__.pack_into(s, buf, 10) # writes in offset 10 of buf, returns the size of the written object\n    p = s.__schema__.unpack_from(s, buf, 10) # returns a proxy for the object just packed into buf, does not deserialize\n    print p.a\n    print p.s\n    print p.fset\n\nTyped objects can be nested, but for that a typecode must be assigned to each type in order for RTTI to properly\nidentify the custom types:\n\n.. code:: python\n\n    SomeStruct.__mapped_type__ = mapped_struct.mapped_object.register_schema(\n        SomeStruct, SomeStruct.__schema__, 'S')\n\nFrom then on, `SomeStruct` can be used as any other type when declaring field types.\n\nHigh-level typed container classes can be created by inheriting the proper base class. Currently, there are only\narrays and mappings of two kinds: string-to-object, and uint-to-object\n\n.. code:: python\n\n    class StructArray(mapped_struct.MappedArrayProxyBase):\n        schema = SomeStruct.__schema__\n    class StructNameMapping(mapped_struct.MappedMappingProxyBase):\n        IdMapper = mapped_struct.StringIdMapper\n        ValueArray = StructArray\n    class StructIdMapping(mapped_struct.MappedMappingProxyBase):\n        IdMapper = mapped_struct.NumericIdMapper\n        ValueArray = StructArray\n\nThe API for these high-level container objects is aimed at collections that don't really fit in RAM in their\npure-python form, so they must be built using an iterator over the items (ideally a generator that doesn't\nput the whole collection in memory at once), and then mapped from the resulting file or buffer. An example:\n\n.. code:: python\n\n    with tempfile.NamedTemporaryFile() as destfile:\n        arr = StructArray.build([SomeStruct(), SomeStruct()], destfile=destfile)\n        print arr[0]\n\n    with tempfile.NamedTemporaryFile() as destfile:\n        arr = StructNameMapping.build(dict(a=SomeStruct(), b=SomeStruct()).iteritems(), destfile=destfile)\n        print arr['a']\n\n    with tempfile.NamedTemporaryFile() as destfile:\n        arr = StructIdMapping.build({1:SomeStruct(), 3:SomeStruct()}.iteritems(), destfile=destfile)\n        print arr[3]\n\nWhen using nested hierarchies, it's possible to unify references to the same object by specifying an idmap dict.\nHowever, since the idmap will map objects by their `id()`, objects must be kept alive by holding references to\nthem while they're still referenced in the idmap, so its usage is non-trivial. An example technique:\n\n.. code:: python\n\n    def all_structs(idmap):\n        iter_all = iter(some_generator)\n        while True:\n            idmap.clear()\n    \n            sstructs = list(itertools.islice(iter_all, 10000))\n            if not sstructs:\n                break\n    \n            for ss in sstructs :\n                # mapping from \"s\" attribute to struct\n                yield (ss.s, ss)\n            del sstructs\n    \n    idmap = {}\n    name_mapping = StructNameMapping.build(all_structs(idmap), \n        destfile = destfile, idmap = idmap)\n\nThe above code syncs the lifetime of objects and their idmap entries to avoid mapping issues. If the invariant\nisn't maintained (objects referenced in the idmap are alive and holding a unique `id()` value), the result will be\nsilent corruption of the resulting mapping due to object identity mixups.\n\nThere are variants of the mapping proxy classes and their associated id mapper classes that implement multi-maps.\nThat is, mappings that, when fed with multiple values for a key, will return a list of values for that key rather\nthan a single key. Their in-memory representation is identical, but their querying API returns all matching values\nrather than the first one, so multi-maps and simple mappings are binary compatible.\n\nMulti-maps with string keys can also be approximate, meaning the original keys will be discarded and the mapping will\nonly work with hashes, making the map much faster and more compact, at the expense of some inaccuracy where the\nreturned values could have extra values corresponding to other keys whose hash collide with the one being requested.",
+    "docs_url": null,
+    "download_url": "UNKNOWN",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/jampp/sharedbuffers/",
+    "keywords": null,
+    "license": "BSD 3-Clause",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "sharedbuffers",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/sharedbuffers/",
+    "release_url": "https://pypi.org/project/sharedbuffers/0.3.3/",
+    "requires_python": null,
+    "summary": "Shared-memory structured buffers",
+    "version": "0.3.3"
+  },
+  "releases": {
+    "0.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "767b9319c068e426bbe382efb63b936d",
+          "sha256": "5eb8da841d102bdfc63fc97d26c07527f372d9533dda8d60ddaf67c33b80a4d0"
+        },
+        "downloads": 278,
+        "filename": "sharedbuffers-0.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "767b9319c068e426bbe382efb63b936d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 297472,
+        "upload_time": "2016-10-05T22:03:48",
+        "url": "https://files.pythonhosted.org/packages/f1/cf/361c50ced37da12d9179c79aa26565207fd19d8c4c560139120e51e46a9d/sharedbuffers-0.1.tar.gz"
+      }
+    ],
+    "0.2.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "cb3d354cec5d7e72e30c68507706acc9",
+          "sha256": "ffa61f06d2f5e6c8f24ae60fe47d67be79971ada15333215999b4f1bf0889231"
+        },
+        "downloads": 63,
+        "filename": "sharedbuffers-0.2.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "cb3d354cec5d7e72e30c68507706acc9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 325639,
+        "upload_time": "2016-10-11T19:54:42",
+        "url": "https://files.pythonhosted.org/packages/4a/45/dd99debdb9c44ba2d28a6dd052d90613b589bbd9d35a448256d0ff48d7c5/sharedbuffers-0.2.0.tar.gz"
+      }
+    ],
+    "0.2.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "81e7c403355cc34f2354db3cbc1bf139",
+          "sha256": "d09981a387956a75064fcadea4f843efc632591766e9d1ba1790acef9422f34c"
+        },
+        "downloads": 443,
+        "filename": "sharedbuffers-0.2.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "81e7c403355cc34f2354db3cbc1bf139",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 351435,
+        "upload_time": "2016-10-19T00:14:54",
+        "url": "https://files.pythonhosted.org/packages/0a/f5/9460488afbd6b9537a2d8045e82e6447b844af4a6c6e45dab5626db108ac/sharedbuffers-0.2.1.tar.gz"
+      }
+    ],
+    "0.3.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d485fd3b3bd94f967b1356465b6c5efa",
+          "sha256": "51b252efffb608c766aef2126c70af599720a44ef63b483c4c542e5bc164cef2"
+        },
+        "downloads": 41,
+        "filename": "sharedbuffers-0.3.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d485fd3b3bd94f967b1356465b6c5efa",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 360212,
+        "upload_time": "2016-11-08T22:26:06",
+        "url": "https://files.pythonhosted.org/packages/9d/a1/56a99343bcdc381fa21858ebaf5c2b22f80f581a5151f35bf2b1a4150d96/sharedbuffers-0.3.0.tar.gz"
+      }
+    ],
+    "0.3.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d34eb5b675ed80d7de99747f0c604df4",
+          "sha256": "212299916db458d8125d32211dc848cc6f0a9bcf09451ef2295b9a94549691af"
+        },
+        "downloads": 65,
+        "filename": "sharedbuffers-0.3.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d34eb5b675ed80d7de99747f0c604df4",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 360337,
+        "upload_time": "2016-11-09T22:52:16",
+        "url": "https://files.pythonhosted.org/packages/5d/d9/a12be484ed9091bc6ab52c904082e2038096c967ddc3cb7af61e8b1e7d87/sharedbuffers-0.3.1.tar.gz"
+      }
+    ],
+    "0.3.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "eeca008f894d6134b9ef9431c5120754",
+          "sha256": "9be141f8ff58ae8a7df0d728af4584d106c2e3faa234c925b31a5fce2a6c99b6"
+        },
+        "downloads": 392,
+        "filename": "sharedbuffers-0.3.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "eeca008f894d6134b9ef9431c5120754",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 387675,
+        "upload_time": "2017-04-07T20:59:17",
+        "url": "https://files.pythonhosted.org/packages/52/8a/17b55b4b350027c322f767259f154b33d58f982cfeb2681a4d7afcbadca6/sharedbuffers-0.3.2.tar.gz"
+      }
+    ],
+    "0.3.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "938c75c975edea22219817c4dcb21331",
+          "sha256": "478dc17efd67be29fed46820c2fac636588678ccc4b3a89b234673ef200bd723"
+        },
+        "downloads": 0,
+        "filename": "sharedbuffers-0.3.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "938c75c975edea22219817c4dcb21331",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 388875,
+        "upload_time": "2017-04-25T20:03:16",
+        "url": "https://files.pythonhosted.org/packages/e5/3d/3439c18125b48416a6dd527ad0243ffcf9ffe2497376f8e3cd6f2c1ed3e3/sharedbuffers-0.3.3.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "938c75c975edea22219817c4dcb21331",
+        "sha256": "478dc17efd67be29fed46820c2fac636588678ccc4b3a89b234673ef200bd723"
+      },
+      "downloads": 0,
+      "filename": "sharedbuffers-0.3.3.tar.gz",
+      "has_sig": false,
+      "md5_digest": "938c75c975edea22219817c4dcb21331",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 388875,
+      "upload_time": "2017-04-25T20:03:16",
+      "url": "https://files.pythonhosted.org/packages/e5/3d/3439c18125b48416a6dd527ad0243ffcf9ffe2497376f8e3cd6f2c1ed3e3/sharedbuffers-0.3.3.tar.gz"
+    }
+  ]
+}

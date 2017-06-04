@@ -1,0 +1,251 @@
+{
+  "info": {
+    "author": "DISQUS",
+    "author_email": "opensource@disqus.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Intended Audience :: Developers",
+      "Intended Audience :: System Administrators",
+      "Operating System :: OS Independent",
+      "Topic :: Software Development"
+    ],
+    "description": "----------------\nDurabledict\n----------------\n\nDurabledict contains a collection of dictionary classes backed by a durable data store (Redis, Django models, etc) suitable for use in a distributed manner.  Dictionary values are cached locally in the instance of the dictionary, and only sync with their values with their durable data stores when a value in the data store has changed.\n\nUsage\n-----\n\nDurabledict contains various flavors of a dictionary-like objects backed by a durable data store.  All dicts classes are located in the ``durabledict`` package.  At present, Durabledict offers the following dicts:\n\n1. ``durabledict.redis.RedisDict`` - Backed by Redis.\n2. ``durabledict.models.ModelDict`` - Backed by DB objects (most likely Django models).\n3. ``durabledict.zookeeper.ZookeeperDict`` - Backed by Zookeeper.\n\nEach dictionary class has a different ``__init__`` method which take different arguments, so consult their documentation for specific usage detail.\n\nOnce you have an instance of a durabledict, just use it like you would a normal dictionary::\n\n        from durabledict import RedisDict\n        from redis import Redis\n\n        # Construct a new RedisDict object\n        settings = RedisDict('settings', Redis())\n\n        # Assign and retrieve a value from the dict\n        settings['foo'] = 'bar'\n        settings['foo']\n        >>> 'bar'\n\n        # Assign and retrieve another value\n        settings['buzz'] = 'foogle'\n        settings['buzz']\n        >>> 'foogle'\n\n        # Delete a value and access receives a KeyError\n        del settings['foo']\n        settings['foo']\n        >>> KeyError\n\nAll dict types pickle their objects inside their durable data store, so any object that is \"pickleable\" can be saved to those stores.\n\nNotes on Persistence, Consistency and the In-Memory Cache\n-----------------------------\n\nNearly all methods called on a Durabledict dictionary class (i.e. ``RedisDict``) are proxied to an internal dict object that serves as a cache for access to dict values.  This cache is only updated with fresh values from durable storage if there actually has been a change in the values stored in durable storage.\n\nTo check if the data in durable storage has changed, each durabledict backend is responsible for providing a fast ``last_updated()`` method that quickly tells the dict the last time any value in the durable storage has been updated.  For instance, the ``Durabledict`` constructor requires a ``cache`` object passed in as an argument, which provides implementations of cache-line interface methods for maintaining the ``last_updated`` state.  A memcache client is a good candidate for this object.\n\nOut of the box by default, all Durabledict classes will sync with their durable data store on all writes (insert, updates and deletes) as well as immediately before any read operation on the dictionary.  This mode provides *high read consistency* of data at the expense of read speed.  You can be guaranteed that any read operation on your dict, i.e. ``settings['cool_feature']``, will always use the most up to date data.  If another consumer of your durable data store has modified a value in that store since you instantiated your object, you will immediately be able to read the new data with your dict instance.\n\nManually Control Durable Storage Sync\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nAs mentioned above in, the downside to syncing with durable storage before each read of dict data is it lowers your read performance.  If you read 100 keys from your dictionary, that means 100 accesses to check ```last_updated()``.  Even with a data store as fast as memecache, that adds up quite quickly.\n\nIt therefore may be advantageous for you to *not* sync with durable storage before every read from the dict and instead control that syncing manually.  To do so, pass ``autosync=False`` when you construct the dict, i.e.::\n\n        from durabledict import RedisDict\n        from redis import Redis\n\n        # Construct a new RedisDict object that does not sync on reads\n        settings = RedisDict('settings', Redis(), autosync=False)\n\nThis causes the dictionary behave in the following way:\n\n1. Like normal, the dictionary initializes from the durable data store upon instantiation.\n2. Writes (both inserts and updates), along with deletes of values to the dictionary will still automatically sync with the data store each time the operation happens.\n3. Any time a dictionary is read from, *only data current in the internal cache is used*.  The dict *will not attempt to sync with its durable data store* before reads.\n4. To force the dict to attempt to sync with its durable data store, you may call the ``sync()`` method on the dictionary.  As with when ``autosync`` is false, if ``last_update`` says there are no changes, the dict will skip updating from durable storage.\n\nA good use case for manual syncing is a read-heavy web application, where you're using a durabledict for settings configuration.  Very few requests actually *change* the dictionary contents - most simply read from the dictionary.  In this situation, you would perhaps only ``sync()`` at the beginning of a user's web request to make sure the dict is up to date, but then not during the request in order to push the response to the user as fast as possible.\n\nEncoding\n--------\n\nAll ``durabledict`` implementations accept an ``encoding`` keyword argument, which defines the encoding object the dictionary should use when serializing data to and from the persistent data store.  The overarching goal of the ``encoding`` is to serialize the dictionary value object into a format suitable for persisting to durable storage, and then at a later date reconstructing that object from its serialized representation into an object\nin memory.\n\nBy default, `durabledict` uses pickle as its encoding format, which allows it to serialize complex object easily at the expense of `known security implications`:security and other limitations.  See `this IBM Developerworks`:devworks article for an overview of Pickle.\n\n.. security: https://docs.python.org/release/3.0.1/library/pickle.html#pickle-restrict\n.. _devworks: http://www.ibm.com/developerworks/library/l-pypers/\n\nIn addition to the built in ``encoding.PickleEncoding``, ``durabledict`` also features ``encoding.JSONEncoding`` which encodes the data as JSON and ``encoding.NoOpEncoding`` which does not encode the data at all (suitable only for the ``MemoryDict`` implementation).\n\nIntegration with Django\n------------------------\n\nIf you would like to store your dict values in the database for your Django application, you should use the ``durabledict.models.Durabledict`` class.  This class takes an instance of a model's manager, as well as ``key_col`` and ``value_col`` arguments which can be used to tell ``Durabledict`` which columns on your object it should use to store data.\n\nIt's also probably most advantageous to construct your dicts with ``autosync=False`` (see \"Manually Control Durable Storage Sync\" above) and manually call ``sync()`` before each request.  This can be accomplished most easily via the ``request_started`` signal::\n\n        django.core.signals.request_started.connect(settings.sync)\n\nCreating Your Own Durable Dict\n---------------------------------\n\nCreating your own durable dict is easy.  All you need to do is subclass ``durabledict.base.DurableDict`` and implement the following required interface methods.\n\n1. ``persist(key, value)`` - Persist ``value`` at ``key`` to your data store.\n2. ``depersist(key)`` - Delete the value at ``key`` from your data store.\n3. ``durables()`` - Return a ``key=val`` dict of all keys in your data store.\n4. ``last_updated()`` - A comparable value of when the data in your data store was last updated.\n\nYou may also implement a couple optional dictionary methods, which ``durabledict.base.DurableDict`` will call when the actual non-underscored version is called on the dict.\n\n1. ``_pop(key[,default])`` - If ``key`` is in the dictionary, remove it and return its value, else return ``default``. If ``default`` is not given and ``key`` is not in the dictionary, a ``KeyError`` is raised.\n2. ``_setdefault(key[,default])`` - If key is in the dictionary, return its value. If not, insert key with a value of ``default`` and return ``default``. ``default`` defaults to ``None``.\n",
+    "docs_url": null,
+    "download_url": "UNKNOWN",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "http://github.com/disqus/durabledict/",
+    "keywords": null,
+    "license": "UNKNOWN",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "durabledict",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/durabledict/",
+    "release_url": "https://pypi.org/project/durabledict/0.9.2/",
+    "requires_python": null,
+    "summary": "Dictionary-style access to different types of models.",
+    "version": "0.9.2"
+  },
+  "releases": {
+    "0.5.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d458443dc6c04145ff56a1a2d5d56a2a",
+          "sha256": "103d881b48593589220a7d44f13998a5e996dada4f89ddcf9da47541bca0c987"
+        },
+        "downloads": 2611,
+        "filename": "durabledict-0.5.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d458443dc6c04145ff56a1a2d5d56a2a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16847,
+        "upload_time": "2012-12-28T22:59:16",
+        "url": "https://files.pythonhosted.org/packages/75/a0/5de11ab33c34a540d799d14baaeead19e72d17d1b65a09558796f8db36a8/durabledict-0.5.0.tar.gz"
+      }
+    ],
+    "0.6.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ffb01859d834a949e17dfcb433ef617f",
+          "sha256": "e33a2a3e00d1d99bfe94126a62dea155fcb7e90074aa207f4c44da877a978c21"
+        },
+        "downloads": 2477,
+        "filename": "durabledict-0.6.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ffb01859d834a949e17dfcb433ef617f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16825,
+        "upload_time": "2012-12-30T05:54:49",
+        "url": "https://files.pythonhosted.org/packages/98/9d/69baf57bc8811704ddb937e40a679b0d666c4310329a68865df91f16923d/durabledict-0.6.0.tar.gz"
+      }
+    ],
+    "0.6.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2fc786ab0455642d6ddf8045ea53b812",
+          "sha256": "326c027dea6d3b59d1647b0dbcf8e5869f2148072cec1bef35f4ae0166fd7162"
+        },
+        "downloads": 2607,
+        "filename": "durabledict-0.6.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2fc786ab0455642d6ddf8045ea53b812",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16845,
+        "upload_time": "2012-12-30T05:57:33",
+        "url": "https://files.pythonhosted.org/packages/35/48/bf7397c49618a7c093f1dedaedbcd5f8f33aca8df5b646ad891d8e1b9d8c/durabledict-0.6.1.tar.gz"
+      }
+    ],
+    "0.7.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "76d2c5f243ca9016baad6fa1010117c8",
+          "sha256": "b2b2edfc28646ddb8167536025dbce5bb243844f8535ffbbff4b710cb12e412f"
+        },
+        "downloads": 5424,
+        "filename": "durabledict-0.7.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "76d2c5f243ca9016baad6fa1010117c8",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16939,
+        "upload_time": "2013-01-25T00:47:32",
+        "url": "https://files.pythonhosted.org/packages/42/d6/a645d26f22297a83451be2c7a4fc90298d1650c7a69a21f7e059ebb92901/durabledict-0.7.0.tar.gz"
+      }
+    ],
+    "0.7.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3299a77e8cb2ea18ec8201898ac66e4e",
+          "sha256": "97ca571cd8d94598be47c2cda9d75d64bf894dde0b0e23fdb658053707e8261a"
+        },
+        "downloads": 10630,
+        "filename": "durabledict-0.7.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3299a77e8cb2ea18ec8201898ac66e4e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 17822,
+        "upload_time": "2013-04-13T16:26:46",
+        "url": "https://files.pythonhosted.org/packages/c6/fa/96b756508d6153cc362793b4ca78c89da9cf06e8bdfd27fb6fd07b151366/durabledict-0.7.1.tar.gz"
+      }
+    ],
+    "0.7.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "cad139a98f45fd62b615be166c71af30",
+          "sha256": "110bb858922ac9231f2036d026366c340ce637bda5d1b92c712e85fd9e204498"
+        },
+        "downloads": 2062,
+        "filename": "durabledict-0.7.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "cad139a98f45fd62b615be166c71af30",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 17869,
+        "upload_time": "2014-03-20T23:12:24",
+        "url": "https://files.pythonhosted.org/packages/7a/3b/64be2b07214081dfcc44d46a69234c1d95785d4d17365d77d2423e6766ee/durabledict-0.7.2.tar.gz"
+      }
+    ],
+    "0.7.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "90101f8138f63792c423164d64d4423b",
+          "sha256": "3039500fd725fef3f5eec7959446d8793e8bccd99bc3bacd916b30643a2570a1"
+        },
+        "downloads": 2131,
+        "filename": "durabledict-0.7.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "90101f8138f63792c423164d64d4423b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 14309,
+        "upload_time": "2014-04-28T20:13:09",
+        "url": "https://files.pythonhosted.org/packages/f3/7b/befae68a744a2c2274c88be6a88196e75c156bf398d831443c5adacce008/durabledict-0.7.3.tar.gz"
+      }
+    ],
+    "0.8.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "479b8a479ad1090291ae841227078f29",
+          "sha256": "1806271291487ee4425ee9cc70d509cf09bc9aacc7d22d626e61ef7a47127fff"
+        },
+        "downloads": 3687,
+        "filename": "durabledict-0.8.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "479b8a479ad1090291ae841227078f29",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 15052,
+        "upload_time": "2014-07-22T19:02:39",
+        "url": "https://files.pythonhosted.org/packages/11/2e/fb0e3c568d11e64e0e36d34f06feec72c334a76ec146328d2eb8cf6def6f/durabledict-0.8.0.tar.gz"
+      }
+    ],
+    "0.9.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f092789a632b1ae1593f43f7d4a228f4",
+          "sha256": "a8e599aeafdc783fee135900a6f7f0710fb9bcd70c347b031e78ea11211f76fc"
+        },
+        "downloads": 1970,
+        "filename": "durabledict-0.9.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f092789a632b1ae1593f43f7d4a228f4",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 15371,
+        "upload_time": "2015-03-26T00:19:25",
+        "url": "https://files.pythonhosted.org/packages/fb/0b/a2924e6064f8d0263f16be857399beba5957630862294bb12f0027333ad0/durabledict-0.9.0.tar.gz"
+      }
+    ],
+    "0.9.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "59c39b47e3885420751b16ce9c0f7fad",
+          "sha256": "e0b2a2f5ccc452820edbcaf9f885db9348ce5fa78902e32c07144bf7f469e9bd"
+        },
+        "downloads": 1103,
+        "filename": "durabledict-0.9.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "59c39b47e3885420751b16ce9c0f7fad",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 15391,
+        "upload_time": "2015-03-27T20:58:29",
+        "url": "https://files.pythonhosted.org/packages/ba/5b/fcfdc51fc51e1e47609b1905801920981789de24b2e88f67ceeb7f356936/durabledict-0.9.1.tar.gz"
+      }
+    ],
+    "0.9.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e656bd013fcd41cf74566b1ccf672adc",
+          "sha256": "b9cf369fd8ded8c90bc3603b05123306d10dd117cdec5f2175ef685e42b8dc5f"
+        },
+        "downloads": 4478,
+        "filename": "durabledict-0.9.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e656bd013fcd41cf74566b1ccf672adc",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 15158,
+        "upload_time": "2015-03-30T17:55:16",
+        "url": "https://files.pythonhosted.org/packages/b2/b4/055cafa805ff3872c51371825e88119ac40d3ff09597505ffe407ced33a7/durabledict-0.9.2.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "e656bd013fcd41cf74566b1ccf672adc",
+        "sha256": "b9cf369fd8ded8c90bc3603b05123306d10dd117cdec5f2175ef685e42b8dc5f"
+      },
+      "downloads": 4478,
+      "filename": "durabledict-0.9.2.tar.gz",
+      "has_sig": false,
+      "md5_digest": "e656bd013fcd41cf74566b1ccf672adc",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 15158,
+      "upload_time": "2015-03-30T17:55:16",
+      "url": "https://files.pythonhosted.org/packages/b2/b4/055cafa805ff3872c51371825e88119ac40d3ff09597505ffe407ced33a7/durabledict-0.9.2.tar.gz"
+    }
+  ]
+}

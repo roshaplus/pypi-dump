@@ -1,0 +1,403 @@
+{
+  "info": {
+    "author": "Mikhail Podgurskiy",
+    "author_email": "kmmbvnr@gmail.com",
+    "bugtrack_url": "",
+    "classifiers": [
+      "Development Status :: 5 - Production/Stable",
+      "Environment :: Web Environment",
+      "Framework :: Django",
+      "Framework :: Django :: 1.10",
+      "Framework :: Django :: 1.8",
+      "Framework :: Django :: 1.9",
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: MIT License",
+      "Operating System :: OS Independent",
+      "Programming Language :: Python",
+      "Programming Language :: Python :: 2.6",
+      "Programming Language :: Python :: 2.7",
+      "Programming Language :: Python :: 3",
+      "Programming Language :: Python :: 3.4",
+      "Programming Language :: Python :: 3.5",
+      "Topic :: Software Development :: Libraries :: Python Modules"
+    ],
+    "description": "Django friendly finite state machine support\n============================================\n\n|Build Status| |Gitter|\n\ndjango-fsm adds simple declarative states management for django models.\n\nIf you need parallel task execution, view and background task code reuse\nover different flows - check my new project django-viewflow:\n\nhttps://github.com/viewflow/viewflow\n\n\nInstead of adding some state field to a django model, and managing its\nvalues by hand, you could use FSMState field and mark model methods with\nthe ``transition`` decorator. Your method could contain the side-effects\nof the state change.\n\nNice introduction is available here:\nhttps://gist.github.com/Nagyman/9502133\n\nYou may also take a look at django-fsm-admin project containing a mixin\nand template tags to integrate django-fsm state transitions into the\ndjango admin.\n\nhttps://github.com/gadventures/django-fsm-admin\n\nTransition logging support could be achived with help of django-fsm-log\npackage\n\nhttps://github.com/gizmag/django-fsm-log\n\nFSM really helps to structure the code, especially when a new developer\ncomes to the project. FSM is most effective when you use it for some\nsequential steps.\n\n\nInstallation\n------------\n\n.. code:: bash\n\n    $ pip install django-fsm\n\nOr, for the latest git version\n\n.. code:: bash\n\n    $ pip install -e git://github.com/kmmbvnr/django-fsm.git#egg=django-fsm\n\nThe library has full Python 3 support\n\nUsage\n-----\n\nAdd FSMState field to your model\n\n.. code:: python\n\n    from django_fsm import FSMField, transition\n\n    class BlogPost(models.Model):\n        state = FSMField(default='new')\n\nUse the ``transition`` decorator to annotate model methods\n\n.. code:: python\n\n    @transition(field=state, source='new', target='published')\n    def publish(self):\n        \"\"\"\n        This function may contain side-effects,\n        like updating caches, notifying users, etc.\n        The return value will be discarded.\n        \"\"\"\n\n``source`` parameter accepts a list of states, or an individual state.\nYou can use ``*`` for source, to allow switching to ``target`` from any\nstate. The ``field`` parameter accepts both a string attribute name or an\nactual field instance.\n\nIf calling publish() succeeds without raising an exception, the state\nfield will be changed, but not written to the database.\n\n.. code:: python\n\n    from django_fsm import can_proceed\n\n    def publish_view(request, post_id):\n        post = get_object__or_404(BlogPost, pk=post_id)\n        if not can_proceed(post.publish):\n            raise PermissionDenied\n\n        post.publish()\n        post.save()\n        return redirect('/')\n\nIf some conditions are required to be met before changing the state, use\nthe ``conditions`` argument to ``transition``. ``conditions`` must be a\nlist of functions taking one argument, the model instance. The function\nmust return either ``True`` or ``False`` or a value that evaluates to\n``True`` or ``False``. If all functions return ``True``, all conditions\nare considered to be met and the transition is allowed to happen. If one\nof the functions returns ``False``, the transition will not happen.\nThese functions should not have any side effects.\n\nYou can use ordinary functions\n\n.. code:: python\n\n    def can_publish(instance):\n        # No publishing after 17 hours\n        if datetime.datetime.now().hour > 17:\n            return False\n        return True\n\nOr model methods\n\n.. code:: python\n\n    def can_destroy(self):\n        return self.is_under_investigation()\n\nUse the conditions like this:\n\n.. code:: python\n\n    @transition(field=state, source='new', target='published', conditions=[can_publish])\n        def publish(self):\n        \"\"\"\n        Side effects galore\n        \"\"\"\n\n    @transition(field=state, source='*', target='destroyed', conditions=[can_destroy])\n        def destroy(self):\n        \"\"\"\n        Side effects galore\n        \"\"\"\n\nYou could instantiate a field with protected=True option, that prevents\ndirect state field modification.\n\n.. code:: python\n\n    class BlogPost(models.Model):\n        state = FSMField(default='new', protected=True)\n\n    model = BlogPost()\n    model.state = 'invalid' # Raises AttributeError\n\nNote that calling\n`refresh_from_db <https://docs.djangoproject.com/en/1.8/ref/models/instances/#django.db.models.Model.refresh_from_db>`_\non a model instance with a protected FSMField will cause an exception.\n\n`target`\n~~~~~~~~\n\n`target` state parameter could point to a specific state or `django_fsm.State` implementation\n\n.. code:: python\n          \n    from django_fsm import FSMField, transition, RETURN_VALUE, GET_STATE\n    @transition(field=state,\n                source='*',\n                target=RETURN_VALUE('for_moderators', 'published'))\n    def publish(self, is_public=False):\n        return 'for_moderators' if is_public else 'published'\n\n    @transition(\n        field=state,\n        source='for_moderators',\n        target=GET_STATE(\n            lambda self, allowed: 'published' if allowed else 'rejected',\n            states=['published', 'rejected']))\n    def moderate(self, allowed):\n        self.allowed=allowed\n\n\n``custom`` properties\n~~~~~~~~~~~~~~~~~~~~~\n\nCustom properties can be added by providing a dictionary to the\n``custom`` keyword on the ``transition`` decorator.\n\n.. code:: python\n\n    @transition(field=state,\n                source='*',\n                target='onhold',\n                custom=dict(verbose='Hold for legal reasons'))\n    def legal_hold(self):\n        \"\"\"\n        Side effects galore\n        \"\"\"\n\n``on_error`` state\n~~~~~~~~~~~~~~~~~~\n\nIn case of transition method would raise exception, you can provide\nspecific target state\n\n.. code:: python\n\n    @transition(field=state, source='new', target='published', on_error='failed')\n    def publish(self):\n       \"\"\"\n       Some exception could happen here\n       \"\"\"\n\n``state_choices``\n~~~~~~~~~~~~~~~~~\n\nInstead of passing two elements list ``choices`` you could use three\nelements ``state_choices``, the last element states for string reference\nto model proxy class.\n\nBase class instance would be dynamically changed to corresponding Proxy\nclass instance, depending on the state. Even for queryset results, you\nwill get Proxy class instances, even if QuerySet executed on base class.\n\nCheck the `test\ncase <https://github.com/kmmbvnr/django-fsm/blob/master/tests/testapp/tests/test_state_transitions.py>`__\nfor example usage. Or read about `implementation\ninternals <http://schinckel.net/2013/06/13/django-proxy-model-state-machine/>`__\n\nPermissions\n~~~~~~~~~~~\n\nIt is common to have permissions attached to each model transition.\n``django-fsm`` handles this with ``permission`` keyword on the\n``transition`` decorator. ``permission`` accepts a permission string, or\ncallable that expects ``instance`` and ``user`` arguments and returns\nTrue if user can perform the transition.\n\n.. code:: python\n\n    @transition(field=state, source='*', target='publish',\n                permission=lambda instance, user: not user.has_perm('myapp.can_make_mistakes'))\n    def publish(self):\n        pass\n\n    @transition(field=state, source='*', target='publish',\n                permission='myapp.can_remove_post')\n    def remove(self):\n        pass\n\nYou can check permission with ``has_transition_permission`` method\n\n.. code:: python\n\n    from django_fsm import has_transition_perm\n    def publish_view(request, post_id):\n        post = get_object_or_404(BlogPost, pk=post_id)\n        if not has_transition_perm(post.publish, request.user):\n            raise PermissionDenied\n\n        post.publish()\n        post.save()\n        return redirect('/')\n\nModel methods\n~~~~~~~~~~~~~\n\n``get_all_FIELD_transitions`` Enumerates all declared transitions\n\n``get_available_FIELD_transitions`` Returns all transitions data\navailable in current state\n\n``get_available_user_FIELD_transitions`` Enumerates all transitions data\navailable in current state for provided user\n\nForeign Key constraints support\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nIf you store the states in the db table you could use FSMKeyField to\nensure Foreign Key database integrity.\n\nIn your model :\n\n.. code:: python\n\n    class DbState(models.Model):\n        id = models.CharField(primary_key=True, max_length=50)\n        label = models.CharField(max_length=255)\n\n        def __unicode__(self):\n            return self.label\n\n\n    class BlogPost(models.Model):\n        state = FSMKeyField(DbState, default='new')\n\n        @transition(field=state, source='new', target='published')\n        def publish(self):\n            pass\n\nIn your fixtures/initial\\_data.json :\n\n.. code:: json\n\n    [\n        {\n            \"pk\": \"new\",\n            \"model\": \"myapp.dbstate\",\n            \"fields\": {\n                \"label\": \"_NEW_\"\n            }\n        },\n        {\n            \"pk\": \"published\",\n            \"model\": \"myapp.dbstate\",\n            \"fields\": {\n                \"label\": \"_PUBLISHED_\"\n            }\n        }\n    ]\n\nNote : source and target parameters in @transition decorator use pk\nvalues of DBState model as names, even if field \"real\" name is used,\nwithout \\_id postfix, as field parameter.\n\nInteger Field support\n~~~~~~~~~~~~~~~~~~~~~\n\nYou can also use ``FSMIntegerField``. This is handy when you want to use\nenum style constants.\n\n.. code:: python\n\n    class BlogPostStateEnum(object):\n        NEW = 10\n        PUBLISHED = 20\n        HIDDEN = 30\n\n    class BlogPostWithIntegerField(models.Model):\n        state = FSMIntegerField(default=BlogPostStateEnum.NEW)\n\n        @transition(field=state, source=BlogPostStateEnum.NEW, target=BlogPostStateEnum.PUBLISHED)\n        def publish(self):\n            pass\n\nSignals\n~~~~~~~\n\n``django_fsm.signals.pre_transition`` and\n``django_fsm.signals.post_transition`` are called before and after\nallowed transition. No signals on invalid transition are called.\n\nArguments sent with these signals:\n\n**sender** The model class.\n\n**instance** The actual instance being proceed\n\n**name** Transition name\n\n**source** Source model state\n\n**target** Target model state\n\nOptimistic locking\n------------------\n\n``django-fsm`` provides optimistic locking mixin, to avoid concurrent\nmodel state changes. If model state was changed in database\n``django_fsm.ConcurrentTransition`` exception would be raised on\nmodel.save()\n\n.. code:: python\n\n    from django_fsm import FSMField, ConcurrentTransitionMixin\n\n    class BlogPost(ConcurrentTransitionMixin, models.Model):\n        state = FSMField(default='new')\n\nFor guaranteed protection against race conditions caused by concurrently\nexecuted transitions, make sure:\n\n- Your transitions do not have any side effects except for changes in the database,\n- You always run the save() method on the object within ``django.db.transaction.atomic()`` block.\n\nFollowing these recommendations, you can rely on\nConcurrentTransitionMixin to cause a rollback of all the changes that\nhave been executed in an inconsistent (out of sync) state, thus\npractically negating their effect.\n\nDrawing transitions\n-------------------\n\nRenders a graphical overview of your models states transitions\n\nYou need ``pip install graphviz>=0.4`` library and add ``django_fsm`` to\nyour ``INSTALLED_APPS``:\n\n.. code:: python\n\n    INSTALLED_APPS = (\n        ...\n        'django_fsm',\n        ...\n    )\n\n.. code:: bash\n\n    # Create a dot file\n    $ ./manage.py graph_transitions > transitions.dot\n\n    # Create a PNG image file only for specific model\n    $ ./manage.py graph_transitions -o blog_transitions.png myapp.Blog\n\nChangelog\n---------\n\ndjango-fsm 2.5.0 2017-03-04\n~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n- graph_transition command fix for django 1.10\n- graph_transition command supports GET_STATE targets\n- signal data extended with method args/kwargs and field\n- sets allowed to be passed to the transition decorator\n\n\n\n.. |Build Status| image:: https://travis-ci.org/kmmbvnr/django-fsm.svg?branch=master\n   :target: https://travis-ci.org/kmmbvnr/django-fsm\n.. |Gitter| image:: https://badges.gitter.im/Join%20Chat.svg\n   :target: https://gitter.im/kmmbvnr/django-fsm?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge\n",
+    "docs_url": null,
+    "download_url": "UNKNOWN",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "http://github.com/kmmbvnr/django-fsm",
+    "keywords": "django",
+    "license": "MIT License",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "django-fsm",
+    "platform": "any",
+    "project_url": "https://pypi.org/project/django-fsm/",
+    "release_url": "https://pypi.org/project/django-fsm/2.5.0/",
+    "requires_python": null,
+    "summary": "Django friendly finite state machine support.",
+    "version": "2.5.0"
+  },
+  "releases": {
+    "1.0.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7ae2aef1679aa90573a68828c9e73e4b",
+          "sha256": "27013c67feb5e38940c5bfa4754c1deb39a8d6a9d7fbe402841d144dd2cf2807"
+        },
+        "downloads": 3213,
+        "filename": "django-fsm-1.0.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7ae2aef1679aa90573a68828c9e73e4b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 3335,
+        "upload_time": "2010-10-12T08:18:36",
+        "url": "https://files.pythonhosted.org/packages/c0/d2/dc8244591dc103ebb97b41b13d7661bdb3e74aa8644c4a4f348409ea468d/django-fsm-1.0.0.tar.gz"
+      }
+    ],
+    "1.1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "72af7d726a1dd2b3044c721a4869de6b",
+          "sha256": "6662b8a3fcb317dd2be8febb4f85e22131cd2796077a0c09a726e19d4726607e"
+        },
+        "downloads": 3177,
+        "filename": "django-fsm-1.1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "72af7d726a1dd2b3044c721a4869de6b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 5582,
+        "upload_time": "2011-02-22T06:22:14",
+        "url": "https://files.pythonhosted.org/packages/f8/4e/389388616d25693d829ad9a509dc4dafb545dc48bb3e67bf5f602b3eecfb/django-fsm-1.1.0.tar.gz"
+      }
+    ],
+    "1.2.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9ea04046bb2960cbc1c7141a92117b78",
+          "sha256": "3cfca40f0276aebac9a41160c8e26554590d8fb88f4bc031ac321f1982bad9e3"
+        },
+        "downloads": 4172,
+        "filename": "django-fsm-1.2.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "9ea04046bb2960cbc1c7141a92117b78",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 5969,
+        "upload_time": "2011-03-23T02:41:05",
+        "url": "https://files.pythonhosted.org/packages/ff/c3/3ef66eec66d7a326bd31c21c12c14d0a322e87fb593a0b37e1101d104523/django-fsm-1.2.0.tar.gz"
+      }
+    ],
+    "1.3.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "90b2a941c2d9b43802f39bb85806b23c",
+          "sha256": "88b29b65c40ef32dc6455fc7131e4b9cfe20b283153f3aeed9aa45fc3830ca45"
+        },
+        "downloads": 4537,
+        "filename": "django-fsm-1.3.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "90b2a941c2d9b43802f39bb85806b23c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 4837,
+        "upload_time": "2011-07-28T05:27:10",
+        "url": "https://files.pythonhosted.org/packages/4a/7a/acf8d1469a3b036f16d7012520c097481caaf602f4502388d6e6106d4c32/django-fsm-1.3.0.tar.gz"
+      }
+    ],
+    "1.4.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a4a5c72835c53ef729a045d1f123d008",
+          "sha256": "dde250d2ec30634dc387c5bd3acae29aaf50bd4391948bc13177b7e312bb2982"
+        },
+        "downloads": 3413,
+        "filename": "django-fsm-1.4.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a4a5c72835c53ef729a045d1f123d008",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 4898,
+        "upload_time": "2011-12-21T08:35:50",
+        "url": "https://files.pythonhosted.org/packages/cf/9a/08e2f7ea823050b41d7874afc58d9dc1d4eb716f4058370f2ea169b43edd/django-fsm-1.4.0.tar.gz"
+      }
+    ],
+    "1.4.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7220111a4fd1573ebdd383e7551af7d5",
+          "sha256": "6fbe3b8c0ef6f89bf8df5e2d7ae2c62c9c8ad732dfe8d2f660ec9f4ffab05e11"
+        },
+        "downloads": 35516,
+        "filename": "django-fsm-1.4.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7220111a4fd1573ebdd383e7551af7d5",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 6114,
+        "upload_time": "2011-12-23T07:08:33",
+        "url": "https://files.pythonhosted.org/packages/1e/6f/c8748770d280b24baf99f9119eb6d9a4a8ad19eee8fbd8cebd83cbb52ee0/django-fsm-1.4.1.tar.gz"
+      }
+    ],
+    "1.5.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "265b40da81fda87ce3b966f0b8d3c5d0",
+          "sha256": "ad0cf083e42279dddddc6c2f630858ea77c97d783d334da495a9c8a0b786051b"
+        },
+        "downloads": 11806,
+        "filename": "django-fsm-1.5.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "265b40da81fda87ce3b966f0b8d3c5d0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 6140,
+        "upload_time": "2013-09-17T03:47:03",
+        "url": "https://files.pythonhosted.org/packages/f2/4f/2e3ccb2b05a437807e46e160d149460402f4954f27ed32d8b91bfd57dff3/django-fsm-1.5.0.tar.gz"
+      }
+    ],
+    "1.5.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "aca2852e8f0d64d4668dea7164cd8b49",
+          "sha256": "9847845c315650bd648be9aca0f0697b174a047c89aa5a5c222da9f9199300e5"
+        },
+        "downloads": 13297,
+        "filename": "django-fsm-1.5.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "aca2852e8f0d64d4668dea7164cd8b49",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 6541,
+        "upload_time": "2014-01-04T11:40:59",
+        "url": "https://files.pythonhosted.org/packages/74/11/23fa8779403bb1f018b321f56823873435b91889c1a174717cce44ab0eaf/django-fsm-1.5.1.tar.gz"
+      }
+    ],
+    "1.6.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "90e1bff0957750cbd1a0851bf55beab0",
+          "sha256": "3a57798fe5a24ab40e6e6964ae62b706d85a6c99a519589d12594a701ce6bb30"
+        },
+        "downloads": 21367,
+        "filename": "django-fsm-1.6.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "90e1bff0957750cbd1a0851bf55beab0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 6984,
+        "upload_time": "2014-03-15T10:29:51",
+        "url": "https://files.pythonhosted.org/packages/a0/8a/74e29ea05b2e62d9b5449eda8d75f075e9b2fa965aadcff39d7a5137c3d1/django-fsm-1.6.0.tar.gz"
+      }
+    ],
+    "2.0.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c0c61f3240d694eee92c0cea966d605d",
+          "sha256": "2af5edf873e99025c5f0708f331acbbbccbb6befa32f01e3c9a7c0d8af84d12f"
+        },
+        "downloads": 2381,
+        "filename": "django-fsm-2.0.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c0c61f3240d694eee92c0cea966d605d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 4788,
+        "upload_time": "2014-03-15T10:37:32",
+        "url": "https://files.pythonhosted.org/packages/d3/99/8309b2977a453062449c213c8b1877d825890cb6732604f8e61aac5cea08/django-fsm-2.0.0.tar.gz"
+      }
+    ],
+    "2.0.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e67f9f01943767208bef3c1de8bc006a",
+          "sha256": "492f2f4ad44d460352eff78ecb9476ab7176e213e2daf28647dddb58c2c5d705"
+        },
+        "downloads": 9155,
+        "filename": "django-fsm-2.0.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e67f9f01943767208bef3c1de8bc006a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 5008,
+        "upload_time": "2014-03-24T04:21:06",
+        "url": "https://files.pythonhosted.org/packages/8f/a2/12a4c29404949c47e71ada759edad47d8887ab9054637766fb1b14093fef/django-fsm-2.0.1.tar.gz"
+      }
+    ],
+    "2.1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0bff9f83662980f5f573c0d6809c8328",
+          "sha256": "2e29fca44747ce967a1c7f897560ac666712f4f743c90c834046765096c450ef"
+        },
+        "downloads": 16161,
+        "filename": "django-fsm-2.1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0bff9f83662980f5f573c0d6809c8328",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 5341,
+        "upload_time": "2014-05-15T09:38:11",
+        "url": "https://files.pythonhosted.org/packages/a6/ac/213d449621fdc91f3ede8f7aab219c18deecd68cea2d060dceed62adb226/django-fsm-2.1.0.tar.gz"
+      }
+    ],
+    "2.2.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "922a41c9abae82b6fdd97ca87e7e27cc",
+          "sha256": "6c03cb4dcec4916955039240ea95e8d07bcb050e9f6a956ff766f579261e1b06"
+        },
+        "downloads": 44899,
+        "filename": "django-fsm-2.2.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "922a41c9abae82b6fdd97ca87e7e27cc",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 7627,
+        "upload_time": "2014-09-03T04:31:05",
+        "url": "https://files.pythonhosted.org/packages/88/8b/54c27f6b65ae9af201c083ed87201c2ab02f58219c680117c2960539b7bf/django-fsm-2.2.0.tar.gz"
+      }
+    ],
+    "2.2.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "42c0a9a3a2f27925a3f5cd244665a6e0",
+          "sha256": "70ee1cde7fbe4f62acd59027b5e9e782f7c77358b5e14aff9b539c0b4889ad19"
+        },
+        "downloads": 220144,
+        "filename": "django-fsm-2.2.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "42c0a9a3a2f27925a3f5cd244665a6e0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 7802,
+        "upload_time": "2015-04-27T07:21:52",
+        "url": "https://files.pythonhosted.org/packages/bb/b0/6d49d266bdadac09e9b1a012845700ca567eb49cb044b46a70663692c817/django-fsm-2.2.1.tar.gz"
+      }
+    ],
+    "2.3.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "fa5d93ba1ce93cb27543acbcfa24e267",
+          "sha256": "d1cbd40943bb6d3ae62d318a1e94f963762d5125c9c75816737f5324cd987688"
+        },
+        "downloads": 17266,
+        "filename": "django-fsm-2.3.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "fa5d93ba1ce93cb27543acbcfa24e267",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 12870,
+        "upload_time": "2015-10-15T06:50:56",
+        "url": "https://files.pythonhosted.org/packages/72/44/61d2a7f49179ae72ee19b691b2893dd32e9c16c3af78750f0a1b02e3ab7a/django-fsm-2.3.0.tar.gz"
+      }
+    ],
+    "2.4.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e8a797975795f8c7c72143765646f697",
+          "sha256": "9867abaee40ad6362598a44684c4dda6590711bf0e4ce33ba5261e90e3e3243a"
+        },
+        "downloads": 15695,
+        "filename": "django-fsm-2.4.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e8a797975795f8c7c72143765646f697",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 12601,
+        "upload_time": "2016-05-14T07:29:27",
+        "url": "https://files.pythonhosted.org/packages/fa/e5/0ba0446ebff1c05d53c593f7926b5af461ee4fc8817517249ee0227c2ea8/django-fsm-2.4.0.tar.gz"
+      }
+    ],
+    "2.5.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7d0679cea70723441cb29d1c766180c4",
+          "sha256": "90c23e25dc2e524d7ce7647e14f610e800176c499fa81a6a3fa2e3bb2be4b737"
+        },
+        "downloads": 573,
+        "filename": "django_fsm-2.5.0-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "7d0679cea70723441cb29d1c766180c4",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 11054,
+        "upload_time": "2017-03-04T04:43:26",
+        "url": "https://files.pythonhosted.org/packages/39/6d/f6d3ec9b9558a65a6d6fc4576757fdb80b2d362cd8709d175255ec9ffe62/django_fsm-2.5.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "49ab85c1c2aabf2da212f1836cf4358e",
+          "sha256": "b28e32785a0dd4ced42c432241a01dd9312ae3fbb10392adc04724375d6ae7c0"
+        },
+        "downloads": 17,
+        "filename": "django-fsm-2.5.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "49ab85c1c2aabf2da212f1836cf4358e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 12890,
+        "upload_time": "2017-03-04T04:43:23",
+        "url": "https://files.pythonhosted.org/packages/75/a0/3a244bc7244daa85cde848f49bf3a075a69267522092212823cd210fd7c8/django-fsm-2.5.0.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "7d0679cea70723441cb29d1c766180c4",
+        "sha256": "90c23e25dc2e524d7ce7647e14f610e800176c499fa81a6a3fa2e3bb2be4b737"
+      },
+      "downloads": 573,
+      "filename": "django_fsm-2.5.0-py2.py3-none-any.whl",
+      "has_sig": false,
+      "md5_digest": "7d0679cea70723441cb29d1c766180c4",
+      "packagetype": "bdist_wheel",
+      "python_version": "2.7",
+      "size": 11054,
+      "upload_time": "2017-03-04T04:43:26",
+      "url": "https://files.pythonhosted.org/packages/39/6d/f6d3ec9b9558a65a6d6fc4576757fdb80b2d362cd8709d175255ec9ffe62/django_fsm-2.5.0-py2.py3-none-any.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "49ab85c1c2aabf2da212f1836cf4358e",
+        "sha256": "b28e32785a0dd4ced42c432241a01dd9312ae3fbb10392adc04724375d6ae7c0"
+      },
+      "downloads": 17,
+      "filename": "django-fsm-2.5.0.tar.gz",
+      "has_sig": false,
+      "md5_digest": "49ab85c1c2aabf2da212f1836cf4358e",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 12890,
+      "upload_time": "2017-03-04T04:43:23",
+      "url": "https://files.pythonhosted.org/packages/75/a0/3a244bc7244daa85cde848f49bf3a075a69267522092212823cd210fd7c8/django-fsm-2.5.0.tar.gz"
+    }
+  ]
+}

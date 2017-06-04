@@ -1,0 +1,158 @@
+{
+  "info": {
+    "author": "Alex Guerra",
+    "author_email": "alex@heyimalex.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 4 - Beta",
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: MIT License",
+      "Programming Language :: Python :: 2.7",
+      "Programming Language :: Python :: 3"
+    ],
+    "description": "rratelimit\n==========\n\nGeneral purpose rate limiting classes that work with redis and redis-py.\n\nInstallation\n~~~~~~~~~~~~\n\nInstall via pip\n\n::\n\n    pip install rratelimit\n\nInstall from source\n\n::\n\n    git clone git://github.com/HeyImAlex/rratelimit.git\n    cd rratelimit\n    python setup.py\n\n**requires redis-server >= 2.6.0 to work properly**\n\nUsage\n~~~~~\n\nIn plain english, a limiter allows you to\n\n::\n\n    Limit {actor} from doing {action} {limit} times per {period} seconds\n\nEach limiter shares the same basic interface:\n\n-  constructor params\n\n   -  **redis** - redis-py Redis or StrictRedis instance\n   -  **action** (string) - Name for the action this limiter will limit\n   -  **limit** (int) - Inclusive number of times you'd like ``action`` to be able to be executed per ``period`` seconds\n   -  **period** (double) - Time window (in seconds) in which you want to limit ``action``. Reliable down to milliseconds (0.001).\n\n-  methods\n\n   -  **check** (``actor``): Return whether ``actor`` is over the limit for this action.\n   -  **insert** (``actor``): Let the limiter know that ``actor`` has just completed this action.\n   -  **checked\\_insert** (``actor``): Convenience method for atomically checking if an actor is over the limit and, if they're not, running the insert method. Returns True if the insert suceeded, False if the user was over the limit.\n\nEvery method is atomic and thread safe. Internally rratelimit uses Lua scripts with redis' EVALSHA command for the bulk of the work, so it's fairly fast as well.\n\nExample\n-------\n\nSay you're writing forum software in Flask and you want to limit your users to only be able to create a thread once every five minutes. Outside of any request context, create an instance of Limiter with the proper parameters. In this case the ``action`` would be something like ``\"new_thread\"``, the ``limit`` would be ``1``, and the ``period`` would be ``5*60``.\n\n.. code:: python\n\n\n    from redis import StrictRedis\n    from rratelimit import Limiter\n\n    r = StrictRedis(...)\n    thread_limiter = Limiter(r, action='new_thread', limit=1, period=5*60)\n\nNow in your view function all you need to do is call ``checked_insert`` whenever a user attempts to create a new thread. If it returns True, you know that the user was not over the limit and you can proceed to create the thread.\n\n.. code:: python\n\n\n    @app.route('/new_thread', methods=['GET', 'POST'])\n    def new_thread():\n        form = NewThreadForm(request.form)\n        if request.method == 'POST' and form.validate():\n            # Do some stuff\n            if thread_limiter.checked_insert(request.remote_addr):\n                # Create the thread\n            else:\n                # You were over the limit!\n\nBoom.\n\nClasses\n~~~~~~~\n\nInternally rratelimit has a few different Limiter classes. The default (and the one that's created when you call Limiter) is the ListLimiter, and for the vast vast vast vast *vast* majority of cases it'll do just fine.\n\nHowever, in the name of completeness I've included a few more limiters (with perhaps even more to come). Following is a description of each of these limiters along with details of their implementations and their respective pros and cons.\n\nListBasedLimiter\n----------------\n\n-  **pros** - simple, very accurate, O(1) insert time, generally O(1) check time\n-  **cons** - potentially O(N) check time, memory usage, where N is the number of insertions made (over a certain threshold), could eat up a lot of memory with very large ``limit`` values or many inserts\n\nThe ListBasedLimiter works by LPUSHing a timestamp onto a list every time insert is called. It checks the limit by calling ``LINDEX {limit}`` and seeing if the returned value is greater than ``current_timestamp - period``. Check also LTRIMs all items past ``limit``, ensuring that after a check the list is at most ``limit`` keys long. Expiration is handled by setting a ttl equal to ``period`` on insert.\n\nIf you solely use checked\\_insert on a ListBasedLimiter, you're guaranteed to LTRIM no more than one element per run, which makes it constant time. If you use check and insert separately, the bound for check is *technically* O(N).\n\n**Note**: There is an edge case where ListBasedLimiters can leak memory; if you continually insert before the key expires without ever calling check, the list will never be trimmed. This trade off is made to maintain O(1) insert time.\n\nHashBasedLimiter\n----------------\n\n-  **pros** - O(1) inserts, checks, and memory usage\n-  **cons** - complicated, inherently inaccurate, constant big-O benefits sometimes negated by size of constant if you still need great accuracy on a long period.\n\nThe HashBasedLimiter is more complicated. It takes an additional constructor param, ``accuracy``, which basically defines a speed/accuracy tradeoff;\n\n-  acceptable error = period/accuracy seconds\n-  O(1) insert/check/memory where the constant is proportional to accuracy\n\nThe HashBasedLimiter internally works by creating ``2*accuracy`` \"time buckets\" arranged in a circle. Each time bucket represents ``period/accuracy`` seconds, and the current bucket is found by taking the current timestamp, dividing it by the bucket width, and then computing the modulo with the total number of buckets. When insert is called, the limiter finds the current bucket and INCRs it, clears half of the buckets in front of it (up to where the period starts), and sets an expire time equal to ``period``. When check is called, the limiter just adds up the contents of the bucket and half of the total buckets behind it.\n\nThe main takeaway here is that memory footprint, check times and insert times all scale with the accuracy parameter. If you don't need great accuracy and your ``limit`` is high, the HashBasedLimiter may be better suited for your usecase. If you *really* don't need great accuracy, the SimpleLimiter is likely a better match.\n\nSimpleLimiter\n-------------\n\n-  **pros** - very low memory footprint (at most 2 keys per actor), very fast, very simple, good enough for many situations\n-  **cons** - very inaccurate; allows up to 2x ``limit`` to be executed in short period of time.\n\nThe SimpleLimiter is... very simple. It just INCRs a key on insert and then checks if the contents of the current key are greater than or equal to ``limit``. The current key is found by dividing the current timestamp by ``period`` and taking the modulo of that with 3. Expiration is set on insertion to ``period``.\n\nThe important thing to know is that this isn't a \"moving window\" limiter; it doesn't make the guarantee that an actor can't make more than ``limit`` calls in the last ``period`` seconds, just that an actor can't make more than ``limit`` calls in period ``x``. This type of limiting is commonly found on web APIs (Twitter) and is might be better handled by your web server, but hey, it's here if you need it.\n\nRace conditions\n~~~~~~~~~~~~~~~\n\nSometimes you may want to chain multiple inserts or checks in an atomic way. Using locks is cumbersome and comes with overhead, so rratelimit provides an alternative through redis-py's pipelines.\n\nJust create a pipeline and then call the limiter method you want with the pipeline object as the second parameter.\n\n.. code:: python\n\n    r = redis.Redis(...)\n    my_limiter = Limiter(...)\n    # Create a pipeline\n    pipe = r.pipeline()\n    # Do some stuff\n    pipe.set('foo', 'bar')\n    # Add in your limiter call\n    my_limiter.check('some_actor', pipe)\n    # Do some other stuff\n    pipe.get('foo')\n    # Execute the pipe\n    pipe.execute()\n    # [True, False, 'bar']\n    # (second item is the return from check)\n\nTODO\n~~~~\n\n-  Work on benchmarking\n\nFaq/Misc\n~~~~~~~~\n\n-  Huge thanks to /u/iminurnamez for coming up with checked\\_insert as the name for checked\\_insert. Naming things is tough...\n\n-  I'm open to changing the verbage of the API while this project is young if you can come up with anything more elegant/intuitive than I've got.\n\n-  Running check and insert separately to see if an actor can do an action creates a race condition; if another check is initiated before the insert is run, both checks could return False. Use the atomic checked\\_insert method to prevent this.\n\n-  Because redis is single threaded, every limiter method blocks while it's executing. HashBasedLimiters that take a long time to execute make all types of weird stuff happen. List based limiters still work fairly well. In general this shouldn't ever be a problem.\n\n-  Don't do anything stupid: rratelimit might not catch it and you'll end up getting an incomprehensible error from the Lua interpreter.\n\n-  Actions and actors should probably only contain letters, numbers, periods, dashes and underscores. I can't think of a situation where something bad would happen with strange keys, but I'd maybe play it safe. I'll look into this...\n\n-  Keys are generally of the form ``rratelimit:{action}:{actor}``. It goes without saying that you shouldn't make keys that start with 'rratelimit' in other places in your application.\n\n-  Hiredis with rratelimit is supported by simply downloading the package, but won't provide much in the way of speed increases as not a whole lot of data is being passed back and forth.\n\n-  Redis-server 2.6.0+ required for EVALSHA and PEXPIRE\n\nIf you have any issues or questions just let me know and I'll be glad to help.\n",
+    "docs_url": null,
+    "download_url": null,
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "http://github.com/HeyImAlex/rratelimit",
+    "keywords": null,
+    "license": "MIT",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "rratelimit",
+    "platform": "UNKNOWN",
+    "project_url": "https://pypi.org/project/rratelimit/",
+    "release_url": "https://pypi.org/project/rratelimit/0.0.4/",
+    "requires_python": null,
+    "summary": "Rate limiting classes for redis and redis-py",
+    "version": "0.0.4"
+  },
+  "releases": {
+    "0.0.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f13185c22c752f982039c8abf599a2cc",
+          "sha256": "880d93f3aab6af5cab7e4ddbd9648fec8140c52ca23648c3e17fc05a3aaf14ce"
+        },
+        "downloads": 1961,
+        "filename": "rratelimit-0.0.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f13185c22c752f982039c8abf599a2cc",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 8402,
+        "upload_time": "2013-09-16T21:35:16",
+        "url": "https://files.pythonhosted.org/packages/c6/39/4f69e2fa20095e3b79b8a4e8e1891bc737a1583b119ae8d63aefeeeb6499/rratelimit-0.0.1.tar.gz"
+      }
+    ],
+    "0.0.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "474a7fc794691f343f2933b234b21e39",
+          "sha256": "f6d462cf50691e0446a722abadc8f274f360b0bac3617bc5b8628d76dc108a00"
+        },
+        "downloads": 1775,
+        "filename": "rratelimit-0.0.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "474a7fc794691f343f2933b234b21e39",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 8132,
+        "upload_time": "2014-01-08T21:11:50",
+        "url": "https://files.pythonhosted.org/packages/41/78/41c8bedfabae3c8f175961936e3d2c4d37c7a36d24ba1d1616c6efa04c47/rratelimit-0.0.2.tar.gz"
+      }
+    ],
+    "0.0.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5d9d7be4c0426d143e404e0c67146003",
+          "sha256": "e751b30a50906687a600e8d36572c955aab378062396db0ad889e995d8218b73"
+        },
+        "downloads": 1919,
+        "filename": "rratelimit-0.0.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5d9d7be4c0426d143e404e0c67146003",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 8637,
+        "upload_time": "2014-01-31T01:32:46",
+        "url": "https://files.pythonhosted.org/packages/1c/99/30e96ab3722b08a5a26183d010bfed9ad535686807458392a1d14b27c7f8/rratelimit-0.0.3.tar.gz"
+      }
+    ],
+    "0.0.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c3ff68663502893d5eb76ec2be16f579",
+          "sha256": "2ef4bfb44c8ab2605aa11703fc6fd2ab07f7c45c8fd4324adfb88bd4df22d690"
+        },
+        "downloads": 4372,
+        "filename": "rratelimit-0.0.4-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "c3ff68663502893d5eb76ec2be16f579",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 7552,
+        "upload_time": "2015-07-23T02:06:56",
+        "url": "https://files.pythonhosted.org/packages/27/5e/07a0d8f6737790e2716c8079234a4fe753ffb8b6dc287cc54189547ef356/rratelimit-0.0.4-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "48650dcfee2a645ec19b6fa755b39bfa",
+          "sha256": "b2e20bc70c72f5469af242a412f4189a6b4f5a818c738c9954c1cd8099f8d0dd"
+        },
+        "downloads": 1556,
+        "filename": "rratelimit-0.0.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "48650dcfee2a645ec19b6fa755b39bfa",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 8266,
+        "upload_time": "2015-07-23T02:06:59",
+        "url": "https://files.pythonhosted.org/packages/8e/57/69ca583730ab063a17be79950d252ea89035146359c4713b3e8b983daed0/rratelimit-0.0.4.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "c3ff68663502893d5eb76ec2be16f579",
+        "sha256": "2ef4bfb44c8ab2605aa11703fc6fd2ab07f7c45c8fd4324adfb88bd4df22d690"
+      },
+      "downloads": 4372,
+      "filename": "rratelimit-0.0.4-py2.py3-none-any.whl",
+      "has_sig": false,
+      "md5_digest": "c3ff68663502893d5eb76ec2be16f579",
+      "packagetype": "bdist_wheel",
+      "python_version": "py2.py3",
+      "size": 7552,
+      "upload_time": "2015-07-23T02:06:56",
+      "url": "https://files.pythonhosted.org/packages/27/5e/07a0d8f6737790e2716c8079234a4fe753ffb8b6dc287cc54189547ef356/rratelimit-0.0.4-py2.py3-none-any.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "48650dcfee2a645ec19b6fa755b39bfa",
+        "sha256": "b2e20bc70c72f5469af242a412f4189a6b4f5a818c738c9954c1cd8099f8d0dd"
+      },
+      "downloads": 1556,
+      "filename": "rratelimit-0.0.4.tar.gz",
+      "has_sig": false,
+      "md5_digest": "48650dcfee2a645ec19b6fa755b39bfa",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 8266,
+      "upload_time": "2015-07-23T02:06:59",
+      "url": "https://files.pythonhosted.org/packages/8e/57/69ca583730ab063a17be79950d252ea89035146359c4713b3e8b983daed0/rratelimit-0.0.4.tar.gz"
+    }
+  ]
+}

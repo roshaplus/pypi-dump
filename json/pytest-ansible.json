@@ -1,0 +1,205 @@
+{
+  "info": {
+    "author": "James Laska",
+    "author_email": "<jlaska@ansible.com>",
+    "bugtrack_url": "https://github.com/jlaska/pytest-ansible/issues",
+    "classifiers": [
+      "Development Status :: 5 - Production/Stable",
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: MIT License",
+      "Operating System :: OS Independent",
+      "Programming Language :: Python",
+      "Programming Language :: Python :: 2",
+      "Programming Language :: Python :: 2.6",
+      "Programming Language :: Python :: 2.7",
+      "Topic :: Software Development :: Quality Assurance",
+      "Topic :: Software Development :: Testing",
+      "Topic :: Utilities"
+    ],
+    "description": "pytest-ansible\n==============\n\n|Build Status| |Coverage Status| |Requirements Status| |Version|\n|Downloads| |License| |Supported Python Versions|\n\nThis repository contains a plugin for ``py.test`` which adds several\nfixtures for running ``ansible`` modules, or inspecting\n``ansible_facts``. While one can simply call out to ``ansible`` using\nthe ``subprocess`` module, having to parse stdout to determine the\noutcome of the operation is unpleasant and prone to error. With\n``pytest-ansible``, modules return JSON data which you can inspect and\nact on, much like with an ansible\n`playbook <http://docs.ansible.com/playbooks.html>`__.\n\nInstallation\n------------\n\nInstall this plugin using ``pip``\n\n.. code:: bash\n\n        pip install pytest-ansible\n\nUsage\n-----\n\nOnce installed, the following ``py.test`` command-line parameters are\navailable:\n\n.. code:: bash\n\n    py.test \\\n        [--ansible-inventory <path_to_inventory>] \\\n        [--ansible-host-pattern <host-pattern>] \\\n        [--ansible-connection <plugin>] \\\n        [--ansible-user <username>] \\\n        [--ansible-sudo] \\\n        [--ansible-sudo-user <username>]\n\nThe following fixtures are available:\n\nFixture ``ansible_module``\n~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nThe ``ansible_module`` fixture allows tests and fixtures to call ansible\n`modules <http://docs.ansible.com/modules.html>`__.\n\nA very basic example demonstrating the ansible ```ping``\nmodule <http://docs.ansible.com/ping_module.html>`__:\n\n.. code:: python\n\n    def test_ping(ansible_module):\n        ansible_module.ping()\n\nThe above example doesn't do any validation/inspection of the return\nvalue. A more likely use case will involve inspecting the return value.\nThe ``ansible_module`` fixture returns a JSON data describing the\nansible module result. The format of the JSON data depends on the\n``--ansible-inventory`` used, and the `ansible\nmodule <http://docs.ansible.com/modules_by_category.html>`__.\n\nThe following example demonstrates inspecting the module result.\n\n.. code:: python\n\n    def test_ping(ansible_module):\n        contacted = ansible_module.ping()\n        for (host, result) in contacted.items():\n            assert 'ping' in result, \\\n                \"Failure on host:%s\" % host\n            assert result['ping'] == 'pong', \\\n                \"Unexpected ping response: %s\" % result['ping']\n\nA more involved example of updating the sshd configuration, and\nrestarting the service.\n\n.. code:: python\n\n    def test_sshd_config(ansible_module):\n\n        # update sshd MaxSessions\n        contacted = ansible_module.lineinfile(\n            dest=\"/etc/ssh/sshd_config\",\n            regexp=\"^#?MaxSessions .*\",\n            line=\"MaxSessions 150\")\n        )\n\n        # assert desired outcome\n        for (host, result) in contacted.items():\n            assert 'failed' not in result, result['msg']\n            assert 'changed' in result\n\n        # restart sshd\n        contacted = ansible_module.service(\n            name=\"sshd\",\n            state=\"restarted\"\n        )\n\n        # assert successful restart\n        for (host, result) in contacted.items():\n            assert 'changed' in result and result['changed']\n            assert result['name'] == 'sshd'\n\n        # do other stuff ...\n\nFixture ``ansible_facts``\n~~~~~~~~~~~~~~~~~~~~~~~~~\n\nThe ``ansible_facts`` fixture returns a JSON structure representing the\nsystem facts for the associated inventory. Sample fact data is available\nin the `ansible\ndocumentation <http://docs.ansible.com/playbooks_variables.html#information-discovered-from-systems-facts>`__.\n\nNote, this fixture is provided for convenience and could easily be\ncalled using ``ansible_module.setup()``.\n\nA systems facts can be useful when deciding whether to skip a test ...\n\n.. code:: python\n\n    def test_something_with_amazon_ec2(ansible_facts):\n        for (host, facts) in ansible_facts.items():\n            if 'ec2.internal' != facts['ansible_domain']:\n                pytest.skip(\"This test only applies to ec2 instances\")\n\nAlternatively, you could inspect ``ec2_facts`` for greater granularity\n...\n\n.. code:: python\n\n\n    def test_terminate_us_east_1_instances(ansible_module):\n\n        for (host, ec2_facts) in ansible_module.ec2_facts().items():\n            if ec2_facts['ansible_ec2_placement_region'].startswith('us-east'):\n                '''do some testing'''\n\nParameterizing with ``pytest.mark.ansible``\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nPerhaps the ``--ansible-inventory=<inventory>`` includes many systems,\nbut you only wish to interact with a subset. The ``pytest.mark.ansible``\nmarker can be used to modify the ``pytest-ansible`` command-line\nparameters for a single test.\n\nFor example, to interact with the local system, you would adjust the\n``host_pattern`` and ``connection`` parameters.\n\n.. code:: python\n\n    @pytest.mark.ansible(host_pattern='local,', connection='local')\n    def test_copy_local(ansible_module):\n\n        # create a file with random data\n        contacted = ansible_module.copy(\n            dest='/etc/motd',\n            content='PyTest is amazing!',\n            owner='root',\n            group='root',\n            mode='0644',\n        )\n\n        # assert only a single host was contacted\n        assert len(contacted) == 1, \\\n            \"Unexpected number of hosts contacted (%d != %d)\" % \\\n            (1, len(contacted))\n\n        assert 'local' in contacted\n\n        # assert the copy module reported changes\n        assert 'changed' in contacted['local']\n        assert contacted['local']['changed']\n\nNote, the parameters provided by ``pytest.mark.ansible`` will apply to\nall class methods.\n\n.. code:: python\n\n    @pytest.mark.ansible(host_pattern='local,', connection='local')\n    class Test_Local(object):\n        def test_install(self, ansible_module):\n            '''do some testing'''\n        def test_template(self, ansible_module):\n            '''do some testing'''\n        def test_service(self, ansible_module):\n            '''do some testing'''\n\nException handling\n~~~~~~~~~~~~~~~~~~\n\nIf ``ansible`` is unable to connect to any inventory, an exception will\nbe raised.\n\n.. code:: python\n\n    @pytest.mark.ansible(inventory='unreachable.example.com,')\n    def test_shutdown(ansible_module):\n\n        # attempt to ping a host that is down (or doesn't exist)\n        pytest.raises(pytest_ansible.AnsibleHostUnreachable):\n            ansible_module.ping()\n\nSometimes, only a single host is unreachable, and others will have\nproperly returned data. The following demonstrates how to catch the\nexception, and inspect the results.\n\n.. code:: python\n\n    @pytest.mark.ansible(inventory='good:bad')\n    def test_inventory_unreachable(ansible_module):\n        exc_info = pytest.raises(pytest_ansible.AnsibleHostUnreachable, ansible_module.ping)\n        (contacted, dark) = exc_info.value.results\n\n        # inspect the JSON result...\n        for (host, result) in contacted.items():\n            assert result['ping'] == 'pong'\n\n        for (host, result) in dark.items():\n            assert result['failed'] == True\n\n.. |Build Status| image:: https://img.shields.io/travis/jlaska/pytest-ansible.svg\n   :target: https://travis-ci.org/jlaska/pytest-ansible\n.. |Coverage Status| image:: https://img.shields.io/coveralls/jlaska/pytest-ansible.svg\n   :target: https://coveralls.io/r/jlaska/pytest-ansible\n.. |Requirements Status| image:: https://requires.io/github/jlaska/pytest-ansible/requirements.svg?branch=master\n   :target: https://requires.io/github/jlaska/pytest-ansible/requirements/?branch=master\n.. |Version| image:: https://img.shields.io/pypi/v/pytest-ansible.svg\n   :target: https://pypi.python.org/pypi/pytest-ansible/\n.. |Downloads| image:: https://img.shields.io/pypi/dm/pytest-ansible.svg\n   :target: https://pypi.python.org/pypi/pytest-ansible/\n.. |License| image:: https://img.shields.io/pypi/l/pytest-ansible.svg\n   :target: https://pypi.python.org/pypi/pytest-ansible/\n.. |Supported Python Versions| image:: https://img.shields.io/pypi/pyversions/pytest-ansible.svg\n   :target: https://pypi.python.org/pypi/pytest-ansible/\n\nRelease History\n---------------\n\n1.3.1 (2016-01-22)\n~~~~~~~~~~~~~~~~~~\n\n-  Correctly handle ansible become options\n\n1.3.0 (2016-01-20)\n~~~~~~~~~~~~~~~~~~\n\n-  Add support for ansible-2.0\n\n1.2.5 (2015-04-20)\n~~~~~~~~~~~~~~~~~~\n\n-  Only validate --ansible-\\* parameters when using pytest-ansible\n   fixture\n-  Include --ansible-user when running module\n\n1.2.4 (2015-03-18)\n~~~~~~~~~~~~~~~~~~\n\n-  Add ansible-1.9 privilege escalation support\n\n1.2.3 (2015-03-03)\n~~~~~~~~~~~~~~~~~~\n\n-  Resolve setuptools import failure by migrating from a module to a\n   package\n\n1.2.2 (2015-03-03)\n~~~~~~~~~~~~~~~~~~\n\n-  Removed py module dependency\n-  Add HISTORY.md\n\n1.2.1 (2015-03-02)\n~~~~~~~~~~~~~~~~~~\n\n-  Use pandoc to convert existing markdown into pypi friendly rst\n\n1.2 (2015-03-02)\n~~~~~~~~~~~~~~~~\n\n-  Add ``ansible_host`` and ``ansible_group`` parametrized fixture\n-  Add cls level fixtures for users needing scope=class fixtures\n-  Updated examples to match new fixture return value\n-  Alter fixture return data to more closely align with ansible\n-  Raise ``AnsibleHostUnreachable`` whenever hosts are ... unreachable\n-  Set contacted and dark hosts in ConnectionError\n\n1.1 (2015-02-16)\n~~~~~~~~~~~~~~~~\n\n-  Initial release",
+    "docs_url": null,
+    "download_url": "UNKNOWN",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "http://github.com/jlaska/pytest-ansible",
+    "keywords": "py.test pytest ansible",
+    "license": "MIT",
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "pytest-ansible",
+    "platform": "any",
+    "project_url": "https://pypi.org/project/pytest-ansible/",
+    "release_url": "https://pypi.org/project/pytest-ansible/1.3.1/",
+    "requires_python": null,
+    "summary": "Plugin for py.test to allow running ansible",
+    "version": "1.3.1"
+  },
+  "releases": {
+    "1.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "47b92dbe856a092506dd513578bbf875",
+          "sha256": "2a5e42fc57cd2c82f19f450b2c2ba90fc64416b9d4d21aaf9aac0a29bf95de4f"
+        },
+        "downloads": 1433,
+        "filename": "pytest-ansible-1.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "47b92dbe856a092506dd513578bbf875",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 5435,
+        "upload_time": "2015-02-16T18:52:26",
+        "url": "https://files.pythonhosted.org/packages/bb/d8/110fa443ae83093a7268956626a0f5131f7f5c421d70d3ba9144ca85888b/pytest-ansible-1.1.tar.gz"
+      }
+    ],
+    "1.2": [],
+    "1.2.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1f8d5ec3201344da5cb15a2522083023",
+          "sha256": "1115901495874f32a9f20ae3638cedf11d7b100038a54f6265783869f9872946"
+        },
+        "downloads": 1001,
+        "filename": "pytest-ansible-1.2.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1f8d5ec3201344da5cb15a2522083023",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9142,
+        "upload_time": "2015-03-03T01:05:44",
+        "url": "https://files.pythonhosted.org/packages/ec/ef/e9b57047349fba6b5d8ecdbabf8e3da3905e3d7b46c66e2f881f1202d30a/pytest-ansible-1.2.1.tar.gz"
+      }
+    ],
+    "1.2.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4ef4c3385add6f37a44c6a829877ca60",
+          "sha256": "9144d843f1da8595741f33074d8e5b2194337640746ae44786124a1c7016a6ec"
+        },
+        "downloads": 973,
+        "filename": "pytest-ansible-1.2.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4ef4c3385add6f37a44c6a829877ca60",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 8223,
+        "upload_time": "2015-03-03T14:16:47",
+        "url": "https://files.pythonhosted.org/packages/25/fd/ca93cae05d22404db2ea2b812c0bc7ea744ec64f3150409f0a1783721077/pytest-ansible-1.2.2.tar.gz"
+      }
+    ],
+    "1.2.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "22c2bc49f771dd6bcbab1352de37338d",
+          "sha256": "adc4702e26b1aacbb49a737b8078ddba4e4d0d8eb6145eeea342bd972a0b21a0"
+        },
+        "downloads": 1027,
+        "filename": "pytest-ansible-1.2.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "22c2bc49f771dd6bcbab1352de37338d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9637,
+        "upload_time": "2015-03-03T17:09:11",
+        "url": "https://files.pythonhosted.org/packages/90/6e/19fc57d20165287818e7d07978d19048edbdfaebb54caefefcf2dc9ff810/pytest-ansible-1.2.3.tar.gz"
+      }
+    ],
+    "1.2.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b66ef72ea2f14bd1c271655c9d2382ea",
+          "sha256": "cf677822bfce9bb02b654d2754d6c5eb58ed14f362e50dcfdcf56c0a519596e4"
+        },
+        "downloads": 1560,
+        "filename": "pytest-ansible-1.2.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b66ef72ea2f14bd1c271655c9d2382ea",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 8744,
+        "upload_time": "2015-03-19T00:40:42",
+        "url": "https://files.pythonhosted.org/packages/47/7d/bbd932b0bcca68ea802e695b61ff5eeb831f1cfbe1d6fb414158e522c505/pytest-ansible-1.2.4.tar.gz"
+      }
+    ],
+    "1.2.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c4ab063bc88121dbab97ee0a38e4c071",
+          "sha256": "86c53df1442facb66905453ed8227cc7978d7c51e18f005f564dc64efca96ca0"
+        },
+        "downloads": 2432,
+        "filename": "pytest-ansible-1.2.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c4ab063bc88121dbab97ee0a38e4c071",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 13224,
+        "upload_time": "2015-04-20T18:27:02",
+        "url": "https://files.pythonhosted.org/packages/8a/d3/6d98821d81d5afe1445b7bdb075a4817b3307738409df9678789c077dd11/pytest-ansible-1.2.5.tar.gz"
+      }
+    ],
+    "1.3.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a9e0a69c65cc91b45213d534a92d48dd",
+          "sha256": "b5cbe703b78742a4339c3ec8ad733216c4dd96dbdf8910f327076440c3a77680"
+        },
+        "downloads": 330,
+        "filename": "pytest-ansible-1.3.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a9e0a69c65cc91b45213d534a92d48dd",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10449,
+        "upload_time": "2016-01-21T02:11:53",
+        "url": "https://files.pythonhosted.org/packages/86/f9/da6eb22896e2c1569af30b9ea6102aeef37acdd31c6348cc9e5afb626a58/pytest-ansible-1.3.0.tar.gz"
+      }
+    ],
+    "1.3.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4c8efb36ee0777269843c6e592310ccd",
+          "sha256": "eec9f1402015cd6d3dcb7d84ac27da15c2d5391e7adb57e48343179542e1f94f"
+        },
+        "downloads": 1366,
+        "filename": "pytest-ansible-1.3.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4c8efb36ee0777269843c6e592310ccd",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 14882,
+        "upload_time": "2016-01-24T15:18:53",
+        "url": "https://files.pythonhosted.org/packages/28/8a/1bc0e1473fb67a5854e5d3e4c625cda221c86805793faefe02d0b3944524/pytest-ansible-1.3.1.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "4c8efb36ee0777269843c6e592310ccd",
+        "sha256": "eec9f1402015cd6d3dcb7d84ac27da15c2d5391e7adb57e48343179542e1f94f"
+      },
+      "downloads": 1366,
+      "filename": "pytest-ansible-1.3.1.tar.gz",
+      "has_sig": false,
+      "md5_digest": "4c8efb36ee0777269843c6e592310ccd",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 14882,
+      "upload_time": "2016-01-24T15:18:53",
+      "url": "https://files.pythonhosted.org/packages/28/8a/1bc0e1473fb67a5854e5d3e4c625cda221c86805793faefe02d0b3944524/pytest-ansible-1.3.1.tar.gz"
+    }
+  ]
+}
