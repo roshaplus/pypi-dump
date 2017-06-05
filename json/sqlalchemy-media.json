@@ -7,7 +7,7 @@
       "Programming Language :: Python :: 3.5",
       "Topic :: Software Development :: Libraries"
     ],
-    "description": "sqlalchemy-media\n================\n\n\n.. image:: http://img.shields.io/pypi/v/sqlalchemy-media.svg\n     :target: https://pypi.python.org/pypi/sqlalchemy-media\n\n.. image:: https://requires.io/github/pylover/sqlalchemy-media/requirements.svg?branch=master\n     :target: https://requires.io/github/pylover/sqlalchemy-media/requirements/?branch=master\n     :alt: Requirements Status\n\n.. image:: https://travis-ci.org/pylover/sqlalchemy-media.svg?branch=master\n     :target: https://travis-ci.org/pylover/sqlalchemy-media\n\n.. image:: https://coveralls.io/repos/github/pylover/sqlalchemy-media/badge.svg?branch=master\n     :target: https://coveralls.io/github/pylover/sqlalchemy-media?branch=master\n\n.. image:: https://img.shields.io/badge/license-MIT-brightgreen.svg\n     :target: https://github.com/pylover/sqlalchemy-media/blob/master/LICENSE\n\n.. image:: https://img.shields.io/gitter/room/pylover/sqlalchemy-media.svg\n     :target: https://gitter.im/pylover/sqlalchemy-media\n\nDocumentation\n-------------\n\nSee the documentation_ for full description.\n\n\nWhy ?\n-----\nNowadays, most of the database applications are used to allow users to upload and attach files of various types to\nORM models.\n\nHandling those jobs is not simple if you have to care about Security, High-Availability, Scalability, CDN and more\nthings you may have already been concerned. Accepting a file from public space, analysing, validating,\nprocessing(Normalizing) and making it available to public space again is the main goal of this project.\n\nSql-Alchemy is the best platform for implementing this stuff. It has the SqlAlchemyMutable_ types facility to\nmanipulate the objects with any type in-place. why not ?\n\n.. note:: The main idea comes from dahlia's SQLAlchemyImageAttach_.\n\nOverview\n--------\n\n- Storing and locating any file, tracking it by sqlalchemy models.\n- Storage layer is completely separated from data model, with a simple api: (put, delete, open, locate)\n- Using any SqlAlchemy data type which interfaces Python dictionary. This is achieved by using the\n  SqlAlchemyTypeDecorators_ and SqlAlchemyMutable_.\n- Offering ``delete_orphan`` flag to automatically delete files which orphaned via attribute set or delete from\n  collections, or objects leaved in memory alone! by setting it's last pointer to None.\n- Attaching files from Url, LocalFileSystem and Streams.\n- Extracting the file's mimetype from the backend stream if possible, using ``magic`` module.\n- Limiting file size(min, max), to prevent DOS attacks.\n- Adding timestamp in url to help caching.\n- Using python type hinting to annotate arguments. So currently python3.5 and higher is supported.\n- Auto generating thumbnails, using ``width``, ``height`` and or ``ratio``.\n- Analyzing files & images using ``magic`` and ``wand``.\n- Validating ``mimetype``, ``width``, ``height`` and image ``ratio``.\n- Automatically resize & reformat images before store.\n- Thanks `@YukSeungChan <https://github.com/YukSeungChan>`_, for implementing the ``S3Store`` and ``OS2Store``.\n\nRoadmap\n-------\n\nThe next two milestones which can develop simultaneously are, ``SSSHStore`` and ``Video Processing.``\n\nQuick Start\n-----------\n\nHere is a simple example to see how to use this library:\n\n.. code-block:: python\n\n  import functools\n  import json\n  from os.path import exists, join\n\n  from sqlalchemy import create_engine, TypeDecorator, Unicode, Column, Integer\n  from sqlalchemy.orm import sessionmaker\n  from sqlalchemy.ext.declarative import declarative_base\n\n  from sqlalchemy_media import StoreManager, FileSystemStore, Image, WandAnalyzer, ImageValidator, ImageProcessor\n\n\n  TEMP_PATH = '/tmp/sqlalchemy-media'\n  Base = declarative_base()\n  engine = create_engine('sqlite:///:memory:', echo=False)\n  session_factory = sessionmaker(bind=engine)\n\n\n  StoreManager.register(\n      'fs',\n      functools.partial(FileSystemStore, TEMP_PATH, 'http://static.example.org/'),\n      default=True\n  )\n\n\n  class Json(TypeDecorator):\n      impl = Unicode\n\n      def process_bind_param(self, value, engine):\n          return json.dumps(value)\n\n      def process_result_value(self, value, engine):\n          if value is None:\n              return None\n\n          return json.loads(value)\n\n\n  class ProfileImage(Image):\n      __pre_processors__ = [\n          WandAnalyzer(),\n          ImageValidator(\n              minimum=(80, 80),\n              maximum=(800, 600),\n              min_aspect_ratio=1.2,\n              content_types=['image/jpeg', 'image/png']\n          ),\n          ImageProcessor(\n              fmt='jpeg',\n              width=120,\n              crop=dict(\n                  left='10%',\n                  top='10%',\n                  width='80%',\n                  height='80%',\n              )\n          )\n      ]\n\n\n  class Person(Base):\n      __tablename__ = 'person'\n\n      id = Column(Integer, primary_key=True)\n      name = Column(Unicode(100))\n      image = Column(ProfileImage.as_mutable(Json))\n\n      def __repr__(self):\n          return \"<%s id=%s>\" % (self.name, self.id)\n\n\n  Base.metadata.create_all(engine, checkfirst=True)\n\n  if __name__ == '__main__':\n      session = session_factory()\n\n      with StoreManager(session):\n          person1 = Person()\n          person1.image = ProfileImage.create_from('https://www.python.org/static/img/python-logo@2x.png')\n          session.add(person1)\n          session.commit()\n\n          print('Content type:', person1.image.content_type)\n          print('Extension:', person1.image.extension)\n          print('Length:', person1.image.length)\n          print('Original filename:', person1.image.original_filename)\n\n          thumbnail = person1.image.get_thumbnail(width=32, auto_generate=True)\n          print(thumbnail.height)\n          assert exists(join(TEMP_PATH, thumbnail.path))\n\n          thumbnail = person1.image.get_thumbnail(ratio=.3, auto_generate=True)\n          print(thumbnail.width, thumbnail.height)\n          assert exists(join(TEMP_PATH, thumbnail.path))\n\n          person1.image.attach('https://www.python.org/static/img/python-logo.png')\n          session.commit()\n\n          print('Content type:', person1.image.content_type)\n          print('Extension:', person1.image.extension)\n          print('Length:', person1.image.length)\n          print('Original filename:', person1.image.original_filename)\n\n      with StoreManager(session, delete_orphan=True):\n          deleted_filename = join(TEMP_PATH, person1.image.path)\n          person1.image = None\n          session.commit()\n\n          assert not exists(deleted_filename)\n\n          person1.image = ProfileImage.create_from('https://www.python.org/static/img/python-logo.png')\n          session.commit()\n\n          print('Content type:', person1.image.content_type)\n          print('Extension:', person1.image.extension)\n          print('Length:', person1.image.length)\n          print('Original filename:', person1.image.original_filename)\n\n\nWill produce::\n\n    Content type: image/jpeg\n    Extension: .jpg\n    Length: 2020\n    Original filename: https://www.python.org/static/img/python-logo@2x.png\n    8\n    28 7\n    Content type: image/jpeg\n    Extension: .jpg\n    Length: 2080\n    Original filename: https://www.python.org/static/img/python-logo.png\n    Content type: image/jpeg\n    Extension: .jpg\n    Length: 2080\n    Original filename: https://www.python.org/static/img/python-logo.png\n\n\nExamples\n--------\n\nCheckout the `examples` directory in the root of the repo.\n\n\nChangelog\n---------\n\nHere you can see the full list of changes made on each sqlalchemy-media release.\n\n0.11.0\n  - ImageList\n  - Observe ``AttachmentList`` items for change.\n\n0.10.0\n  - OS2 Store\n\n0.9.7\n  - Fixed: get_thumbnail() does not return a Thumbnail: #72\n\n0.9.6\n  - Support rrs(ReducedRedundancyStorage) and  prefix of S3Store.\n\n0.9.5\n  - BUG-FIX: #68, #69\n\n0.9.4\n  - BUG-FIX: Using ``Image.__thumbnail_type__`` for creating thumbnails, it was missed: #67\n\n0.9.0\n  - Aws S3 Store.\n\n0.8.0\n  -  Automatically coerce ``:obj:.Attachable`` objects. So if True, you can set the models attribute by a ``file``,\n     ``filename`` or ``cgi.FieldStorage``.\n\n0.6.2\n  - Fixing a bug in ``optionals`` module.\n\n0.6.1\n  - Fixing some problems in documents.\n\n0.6.0\n  - Image crop feature: #16.\n\n0.5.0\n  - #17, #55. Merge analyzers, validators and processors as processors. for simplicity.\n\n0.4.1 (2016-10-06)\n  - #54 Fixed.\n\n0.4.0 (2016-10-05)\n  - ImageDimensionValidator: #14\n  - WandAnalyzer: #52\n\n0.3.0 (2016-10-05)\n  - Thumbnail auto generation implemented: #11,  See doc.\n  - Not using python's built-in mimetype module, due the bug: https://bugs.python.org/issue4963\n\n0.2.0 (2016-10-05)\n  - Added two tutorials in documentation_.\n  - Restricting Content-type: #28\n  - MagicAnalyzer\n  - Including all requirements*.txt in distribution: #49\n  - Including test stuff in distribution: #36\n  - Descriptive error message when an optional package is missing: #48\n  - Analyser: #30\n  - Validation: #31\n  - Fixed two bugs: #42, #41\n\n0.1.1 (2016-10-03)\n  - Improving coverage\n\n.. _SqlAlchemyMutable: http://docs.sqlalchemy.org/en/latest/orm/extensions/mutable.html\n.. _SqlAlchemyTypeDecorators: http://docs.sqlalchemy.org/en/latest/core/custom_types.html#typedecorator-recipes\n.. _SQLAlchemyImageAttach: https://github.com/dahlia/sqlalchemy-imageattach\n.. _documentation: http://sqlalchemy-media.dobisel.com",
+    "description": "sqlalchemy-media\n================\n\n\n.. image:: http://img.shields.io/pypi/v/sqlalchemy-media.svg\n     :target: https://pypi.python.org/pypi/sqlalchemy-media\n\n.. image:: https://requires.io/github/pylover/sqlalchemy-media/requirements.svg?branch=master\n     :target: https://requires.io/github/pylover/sqlalchemy-media/requirements/?branch=master\n     :alt: Requirements Status\n\n.. image:: https://travis-ci.org/pylover/sqlalchemy-media.svg?branch=master\n     :target: https://travis-ci.org/pylover/sqlalchemy-media\n\n.. image:: https://coveralls.io/repos/github/pylover/sqlalchemy-media/badge.svg?branch=master\n     :target: https://coveralls.io/github/pylover/sqlalchemy-media?branch=master\n\n.. image:: https://img.shields.io/badge/license-MIT-brightgreen.svg\n     :target: https://github.com/pylover/sqlalchemy-media/blob/master/LICENSE\n\n.. image:: https://img.shields.io/gitter/room/pylover/sqlalchemy-media.svg\n     :target: https://gitter.im/pylover/sqlalchemy-media\n\nDocumentation\n-------------\n\nSee the documentation_ for full description.\n\n\nWhy ?\n-----\nNowadays, most of the database applications are used to allow users to upload and attach files of various types to\nORM models.\n\nHandling those jobs is not simple if you have to care about Security, High-Availability, Scalability, CDN and more\nthings you may have already been concerned. Accepting a file from public space, analysing, validating,\nprocessing(Normalizing) and making it available to public space again is the main goal of this project.\n\nSql-Alchemy is the best platform for implementing this stuff. It has the SqlAlchemyMutable_ types facility to\nmanipulate the objects with any type in-place. why not ?\n\n.. note:: The main idea comes from dahlia's SQLAlchemyImageAttach_.\n\nOverview\n--------\n\n- Storing and locating any file, tracking it by sqlalchemy models.\n- Storage layer is completely separated from data model, with a simple api: (put, delete, open, locate)\n- Using any SqlAlchemy data type which interfaces Python dictionary. This is achieved by using the\n  SqlAlchemyTypeDecorators_ and SqlAlchemyMutable_.\n- Offering ``delete_orphan`` flag to automatically delete files which orphaned via attribute set or delete from\n  collections, or objects leaved in memory alone! by setting it's last pointer to None.\n- Attaching files from Url, LocalFileSystem and Streams.\n- Extracting the file's mimetype from the backend stream if possible, using ``magic`` module.\n- Limiting file size(min, max), to prevent DOS attacks.\n- Adding timestamp in url to help caching.\n- Using python type hinting to annotate arguments. So currently python3.5 and higher is supported.\n- Auto generating thumbnails, using ``width``, ``height`` and or ``ratio``.\n- Analyzing files & images using ``magic`` and ``wand``.\n- Validating ``mimetype``, ``width``, ``height`` and image ``ratio``.\n- Automatically resize & reformat images before store.\n- Thanks `@YukSeungChan <https://github.com/YukSeungChan>`_, for implementing the ``S3Store`` and ``OS2Store``.\n- SSH/SFTP Store\n\nRoadmap\n-------\n\nThe next two milestones which can develop simultaneously are, ``SSSHStore`` and ``Video Processing.``\n\nQuick Start\n-----------\n\nHere is a simple example to see how to use this library:\n\n.. code-block:: python\n\n  import functools\n  import json\n  from os.path import exists, join\n\n  from sqlalchemy import create_engine, TypeDecorator, Unicode, Column, Integer\n  from sqlalchemy.orm import sessionmaker\n  from sqlalchemy.ext.declarative import declarative_base\n\n  from sqlalchemy_media import StoreManager, FileSystemStore, Image, WandAnalyzer, ImageValidator, ImageProcessor\n\n\n  TEMP_PATH = '/tmp/sqlalchemy-media'\n  Base = declarative_base()\n  engine = create_engine('sqlite:///:memory:', echo=False)\n  session_factory = sessionmaker(bind=engine)\n\n\n  StoreManager.register(\n      'fs',\n      functools.partial(FileSystemStore, TEMP_PATH, 'http://static.example.org/'),\n      default=True\n  )\n\n\n  class Json(TypeDecorator):\n      impl = Unicode\n\n      def process_bind_param(self, value, engine):\n          return json.dumps(value)\n\n      def process_result_value(self, value, engine):\n          if value is None:\n              return None\n\n          return json.loads(value)\n\n\n  class ProfileImage(Image):\n      __pre_processors__ = [\n          WandAnalyzer(),\n          ImageValidator(\n              minimum=(80, 80),\n              maximum=(800, 600),\n              min_aspect_ratio=1.2,\n              content_types=['image/jpeg', 'image/png']\n          ),\n          ImageProcessor(\n              fmt='jpeg',\n              width=120,\n              crop=dict(\n                  left='10%',\n                  top='10%',\n                  width='80%',\n                  height='80%',\n              )\n          )\n      ]\n\n\n  class Person(Base):\n      __tablename__ = 'person'\n\n      id = Column(Integer, primary_key=True)\n      name = Column(Unicode(100))\n      image = Column(ProfileImage.as_mutable(Json))\n\n      def __repr__(self):\n          return \"<%s id=%s>\" % (self.name, self.id)\n\n\n  Base.metadata.create_all(engine, checkfirst=True)\n\n  if __name__ == '__main__':\n      session = session_factory()\n\n      with StoreManager(session):\n          person1 = Person()\n          person1.image = ProfileImage.create_from('https://www.python.org/static/img/python-logo@2x.png')\n          session.add(person1)\n          session.commit()\n\n          print('Content type:', person1.image.content_type)\n          print('Extension:', person1.image.extension)\n          print('Length:', person1.image.length)\n          print('Original filename:', person1.image.original_filename)\n\n          thumbnail = person1.image.get_thumbnail(width=32, auto_generate=True)\n          print(thumbnail.height)\n          assert exists(join(TEMP_PATH, thumbnail.path))\n\n          thumbnail = person1.image.get_thumbnail(ratio=.3, auto_generate=True)\n          print(thumbnail.width, thumbnail.height)\n          assert exists(join(TEMP_PATH, thumbnail.path))\n\n          person1.image.attach('https://www.python.org/static/img/python-logo.png')\n          session.commit()\n\n          print('Content type:', person1.image.content_type)\n          print('Extension:', person1.image.extension)\n          print('Length:', person1.image.length)\n          print('Original filename:', person1.image.original_filename)\n\n      with StoreManager(session, delete_orphan=True):\n          deleted_filename = join(TEMP_PATH, person1.image.path)\n          person1.image = None\n          session.commit()\n\n          assert not exists(deleted_filename)\n\n          person1.image = ProfileImage.create_from('https://www.python.org/static/img/python-logo.png')\n          session.commit()\n\n          print('Content type:', person1.image.content_type)\n          print('Extension:', person1.image.extension)\n          print('Length:', person1.image.length)\n          print('Original filename:', person1.image.original_filename)\n\n\nWill produce::\n\n    Content type: image/jpeg\n    Extension: .jpg\n    Length: 2020\n    Original filename: https://www.python.org/static/img/python-logo@2x.png\n    8\n    28 7\n    Content type: image/jpeg\n    Extension: .jpg\n    Length: 2080\n    Original filename: https://www.python.org/static/img/python-logo.png\n    Content type: image/jpeg\n    Extension: .jpg\n    Length: 2080\n    Original filename: https://www.python.org/static/img/python-logo.png\n\n\nExamples\n--------\n\nCheckout the `examples` directory in the root of the repo.\n\n\nChangelog\n---------\n\nHere you can see the full list of changes made on each sqlalchemy-media release.\n\n0.12.0\n  - SSH/SFTP Store\n\n0.11.0\n  - ImageList\n  - Observe ``AttachmentList`` items for change.\n\n0.10.0\n  - OS2 Store\n\n0.9.7\n  - Fixed: get_thumbnail() does not return a Thumbnail: #72\n\n0.9.6\n  - Support rrs(ReducedRedundancyStorage) and  prefix of S3Store.\n\n0.9.5\n  - BUG-FIX: #68, #69\n\n0.9.4\n  - BUG-FIX: Using ``Image.__thumbnail_type__`` for creating thumbnails, it was missed: #67\n\n0.9.0\n  - Aws S3 Store.\n\n0.8.0\n  -  Automatically coerce ``:obj:.Attachable`` objects. So if True, you can set the models attribute by a ``file``,\n     ``filename`` or ``cgi.FieldStorage``.\n\n0.6.2\n  - Fixing a bug in ``optionals`` module.\n\n0.6.1\n  - Fixing some problems in documents.\n\n0.6.0\n  - Image crop feature: #16.\n\n0.5.0\n  - #17, #55. Merge analyzers, validators and processors as processors. for simplicity.\n\n0.4.1 (2016-10-06)\n  - #54 Fixed.\n\n0.4.0 (2016-10-05)\n  - ImageDimensionValidator: #14\n  - WandAnalyzer: #52\n\n0.3.0 (2016-10-05)\n  - Thumbnail auto generation implemented: #11,  See doc.\n  - Not using python's built-in mimetype module, due the bug: https://bugs.python.org/issue4963\n\n0.2.0 (2016-10-05)\n  - Added two tutorials in documentation_.\n  - Restricting Content-type: #28\n  - MagicAnalyzer\n  - Including all requirements*.txt in distribution: #49\n  - Including test stuff in distribution: #36\n  - Descriptive error message when an optional package is missing: #48\n  - Analyser: #30\n  - Validation: #31\n  - Fixed two bugs: #42, #41\n\n0.1.1 (2016-10-03)\n  - Improving coverage\n\n.. _SqlAlchemyMutable: http://docs.sqlalchemy.org/en/latest/orm/extensions/mutable.html\n.. _SqlAlchemyTypeDecorators: http://docs.sqlalchemy.org/en/latest/core/custom_types.html#typedecorator-recipes\n.. _SQLAlchemyImageAttach: https://github.com/dahlia/sqlalchemy-imageattach\n.. _documentation: http://sqlalchemy-media.dobisel.com",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -23,10 +23,10 @@
     "name": "sqlalchemy-media",
     "platform": "any",
     "project_url": "https://pypi.org/project/sqlalchemy-media/",
-    "release_url": "https://pypi.org/project/sqlalchemy-media/0.11.4/",
+    "release_url": "https://pypi.org/project/sqlalchemy-media/0.12.3/",
     "requires_python": "",
     "summary": "Sqlalchemy asset manager",
-    "version": "0.11.4"
+    "version": "0.12.3"
   },
   "releases": {
     "0.1.0": [
@@ -331,6 +331,78 @@
         "size": 1314352,
         "upload_time": "2017-05-29T16:34:17",
         "url": "https://files.pythonhosted.org/packages/d8/cf/b42505da3594a331702446a74ad87f7a89234fb65b02a3c1f98ca2d486f5/sqlalchemy-media-0.11.4.tar.gz"
+      }
+    ],
+    "0.12.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8e4be53220f59ffbb65e41881aba2393",
+          "sha256": "a7e348ef0792a20ced97c7ab4f1d5e73613ddbdb0a78d70b74228b5b7fa0293b"
+        },
+        "downloads": 0,
+        "filename": "sqlalchemy-media-0.12.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8e4be53220f59ffbb65e41881aba2393",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1319356,
+        "upload_time": "2017-06-04T19:19:59",
+        "url": "https://files.pythonhosted.org/packages/19/4d/6b9f4f29c40c0a52edd6110e805cc3bcceec429665e417b896ff01344e01/sqlalchemy-media-0.12.0.tar.gz"
+      }
+    ],
+    "0.12.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ee54d761f62207f7c5db9249e3feb93a",
+          "sha256": "be72fa7ee4c569d2d1d9119bae2638ab418366ca6950c7e832fffee2b796fef9"
+        },
+        "downloads": 0,
+        "filename": "sqlalchemy-media-0.12.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ee54d761f62207f7c5db9249e3feb93a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1321518,
+        "upload_time": "2017-06-05T10:43:43",
+        "url": "https://files.pythonhosted.org/packages/96/b2/e830106b957bb07ca9093fc2b2a12d476e88177d791b81e8bc681fd8a3e1/sqlalchemy-media-0.12.1.tar.gz"
+      }
+    ],
+    "0.12.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "87162a6a5acb4c12f8207cd306a64477",
+          "sha256": "feb0a4b0dddd98c0e64287265fc1b3d1863612813cc19a4a8c0f7c4758f988df"
+        },
+        "downloads": 0,
+        "filename": "sqlalchemy-media-0.12.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "87162a6a5acb4c12f8207cd306a64477",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1321796,
+        "upload_time": "2017-06-05T13:41:46",
+        "url": "https://files.pythonhosted.org/packages/1f/42/e829bc374240403fb7cceb3ab478d16e89c10025cfc0ad403841c2051b3f/sqlalchemy-media-0.12.2.tar.gz"
+      }
+    ],
+    "0.12.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2e65794f1136e5aa22dc8a88ac017d2a",
+          "sha256": "b71a168321216ac579f5789673ec6ccd4e396ba7561daf39892f1768b0647edb"
+        },
+        "downloads": 0,
+        "filename": "sqlalchemy-media-0.12.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2e65794f1136e5aa22dc8a88ac017d2a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1321927,
+        "upload_time": "2017-06-05T16:06:54",
+        "url": "https://files.pythonhosted.org/packages/1c/fd/109652aca8ea362f47839507ae5bfc7bf4fbc9c32a1ac3f399640243143a/sqlalchemy-media-0.12.3.tar.gz"
       }
     ],
     "0.2.0": [
@@ -788,18 +860,18 @@
     {
       "comment_text": "",
       "digests": {
-        "md5": "000bdd1e94c64d3c8128f5920df18fe5",
-        "sha256": "53f5c033528451cb14f3e64c54a6ca766c3ea761baa1a40f5095da1a91c4949c"
+        "md5": "2e65794f1136e5aa22dc8a88ac017d2a",
+        "sha256": "b71a168321216ac579f5789673ec6ccd4e396ba7561daf39892f1768b0647edb"
       },
       "downloads": 0,
-      "filename": "sqlalchemy-media-0.11.4.tar.gz",
+      "filename": "sqlalchemy-media-0.12.3.tar.gz",
       "has_sig": false,
-      "md5_digest": "000bdd1e94c64d3c8128f5920df18fe5",
+      "md5_digest": "2e65794f1136e5aa22dc8a88ac017d2a",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 1314352,
-      "upload_time": "2017-05-29T16:34:17",
-      "url": "https://files.pythonhosted.org/packages/d8/cf/b42505da3594a331702446a74ad87f7a89234fb65b02a3c1f98ca2d486f5/sqlalchemy-media-0.11.4.tar.gz"
+      "size": 1321927,
+      "upload_time": "2017-06-05T16:06:54",
+      "url": "https://files.pythonhosted.org/packages/1c/fd/109652aca8ea362f47839507ae5bfc7bf4fbc9c32a1ac3f399640243143a/sqlalchemy-media-0.12.3.tar.gz"
     }
   ]
 }
