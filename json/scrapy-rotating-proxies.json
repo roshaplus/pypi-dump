@@ -17,7 +17,7 @@
       "Programming Language :: Python :: 3.5",
       "Programming Language :: Python :: 3.6"
     ],
-    "description": "scrapy-rotating-proxies\n=======================\n\n.. image:: https://img.shields.io/pypi/v/scrapy-rotating-proxies.svg\n   :target: https://pypi.python.org/pypi/scrapy-rotating-proxies\n   :alt: PyPI Version\n\n.. image:: https://travis-ci.org/TeamHG-Memex/scrapy-rotating-proxies.svg?branch=master\n   :target: http://travis-ci.org/TeamHG-Memex/scrapy-rotating-proxies\n   :alt: Build Status\n\n.. image:: http://codecov.io/github/TeamHG-Memex/scrapy-rotating-proxies/coverage.svg?branch=master\n   :target: http://codecov.io/github/TeamHG-Memex/scrapy-rotating-proxies?branch=master\n   :alt: Code Coverage\n\nThis package provides a Scrapy_ middleware to use rotating proxies,\ncheck that they are alive and adjust crawling speed.\n\n.. _Scrapy: https://scrapy.org/\n\nLicense is MIT.\n\nInstallation\n------------\n\n::\n\n    pip install scrapy-rotating-proxies\n\nUsage\n-----\n\nAdd ``ROTATING_PROXY_LIST`` option with a list of proxies to settings.py::\n\n    ROTATING_PROXY_LIST = [\n        'proxy1.com:8000',\n        'proxy2.com:8031',\n        # ...\n    ]\n\nYou can load it from file if needed::\n\n    def load_lines(path):\n        with open(path, 'rb') as f:\n            return [line.strip() for line in\n                    f.read().decode('utf8').splitlines()\n                    if line.strip()]\n\n    ROTATING_PROXY_LIST = load_lines('/my/path/proxies.txt')\n\nThen add rotating_proxies middlewares to your DOWNLOADER_MIDDLEWARES::\n\n    DOWNLOADER_MIDDLEWARES = {\n        # ...\n        'rotating_proxies.middlewares.RotatingProxyMiddleware': 610,\n        'rotating_proxies.middlewares.BanDetectionMiddleware': 620,\n        # ...\n    }\n\nAfter this all requests will be proxied using one of the proxies from\nthe ``ROTATING_PROXY_LIST``.\n\nRequests with \"proxy\" set in their meta are not handled by\nscrapy-rotating-proxies. To disable proxying for a request set\n``request.meta['proxy'] = None``; to set proxy explicitly use\n``request.meta['proxy'] = \"<my-proxy-address>\"``.\n\n\nConcurrency\n-----------\n\nBy default, all default Scrapy concurrency options (``DOWNLOAD_DELAY``,\n``AUTHTHROTTLE_...``, ``CONCURRENT_REQUESTS_PER_DOMAIN``, etc) become\nper-proxy for proxied requests when RotatingProxyMiddleware is enabled.\nFor example, if you set ``CONCURRENT_REQUESTS_PER_DOMAIN=2`` then\nspider will be making at most 2 concurrent connections to each proxy,\nregardless of request url domain.\n\nCustomization\n-------------\n\n``scrapy-rotating-proxies`` keeps track of working and non-working proxies,\nand re-checks non-working from time to time.\n\nDetection of a non-working proxy is site-specific.\nBy default, ``scrapy-rotating-proxies`` uses a simple heuristic:\nif a response status code is not 200, response body is empty or if\nthere was an exception then proxy is considered dead.\n\nYou can override ban detection method by passing a path to\na custom BanDectionPolicy in ``ROTATING_PROXY_BAN_POLICY`` option, e.g.::\n\n    # settings.py\n    ROTATING_PROXY_BAN_POLICY = 'myproject.policy.MyBanPolicy'\n\nThe policy must be a class with ``response_is_ban``\nand ``exception_is_ban`` methods. These methods can return True\n(ban detected), False (not a ban) or None (unknown). It can be convenient\nto subclass and modify default BanDetectionPolicy::\n\n    # myproject/policy.py\n    from rotating_proxies.policy import BanDetectionPolicy\n\n    class MyPolicy(BanDetectionPolicy):\n        def response_is_ban(self, request, response):\n            # use default rules, but also consider HTTP 200 responses\n            # a ban if there is 'captcha' word in response body.\n            ban = super(MyPolicy, self).response_is_ban(request, response)\n            ban = ban or b'captcha' in response.body\n            return ban\n\n        def exception_is_ban(self, request, exception):\n            # override method completely: don't take exceptions in account\n            return None\n\nInstead of creating a policy you can also implement ``response_is_ban``\nand ``exception_is_ban`` methods as spider methods, for example::\n\n    class MySpider(scrapy.Spider):\n        # ...\n\n        def response_is_ban(self, request, response):\n            return b'banned' in response.body\n\n        def exception_is_ban(self, request, exception):\n            return None\n\nIt is important to have these rules correct because action for a failed\nrequest and a bad proxy should be different: if it is a proxy to blame\nit makes sense to retry the request with a different proxy.\n\nNon-working proxies could become alive again after some time.\n``scrapy-rotating-proxies`` uses a randomized exponential backoff for these\nchecks - first check happens soon, if it still fails then next check is\ndelayed further, etc. Use ``ROTATING_PROXY_BACKOFF_BASE`` to adjust the\ninitial delay (by default it is random, from0 to 5 minutes).\n\nSettings\n--------\n\n* ``ROTATING_PROXY_LIST``  - a list of proxies to choose from;\n* ``ROTATING_PROXY_LOGSTATS_INTERVAL`` - stats logging interval in seconds,\n  30 by default;\n* ``ROTATING_PROXY_CLOSE_SPIDER`` - When True, spider is stopped if\n  there are no alive proxies. If False (default), then when there is no\n  alive proxies all dead proxies are re-checked.\n* ``ROTATING_PROXY_PAGE_RETRY_TIMES`` - a number of times to retry\n  downloading a page using a different proxy. After this amount of retries\n  failure is considered a page failure, not a proxy failure.\n  Think of it this way: every improperly detected ban cost you\n  ``ROTATING_PROXY_PAGE_RETRY_TIMES`` alive proxies. Default: 5.\n\n  It is possible to change this option per-request using\n  ``max_proxies_to_try`` request.meta key - for example, you can use a higher\n  value for certain pages if you're sure they should work.\n* ``ROTATING_PROXY_BACKOFF_BASE`` - base backoff time, in seconds.\n  Default is 300 (i.e. 5 min).\n* ``ROTATING_PROXY_BAN_POLICY`` - path to a ban detection policy.\n  Default is ``'rotating_proxies.policy.BanDetectionPolicy'``.\n\n\nFAQ\n---\n\nQ: Where to get proxy lists? How to write and maintain ban rules?\n\nA: It is up to you to find proxies and maintain proper ban rules\nfor web sites; ``scrapy-rotating-proxies`` doesn't have anything built-in.\nThere are commercial proxy services like https://crawlera.com/ which can\nintegrate with Scrapy (see https://github.com/scrapy-plugins/scrapy-crawlera)\nand take care of all these details.\n\nContributing\n------------\n\n* source code: https://github.com/TeamHG-Memex/scrapy-rotating-proxies\n* bug tracker: https://github.com/TeamHG-Memex/scrapy-rotating-proxies/issues\n\nTo run tests, install tox_ and run ``tox`` from the source checkout.\n\n.. _tox: https://tox.readthedocs.io/en/latest/\n\n\nCHANGES\n=======\n\n0.3.2 (2017-06-05)\n------------------\n\n* fixed proxy authentication issue.\n\n0.3.1 (2017-03-20)\n------------------\n\n* fixed OverflowError during backoff computation.\n\n0.3 (2017-03-14)\n----------------\n\n* redirects with empty bodies are no longer considered bans\n  (thanks Diga Widyaprana).\n* ``ROTATING_PROXY_BAN_POLICY`` option allows to customize ban detection\n  for all spiders.\n\n0.2.3 (2017-03-03)\n------------------\n\n* ``max_proxies_to_try`` request.meta key allows to override\n  ``ROTATING_PROXY_PAGE_RETRY_TIMES`` option per-request.\n\n0.2.2 (2017-03-01)\n------------------\n\n* Update default ban detection rules: scrapy.exceptions.IgnoreRequest\n  is not a ban.\n\n0.2.1 (2017-02-08)\n------------------\n\n* changed ``ROTATING_PROXY_PAGE_RETRY_TIMES`` default value - it is now 5.\n\n0.2 (2017-02-07)\n----------------\n\n* improved default ban detection rules;\n* log ban stats.\n\n0.1 (2017-02-01)\n----------------\n\nInitial release\n",
+    "description": "scrapy-rotating-proxies\n=======================\n\n.. image:: https://img.shields.io/pypi/v/scrapy-rotating-proxies.svg\n   :target: https://pypi.python.org/pypi/scrapy-rotating-proxies\n   :alt: PyPI Version\n\n.. image:: https://travis-ci.org/TeamHG-Memex/scrapy-rotating-proxies.svg?branch=master\n   :target: http://travis-ci.org/TeamHG-Memex/scrapy-rotating-proxies\n   :alt: Build Status\n\n.. image:: http://codecov.io/github/TeamHG-Memex/scrapy-rotating-proxies/coverage.svg?branch=master\n   :target: http://codecov.io/github/TeamHG-Memex/scrapy-rotating-proxies?branch=master\n   :alt: Code Coverage\n\nThis package provides a Scrapy_ middleware to use rotating proxies,\ncheck that they are alive and adjust crawling speed.\n\n.. _Scrapy: https://scrapy.org/\n\nLicense is MIT.\n\nInstallation\n------------\n\n::\n\n    pip install scrapy-rotating-proxies\n\nUsage\n-----\n\nAdd ``ROTATING_PROXY_LIST`` option with a list of proxies to settings.py::\n\n    ROTATING_PROXY_LIST = [\n        'proxy1.com:8000',\n        'proxy2.com:8031',\n        # ...\n    ]\n\nYou can load it from file if needed::\n\n    def load_lines(path):\n        with open(path, 'rb') as f:\n            return [line.strip() for line in\n                    f.read().decode('utf8').splitlines()\n                    if line.strip()]\n\n    ROTATING_PROXY_LIST = load_lines('/my/path/proxies.txt')\n\nThen add rotating_proxies middlewares to your DOWNLOADER_MIDDLEWARES::\n\n    DOWNLOADER_MIDDLEWARES = {\n        # ...\n        'rotating_proxies.middlewares.RotatingProxyMiddleware': 610,\n        'rotating_proxies.middlewares.BanDetectionMiddleware': 620,\n        # ...\n    }\n\nAfter this all requests will be proxied using one of the proxies from\nthe ``ROTATING_PROXY_LIST``.\n\nRequests with \"proxy\" set in their meta are not handled by\nscrapy-rotating-proxies. To disable proxying for a request set\n``request.meta['proxy'] = None``; to set proxy explicitly use\n``request.meta['proxy'] = \"<my-proxy-address>\"``.\n\n\nConcurrency\n-----------\n\nBy default, all default Scrapy concurrency options (``DOWNLOAD_DELAY``,\n``AUTHTHROTTLE_...``, ``CONCURRENT_REQUESTS_PER_DOMAIN``, etc) become\nper-proxy for proxied requests when RotatingProxyMiddleware is enabled.\nFor example, if you set ``CONCURRENT_REQUESTS_PER_DOMAIN=2`` then\nspider will be making at most 2 concurrent connections to each proxy,\nregardless of request url domain.\n\nCustomization\n-------------\n\n``scrapy-rotating-proxies`` keeps track of working and non-working proxies,\nand re-checks non-working from time to time.\n\nDetection of a non-working proxy is site-specific.\nBy default, ``scrapy-rotating-proxies`` uses a simple heuristic:\nif a response status code is not 200, response body is empty or if\nthere was an exception then proxy is considered dead.\n\nYou can override ban detection method by passing a path to\na custom BanDectionPolicy in ``ROTATING_PROXY_BAN_POLICY`` option, e.g.::\n\n    # settings.py\n    ROTATING_PROXY_BAN_POLICY = 'myproject.policy.MyBanPolicy'\n\nThe policy must be a class with ``response_is_ban``\nand ``exception_is_ban`` methods. These methods can return True\n(ban detected), False (not a ban) or None (unknown). It can be convenient\nto subclass and modify default BanDetectionPolicy::\n\n    # myproject/policy.py\n    from rotating_proxies.policy import BanDetectionPolicy\n\n    class MyPolicy(BanDetectionPolicy):\n        def response_is_ban(self, request, response):\n            # use default rules, but also consider HTTP 200 responses\n            # a ban if there is 'captcha' word in response body.\n            ban = super(MyPolicy, self).response_is_ban(request, response)\n            ban = ban or b'captcha' in response.body\n            return ban\n\n        def exception_is_ban(self, request, exception):\n            # override method completely: don't take exceptions in account\n            return None\n\nInstead of creating a policy you can also implement ``response_is_ban``\nand ``exception_is_ban`` methods as spider methods, for example::\n\n    class MySpider(scrapy.Spider):\n        # ...\n\n        def response_is_ban(self, request, response):\n            return b'banned' in response.body\n\n        def exception_is_ban(self, request, exception):\n            return None\n\nIt is important to have these rules correct because action for a failed\nrequest and a bad proxy should be different: if it is a proxy to blame\nit makes sense to retry the request with a different proxy.\n\nNon-working proxies could become alive again after some time.\n``scrapy-rotating-proxies`` uses a randomized exponential backoff for these\nchecks - first check happens soon, if it still fails then next check is\ndelayed further, etc. Use ``ROTATING_PROXY_BACKOFF_BASE`` to adjust the\ninitial delay (by default it is random, from 0 to 5 minutes). The randomized\nexponential backoff is capped by ``ROTATING_PROXY_BACKOFF_CAP``.\n\nSettings\n--------\n\n* ``ROTATING_PROXY_LIST``  - a list of proxies to choose from;\n* ``ROTATING_PROXY_LOGSTATS_INTERVAL`` - stats logging interval in seconds,\n  30 by default;\n* ``ROTATING_PROXY_CLOSE_SPIDER`` - When True, spider is stopped if\n  there are no alive proxies. If False (default), then when there is no\n  alive proxies all dead proxies are re-checked.\n* ``ROTATING_PROXY_PAGE_RETRY_TIMES`` - a number of times to retry\n  downloading a page using a different proxy. After this amount of retries\n  failure is considered a page failure, not a proxy failure.\n  Think of it this way: every improperly detected ban cost you\n  ``ROTATING_PROXY_PAGE_RETRY_TIMES`` alive proxies. Default: 5.\n\n  It is possible to change this option per-request using\n  ``max_proxies_to_try`` request.meta key - for example, you can use a higher\n  value for certain pages if you're sure they should work.\n* ``ROTATING_PROXY_BACKOFF_BASE`` - base backoff time, in seconds.\n  Default is 300 (i.e. 5 min).\n* ``ROTATING_PROXY_BACKOFF_CAP`` - backoff time cap, in seconds.\n  Default is 3600 (i.e. 60 min).\n* ``ROTATING_PROXY_BAN_POLICY`` - path to a ban detection policy.\n  Default is ``'rotating_proxies.policy.BanDetectionPolicy'``.\n\n\nFAQ\n---\n\nQ: Where to get proxy lists? How to write and maintain ban rules?\n\nA: It is up to you to find proxies and maintain proper ban rules\nfor web sites; ``scrapy-rotating-proxies`` doesn't have anything built-in.\nThere are commercial proxy services like https://crawlera.com/ which can\nintegrate with Scrapy (see https://github.com/scrapy-plugins/scrapy-crawlera)\nand take care of all these details.\n\nContributing\n------------\n\n* source code: https://github.com/TeamHG-Memex/scrapy-rotating-proxies\n* bug tracker: https://github.com/TeamHG-Memex/scrapy-rotating-proxies/issues\n\nTo run tests, install tox_ and run ``tox`` from the source checkout.\n\n.. _tox: https://tox.readthedocs.io/en/latest/\n\n\nCHANGES\n=======\n\n0.4 (2017-06-06)\n----------------\n\n* ``ROTATING_PROXY_BACKOFF_CAP`` option allows to change max backoff time\n  from the default 1 hour.\n\n0.3.2 (2017-06-05)\n------------------\n\n* fixed proxy authentication issue.\n\n0.3.1 (2017-03-20)\n------------------\n\n* fixed OverflowError during backoff computation.\n\n0.3 (2017-03-14)\n----------------\n\n* redirects with empty bodies are no longer considered bans\n  (thanks Diga Widyaprana).\n* ``ROTATING_PROXY_BAN_POLICY`` option allows to customize ban detection\n  for all spiders.\n\n0.2.3 (2017-03-03)\n------------------\n\n* ``max_proxies_to_try`` request.meta key allows to override\n  ``ROTATING_PROXY_PAGE_RETRY_TIMES`` option per-request.\n\n0.2.2 (2017-03-01)\n------------------\n\n* Update default ban detection rules: scrapy.exceptions.IgnoreRequest\n  is not a ban.\n\n0.2.1 (2017-02-08)\n------------------\n\n* changed ``ROTATING_PROXY_PAGE_RETRY_TIMES`` default value - it is now 5.\n\n0.2 (2017-02-07)\n----------------\n\n* improved default ban detection rules;\n* log ban stats.\n\n0.1 (2017-02-01)\n----------------\n\nInitial release\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -33,10 +33,10 @@
     "name": "scrapy-rotating-proxies",
     "platform": "",
     "project_url": "https://pypi.org/project/scrapy-rotating-proxies/",
-    "release_url": "https://pypi.org/project/scrapy-rotating-proxies/0.3.2/",
+    "release_url": "https://pypi.org/project/scrapy-rotating-proxies/0.4/",
     "requires_python": "",
     "summary": "Rotating proxies for Scrapy",
-    "version": "0.3.2"
+    "version": "0.4"
   },
   "releases": {
     "0.1": [
@@ -310,40 +310,74 @@
         "upload_time": "2017-06-05T14:59:31",
         "url": "https://files.pythonhosted.org/packages/12/ec/bc96297f2eef88f8447243b993f7ef1dbf69c86daeaa66d03de2632fc9f4/scrapy-rotating-proxies-0.3.2.tar.gz"
       }
+    ],
+    "0.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "25950ffa41e4dbfb05b8baca3dd5256c",
+          "sha256": "c6754411e683246352d16d403ff2427a5e9d8d5e1cfde3625c59de580b1cc4de"
+        },
+        "downloads": 0,
+        "filename": "scrapy_rotating_proxies-0.4-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "25950ffa41e4dbfb05b8baca3dd5256c",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 14661,
+        "upload_time": "2017-06-06T14:58:51",
+        "url": "https://files.pythonhosted.org/packages/ff/f5/83a9e0478379278e81b8bc6e7ee41872160fec870e895b0dfc59c0d2e89e/scrapy_rotating_proxies-0.4-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "049883d84af42c9f9d2a494a0ad8e63d",
+          "sha256": "dec97fdc32c1a14eb0dc1e9140ac60e4716f2591527c41b3af3393a66a8b0cdc"
+        },
+        "downloads": 0,
+        "filename": "scrapy-rotating-proxies-0.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "049883d84af42c9f9d2a494a0ad8e63d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 11896,
+        "upload_time": "2017-06-06T14:58:44",
+        "url": "https://files.pythonhosted.org/packages/e6/5d/ee8472c4922f56992016652d9c2c268de355760957006d358e2513c684ec/scrapy-rotating-proxies-0.4.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "fbcb90f978c3b9140e231aeacdbc97b5",
-        "sha256": "35b5d0afbcd905a3825af075176ea4e3de6280af102a640907612b41fc872c64"
+        "md5": "25950ffa41e4dbfb05b8baca3dd5256c",
+        "sha256": "c6754411e683246352d16d403ff2427a5e9d8d5e1cfde3625c59de580b1cc4de"
       },
       "downloads": 0,
-      "filename": "scrapy_rotating_proxies-0.3.2-py2.py3-none-any.whl",
+      "filename": "scrapy_rotating_proxies-0.4-py2.py3-none-any.whl",
       "has_sig": false,
-      "md5_digest": "fbcb90f978c3b9140e231aeacdbc97b5",
+      "md5_digest": "25950ffa41e4dbfb05b8baca3dd5256c",
       "packagetype": "bdist_wheel",
-      "python_version": "3.6",
-      "size": 14510,
-      "upload_time": "2017-06-05T14:59:39",
-      "url": "https://files.pythonhosted.org/packages/85/a8/c9755ed2dfe8cd066d8677cff4bb1e86f10b9ed40722dc5043656a356f4f/scrapy_rotating_proxies-0.3.2-py2.py3-none-any.whl"
+      "python_version": "2.7",
+      "size": 14661,
+      "upload_time": "2017-06-06T14:58:51",
+      "url": "https://files.pythonhosted.org/packages/ff/f5/83a9e0478379278e81b8bc6e7ee41872160fec870e895b0dfc59c0d2e89e/scrapy_rotating_proxies-0.4-py2.py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "091960618d3d9b16f1874dbdcf074a69",
-        "sha256": "9b2d06e5a80684f324823e9834cd96e5b2954b66fb16aeb8496c2d2c1ab1a4d0"
+        "md5": "049883d84af42c9f9d2a494a0ad8e63d",
+        "sha256": "dec97fdc32c1a14eb0dc1e9140ac60e4716f2591527c41b3af3393a66a8b0cdc"
       },
       "downloads": 0,
-      "filename": "scrapy-rotating-proxies-0.3.2.tar.gz",
+      "filename": "scrapy-rotating-proxies-0.4.tar.gz",
       "has_sig": false,
-      "md5_digest": "091960618d3d9b16f1874dbdcf074a69",
+      "md5_digest": "049883d84af42c9f9d2a494a0ad8e63d",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 11513,
-      "upload_time": "2017-06-05T14:59:31",
-      "url": "https://files.pythonhosted.org/packages/12/ec/bc96297f2eef88f8447243b993f7ef1dbf69c86daeaa66d03de2632fc9f4/scrapy-rotating-proxies-0.3.2.tar.gz"
+      "size": 11896,
+      "upload_time": "2017-06-06T14:58:44",
+      "url": "https://files.pythonhosted.org/packages/e6/5d/ee8472c4922f56992016652d9c2c268de355760957006d358e2513c684ec/scrapy-rotating-proxies-0.4.tar.gz"
     }
   ]
 }
