@@ -6,7 +6,7 @@
     "classifiers": [],
     "description": "# TensorGraph\nTensorGraph is a framework for building any imaginable models based on TensorFlow.\n\nAs deep learning becomes more and more common and the architectures becoming more\nand more complicated, it seems that we need some easy to use framework to quickly\nbuild these models and that's why TensorGraph is born. It's a very simple and easy\nto use framework, but it allows you to build all kinds of imaginable models.\n\n-----\n### Install\n\nFirst you need to install [tensorflow](https://www.tensorflow.org/versions/r0.9/get_started/os_setup.html)\n\nTo install tensorgraph simply do via pip\n```bash\nsudo pip install tensorgraph\n```\nor for bleeding edge version do\n```bash\nsudo pip install --upgrade git+https://github.com/hycis/TensorGraph.git@master\n```\nor simply clone and add to `PYTHONPATH`.\n```bash\ngit clone https://github.com/hycis/TensorGraph.git\nexport PYTHONPATH=/path/to/TensorGraph:$PYTHONPATH\n```\nin order for the install to persist via export `PYTHONPATH`. Add `PYTHONPATH=/path/to/TensorGraph:$PYTHONPATH` to your `.bashrc` for linux or\n`.bash_profile` for mac. While this method works, you will have to ensure that\nall the dependencies in [setup.py](setup.py) are installed.\n\n-----\n### How TensorGraph Works?\nIn TensorGraph, we defined three types of nodes\n\n1. StartNode : for inputs to the graph\n2. HiddenNode : for putting sequential layers inside\n3. EndNode : for getting outputs from the model\n\nWe put all the sequential layers into a `HiddenNode`, and connect the hidden nodes\ntogether to build all kinds of architectures without worrying about how to design\nthe forward propagation. We let the graph engine sort out all the forward propagations\nfor you, so that you just focus on designing the architecture. The graph always\nstarts with `StartNode` and ends with `EndNode`. Below shows an\n[example](examples/example.py) of building a tensor graph.\n\n-----\n### Graph Example\n\n<img src=\"draw/graph.png\" height=\"250\">\n\nFirst define the `StartNode` for putting the input placeholder\n```python\ny1_dim = 50\ny2_dim = 100\nbatchsize = 32\nlearning_rate = 0.01\n\ny1 = tf.placeholder('float32', [None, y1_dim])\ny2 = tf.placeholder('float32', [None, y2_dim])\ns1 = StartNode(input_vars=[y1])\ns2 = StartNode(input_vars=[y2])\n```\nThen define the `HiddenNode` for putting the sequential layers in each `HiddenNode`\n```python\nh1 = HiddenNode(prev=[s1, s2],\n                input_merge_mode=Concat(),\n                layers=[Linear(y1_dim+y2_dim, y2_dim), RELU()])\nh2 = HiddenNode(prev=[start2],\n                layers=[Linear(y2_dim, y2_dim), RELU()])\nh3 = HiddenNode(prev=[h1, h2],\n                input_merge_mode=Sum(),\n                layers=[Linear(y2_dim, y1_dim), RELU()])\n```\nThen define the `EndNode`. `EndNode` is used to back-trace the graph to connect\nthe nodes together.\n```python\ne1 = EndNode(prev=[h3])\ne2 = EndNode(prev=[h2])\n```\nFinally build the graph by putting `StartNodes` and `EndNodes` into `Graph`\n```python\ngraph = Graph(start=[s1, s2], end=[e1, e2])\n```\nRun train forward propagation to get symbolic output from train mode. The number\nof outputs from `graph.train_fprop` is the same as the number of `EndNodes` put\ninto `Graph`\n```python\no1, o2 = graph.train_fprop()\n```\nFinally build an optimizer to optimize the objective function\n```python\no1_mse = tf.reduce_mean((y1 - o1)**2)\no2_mse = tf.reduce_mean((y2 - o2)**2)\nmse = o1_mse + o2_mse\noptimizer = tf.train.AdamOptimizer(learning_rate).minimize(mse)\n```\n-----\n### Hierachical Softmax Example\nBelow is another example for building a more powerful [hierachical softmax](examples/hierachical_softmax.py)\nwhereby the lower hierachical softmax layer can be conditioned on all the upper\nhierachical softmax layers.\n\n<img src=\"draw/hsoftmax.png\" height=\"250\">\n\n```python\n## params\nx_dim = 50\ncomponent_dim = 100\nbatchsize = 32\nlearning_rate = 0.01\n\n\nx_ph = tf.placeholder('float32', [None, x_dim])\n# the three hierachical level\ny1_ph = tf.placeholder('float32', [None, component_dim])\ny2_ph = tf.placeholder('float32', [None, component_dim])\ny3_ph = tf.placeholder('float32', [None, component_dim])\n\n# define the graph model structure\nstart = StartNode(input_vars=[x_ph])\n\nh1 = HiddenNode(prev=[start], layers=[Linear(x_dim, component_dim), Softmax()])\nh2 = HiddenNode(prev=[h1], layers=[Linear(component_dim, component_dim), Softmax()])\nh3 = HiddenNode(prev=[h2], layers=[Linear(component_dim, component_dim), Softmax()])\n\n\ne1 = EndNode(prev=[h1], input_merge_mode=Sum())\ne2 = EndNode(prev=[h1, h2], input_merge_mode=Sum())\ne3 = EndNode(prev=[h1, h2, h3], input_merge_mode=Sum())\n\ngraph = Graph(start=[start], end=[e1, e2, e3])\n\no1, o2, o3 = graph.train_fprop()\n\no1_mse = tf.reduce_mean((y1_ph - o1)**2)\no2_mse = tf.reduce_mean((y2_ph - o2)**2)\no3_mse = tf.reduce_mean((y3_ph - o3)**2)\nmse = o1_mse + o2_mse + o3_mse\noptimizer = tf.train.AdamOptimizer(learning_rate).minimize(mse)\n```\n\n-----\n### Transfer Learning Example\nBelow is an example on transfer learning with bi-modality inputs and merge at\nthe middle layer with shared representation, in fact, TensorGraph can be used\nto build any number of modalities for transfer learning.\n\n<img src=\"draw/transferlearn.png\" height=\"250\">\n\n```python\n## params\nx1_dim = 50\nx2_dim = 100\nshared_dim = 200\ny_dim = 100\nbatchsize = 32\nlearning_rate = 0.01\n\n\nx1_ph = tf.placeholder('float32', [None, x1_dim])\nx2_ph = tf.placeholder('float32', [None, x2_dim])\ny_ph = tf.placeholder('float32', [None, y_dim])\n\n# define the graph model structure\ns1 = StartNode(input_vars=[x1_ph])\ns2 = StartNode(input_vars=[x2_ph])\n\nh1 = HiddenNode(prev=[s1], layers=[Linear(x1_dim, shared_dim), RELU()])\nh2 = HiddenNode(prev=[s2], layers=[Linear(x2_dim, shared_dim), RELU()])\nh3 = HiddenNode(prev=[h1,h2], input_merge_mode=Sum(),\n                layers=[Linear(shared_dim, y_dim), Softmax()])\n\ne1 = EndNode(prev=[h3])\n\ngraph = Graph(start=[s1, s2], end=[e1])\no1, = graph.train_fprop()\n\nmse = tf.reduce_mean((y_ph - o1)**2)\noptimizer = tf.train.AdamOptimizer(learning_rate).minimize(mse)\n```",
     "docs_url": null,
-    "download_url": "https://github.com/hycis/TensorGraph/tarball/3.2.5",
+    "download_url": "https://github.com/hycis/TensorGraph/tarball/3.3.5",
     "downloads": {
       "last_day": 0,
       "last_month": 0,
@@ -20,10 +20,10 @@
     "name": "tensorgraph",
     "platform": "UNKNOWN",
     "project_url": "https://pypi.org/project/tensorgraph/",
-    "release_url": "https://pypi.org/project/tensorgraph/3.2.5/",
+    "release_url": "https://pypi.org/project/tensorgraph/3.3.5/",
     "requires_python": null,
     "summary": "A high level tensorflow library for building deep learning models",
-    "version": "3.2.5"
+    "version": "3.3.5"
   },
   "releases": {
     "1.4.10": [
@@ -565,24 +565,42 @@
         "upload_time": "2017-05-03T09:13:44",
         "url": "https://files.pythonhosted.org/packages/08/9e/25f84c55744f0c1b1b586975babc8e1db4aad957c45cdf485f50b7268588/tensorgraph-3.2.5.tar.gz"
       }
+    ],
+    "3.3.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f579ec4473aa0343d2199494edc46964",
+          "sha256": "0de9a00ff754132e02346c15d7e7c567f912b3de1b35274c55e6f5b7acd4c00b"
+        },
+        "downloads": 0,
+        "filename": "tensorgraph-3.3.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f579ec4473aa0343d2199494edc46964",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 28193,
+        "upload_time": "2017-06-07T01:33:20",
+        "url": "https://files.pythonhosted.org/packages/84/db/35496e56f89c0255016338abca8a96537ce1d01ceaae4997f753b1d19284/tensorgraph-3.3.5.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "fd33169fbd96a44c227f63fc9f91015d",
-        "sha256": "78d287346d240b8a609f6d2ffa8d7b3c6b4efddae88995bfaeaa0ff106d37e2b"
+        "md5": "f579ec4473aa0343d2199494edc46964",
+        "sha256": "0de9a00ff754132e02346c15d7e7c567f912b3de1b35274c55e6f5b7acd4c00b"
       },
       "downloads": 0,
-      "filename": "tensorgraph-3.2.5.tar.gz",
+      "filename": "tensorgraph-3.3.5.tar.gz",
       "has_sig": false,
-      "md5_digest": "fd33169fbd96a44c227f63fc9f91015d",
+      "md5_digest": "f579ec4473aa0343d2199494edc46964",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 28496,
-      "upload_time": "2017-05-03T09:13:44",
-      "url": "https://files.pythonhosted.org/packages/08/9e/25f84c55744f0c1b1b586975babc8e1db4aad957c45cdf485f50b7268588/tensorgraph-3.2.5.tar.gz"
+      "size": 28193,
+      "upload_time": "2017-06-07T01:33:20",
+      "url": "https://files.pythonhosted.org/packages/84/db/35496e56f89c0255016338abca8a96537ce1d01ceaae4997f753b1d19284/tensorgraph-3.3.5.tar.gz"
     }
   ]
 }
