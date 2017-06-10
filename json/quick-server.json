@@ -8,9 +8,11 @@
       "License :: OSI Approved :: MIT License",
       "Programming Language :: Python :: 2",
       "Programming Language :: Python :: 2.6",
-      "Programming Language :: Python :: 2.7"
+      "Programming Language :: Python :: 2.7",
+      "Programming Language :: Python :: 3",
+      "Programming Language :: Python :: 3.6"
     ],
-    "description": "QuickServer\n===========\n\n*QuickServer* is a quick to use and easy to set up server\nimplementation. It has the following goals / features and is primarily\nmeant to speed up back end implementation / iteration:\n\n-  serve local files as is with basic black-listing\n-  provide functionality for dynamic requests\n-  provide easy access to worker threads (and caching)\n-  provide a basic command interpret loop for server commands\n\n|Build Status| |codecov.io|\n\nUsage\n-----\n\nYou can install *quick\\_server* with pip:\n\n.. code:: sh\n\n    pip install --user quick-server\n\nImport it in python via:\n\n.. code:: python\n\n    from quick_server import create_server, msg, setup_restart\n\nSetting up a basic file server\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nFollowing we will set up a basic *quick\\_server*. Please refer to the\n`inline documentation <https://github.com/JosuaKrause/quick_server/blob/master/quick_server/__init__.py>`__ of the methods for\nfull information.\n\n.. code:: python\n\n    setup_restart() # sets up restart functionality (if not called the `restart` command of the server needs external help to work)\n    # should be the first real executed command in the script\n    # some services, like heroku, don't play well with this command and it should not be called if in such an environment\n\n    addr = '' # empty address is equivalent to 'localhost'\n    port = 8080\n    server = create_server((addr, port), parallel=True) # parallel is recommended unless your code is not thread-safe\n    server.bind_path('/', 'www') # binds the 'www' directory to the server's root\n    server.add_default_white_list() # adds typical file types to the list of files that will be served; you can use server.add_file_patterns to add more file types\n    server.favicon_fallback = 'favicon.ico' # sets the default favicon file to the given file on disk (you'll need a file called 'favicon.ico')\n    # you can also use server.link_empty_favicon_fallback()\n\n    server.suppress_noise = True # don't report successful requests (turn off if you want to measure performance)\n    server.report_slow_requests = True # reports requests that take longer than 5s\n\nStarting the actual server:\n\n.. code:: python\n\n    msg(\"{0}\", \" \".join(sys.argv)) # prints how the script was started\n    msg(\"starting server at {0}:{1}\", addr if addr else 'localhost', port)\n    server.serve_forever() # starts the server -- only returns when the server stops (e.g., by typing `quit`, `restart`, or `CTRL-C`)\n    msg(\"shutting down..\")\n    server.server_close() # make sure to clean up all resources\n\nAdding dynamic requests\n~~~~~~~~~~~~~~~~~~~~~~~\n\nDynamic requests can be set up by annotating a function. The annotation\nconsists of *return-type* and *http-method*.\n\nA ``POST`` request in ``JSON`` format:\n\n.. code:: python\n\n    @server.json_post('/json_request', 0) # creates a request at http://localhost:8080/json_request\n    def json_request(req, args):\n        return {\n            \"post\": args[\"post\"],\n        }\n\nA ``GET`` request as ``plain text``:\n\n.. code:: python\n\n    @server.text_get('/text_request', 0) # creates a request at http://localhost:8080/text_request\n    def text_request(req, args):\n        return \"plain text\"\n\nWorker threads and caching\n~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nWorker threads require support from the client side.\n\nFirst, provide the necessary JavaScript file via\n\n.. code:: python\n\n    server.link_worker_js('/js/worker.js')\n\nand load it on the client side:\n\n.. code:: html\n\n    <script src=\"js/worker.js\" charset=\"utf-8\"></script>\n\nA worker request can be set up on the server side with\n\n.. code:: python\n\n    @server.json_worker('/json_worker')\n    def json_worker(args):\n        # ...\n        # long, slow computation\n        return myresult # myresult must be JSON convertible\n\nand accessed from the client. An instance of the ``Worker`` class is\nneeded:\n\n.. code:: javascript\n\n    var work = new quick_server.Worker();\n    work.status(function(req) {\n      // req contains the number of currently active requests (-1 indicates an error state)\n      // it can be used to tell the user that something is happening\n    });\n\nAccessing the worker:\n\n.. code:: javascript\n\n    // the first argument identifies worker jobs\n    // jobs with the same name get replaced when a new one has been started\n    // the second argument is the URL\n    work.post(\"worker_name\", \"json_worker\", {\n      // this object will appear as args on the server side\n    }, function(data) {\n      // data is the result of the worker function of the server side\n      // this function is only called if the request was successful\n    });\n\nA worker can be cancelled using its name:\n\n.. code:: javascript\n\n    work.cancel(\"worker_name\");\n\nNote that all running workers are cancelled when the page is unloaded.\n\nWorkers can automatically cache the server response using\n`quick\\_cache <https://pypi.python.org/pypi/quick-cache>`__. The\nserver needs to be set up for this:\n\n.. code:: python\n\n    cache = QuickCache(base_file, quota=500, ram_quota=100, warnings=msg)\n    server.cache = cache\n\nThen caching can be used for workers:\n\n.. code:: python\n\n    @server.json_worker('/json_worker', cache_id=lambda args: {\n            # uniquely identify the task from its arguments (must be JSON convertible)\n        })\n    def json_worker(args):\n        # ...\n        # long, slow computation\n        return myresult # myresult must be JSON convertible\n\nCustom server commands\n~~~~~~~~~~~~~~~~~~~~~~\n\nBy default *quick\\_server* provides the commands ``help`` (list of\navailable commands), ``restart`` (restart the server), and ``quit``\n(terminates the server). You can add own commands via\n\n.. code:: python\n\n    @server.cmd()\n    def name(args): # creates the command name\n        if not args:\n            msg(\"hello\")\n        else:\n            msg(\"hi {0}\", \" \".join(args)) # words typed after name are printed here\n\nA common command to add when having caching functionality (e.g.,\nprovided by\n`quick\\_cache <https://pypi.python.org/pypi/quick-cache>`__) is to\nclear caches. This show-cases also auto-complete functionality:\n\n.. code:: python\n\n    def complete_cache_clear(args, text): # args contains already completed arguments; text the currently started one\n        if args: # we only allow up to one argument\n            return []\n        return [ section for section in cache.list_sections() if section.startswith(text) ] # cache is the quick_cache object\n\n    @server.cmd(complete=complete_cache_clear)\n    def cache_clear(args):\n        if len(args) > 1: # we only allow up to one argument\n          msg(\"too many extra arguments! expected one got {0}\", ' '.join(args))\n          return\n        msg(\"clear {0}cache{1}{2}\", \"\" if args else \"all \", \" \" if args else \"s\", args[0] if args else \"\")\n        cache.clean_cache(args[0] if args else None)\n\nServer without command loop\n~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nThe easiest way to start the server without a command loop (e.g., when\nstarted as service) is to stop the loop with an EOF by calling the\nscript like this:\n\n.. code:: sh\n\n    cat /dev/null | python yourscript.py\n\nMore examples\n~~~~~~~~~~~~~\n\n`example.py <https://github.com/JosuaKrause/quick_server/blob/master/example/example.py>`__ and\n`example2.py <https://github.com/JosuaKrause/quick_server/blob/master/example/example2.py>`__ also contain minimal example\nservers. You can run them with ``./example.py`` and ``./example2.py``\nrespectively from the examples directory. Then you can browse to\nhttp://localhost:8000/example/.\n\nContributing\n------------\n\nPull requests are highly appreciated :) Also, feel free to open\n`issues <https://github.com/JosuaKrause/quick_server/issues>`__ for any\nquestions or bugs you may encounter.\n\n.. |Build Status| image:: https://travis-ci.org/JosuaKrause/quick_server.svg?branch=master\n   :target: https://travis-ci.org/JosuaKrause/quick_server\n.. |codecov.io| image:: https://codecov.io/github/JosuaKrause/quick_server/coverage.svg?branch=master\n   :target: https://codecov.io/github/JosuaKrause/quick_server?branch=master\n\n\n",
+    "description": "QuickServer\n===========\n\n*QuickServer* is a quick to use and easy to set up server\nimplementation. It has the following goals / features and is primarily\nmeant to speed up back end implementation / iteration:\n\n-  serve local files as is with basic black-listing\n-  provide functionality for dynamic requests\n-  provide easy access to worker threads (and caching)\n-  provide a basic command interpret loop for server commands\n\n|Build Status| |codecov.io|\n\nUsage\n-----\n\nYou can install *quick\\_server* with pip:\n\n.. code:: sh\n\n    pip install --user quick-server\n\nImport it in python via:\n\n.. code:: python\n\n    from quick_server import create_server, msg, setup_restart\n\nSetting up a basic file server\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nFollowing we will set up a basic *quick\\_server*. Please refer to the\n`inline documentation <https://github.com/JosuaKrause/quick_server/blob/master/quick_server/__init__.py>`__ of the methods for\nfull information.\n\n.. code:: python\n\n    setup_restart() # sets up restart functionality (if not called the `restart` command of the server needs external help to work)\n    # should be the first real executed command in the script\n    # some services, like heroku, don't play well with this command and it should not be called if in such an environment\n\n    addr = '' # empty address is equivalent to 'localhost'\n    port = 8080\n    server = create_server((addr, port), parallel=True) # parallel is recommended unless your code is not thread-safe\n    server.bind_path('/', 'www') # binds the 'www' directory to the server's root\n    server.add_default_white_list() # adds typical file types to the list of files that will be served; you can use server.add_file_patterns to add more file types\n    server.favicon_fallback = 'favicon.ico' # sets the default favicon file to the given file on disk (you'll need a file called 'favicon.ico')\n    # you can also use server.link_empty_favicon_fallback()\n\n    server.suppress_noise = True # don't report successful requests (turn off if you want to measure performance)\n    server.report_slow_requests = True # reports requests that take longer than 5s\n\nStarting the actual server:\n\n.. code:: python\n\n    msg(\"{0}\", \" \".join(sys.argv)) # prints how the script was started\n    msg(\"starting server at {0}:{1}\", addr if addr else 'localhost', port)\n    server.serve_forever() # starts the server -- only returns when the server stops (e.g., by typing `quit`, `restart`, or `CTRL-C`)\n    msg(\"shutting down..\")\n    server.server_close() # make sure to clean up all resources\n\nAdding dynamic requests\n~~~~~~~~~~~~~~~~~~~~~~~\n\nDynamic requests can be set up by annotating a function. The annotation\nconsists of *return-type* and *http-method*.\n\nA ``POST`` request in ``JSON`` format:\n\n.. code:: python\n\n    @server.json_post('/json_request', 0) # creates a request at http://localhost:8080/json_request\n    def json_request(req, args):\n        return {\n            \"post\": args[\"post\"],\n        }\n\nA ``GET`` request as ``plain text``:\n\n.. code:: python\n\n    @server.text_get('/text_request', 0) # creates a request at http://localhost:8080/text_request\n    def text_request(req, args):\n        return \"plain text\"\n\nWorker threads and caching\n~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nWorker threads require support from the client side.\n\nFirst, provide the necessary JavaScript file via\n\n.. code:: python\n\n    server.link_worker_js('/js/worker.js')\n\nand load it on the client side:\n\n.. code:: html\n\n    <script src=\"js/worker.js\" charset=\"utf-8\"></script>\n\nA worker request can be set up on the server side with\n\n.. code:: python\n\n    @server.json_worker('/json_worker')\n    def json_worker(args):\n        # ...\n        # long, slow computation\n        return myresult # myresult must be JSON convertible\n\nand accessed from the client. An instance of the ``Worker`` class is\nneeded:\n\n.. code:: javascript\n\n    var work = new quick_server.Worker();\n    work.status(function(req) {\n      // req contains the number of currently active requests (-1 indicates an error state)\n      // it can be used to tell the user that something is happening\n    });\n\nAccessing the worker:\n\n.. code:: javascript\n\n    // the first argument identifies worker jobs\n    // jobs with the same name get replaced when a new one has been started\n    // the second argument is the URL\n    work.post(\"worker_name\", \"json_worker\", {\n      // this object will appear as args on the server side\n    }, function(data) {\n      // data is the result of the worker function of the server side\n      // this function is only called if the request was successful\n    });\n\nA worker can be cancelled using its name:\n\n.. code:: javascript\n\n    work.cancel(\"worker_name\");\n\nNote that all running workers are cancelled when the page is unloaded.\n\nWorkers can automatically cache the server response using\n`quick\\_cache <https://pypi.python.org/pypi/quick-cache>`__. The\nserver needs to be set up for this:\n\n.. code:: python\n\n    cache = QuickCache(base_file, quota=500, ram_quota=100, warnings=msg)\n    server.cache = cache\n\nThen caching can be used for workers:\n\n.. code:: python\n\n    @server.json_worker('/json_worker', cache_id=lambda args: {\n            # uniquely identify the task from its arguments (must be JSON convertible)\n        })\n    def json_worker(args):\n        # ...\n        # long, slow computation\n        return myresult # myresult must be JSON convertible\n\nCustom server commands\n~~~~~~~~~~~~~~~~~~~~~~\n\nBy default *quick\\_server* provides the commands ``help`` (list of\navailable commands), ``restart`` (restart the server), and ``quit``\n(terminates the server). You can add own commands via\n\n.. code:: python\n\n    @server.cmd()\n    def name(args): # creates the command name\n        if not args:\n            msg(\"hello\")\n        else:\n            msg(\"hi {0}\", \" \".join(args)) # words typed after name are printed here\n\nA common command to add when having caching functionality (e.g.,\nprovided by\n`quick\\_cache <https://pypi.python.org/pypi/quick-cache>`__) is to\nclear caches. This show-cases also auto-complete functionality:\n\n.. code:: python\n\n    def complete_cache_clear(args, text): # args contains already completed arguments; text the currently started one\n        if args: # we only allow up to one argument\n            return []\n        return [ section for section in cache.list_sections() if section.startswith(text) ] # cache is the quick_cache object\n\n    @server.cmd(complete=complete_cache_clear)\n    def cache_clear(args):\n        if len(args) > 1: # we only allow up to one argument\n          msg(\"too many extra arguments! expected one got {0}\", ' '.join(args))\n          return\n        msg(\"clear {0}cache{1}{2}\", \"\" if args else \"all \", \" \" if args else \"s\", args[0] if args else \"\")\n        cache.clean_cache(args[0] if args else None)\n\nServer without command loop\n~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nThe easiest way to start the server without a command loop (e.g., when\nstarted as service) is to stop the loop with an EOF by calling the\nscript like this:\n\n.. code:: sh\n\n    cat /dev/null | python yourscript.py\n\nor use the ``no_command_loop`` flag and run the script normally.\n\nMore examples\n~~~~~~~~~~~~~\n\n`example.py <https://github.com/JosuaKrause/quick_server/blob/master/example/example.py>`__ and\n`example2.py <https://github.com/JosuaKrause/quick_server/blob/master/example/example2.py>`__ also contain minimal example\nservers. You can run them with ``./example.py`` and ``./example2.py``\nrespectively from the examples directory. Then you can browse to\nhttp://localhost:8000/example/.\n\nContributing\n------------\n\nPull requests are highly appreciated :) Also, feel free to open\n`issues <https://github.com/JosuaKrause/quick_server/issues>`__ for any\nquestions or bugs you may encounter.\n\n.. |Build Status| image:: https://travis-ci.org/JosuaKrause/quick_server.svg?branch=master\n   :target: https://travis-ci.org/JosuaKrause/quick_server\n.. |codecov.io| image:: https://codecov.io/github/JosuaKrause/quick_server/coverage.svg?branch=master\n   :target: https://codecov.io/github/JosuaKrause/quick_server?branch=master\n\n\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -26,10 +28,10 @@
     "name": "quick-server",
     "platform": "",
     "project_url": "https://pypi.org/project/quick-server/",
-    "release_url": "https://pypi.org/project/quick-server/0.3.1/",
+    "release_url": "https://pypi.org/project/quick-server/0.4.0/",
     "requires_python": "",
     "summary": "QuickServer is a quick to use and easy to set up server implementation.",
-    "version": "0.3.1"
+    "version": "0.4.0"
   },
   "releases": {
     "0.1.0": [
@@ -303,40 +305,74 @@
         "upload_time": "2017-04-25T22:42:46",
         "url": "https://files.pythonhosted.org/packages/37/ee/07572161faf28cf5646ed7934988cca5a29501379f367e7ea0763929c0d9/quick_server-0.3.1.tar.gz"
       }
+    ],
+    "0.4.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "531e863f313b77704dbe1929f8c585a1",
+          "sha256": "393ea11f67ae953dc7740f51171e22033ecb96e527d1c385b06c19be3457b36d"
+        },
+        "downloads": 0,
+        "filename": "quick_server-0.4.0-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "531e863f313b77704dbe1929f8c585a1",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 29591,
+        "upload_time": "2017-06-09T23:17:59",
+        "url": "https://files.pythonhosted.org/packages/4b/72/46617d17329774edfc414f04c8d25a2da0b807150e560cba2355f4f89431/quick_server-0.4.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "fdc2edfcb710546d4eb27e2c7f6cdc65",
+          "sha256": "0f2096184895321e0658e3639c5279bbee8bb2f0fc7ab60924dedc62ae264ee4"
+        },
+        "downloads": 0,
+        "filename": "quick_server-0.4.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "fdc2edfcb710546d4eb27e2c7f6cdc65",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 29018,
+        "upload_time": "2017-06-09T23:18:01",
+        "url": "https://files.pythonhosted.org/packages/03/b3/d7f2a01257e21e81216bb0dbd3fab2e8f5b819d8ca3bd7806a6815bf3bc4/quick_server-0.4.0.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "3664df0ec273d95699308ec21b7699a8",
-        "sha256": "e21c550f2f8fee40bf56895239fde5ab48baff76f4aee16ae7ec1d9210c03115"
+        "md5": "531e863f313b77704dbe1929f8c585a1",
+        "sha256": "393ea11f67ae953dc7740f51171e22033ecb96e527d1c385b06c19be3457b36d"
       },
       "downloads": 0,
-      "filename": "quick_server-0.3.1-py2-none-any.whl",
+      "filename": "quick_server-0.4.0-py2.py3-none-any.whl",
       "has_sig": false,
-      "md5_digest": "3664df0ec273d95699308ec21b7699a8",
+      "md5_digest": "531e863f313b77704dbe1929f8c585a1",
       "packagetype": "bdist_wheel",
-      "python_version": "py2",
-      "size": 29165,
-      "upload_time": "2017-04-25T22:42:45",
-      "url": "https://files.pythonhosted.org/packages/1d/f6/4d702f4721f577595da08445a49a7a758868dc566fc27e39b5a11db8e033/quick_server-0.3.1-py2-none-any.whl"
+      "python_version": "py2.py3",
+      "size": 29591,
+      "upload_time": "2017-06-09T23:17:59",
+      "url": "https://files.pythonhosted.org/packages/4b/72/46617d17329774edfc414f04c8d25a2da0b807150e560cba2355f4f89431/quick_server-0.4.0-py2.py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "3b17368345e046f3bcedfecc5cb256f4",
-        "sha256": "64a81e5d069bcc2f38940f8b1a0dd1d8f0e46582e8971cb5d02997682b8eb634"
+        "md5": "fdc2edfcb710546d4eb27e2c7f6cdc65",
+        "sha256": "0f2096184895321e0658e3639c5279bbee8bb2f0fc7ab60924dedc62ae264ee4"
       },
       "downloads": 0,
-      "filename": "quick_server-0.3.1.tar.gz",
+      "filename": "quick_server-0.4.0.tar.gz",
       "has_sig": false,
-      "md5_digest": "3b17368345e046f3bcedfecc5cb256f4",
+      "md5_digest": "fdc2edfcb710546d4eb27e2c7f6cdc65",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 28554,
-      "upload_time": "2017-04-25T22:42:46",
-      "url": "https://files.pythonhosted.org/packages/37/ee/07572161faf28cf5646ed7934988cca5a29501379f367e7ea0763929c0d9/quick_server-0.3.1.tar.gz"
+      "size": 29018,
+      "upload_time": "2017-06-09T23:18:01",
+      "url": "https://files.pythonhosted.org/packages/03/b3/d7f2a01257e21e81216bb0dbd3fab2e8f5b819d8ca3bd7806a6815bf3bc4/quick_server-0.4.0.tar.gz"
     }
   ]
 }
