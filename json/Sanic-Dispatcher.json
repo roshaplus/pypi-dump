@@ -15,7 +15,7 @@
       "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
       "Topic :: Software Development :: Libraries :: Python Modules"
     ],
-    "description": "#Sanic-Dispatcher\n###A Dispatcher extension for Sanic that also acts as a Sanic-to-WSGI adapter \n#\nAllows you to do this: *(seriously)*\n```python\nfrom sanic import Sanic, response\nfrom sanic_dispatcher import SanicDispatcherMiddlewareController\nfrom flask import Flask, make_response, current_app as flask_app\n\napp = Sanic(__name__)\n\ndispatcher = SanicDispatcherMiddlewareController(app)\n\nchild_sanic_app = Sanic(\"MyChildSanicApp\")\n\nchild_flask_app = Flask(\"MyChildFlaskApp\")\n\n@app.middleware(\"response\")\nasync def modify_response(request, response):\n    response.body = response.body + b\"\\nModified by Sanic Response middleware!\"\n    response.headers['Content-Length'] = len(response.body)\n    return response\n\n@app.route(\"/\")\nasync def index(request):\n    return response.text(\"Hello World from {}\".format(request.app.name))\n\n@child_sanic_app.route(\"/\")\nasync def index(request):\n    return response.text(\"Hello World from {}\".format(request.app.name))\n\n@child_flask_app.route(\"/\")\ndef index():\n    app = flask_app\n    return make_response(\"Hello World from {}\".format(app.import_name))\n\ndispatcher.register_sanic_application(child_sanic_app, '/sanicchild', apply_middleware=True)\ndispatcher.register_wsgi_application(child_flask_app.wsgi_app, '/flaskchild', apply_middleware=True)\n\nif __name__ == \"__main__\":\n    app.run(port=8001, debug=True)\n```\n#\n##How To Use\nFirst make a Sanic application the way you normally do:\n```python\nfrom sanic import Sanic\n\napp = Sanic(__name__) # This creates a sanic app\n```\n`app` becomes your 'base' or 'parent' sanic app which will accommodate the Dispatcher extension\n\nCreate a Dispatcher\n```python\nfrom sanic_dispatcher import SanicDispatcherMiddlewareController\n\ndispatcher = SanicDispatcherMiddlewareController(app)\n```\n`dispatcher` is your new dispatcher controller.\n*Note: This takes a reference to `app` as its first parameter, but it does not consume `app`, nor does it return `app`.*\n\n**I want to dispatch another Sanic App**\n```python\napp = Sanic(__name__)\n\ndispatcher = SanicDispatcherMiddlewareController(app)\n\notherapp = Sanic(\"MyChildApp\")\n\ndispatcher.register_sanic_application(otherapp, \"/childprefix\")\n\n@otherapp.route('/')\nasync def index(request):\n    return response.text(\"Hello World from Child App\")\n```\nBrowsing to url `/childprefix/` will invoke the `otherapp` App, and call the `/` route which displays \"Hello World from Child App\"\n\n**What if the other App is a Flask App?**\n```python\nfrom flask import Flask, make_response\n\napp = Sanic(__name__)\n\ndispatcher = SanicDispatcherMiddlewareController(app)\nflaskapp = Flask(\"MyFlaskApp\")\n\n# register the wsgi_app method from the flask app into the dispatcher\ndispatcher.register_wsgi_application(flaskapp.wsgi_app, \"/flaskprefix\")\n\n@flaskapp.route('/')\ndef index():\n    return make_response(\"Hello World from Flask App\")\n```\nBrowsing to url `/flaskprefix/` will invoke the Flask App, and call the `/` route which displays \"Hello World from Flask App\"\n\n**What if the other App is a Django App?**\n```python\nimport my_django_app\n\napp = Sanic(__name__)\n\ndispatcher = SanicDispatcherMiddlewareController(app)\n# register the django wsgi application into the dispatcher\ndispatcher.register_wsgi_application(my_django_app.wsgi.application,\n                                     \"/djangoprefix\")\n```\nBrowsing to url `/djangoprefix/` will invoke the Django App.\n\n**Can I run a default application?**\n\nThe Sanic App `app` you create at the start is also the default app.\n\nWhen you navigate to a URL that does not match a registered dispatch prefix, this Sanic app will handle the request itself as per normal.\n```python\napp = Sanic(__name__)\n\ndispatcher = SanicDispatcherMiddlewareController(app)\n\notherapp = Sanic(\"MyChildApp\")\n\ndispatcher.register_sanic_application(otherapp, \"/childprefix\")\n\n@app.route('/')\nasync def index(request):\n    return response.text(\"Hello World from Default App\")\n\n@otherapp.route('/')\nasync def index(request):\n    return response.text(\"Hello World from Child App\")\n```\nBrowsing to url `/` will *not* invoke any Dispatcher applications, so `app` will handle the request itself, resolving the `/` route which displays \"Hello World from Default App\"\n\n**I want to apply common middleware to the registered applications!**\n\nEasy!\n```python\nimport my_django_app\nfrom flask import Flask, make_response, current_app\n\napp = Sanic(__name__)\n\ndispatcher = SanicDispatcherMiddlewareController(app)\n\nchild_sanic_app = Sanic(\"MyChildSanicApp\")\n\nchild_flask_app = Flask(\"MyChildFlaskApp\")\n\n@app.middleware(\"request\")\nasync def modify_request(request):\n    request.headers['Content-Type'] = \"text/plain\"\n\n@app.middleware(\"response\")\nasync def modify_response(request, response):\n    response.body = response.body + b\"\\nModified by Sanic Response middleware!\"\n    response.headers['Content-Length'] = len(response.body)\n    return response\n\n@app.route(\"/\")\nasync def index(request):\n    return response.text(\"Hello World from {}\".format(request.app.name))\n\n@child_sanic_app.route(\"/\")\nasync def index(request):\n    return response.text(\"Hello World from {}\".format(request.app.name))\n\n@child_flask_app.route(\"/\")\ndef index():\n    app = current_app\n    return make_response(\"Hello World from {}\".format(app.import_name))\n\ndispatcher.register_sanic_application(child_sanic_app,\n                                      '/childprefix', apply_middleware=True)\ndispatcher.register_wsgi_application(my_django_app.wsgi.application,\n                                     '/djangoprefix', apply_middleware=True)\ndispatcher.register_wsgi_application(child_flask_app.wsgi_app,\n                                     '/flaskprefix', apply_middleware=True)\n```\nThe key here is passing `apply_middleware=True` to the relevant register application function. By default `apply_middleware` is set to `False` for all registered dispatcher applications.\n\nIn this example the Sanic Request Middleware `modify_request` will be applied to ALL requests, including those handled by applications registered on the dispatcher. The request middleware will be applied to the `request` *before* it is passed to any registered applications.\n\nIn this example the Sanic Response Middleware `modify_response` will be applied to ALL responses, including those which were generated by applications registered on the dispatcher. The response middleware will be applied to the `response` *after* it is processed by the registered application.",
+    "description": "# Sanic-Dispatcher\n### A Dispatcher extension for Sanic that also acts as a Sanic-to-WSGI adapter \n\nAllows you to do this: *(seriously)*\n```python\nfrom sanic import Sanic, response\nfrom sanic_dispatcher import SanicDispatcherMiddlewareController\nfrom flask import Flask, make_response, current_app as flask_app\n\napp = Sanic(__name__)\n\ndispatcher = SanicDispatcherMiddlewareController(app)\n\nchild_sanic_app = Sanic(\"MyChildSanicApp\")\n\nchild_flask_app = Flask(\"MyChildFlaskApp\")\n\n@app.middleware(\"response\")\nasync def modify_response(request, response):\n    response.body = response.body + b\"\\nModified by Sanic Response middleware!\"\n    response.headers['Content-Length'] = len(response.body)\n    return response\n\n@app.route(\"/\")\nasync def index(request):\n    return response.text(\"Hello World from {}\".format(request.app.name))\n\n@child_sanic_app.route(\"/\")\nasync def index(request):\n    return response.text(\"Hello World from {}\".format(request.app.name))\n\n@child_flask_app.route(\"/\")\ndef index():\n    app = flask_app\n    return make_response(\"Hello World from {}\".format(app.import_name))\n\ndispatcher.register_sanic_application(child_sanic_app, '/sanicchild', apply_middleware=True)\ndispatcher.register_wsgi_application(child_flask_app.wsgi_app, '/flaskchild', apply_middleware=True)\n\nif __name__ == \"__main__\":\n    app.run(port=8001, debug=True)\n```\n\n## Installation \n\n    pip install Sanic-Dispatcher\n\n## How To Use\n\nFirst make a Sanic application the way you normally do:\n```python\nfrom sanic import Sanic\n\napp = Sanic(__name__) # This creates a sanic app\n```\n`app` becomes your 'base' or 'parent' sanic app which will accommodate the Dispatcher extension\n\nCreate a Dispatcher\n```python\nfrom sanic_dispatcher import SanicDispatcherMiddlewareController\n\ndispatcher = SanicDispatcherMiddlewareController(app)\n```\n`dispatcher` is your new dispatcher controller.\n*Note: This takes a reference to `app` as its first parameter, but it does not consume `app`, nor does it return `app`.*\n\n**I want to dispatch another Sanic App**\n```python\napp = Sanic(__name__)\n\ndispatcher = SanicDispatcherMiddlewareController(app)\n\notherapp = Sanic(\"MyChildApp\")\n\ndispatcher.register_sanic_application(otherapp, \"/childprefix\")\n\n@otherapp.route('/')\nasync def index(request):\n    return response.text(\"Hello World from Child App\")\n```\nBrowsing to url `/childprefix/` will invoke the `otherapp` App, and call the `/` route which displays \"Hello World from Child App\"\n\n**What if the other App is a Flask App?**\n```python\nfrom flask import Flask, make_response\n\napp = Sanic(__name__)\n\ndispatcher = SanicDispatcherMiddlewareController(app)\nflaskapp = Flask(\"MyFlaskApp\")\n\n# register the wsgi_app method from the flask app into the dispatcher\ndispatcher.register_wsgi_application(flaskapp.wsgi_app, \"/flaskprefix\")\n\n@flaskapp.route('/')\ndef index():\n    return make_response(\"Hello World from Flask App\")\n```\nBrowsing to url `/flaskprefix/` will invoke the Flask App, and call the `/` route which displays \"Hello World from Flask App\"\n\n**What if the other App is a Django App?**\n```python\nimport my_django_app\n\napp = Sanic(__name__)\n\ndispatcher = SanicDispatcherMiddlewareController(app)\n# register the django wsgi application into the dispatcher\ndispatcher.register_wsgi_application(my_django_app.wsgi.application,\n                                     \"/djangoprefix\")\n```\nBrowsing to url `/djangoprefix/` will invoke the Django App.\n\n**Can I run a default application?**\n\nThe Sanic App `app` you create at the start is also the default app.\n\nWhen you navigate to a URL that does not match a registered dispatch prefix, this Sanic app will handle the request itself as per normal.\n```python\napp = Sanic(__name__)\n\ndispatcher = SanicDispatcherMiddlewareController(app)\n\notherapp = Sanic(\"MyChildApp\")\n\ndispatcher.register_sanic_application(otherapp, \"/childprefix\")\n\n@app.route('/')\nasync def index(request):\n    return response.text(\"Hello World from Default App\")\n\n@otherapp.route('/')\nasync def index(request):\n    return response.text(\"Hello World from Child App\")\n```\nBrowsing to url `/` will *not* invoke any Dispatcher applications, so `app` will handle the request itself, resolving the `/` route which displays \"Hello World from Default App\"\n\n**I want to apply common middleware to the registered applications!**\n\nEasy!\n```python\nimport my_django_app\nfrom flask import Flask, make_response, current_app\n\napp = Sanic(__name__)\n\ndispatcher = SanicDispatcherMiddlewareController(app)\n\nchild_sanic_app = Sanic(\"MyChildSanicApp\")\n\nchild_flask_app = Flask(\"MyChildFlaskApp\")\n\n@app.middleware(\"request\")\nasync def modify_request(request):\n    request.headers['Content-Type'] = \"text/plain\"\n\n@app.middleware(\"response\")\nasync def modify_response(request, response):\n    response.body = response.body + b\"\\nModified by Sanic Response middleware!\"\n    response.headers['Content-Length'] = len(response.body)\n    return response\n\n@app.route(\"/\")\nasync def index(request):\n    return response.text(\"Hello World from {}\".format(request.app.name))\n\n@child_sanic_app.route(\"/\")\nasync def index(request):\n    return response.text(\"Hello World from {}\".format(request.app.name))\n\n@child_flask_app.route(\"/\")\ndef index():\n    app = current_app\n    return make_response(\"Hello World from {}\".format(app.import_name))\n\ndispatcher.register_sanic_application(child_sanic_app,\n                                      '/childprefix', apply_middleware=True)\ndispatcher.register_wsgi_application(my_django_app.wsgi.application,\n                                     '/djangoprefix', apply_middleware=True)\ndispatcher.register_wsgi_application(child_flask_app.wsgi_app,\n                                     '/flaskprefix', apply_middleware=True)\n```\nThe key here is passing `apply_middleware=True` to the relevant register application function. By default `apply_middleware` is set to `False` for all registered dispatcher applications.\n\nIn this example the Sanic Request Middleware `modify_request` will be applied to ALL requests, including those handled by applications registered on the dispatcher. The request middleware will be applied to the `request` *before* it is passed to any registered applications.\n\nIn this example the Sanic Response Middleware `modify_response` will be applied to ALL responses, including those which were generated by applications registered on the dispatcher. The response middleware will be applied to the `response` *after* it is processed by the registered application.",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -31,10 +31,10 @@
     "name": "Sanic-Dispatcher",
     "platform": "any",
     "project_url": "https://pypi.org/project/Sanic-Dispatcher/",
-    "release_url": "https://pypi.org/project/Sanic-Dispatcher/0.5.2.1/",
+    "release_url": "https://pypi.org/project/Sanic-Dispatcher/0.5.4.1/",
     "requires_python": "",
     "summary": "Multi-application dispatcher based on DispatcherMiddleware from the Werkzeug Project.",
-    "version": "0.5.2.1"
+    "version": "0.5.4.1"
   },
   "releases": {
     "0.5.0": [
@@ -286,56 +286,106 @@
         "upload_time": "2017-05-02T07:10:32",
         "url": "https://files.pythonhosted.org/packages/a9/07/55802d9e2304c13b97dd13b0bc829a92190e786a5d0130485ab897e3262f/Sanic-Dispatcher-0.5.2.1.tar.gz"
       }
+    ],
+    "0.5.4.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c569ac0d3a51d618635c31698496241f",
+          "sha256": "15e18bf81ae7427b196cf5efa96cfabf397f7f2a7c0148e4b8324768f59ce245"
+        },
+        "downloads": 0,
+        "filename": "Sanic_Dispatcher-0.5.4.1-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "c569ac0d3a51d618635c31698496241f",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 10181,
+        "upload_time": "2017-06-16T06:59:03",
+        "url": "https://files.pythonhosted.org/packages/6f/35/c0080e08c52ee4669669aae93cc31664ca40103d91067d02120b37406a76/Sanic_Dispatcher-0.5.4.1-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e607a2a8f95c3581311c68d007d48336",
+          "sha256": "3f33d29c0af9677c16b0e4627ee3133815b97df8297b794014d4e56e103ac1c3"
+        },
+        "downloads": 0,
+        "filename": "Sanic_Dispatcher-0.5.4.1-py3.5.egg",
+        "has_sig": false,
+        "md5_digest": "e607a2a8f95c3581311c68d007d48336",
+        "packagetype": "bdist_egg",
+        "python_version": "3.5",
+        "size": 13924,
+        "upload_time": "2017-06-16T06:59:07",
+        "url": "https://files.pythonhosted.org/packages/04/9b/0c6e8c23bf0ac843095a764294b481a7e1fe672ca3680551ea685b7d7406/Sanic_Dispatcher-0.5.4.1-py3.5.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "49ebc128676885b1243dc205c177b4c5",
+          "sha256": "e38d6eea8ff2e867ebb34652430677afafefcce2084e41fa6a9766b75483af2b"
+        },
+        "downloads": 0,
+        "filename": "Sanic-Dispatcher-0.5.4.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "49ebc128676885b1243dc205c177b4c5",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 8076,
+        "upload_time": "2017-06-16T06:59:05",
+        "url": "https://files.pythonhosted.org/packages/52/c3/74d61351e88d646f3638a0b124f5792bc1bb17c099a8df4ce7ef25c4004a/Sanic-Dispatcher-0.5.4.1.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "9dae77e8511bc9c152fef371b5150e2d",
-        "sha256": "b6192efc1e08b98ccc59dc1391f6b0641f80407a0e3365611ef4208febe4342b"
+        "md5": "c569ac0d3a51d618635c31698496241f",
+        "sha256": "15e18bf81ae7427b196cf5efa96cfabf397f7f2a7c0148e4b8324768f59ce245"
       },
       "downloads": 0,
-      "filename": "Sanic_Dispatcher-0.5.2.1-py2.py3-none-any.whl",
+      "filename": "Sanic_Dispatcher-0.5.4.1-py2.py3-none-any.whl",
       "has_sig": false,
-      "md5_digest": "9dae77e8511bc9c152fef371b5150e2d",
+      "md5_digest": "c569ac0d3a51d618635c31698496241f",
       "packagetype": "bdist_wheel",
       "python_version": "py2.py3",
-      "size": 10121,
-      "upload_time": "2017-05-02T07:10:30",
-      "url": "https://files.pythonhosted.org/packages/3c/61/331cb724bde8c72172a26cd7d05dd2b77a2fbdf62b58c57a7dc5c2c89035/Sanic_Dispatcher-0.5.2.1-py2.py3-none-any.whl"
+      "size": 10181,
+      "upload_time": "2017-06-16T06:59:03",
+      "url": "https://files.pythonhosted.org/packages/6f/35/c0080e08c52ee4669669aae93cc31664ca40103d91067d02120b37406a76/Sanic_Dispatcher-0.5.4.1-py2.py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "1808d1dd56253c3b28980aa99390fe5f",
-        "sha256": "e1fb034b697900a427e0abe3d235024b1b8c6995e583590d6d07484190a9f8bf"
+        "md5": "e607a2a8f95c3581311c68d007d48336",
+        "sha256": "3f33d29c0af9677c16b0e4627ee3133815b97df8297b794014d4e56e103ac1c3"
       },
       "downloads": 0,
-      "filename": "Sanic_Dispatcher-0.5.2.1-py3.5.egg",
+      "filename": "Sanic_Dispatcher-0.5.4.1-py3.5.egg",
       "has_sig": false,
-      "md5_digest": "1808d1dd56253c3b28980aa99390fe5f",
+      "md5_digest": "e607a2a8f95c3581311c68d007d48336",
       "packagetype": "bdist_egg",
       "python_version": "3.5",
-      "size": 13932,
-      "upload_time": "2017-05-02T07:10:34",
-      "url": "https://files.pythonhosted.org/packages/f8/68/f573ae15aa558bdda4f1487a47deeeebb8cd96e42e6c21a7240bd2845a95/Sanic_Dispatcher-0.5.2.1-py3.5.egg"
+      "size": 13924,
+      "upload_time": "2017-06-16T06:59:07",
+      "url": "https://files.pythonhosted.org/packages/04/9b/0c6e8c23bf0ac843095a764294b481a7e1fe672ca3680551ea685b7d7406/Sanic_Dispatcher-0.5.4.1-py3.5.egg"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "4a3ca909aba374c425dd1db124a8741c",
-        "sha256": "a9044605936d7b5b9da3345b95472128ef71b3fd3d3b0cec3a619cdf3b3454e3"
+        "md5": "49ebc128676885b1243dc205c177b4c5",
+        "sha256": "e38d6eea8ff2e867ebb34652430677afafefcce2084e41fa6a9766b75483af2b"
       },
       "downloads": 0,
-      "filename": "Sanic-Dispatcher-0.5.2.1.tar.gz",
+      "filename": "Sanic-Dispatcher-0.5.4.1.tar.gz",
       "has_sig": false,
-      "md5_digest": "4a3ca909aba374c425dd1db124a8741c",
+      "md5_digest": "49ebc128676885b1243dc205c177b4c5",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 8015,
-      "upload_time": "2017-05-02T07:10:32",
-      "url": "https://files.pythonhosted.org/packages/a9/07/55802d9e2304c13b97dd13b0bc829a92190e786a5d0130485ab897e3262f/Sanic-Dispatcher-0.5.2.1.tar.gz"
+      "size": 8076,
+      "upload_time": "2017-06-16T06:59:05",
+      "url": "https://files.pythonhosted.org/packages/52/c3/74d61351e88d646f3638a0b124f5792bc1bb17c099a8df4ce7ef25c4004a/Sanic-Dispatcher-0.5.4.1.tar.gz"
     }
   ]
 }
