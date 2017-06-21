@@ -12,7 +12,7 @@
       "Topic :: Scientific/Engineering :: Artificial Intelligence",
       "Topic :: System :: Networking"
     ],
-    "description": "<div align=\"center\">\n  <img src=\"img/logo.png\">\n</div>\n\n# tensorflow-qnd\n\n[![PyPI version](https://badge.fury.io/py/tensorflow-qnd.svg)](https://badge.fury.io/py/tensorflow-qnd)\n[![Python versions](https://img.shields.io/pypi/pyversions/tensorflow-qnd.svg)](setup.py)\n[![Build Status](https://travis-ci.org/raviqqe/tensorflow-qnd.svg?branch=master)](https://travis-ci.org/raviqqe/tensorflow-qnd)\n[![License](https://img.shields.io/badge/license-unlicense-lightgray.svg)](https://unlicense.org)\n\nQuick and Dirty TensorFlow command framework\n\ntensorflow-qnd is a TensorFlow framework to create commands to train and\nevaluate models and make inference with them.\nThe framework is built on top of\n[tf.contrib.learn module](https://github.com/tensorflow/tensorflow/tree/master/tensorflow/contrib/learn/python/learn).\nEspecially if you are working on research projects using TensorFlow, you can\nremove most of boilerplate code with the framework.\nAll you need to do is to define a model constructor `model_fn` and input\nproducer(s) `input_fn` to feed a dataset to the model.\n\n## Features\n\n-   Command creation for:\n    -   Training and evaluation of models\n    -   Inference of labels or regression values with trained models\n-   Configuration of command line options to set hyperparameters of models etc.\n-   [Distributed TensorFlow](https://www.tensorflow.org/how_tos/distributed/)\n    -   Just set an optional argument `distributed` of `def_train_and_evaluate()`\n        as `True` (i.e. `def_train_and_evaluate(distributed=True)`) to enable it.\n    -   Supports only data parallel training\n    -   Only for training but not for inference\n\n## Installation\n\nPython 3.5+ and TensorFlow 1.1+ are required.\n\n```\npip3 install --user --upgrade tensorflow-qnd\n```\n\n## Usage\n\n1.  Add command line arguments with `add_flag` and `add_required_flag` functions.\n2.  Define a `train_and_evaluate` or `infer` function with\n    `def_train_and_evaluate` or `def_infer` function\n3.  Pass `model_fn` (model constructor) and `input_fn` (input producer) functions\n    to the defined function.\n4.  Run the script with appropriate command line arguments.\n\nFor more information, see [documentation](https://raviqqe.github.io/tensorflow-qnd/qnd).\n\n## Examples\n\n`train.py` (command script):\n\n```python\nimport logging\nimport os\n\nimport qnd\n\nimport mnist\n\n\ntrain_and_evaluate = qnd.def_train_and_evaluate(\n    distributed=(\"distributed\" in os.environ))\n\n\nmodel = mnist.def_model()\n\n\ndef main():\n    logging.getLogger().setLevel(logging.INFO)\n    train_and_evaluate(model, mnist.read_file)\n\n\nif __name__ == \"__main__\":\n    main()\n```\n\n`mnist.py` (module):\n\n```python\nimport qnd\nimport tensorflow as tf\n\n\ndef read_file(filename_queue):\n    _, serialized = tf.TFRecordReader().read(filename_queue)\n\n    def scalar_feature(dtype): return tf.FixedLenFeature([], dtype)\n\n    features = tf.parse_single_example(serialized, {\n        \"image_raw\": scalar_feature(tf.string),\n        \"label\": scalar_feature(tf.int64),\n    })\n\n    image = tf.decode_raw(features[\"image_raw\"], tf.uint8)\n    image.set_shape([28**2])\n\n    return tf.to_float(image) / 255 - 0.5, features[\"label\"]\n\n\ndef minimize(loss):\n    return tf.train.AdamOptimizer().minimize(\n        loss,\n        tf.contrib.framework.get_global_step())\n\n\ndef def_model():\n    qnd.add_flag(\"hidden_layer_size\", type=int, default=64,\n                 help=\"Hidden layer size\")\n\n    def model(image, number=None, mode=None):\n        h = tf.contrib.layers.fully_connected(image,\n                                              qnd.FLAGS.hidden_layer_size)\n        h = tf.contrib.layers.fully_connected(h, 10, activation_fn=None)\n\n        predictions = tf.argmax(h, axis=1)\n\n        if mode == tf.contrib.learn.ModeKeys.INFER:\n            return predictions\n\n        loss = tf.reduce_mean(\n            tf.nn.sparse_softmax_cross_entropy_with_logits(labels=number,\n                                                           logits=h))\n\n        return predictions, loss, minimize(loss), {\n            \"accuracy\": tf.contrib.metrics.streaming_accuracy(predictions,\n                                                              number)[1],\n        }\n\n    return model\n```\n\nWith the code above, you can create a command with the following interface.\n\n```\nusage: train.py [-h] [--output_dir OUTPUT_DIR] [--train_steps TRAIN_STEPS]\n                [--eval_steps EVAL_STEPS]\n                [--min_eval_frequency MIN_EVAL_FREQUENCY]\n                [--num_cores NUM_CORES] [--log_device_placement]\n                [--save_summary_steps SAVE_SUMMARY_STEPS]\n                [--save_checkpoints_steps SAVE_CHECKPOINTS_STEPS]\n                [--keep_checkpoint_max KEEP_CHECKPOINT_MAX]\n                [--batch_size BATCH_SIZE]\n                [--batch_queue_capacity BATCH_QUEUE_CAPACITY]\n                [--num_batch_threads NUM_BATCH_THREADS] --train_file\n                TRAIN_FILE [--filename_queue_capacity FILENAME_QUEUE_CAPACITY]\n                --eval_file EVAL_FILE [--hidden_layer_size HIDDEN_LAYER_SIZE]\n\noptional arguments:\n  -h, --help            show this help message and exit\n  --output_dir OUTPUT_DIR\n                        Directory where checkpoint and event files are stored\n                        (default: output)\n  --train_steps TRAIN_STEPS\n                        Maximum number of train steps (default: None)\n  --eval_steps EVAL_STEPS\n                        Maximum number of eval steps (default: 100)\n  --min_eval_frequency MIN_EVAL_FREQUENCY\n                        Minimum evaluation frequency in number of train steps\n                        (default: 1)\n  --num_cores NUM_CORES\n                        Number of CPU cores used. 0 means use of a default\n                        value. (default: 0)\n  --log_device_placement\n                        If specified, log device placement information\n                        (default: False)\n  --save_summary_steps SAVE_SUMMARY_STEPS\n                        Number of steps every time of which summary is saved\n                        (default: 100)\n  --save_checkpoints_steps SAVE_CHECKPOINTS_STEPS\n                        Number of steps every time of which a model is saved\n                        (default: None)\n  --keep_checkpoint_max KEEP_CHECKPOINT_MAX\n                        Max number of kept checkpoint files (default: 86058)\n  --batch_size BATCH_SIZE\n                        Mini-batch size (default: 64)\n  --batch_queue_capacity BATCH_QUEUE_CAPACITY\n                        Batch queue capacity (default: 1024)\n  --num_batch_threads NUM_BATCH_THREADS\n                        Number of threads used to create batches (default: 2)\n  --train_file TRAIN_FILE\n                        File path of train data file(s). A glob is available.\n                        (e.g. train/*.tfrecords) (default: None)\n  --filename_queue_capacity FILENAME_QUEUE_CAPACITY\n                        Capacity of filename queues of train, eval and infer\n                        data (default: 32)\n  --eval_file EVAL_FILE\n                        File path of eval data file(s). A glob is available.\n                        (e.g. eval/*.tfrecords) (default: None)\n  --hidden_layer_size HIDDEN_LAYER_SIZE\n                        Hidden layer size (default: 64)\n```\n\nExplore [examples](examples) directory for more information and see how to run\nthem.\n\n## Caveats\n\n### Necessary update of a global step variable\n\nAs done in [examples](examples), you must get a global step variable with\n`tf.contrib.framework.get_global_step()` and update (increment) it in each\ntraining step.\n\n### Use streaming metrics for `eval_metric_ops`\n\nWhen non-streaming metrics such as `tf.contrib.metrics.accuracy` are used in a\nreturn value `eval_metric_ops` of your `model_fn` or as arguments of\n`ModelFnOps`, their values will be ones of the last batch in every evaluation\nstep.\n\n## Contributing\n\nPlease send issues about any bugs, feature requests or questions, or pull\nrequests.\n\n## License\n\n[The Unlicense](https://unlicense.org)\n\n\n",
+    "description": "<div align=\"center\">\n  <img src=\"img/logo.png\">\n</div>\n\n# tensorflow-qnd\n\n[![PyPI version](https://badge.fury.io/py/tensorflow-qnd.svg)](https://badge.fury.io/py/tensorflow-qnd)\n[![Python versions](https://img.shields.io/pypi/pyversions/tensorflow-qnd.svg)](setup.py)\n[![Build Status](https://travis-ci.org/raviqqe/tensorflow-qnd.svg?branch=master)](https://travis-ci.org/raviqqe/tensorflow-qnd)\n[![License](https://img.shields.io/badge/license-unlicense-lightgray.svg)](https://unlicense.org)\n\nQuick and Dirty TensorFlow command framework\n\ntensorflow-qnd is a TensorFlow framework to create commands to train and\nevaluate models and make inference with them.\nThe framework is built on top of\n[tf.contrib.learn module](https://github.com/tensorflow/tensorflow/tree/master/tensorflow/contrib/learn/python/learn).\nEspecially if you are working on research projects using TensorFlow, you can\nremove most of boilerplate code with the framework.\nAll you need to do is to define a model constructor `model_fn` and input\nproducer(s) `input_fn` to feed a dataset to the model.\n\n## Features\n\n-   Command creation for:\n    -   Training and evaluation of models\n    -   Inference of labels or regression values with trained models\n-   Configuration of command line options to set hyperparameters of models etc.\n-   [Distributed TensorFlow](https://www.tensorflow.org/how_tos/distributed/)\n    -   Just set an optional argument `distributed` of `def_train_and_evaluate()`\n        as `True` (i.e. `def_train_and_evaluate(distributed=True)`) to enable it.\n    -   Supports only data parallel training\n    -   Only for training but not for inference\n\n## Installation\n\nPython 3.5+ and TensorFlow 1.1+ are required.\n\n```\npip3 install --user --upgrade tensorflow-qnd\n```\n\n## Usage\n\n1.  Add command line arguments with `add_flag` and `add_required_flag` functions.\n2.  Define a `train_and_evaluate` or `infer` function with\n    `def_train_and_evaluate` or `def_infer` function\n3.  Pass `model_fn` (model constructor) and `input_fn` (input producer) functions\n    to the defined function.\n4.  Run the script with appropriate command line arguments.\n\nFor more information, see [documentation](https://raviqqe.github.io/tensorflow-qnd/qnd).\n\n## Examples\n\n`train.py` (command script):\n\n```python\nimport logging\nimport os\n\nimport qnd\n\nimport mnist\n\n\ntrain_and_evaluate = qnd.def_train_and_evaluate(\n    distributed=(\"distributed\" in os.environ))\n\n\nmodel = mnist.def_model()\n\n\ndef main():\n    logging.getLogger().setLevel(logging.INFO)\n    train_and_evaluate(model, mnist.read_file)\n\n\nif __name__ == \"__main__\":\n    main()\n```\n\n`mnist.py` (module):\n\n```python\nimport qnd\nimport tensorflow as tf\n\n\ndef _preprocess_image(image):\n    return tf.to_float(image) / 255 - 0.5\n\n\ndef read_file(filename_queue):\n    _, serialized = tf.TFRecordReader().read(filename_queue)\n\n    def scalar_feature(dtype): return tf.FixedLenFeature([], dtype)\n\n    features = tf.parse_single_example(serialized, {\n        \"image_raw\": scalar_feature(tf.string),\n        \"label\": scalar_feature(tf.int64),\n    })\n\n    image = tf.decode_raw(features[\"image_raw\"], tf.uint8)\n    image.set_shape([28**2])\n\n    return _preprocess_image(image), features[\"label\"]\n\n\ndef serving_input_fn():\n    features = {\n        'image': _preprocess_image(tf.placeholder(tf.uint8, [None, 28**2])),\n    }\n\n    return tf.contrib.learn.InputFnOps(features, None, features)\n\n\ndef minimize(loss):\n    return tf.train.AdamOptimizer().minimize(\n        loss,\n        tf.contrib.framework.get_global_step())\n\n\ndef def_model():\n    qnd.add_flag(\"hidden_layer_size\", type=int, default=64,\n                 help=\"Hidden layer size\")\n\n    def model(image, number=None, mode=None):\n        h = tf.contrib.layers.fully_connected(image,\n                                              qnd.FLAGS.hidden_layer_size)\n        h = tf.contrib.layers.fully_connected(h, 10, activation_fn=None)\n\n        predictions = tf.argmax(h, axis=1)\n\n        if mode == tf.contrib.learn.ModeKeys.INFER:\n            return predictions\n\n        loss = tf.reduce_mean(\n            tf.nn.sparse_softmax_cross_entropy_with_logits(labels=number,\n                                                           logits=h))\n\n        return predictions, loss, minimize(loss), {\n            \"accuracy\": tf.contrib.metrics.streaming_accuracy(predictions,\n                                                              number)[1],\n        }\n\n    return model\n```\n\nWith the code above, you can create a command with the following interface.\n\n```\nusage: train.py [-h] [--output_dir OUTPUT_DIR] [--train_steps TRAIN_STEPS]\n                [--eval_steps EVAL_STEPS]\n                [--min_eval_frequency MIN_EVAL_FREQUENCY]\n                [--num_cores NUM_CORES] [--log_device_placement]\n                [--save_summary_steps SAVE_SUMMARY_STEPS]\n                [--save_checkpoints_steps SAVE_CHECKPOINTS_STEPS]\n                [--keep_checkpoint_max KEEP_CHECKPOINT_MAX]\n                [--batch_size BATCH_SIZE]\n                [--batch_queue_capacity BATCH_QUEUE_CAPACITY]\n                [--num_batch_threads NUM_BATCH_THREADS] --train_file\n                TRAIN_FILE [--filename_queue_capacity FILENAME_QUEUE_CAPACITY]\n                --eval_file EVAL_FILE [--hidden_layer_size HIDDEN_LAYER_SIZE]\n\noptional arguments:\n  -h, --help            show this help message and exit\n  --output_dir OUTPUT_DIR\n                        Directory where checkpoint and event files are stored\n                        (default: output)\n  --train_steps TRAIN_STEPS\n                        Maximum number of train steps (default: None)\n  --eval_steps EVAL_STEPS\n                        Maximum number of eval steps (default: 100)\n  --min_eval_frequency MIN_EVAL_FREQUENCY\n                        Minimum evaluation frequency in number of train steps\n                        (default: 1)\n  --num_cores NUM_CORES\n                        Number of CPU cores used. 0 means use of a default\n                        value. (default: 0)\n  --log_device_placement\n                        If specified, log device placement information\n                        (default: False)\n  --save_summary_steps SAVE_SUMMARY_STEPS\n                        Number of steps every time of which summary is saved\n                        (default: 100)\n  --save_checkpoints_steps SAVE_CHECKPOINTS_STEPS\n                        Number of steps every time of which a model is saved\n                        (default: None)\n  --keep_checkpoint_max KEEP_CHECKPOINT_MAX\n                        Max number of kept checkpoint files (default: 86058)\n  --batch_size BATCH_SIZE\n                        Mini-batch size (default: 64)\n  --batch_queue_capacity BATCH_QUEUE_CAPACITY\n                        Batch queue capacity (default: 1024)\n  --num_batch_threads NUM_BATCH_THREADS\n                        Number of threads used to create batches (default: 2)\n  --train_file TRAIN_FILE\n                        File path of train data file(s). A glob is available.\n                        (e.g. train/*.tfrecords) (default: None)\n  --filename_queue_capacity FILENAME_QUEUE_CAPACITY\n                        Capacity of filename queues of train, eval and infer\n                        data (default: 32)\n  --eval_file EVAL_FILE\n                        File path of eval data file(s). A glob is available.\n                        (e.g. eval/*.tfrecords) (default: None)\n  --hidden_layer_size HIDDEN_LAYER_SIZE\n                        Hidden layer size (default: 64)\n```\n\nExplore [examples](examples) directory for more information and see how to run\nthem.\n\n\n## Caveats\n\n### Necessary update of a global step variable\n\nAs done in [examples](examples), you must get a global step variable with\n`tf.contrib.framework.get_global_step()` and update (increment) it in each\ntraining step.\n\n### Use streaming metrics for `eval_metric_ops`\n\nWhen non-streaming metrics such as `tf.contrib.metrics.accuracy` are used in a\nreturn value `eval_metric_ops` of your `model_fn` or as arguments of\n`ModelFnOps`, their values will be ones of the last batch in every evaluation\nstep.\n\n## Contributing\n\nPlease send issues about any bugs, feature requests or questions, or pull\nrequests.\n\n## License\n\n[The Unlicense](https://unlicense.org)\n\n\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -28,10 +28,10 @@
     "name": "tensorflow-qnd",
     "platform": "",
     "project_url": "https://pypi.org/project/tensorflow-qnd/",
-    "release_url": "https://pypi.org/project/tensorflow-qnd/0.1.3/",
+    "release_url": "https://pypi.org/project/tensorflow-qnd/0.1.6/",
     "requires_python": "",
     "summary": "Quick and Dirty TensorFlow command framework",
-    "version": "0.1.3"
+    "version": "0.1.6"
   },
   "releases": {
     "0.0.1": [
@@ -1067,56 +1067,206 @@
         "upload_time": "2017-06-19T10:18:07",
         "url": "https://files.pythonhosted.org/packages/12/75/cd2657d3bc995efc453a1df50c909a381050c6187e9ec02507d472667bf8/tensorflow-qnd-0.1.3.tar.gz"
       }
+    ],
+    "0.1.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "675eeee43b15a30ac88e6f773e5dba0f",
+          "sha256": "ec628ea18a80ef309609c7bc5e84fb02bd846d81f0d7fe428de54adacb9e7199"
+        },
+        "downloads": 0,
+        "filename": "tensorflow_qnd-0.1.4-py3.6.egg",
+        "has_sig": false,
+        "md5_digest": "675eeee43b15a30ac88e6f773e5dba0f",
+        "packagetype": "bdist_egg",
+        "python_version": "3.6",
+        "size": 36490,
+        "upload_time": "2017-06-21T11:28:33",
+        "url": "https://files.pythonhosted.org/packages/a4/ae/8f6ed33b884c26e8392b2792432468e4b7b01bdf202174087efa07fcdf11/tensorflow_qnd-0.1.4-py3.6.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4469dbe1d0f93bfdd3f945da13be6e7c",
+          "sha256": "8ef33d529ce0152a1522b93fab28e5dd9994e14582f808d70e90396e495b8615"
+        },
+        "downloads": 0,
+        "filename": "tensorflow_qnd-0.1.4-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "4469dbe1d0f93bfdd3f945da13be6e7c",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "size": 20814,
+        "upload_time": "2017-06-21T11:28:30",
+        "url": "https://files.pythonhosted.org/packages/ee/31/20ad5b5e2fb7730303a023fa498ce6ebc413e29f86376ff652a1ebde226b/tensorflow_qnd-0.1.4-py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "eb50c2d4e5bbd780f1bc01461d5fed43",
+          "sha256": "f91ac7aff27e9cab97978f47f248b867df3b7aaf72d2f7956a08f521b2a49029"
+        },
+        "downloads": 0,
+        "filename": "tensorflow-qnd-0.1.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "eb50c2d4e5bbd780f1bc01461d5fed43",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 15250,
+        "upload_time": "2017-06-21T11:28:32",
+        "url": "https://files.pythonhosted.org/packages/40/fb/1ff669f552f0653f137e8b9e71686e915f1918adbabb3be6147a0d197ef7/tensorflow-qnd-0.1.4.tar.gz"
+      }
+    ],
+    "0.1.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "fed8cc08aa2f18749f80261dba83d56e",
+          "sha256": "d472c6b386a1cddae3f01b161fbe6446b8997d328e7eb17268787f31c8474d9e"
+        },
+        "downloads": 0,
+        "filename": "tensorflow_qnd-0.1.5-py3.6.egg",
+        "has_sig": false,
+        "md5_digest": "fed8cc08aa2f18749f80261dba83d56e",
+        "packagetype": "bdist_egg",
+        "python_version": "3.6",
+        "size": 36593,
+        "upload_time": "2017-06-21T12:23:05",
+        "url": "https://files.pythonhosted.org/packages/ce/db/0e7def9fcb1de5e8549fc25531b55f2f27fc5cb990ccceed2093e17d8e03/tensorflow_qnd-0.1.5-py3.6.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f09425d700a2cd534bcdd50632d53678",
+          "sha256": "f3184d38b71ab000cbc655670970a728786221d002569f724c2d6f2b26423ed1"
+        },
+        "downloads": 0,
+        "filename": "tensorflow_qnd-0.1.5-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "f09425d700a2cd534bcdd50632d53678",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "size": 20857,
+        "upload_time": "2017-06-21T12:23:01",
+        "url": "https://files.pythonhosted.org/packages/eb/1b/5427c159e5658819e99d50a0106c14ff0cefb61efa66d22fe9528adaa9be/tensorflow_qnd-0.1.5-py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "47b03261720c7215a579bbc69681d404",
+          "sha256": "dc2ee6dd1308754d80efb9eeb0937aa275d121eb5c0c759d1c5433e33520335b"
+        },
+        "downloads": 0,
+        "filename": "tensorflow-qnd-0.1.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "47b03261720c7215a579bbc69681d404",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 15296,
+        "upload_time": "2017-06-21T12:23:03",
+        "url": "https://files.pythonhosted.org/packages/b7/45/458c5b183b10c8c1b52f11287d872aa4c2d3ea2546642a2751ba08638043/tensorflow-qnd-0.1.5.tar.gz"
+      }
+    ],
+    "0.1.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5c9635748947b21d50e825ebce93a7c4",
+          "sha256": "599ff0fe8fe0bde3b7dc733a8011dc4d15ecadbae03188d2402e06fead3b1e3b"
+        },
+        "downloads": 0,
+        "filename": "tensorflow_qnd-0.1.6-py3.6.egg",
+        "has_sig": false,
+        "md5_digest": "5c9635748947b21d50e825ebce93a7c4",
+        "packagetype": "bdist_egg",
+        "python_version": "3.6",
+        "size": 36669,
+        "upload_time": "2017-06-21T13:00:14",
+        "url": "https://files.pythonhosted.org/packages/ee/0a/f6501fd519fcbe764cd478f52994b264ab572981e89fb9a664228a5fa0cb/tensorflow_qnd-0.1.6-py3.6.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0c1da6628bf4222d54a625d21e7e0375",
+          "sha256": "22296c6a7109c5827ccbba25fce3ca6179dcd8082a5dd9f4aff794dbd3bf3d4b"
+        },
+        "downloads": 0,
+        "filename": "tensorflow_qnd-0.1.6-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "0c1da6628bf4222d54a625d21e7e0375",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "size": 20887,
+        "upload_time": "2017-06-21T13:00:11",
+        "url": "https://files.pythonhosted.org/packages/00/e5/b60f8f4c991a921f4d8a4b04a4f195af048f8285dbfb0b0d709e783176d3/tensorflow_qnd-0.1.6-py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9da31f1b6b3d6287c01b104c02cda288",
+          "sha256": "63a0e125b12485073f48dba6ea3bf7f3d8c65cb5a0eb49aa31a45dd4ec71a0ac"
+        },
+        "downloads": 0,
+        "filename": "tensorflow-qnd-0.1.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "9da31f1b6b3d6287c01b104c02cda288",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 15316,
+        "upload_time": "2017-06-21T13:00:13",
+        "url": "https://files.pythonhosted.org/packages/86/aa/f63a0e3948d73fefec0853a3f20f783e219fd2247b0287ee9c5f6c962ec5/tensorflow-qnd-0.1.6.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "b4c3b82d02d222be0f9db2c32f9e1d6e",
-        "sha256": "d798d3e54281e329613f6ef64293929ab8367f93baba6ad21b3e55bf61f6a47a"
+        "md5": "5c9635748947b21d50e825ebce93a7c4",
+        "sha256": "599ff0fe8fe0bde3b7dc733a8011dc4d15ecadbae03188d2402e06fead3b1e3b"
       },
       "downloads": 0,
-      "filename": "tensorflow_qnd-0.1.3-py3.6.egg",
+      "filename": "tensorflow_qnd-0.1.6-py3.6.egg",
       "has_sig": false,
-      "md5_digest": "b4c3b82d02d222be0f9db2c32f9e1d6e",
+      "md5_digest": "5c9635748947b21d50e825ebce93a7c4",
       "packagetype": "bdist_egg",
       "python_version": "3.6",
-      "size": 36414,
-      "upload_time": "2017-06-19T10:18:10",
-      "url": "https://files.pythonhosted.org/packages/57/c5/4e4093663b9bd69d8d7173c3382351dd38a6b10d58027aa3a80d243443fe/tensorflow_qnd-0.1.3-py3.6.egg"
+      "size": 36669,
+      "upload_time": "2017-06-21T13:00:14",
+      "url": "https://files.pythonhosted.org/packages/ee/0a/f6501fd519fcbe764cd478f52994b264ab572981e89fb9a664228a5fa0cb/tensorflow_qnd-0.1.6-py3.6.egg"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "edaa7bdf7ab083c70a2d9e863841fd7a",
-        "sha256": "d5d0226470a3ab06139acfabcbb0284932c7174e6ff794b72ce9874d66313b0c"
+        "md5": "0c1da6628bf4222d54a625d21e7e0375",
+        "sha256": "22296c6a7109c5827ccbba25fce3ca6179dcd8082a5dd9f4aff794dbd3bf3d4b"
       },
       "downloads": 0,
-      "filename": "tensorflow_qnd-0.1.3-py3-none-any.whl",
+      "filename": "tensorflow_qnd-0.1.6-py3-none-any.whl",
       "has_sig": false,
-      "md5_digest": "edaa7bdf7ab083c70a2d9e863841fd7a",
+      "md5_digest": "0c1da6628bf4222d54a625d21e7e0375",
       "packagetype": "bdist_wheel",
       "python_version": "py3",
-      "size": 20657,
-      "upload_time": "2017-06-19T10:18:06",
-      "url": "https://files.pythonhosted.org/packages/be/84/418f5cc8023e840231dfa1208288422e34a011d72ffd3dbd7b7424bb2769/tensorflow_qnd-0.1.3-py3-none-any.whl"
+      "size": 20887,
+      "upload_time": "2017-06-21T13:00:11",
+      "url": "https://files.pythonhosted.org/packages/00/e5/b60f8f4c991a921f4d8a4b04a4f195af048f8285dbfb0b0d709e783176d3/tensorflow_qnd-0.1.6-py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "c5084d99684f734b19f42d25989ef1f4",
-        "sha256": "76a98c612a2d478fab0d7b92efc6e5c748ca7bb5ae8143c6d7c8565d4b008c84"
+        "md5": "9da31f1b6b3d6287c01b104c02cda288",
+        "sha256": "63a0e125b12485073f48dba6ea3bf7f3d8c65cb5a0eb49aa31a45dd4ec71a0ac"
       },
       "downloads": 0,
-      "filename": "tensorflow-qnd-0.1.3.tar.gz",
+      "filename": "tensorflow-qnd-0.1.6.tar.gz",
       "has_sig": false,
-      "md5_digest": "c5084d99684f734b19f42d25989ef1f4",
+      "md5_digest": "9da31f1b6b3d6287c01b104c02cda288",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 15087,
-      "upload_time": "2017-06-19T10:18:07",
-      "url": "https://files.pythonhosted.org/packages/12/75/cd2657d3bc995efc453a1df50c909a381050c6187e9ec02507d472667bf8/tensorflow-qnd-0.1.3.tar.gz"
+      "size": 15316,
+      "upload_time": "2017-06-21T13:00:13",
+      "url": "https://files.pythonhosted.org/packages/86/aa/f63a0e3948d73fefec0853a3f20f783e219fd2247b0287ee9c5f6c962ec5/tensorflow-qnd-0.1.6.tar.gz"
     }
   ]
 }
