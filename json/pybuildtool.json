@@ -6,7 +6,7 @@
     "classifiers": [],
     "description": "PyBuildTool\n===========\n\n* License      : MIT\n* Project URL  : http://github.com/dozymoe/PyBuildTool\n\n\nSummary\n-------\n\nPyBuildTool helps transform resources and run automated tests as you code, I\nusually have it watched the project files while editing with vim.\n\nPyBuildTool is written in python as a higher level interface to `Waf\n<http://waf.io>`_, a meta build system.\n\nThe configuration file you'd interact with: ``build.yml``, is declarative,\nwritten in yaml. While the build tools which you could also write, were made to\nbe simple, following a pattern.\n\nThe configuration file does not need to be named \"build.yml\", just change\nthe file ``wscript`` (this is something that waf needs). You need to create\n``wscript`` file yourself, following the example here:\nhttp://raw.githubusercontent.com/dozymoe/PyBuildTool/master/pybuildtool/wscript.example\n\nThere are builtin tools, you can use them as examples to build your own build\ntools, see them here: http://github.com/dozymoe/PyBuildTool/tree/master/pybuildtool/tools.\nSee how they were imported by the ``wscript`` file.\n\nSince you control the ``wscript`` file, you control much of the aspect of the\nbuild process.\n\nIf you wanted to go deeper than just editing ``build.yml`` you could read\n`introduction to waf and wscript <http://waf.io/apidocs/tutorial.html>`_, or\na more technical `waf project structure <http://waf.io/book/#_basic_project_structure>`_.\n\nThere're three stages predefined: \"dev\", \"stage\", and \"prod\" (see the\n``wscript`` file), but the functionality isn't there yet, they have separate\ntemporary build directory of their own but they still share the same build\nrules.\n\nCurrently stages were implemented like this: for ``clean-css`` tool, if the\ncurrent stage was one of \"dev\" or \"devel\" or \"development\" it will do copy\noperation instead of css file minification.\n\nThis is an example of ``build.yml``, pretend it's a django project:\n\n.. code:: yaml\n\n    # Macro, reusable definition, defined once - used plenty.\n    # The word started with ampersand (&) is called yaml node anchor.\n    # The anchor is what matters, it's a yaml feature.\n    #\n    # Group name in all uppercase will be ignored.\n    #\n    # {_1} is a replacement pattern for parent group's name at level 1.\n    # It is being used to easily reproduce the directory structure.\n    JSHINT_EXCLUDES: &JSHINT_EXCLUDES\n        - \"{_1}/{_2}/js/jquery.js\"\n        - \"{_1}/{_2}/js/require.js\"\n        - \"{_1}/{_2}/js/underscore.js\"\n\n\n    # Build group at level 1.\n    djangoprj:\n        # This is special, not a group.\n        options:\n            # Lower level tool configurations can be defined at higher level.\n            #\n            # `config_file` of the tool `jshint`\n            jshint_config_file: \"etc/jshint.rc\"\n            # `config_file` of the tool `pylint`\n            pylint_config_file: \"etc/pylint.rc\"\n\n        # Build group at level 2\n        blogapp:\n            # The lowest level group is the tool being used, if no such tool\n            # was found a fatal error will be raised.\n            jshint:\n                # Wildcards is a okay, see ant-glob.\n                file_in: \"{_1}/{_2}/js/**/*.js\"\n                # Tokens are virtual keys (not real files), can be used\n                # as dependency of another tool\n                token_out: \"{_1}:{_2}:{_3}\"\n            concat:\n                # `raw_file_in` will be monitored for changes by `waf watch`\n                raw_file_in: \"{_1}/{_2}/js/**/*.js\"\n                # `{_1}:{_2}` will be replaced with the groups' names, in this\n                # case it will be read as `djangoprj:blogapp:jshint`\n                token_in: \"{_1}:{_2}:jshint\"\n                # Relative files are relative to the directory where you\n                # run `waf configure`\n                file_out: \"js/blogapp.js\"\n\n        # Build group at level 2\n        djangoprj:\n            # Test javascript files syntax for errors\n            jshint:\n                options:\n                    # Example of macro usage, see yaml node anchor.\n                    # `_source_excluded_` is a special directive, excludes some\n                    # files listed in `file_in` (could be from wildcards) from\n                    # being processed.\n                    _source_excluded_: *JSHINT_EXCLUDES\n                file_in: \"{_1}/{_2}/js/**/*.js\"\n                token_out: \"{_1}:{_2}:{_3}\"\n            # Test javascript files syntax for errors\n            jscs:\n                options:\n                    _source_excluded_: *JSHINT_EXCLUDES\n                    # This one is defined here, not in higher level group\n                    config_file: \"etc/jscs.rc\"\n                file_in: \"{_1}/{_2}/js/**/*.js\"\n                token_out: \"{_1}:{_2}:{_3}\"\n            # Test python files syntax for errors\n            pylint:\n                raw_file_in: \"{_1}/{_2}/**/*.py\"\n                token_out: \"{_1}:{_2}:{_3}\"\n            # Concacenate javascript files into one file for production site\n            concat:\n                token_in:\n                    # Can has multiple items\n                    -   \"@djangoprj:djangoprj:jshint\"\n                    -   \"{_1}:{_2}:jscs\"\n                # The `@` symbol means to use the files produced by other tools\n                file_in: \"@{_1}:blogapp:concat\"\n                raw_file_in: \"{_1}/{_2}/js/**/*.js\"\n                file_out: \"js/djangoprj.js\"\n            # Copy final javascript file to production directory\n            cp:\n                file_in: \"@{_1}:{_2}:concat\"\n                # Files usually produced in sandbox directories, `raw_file_out`\n                # directive made it produced in the real project directory\n                raw_file_out: \"dist/\"\n            # Copy compressed final javascript file to production\n            # directory\n            uglifyjs:\n                file_in: \"@{_1}:{_2}:concat\"\n                # Directory as target is a okay, directory must ends with `/`.\n                raw_file_out: \"dist/\"\n\n\nSeveral things to keep in mind:\n\n-   \"djangoprj\", \"blogapp\", \"jshint\", \"concat\" are group names.\n\n-   JSHINT_EXCLUDES is not a group name (it matches all capital letters and\n    underscore), pybuildtool will not recognize this entry, but ``yaml.load``\n    will.\n    It can be used as `yaml node anchor`_.\n\n-   ``{_1}`` is string replacement thingy for a group name based on its level.\n\n-   Because group name can be used as string replacement for file\n    names, they can be used to represent directory structures.\n\n-   \"@djangoprj:djangoprj:jshint\" is a reference to files or token\n    generated by the rule \"djangoprj\"-\"djangoprj\"-\"jshint\", that is,\n    the combination of its ``file_out``, ``raw_file_out`` and ``extra_out``.\n\n-   You can use `ant glob`_ like this ``**/*.js``\n\n-   You can use directory as output, they must end with path separator, for\n    example: \"minified_js/\"\n\n-   The child-most groups are special, they must match tool name like \"jshint\",\n    \"concat\", \"pylint\", \"uglifyjs\", etc.\n\n-   Rules are read in the order they are written, you can reference other rules\n    generated output files as a input files but those rules must have been\n    specified before.\n    We don't support lazy loading of rules yet.\n\n-   The directive ``raw_file_in`` or ``raw_depend_in`` is used for ``waf watch``\n    to get list of files need to be monitored.\n\n-   The directive ``depend_in`` can be used to force the tool to process\n    ``file_in`` if files in ``depend_in`` changes.\n\n-   The directive ``extra_out`` can be used to list auxiliary files produced by\n    the tool, it can be used with combination of ``@group:group`` directive as\n    inputs for other tools.\n\n-   The option field: ``_source_excluded_`` is list of files which will be\n    excluded from inputs.\n\n-   The directive ``raw_file_out`` means this rule's outputs will be\n    written in the actual file system, by default it's generated inside\n    '.BUILD/stage/' directory.\n\n-   The option field: ``config_file`` is configuration item provided by each\n    tools, in this case it was provided by \"pylint\", \"jshint\", and \"jscs\", and\n    they happened to have used the same name.  \n    When option field is placed in higher group level, it's prefixed with the\n    tool name, for example: \"jscs_config_file\"\n\n\nWarning\n-------\n\n``waf`` does not like it if the source and target existed in the same directory,\nsee: `Files are always built`_.\n\n\nInstall\n-------\n\n1.   ``pip install pybuildtool``\n\n\n#.   Install **waf** as executable binary, download from `Waf project\n     <http://waf.io>`_.\n\n     You could also ``pip install waftools`` and then run ``wafinstall``,\n     caution: this method will modify your ``~/.bashrc`` adding ``WAFDIR=???``.\n\n#.   Copy and modify ``wscript`` in your project's root directory, specify the\n     build tools your are going to use.\n\n#.   Create ``build.yml`` with content like our example, this will be\n     your build rules.\n\n#.   ``waf configure``\n\n#.   ``waf build_dev`` or ``waf watch_dev``\n\n\n.. _ant glob: http://ant.apache.org/manual/dirtasks.html\n.. _yaml node anchor: http://yaml.org/spec/1.2/spec.html#id2785586\n.. _Files are always built: https://code.google.com/p/waf/wiki/FAQ#The_same_files_are_always_built\n",
     "docs_url": null,
-    "download_url": "https://github.com/dozymoe/PyBuildTool/tarball/2.0.10",
+    "download_url": "https://github.com/dozymoe/PyBuildTool/tarball/2.0.11",
     "downloads": {
       "last_day": 0,
       "last_month": 0,
@@ -20,10 +20,10 @@
     "name": "pybuildtool",
     "platform": "any",
     "project_url": "https://pypi.org/project/pybuildtool/",
-    "release_url": "https://pypi.org/project/pybuildtool/2.0.10/",
+    "release_url": "https://pypi.org/project/pybuildtool/2.0.11/",
     "requires_python": null,
     "summary": "Build utility to manage web resources",
-    "version": "2.0.10"
+    "version": "2.0.11"
   },
   "releases": {
     "2.0.1": [
@@ -60,6 +60,24 @@
         "size": 50796,
         "upload_time": "2017-04-22T00:12:31",
         "url": "https://files.pythonhosted.org/packages/fa/35/df99bcc254d77592426af582c722a5b63cb7e21e648ab3b70e95f2f2d333/pybuildtool-2.0.10.tar.gz"
+      }
+    ],
+    "2.0.11": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5fb2e338c84fca37179a82751c97c5de",
+          "sha256": "23836244b30ff1f7972dcf51e5edc36ee8c106705d9926596ef8652d7235469f"
+        },
+        "downloads": 0,
+        "filename": "pybuildtool-2.0.11.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5fb2e338c84fca37179a82751c97c5de",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 52531,
+        "upload_time": "2017-06-22T02:08:28",
+        "url": "https://files.pythonhosted.org/packages/11/0c/1121f7d089a93be0867e65c648ffd4a248f7bdf2a91a8243d239f06729ef/pybuildtool-2.0.11.tar.gz"
       }
     ],
     "2.0.2": [
@@ -211,18 +229,18 @@
     {
       "comment_text": "",
       "digests": {
-        "md5": "5bc1ad0bee655ffe281533780a4cfddc",
-        "sha256": "d3923f9be2ed263b2a122c31dc81b7c763a83af9e20a86e7438e5ce17e7ce896"
+        "md5": "5fb2e338c84fca37179a82751c97c5de",
+        "sha256": "23836244b30ff1f7972dcf51e5edc36ee8c106705d9926596ef8652d7235469f"
       },
       "downloads": 0,
-      "filename": "pybuildtool-2.0.10.tar.gz",
+      "filename": "pybuildtool-2.0.11.tar.gz",
       "has_sig": false,
-      "md5_digest": "5bc1ad0bee655ffe281533780a4cfddc",
+      "md5_digest": "5fb2e338c84fca37179a82751c97c5de",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 50796,
-      "upload_time": "2017-04-22T00:12:31",
-      "url": "https://files.pythonhosted.org/packages/fa/35/df99bcc254d77592426af582c722a5b63cb7e21e648ab3b70e95f2f2d333/pybuildtool-2.0.10.tar.gz"
+      "size": 52531,
+      "upload_time": "2017-06-22T02:08:28",
+      "url": "https://files.pythonhosted.org/packages/11/0c/1121f7d089a93be0867e65c648ffd4a248f7bdf2a91a8243d239f06729ef/pybuildtool-2.0.11.tar.gz"
     }
   ]
 }

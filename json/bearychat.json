@@ -17,7 +17,7 @@
       "Programming Language :: Python :: Implementation :: PyPy",
       "Topic :: Software Development"
     ],
-    "description": "========================\nPython SDK for BearyChat\n========================\n\n|@BearyChat|\n|Build Status|\n|Development Status|\n|Documentation Status|\n\n`Documentation <http://bearychat.readthedocs.io/en/latest/?badge=latest>`_\n\nRequirements\n------------\n\n- Python: 2.7/3.5\n- `requests <https://github.com/kennethreitz/requests>`_\n\nInstallation\n------------\n\nUse pip to install bearychat SDK.\n\n::\n\n    $ pip install bearychat\n\nor for development:\n\n::\n\n    $ git clone https://github.com/bearyinnovative/bearychat.py.git\n    $ cd bearychat.py\n    $ python setup.py install\n\nExamples\n--------\n\n- Incoming\n\n.. code:: python\n\n    from bearychat import incoming\n\n    def main():\n        data = {\n            \"text\": \"hello, **world**\",\n            \"markdown\": True,\n            \"notification\": \"Hello, BearyChat in Notification\",\n            \"channel\": \"testing\"\n        }\n\n        resp = incoming.send(\n            \"https://hook.bearychat.com/=bw52O/incoming/token\",\n            data)\n\n        print(resp.status_code)\n        print(resp.text)\n\n\n    if __name__ == \"__main__\":\n        main()\n\n- Real Time Message\n\n.. code:: python\n\n    import sys\n    import time\n    import json\n    import threading\n\n    import websocket\n\n    from bearychat import RTMMessage, RTMMessageType\n\n    if sys.version_info > (3, ):\n        from queue import Queue\n        from _thread import start_new_thread\n    else:\n        from Queue import Queue\n        from thread import start_new_thread\n\n\n    class RTMLoop(object):\n        \"\"\"Real Time Message loop\n\n        _errors(Queue): contains error message(dict(\"result\", \"msg\")),\n                        looks self._set_error()\n        _inbox(Queue): contains RTMMessage\n        _worker(threading.Thread): a thread for running the loop\n\n        Args:\n            ws_host(str): websocket host\n        \"\"\"\n\n        def __init__(self, ws_host):\n            self._call_id = 0\n            self._inbox = Queue()\n            self._errors = Queue()\n            self._ws = websocket.WebSocketApp(\n                ws_host,\n                on_open=self.on_open,\n                on_message=self.on_message,\n                on_close=self.on_close,\n                on_error=self.on_error)\n            self._worker = threading.Thread(target=self._ws.run_forever)\n\n        def on_open(self, ws):\n            \"\"\"Websocket on_open event handler\"\"\"\n            def keep_alive(interval):\n                while True:\n                    time.sleep(interval)\n                    self.ping()\n\n            start_new_thread(keep_alive, (self.keep_alive_interval, ))\n\n        def on_message(self, ws, message):\n            \"\"\"Websocket on_message event handler\n\n            Saves message as RTMMessage in self._inbox\n            \"\"\"\n            try:\n                data = json.loads(message)\n            except:\n                self._set_error(message, \"decode message failed\")\n            else:\n                self._inbox.put(RTMMessage(data))\n\n        def on_error(self, ws, error):\n            \"\"\"Websocket on_error event handler\n\n            Saves error message in self._errors\n            \"\"\"\n            self._set_error(error, \"read socket failed\")\n\n        def on_close(self, ws):\n            \"\"\"Websocket on_close event handler\"\"\"\n            self._set_error(\"closed\", \"websocket closed\")\n\n        def _set_error(self, result, msg):\n            \"\"\"Puts a error to self._errors\n\n            Args:\n                result(mix): received data\n                msg(str): message\n            \"\"\"\n            self._errors.put({\"result\": result, \"msg\": msg})\n\n        def start(self, keep_alive_interval=2):\n            \"\"\"Starts the main loop\n\n            Args:\n                keep_alive_interval(int): the interval(second) of sending keep\n                                          alive message\n            \"\"\"\n            self.keep_alive_interval = keep_alive_interval\n            self._worker.start()\n\n        def stop(self):\n            \"\"\"Stops the main loop\n            \"\"\"\n            self._ws.close()\n\n        def ping(self):\n            \"\"\"Sends ping message\n            \"\"\"\n            self.send(RTMMessage({\"type\": RTMMessageType.Ping}))\n\n        def gen_call_id(self):\n            \"\"\"Generates a call_id\n\n            Returns:\n                int: the call_id\n            \"\"\"\n            self._call_id += 1\n            return self._call_id\n\n        def send(self, message):\n            \"\"\"Sends a RTMMessage\n            Should be called after starting the loop\n\n            Args:\n                message(RTMMessage): the sending message\n\n            Raises:\n                WebSocketConnectionClosedException: if the loop is closed\n            \"\"\"\n            if \"call_id\" not in message:\n                message[\"call_id\"] = self.gen_call_id()\n\n            self._ws.send(message.to_json())\n\n        def get_message(self, block=False, timeout=None):\n            \"\"\"Removes and returns a RTMMessage from self._inbox\n\n            Args:\n                block(bool): if True block until a RTMMessage is available,\n                             else it will return None when self._inbox is empty\n                timeout(int): it blocks at most timeout seconds\n\n            Returns:\n                RTMMessage if self._inbox is not empty, else None\n            \"\"\"\n            try:\n                message = self._inbox.get(block=block, timeout=timeout)\n                return message\n            except:\n                return None\n\n        def get_error(self, block=False, timeout=None):\n            \"\"\"Removes and returns an error from self._errors\n\n            Args:\n                block(bool): if True block until a RTMMessage is available,\n                             else it will return None when self._inbox is empty\n                timeout(int): it blocks at most timeout seconds\n\n            Returns:\n                error if inbox is not empty, else None\n            \"\"\"\n            try:\n                error = self._errors.get(block=block, timeout=timeout)\n                return error\n            except:\n                return None\n\n\n**BearyChat SDK **DOES NOT** provide rtm loop, you should implement it**\n\n\n.. code:: python\n\n    import time\n\n    from bearychat import RTMClient\n\n    from rtm_loop import RTMLoop\n\n    client = RTMClient(\"rtm_token\", \"https://rtm.bearychat.com\")\n    # init the rtm client\n\n    resp = client.start()  # get rtm user and ws_host\n\n    user = resp[\"user\"]\n    ws_host = resp[\"ws_host\"]\n\n    loop = RTMLoop(ws_host)  # init the loop\n    loop.start()\n    time.sleep(2)\n\n    while True:\n        error = loop.get_error()\n\n        if error:\n            print(error)\n            continue\n\n        message = loop.get_message(True, 5)\n\n        if not message or not message.is_chat_message():\n            continue\n        try:\n            print(\"rtm loop received {0} from {1}\".format(message[\"text\"],\n                                                          message[\"uid\"]))\n        except:\n            continue\n\n        if message.is_from(user):\n            continue\n        loop.send(message.refer(\"Pardon?\"))\n\nDevelopment\n-----------\n\nOpenAPI Client Building\n~~~~~~~~~~~~~~~~~~~~~~~\n\n.. code:: shell\n\n  $ ./scripts/gen_api.py > bearychat/openapi/_api.py\n\n\nLicense\n-------\n\nMIT\n\n\n.. |@BearyChat| image:: http://openapi.beary.chat/badge.svg\n   :target: http://openapi.beary.chat/join\n.. |Build Status| image:: https://travis-ci.org/bearyinnovative/bearychat.py.svg\n   :target: https://travis-ci.org/bearyinnovative/bearychat.py\n.. |Development Status| image:: https://img.shields.io/badge/status-WIP-yellow.svg?style=flat-square\n.. |Documentation Status| image:: https://readthedocs.org/projects/bearychat/badge/?version=latest\n   :target: http://bearychat.readthedocs.io/en/latest/?badge=latest\n",
+    "description": "========================\nPython SDK for BearyChat\n========================\n\n|@BearyChat|\n|Build Status|\n|Development Status|\n|Documentation Status|\n\n`Documentation <http://bearychat.readthedocs.io/en/latest/?badge=latest>`_\n\nRequirements\n------------\n\n- Python: 2.7/3.5\n- `requests <https://github.com/kennethreitz/requests>`_\n\nInstallation\n------------\n\nUse pip to install bearychat SDK.\n\n::\n\n    $ pip install bearychat\n\nor for development:\n\n::\n\n    $ git clone https://github.com/bearyinnovative/bearychat.py.git\n    $ cd bearychat.py\n    $ python setup.py install\n\nExamples\n--------\n\nIncoming\n~~~~~~~~\n\n.. code:: python\n\n    from bearychat import incoming\n\n    def main():\n        data = {\n            \"text\": \"hello, **world**\",\n            \"markdown\": True,\n            \"notification\": \"Hello, BearyChat in Notification\",\n            \"channel\": \"testing\"\n        }\n\n        resp = incoming.send(\n            \"https://hook.bearychat.com/=bw52O/incoming/token\",\n            data)\n\n        print(resp.status_code)\n        print(resp.text)\n\n\n    if __name__ == \"__main__\":\n        main()\n\n\nReal Time Message\n~~~~~~~~~~~~~~~~~\n\nBearyChat SDK **DOES NOT** provide rtm loop, you should implement it with your\nfavorite websocket library.\n\nA reference implmenetation can be found at `examples/rtm_loop.py <./examples/rtm_loop.py>`_\n\n\nDevelopment\n-----------\n\nOpenAPI Client Building\n~~~~~~~~~~~~~~~~~~~~~~~\n\n.. code:: shell\n\n  $ ./scripts/gen_api.py > bearychat/openapi/_api.py\n\n\nLicense\n-------\n\nMIT\n\n\n.. |@BearyChat| image:: http://openapi.beary.chat/badge.svg\n   :target: http://openapi.beary.chat/join\n.. |Build Status| image:: https://travis-ci.org/bearyinnovative/bearychat.py.svg\n   :target: https://travis-ci.org/bearyinnovative/bearychat.py\n.. |Development Status| image:: https://img.shields.io/badge/status-WIP-yellow.svg?style=flat-square\n.. |Documentation Status| image:: https://readthedocs.org/projects/bearychat/badge/?version=latest\n   :target: http://bearychat.readthedocs.io/en/latest/?badge=latest\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -33,10 +33,10 @@
     "name": "bearychat",
     "platform": "any",
     "project_url": "https://pypi.org/project/bearychat/",
-    "release_url": "https://pypi.org/project/bearychat/0.4.0/",
+    "release_url": "https://pypi.org/project/bearychat/0.4.1/",
     "requires_python": "",
     "summary": "SDK for BearyChat",
-    "version": "0.4.0"
+    "version": "0.4.1"
   },
   "releases": {
     "0.1": [],
@@ -112,24 +112,42 @@
         "upload_time": "2017-06-02T00:39:10",
         "url": "https://files.pythonhosted.org/packages/22/33/62a25cf3dadf758b97e935ed3996c3b5e6b565614b0e6b18c583af0291c9/bearychat-0.4.0.tar.gz"
       }
+    ],
+    "0.4.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "dcec119a2d1945c9f40a38ab52e52270",
+          "sha256": "d6268ee5e8eeec149861b89f71a159fc039b183ece540018a0a4bc8b7d2795d0"
+        },
+        "downloads": 0,
+        "filename": "bearychat-0.4.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "dcec119a2d1945c9f40a38ab52e52270",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 8532,
+        "upload_time": "2017-06-22T03:54:29",
+        "url": "https://files.pythonhosted.org/packages/a4/3a/7ef60639dfbc53afeb77162868c6e5a1c2eed6044481fade2828c138c877/bearychat-0.4.1.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "5b7e85b856246886614454447d5a4a9b",
-        "sha256": "1362ad5a0e4a34e22e9a74aaa728154f45653cc6b7e7c0444d96777c8ee59e06"
+        "md5": "dcec119a2d1945c9f40a38ab52e52270",
+        "sha256": "d6268ee5e8eeec149861b89f71a159fc039b183ece540018a0a4bc8b7d2795d0"
       },
       "downloads": 0,
-      "filename": "bearychat-0.4.0.tar.gz",
+      "filename": "bearychat-0.4.1.tar.gz",
       "has_sig": false,
-      "md5_digest": "5b7e85b856246886614454447d5a4a9b",
+      "md5_digest": "dcec119a2d1945c9f40a38ab52e52270",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 11739,
-      "upload_time": "2017-06-02T00:39:10",
-      "url": "https://files.pythonhosted.org/packages/22/33/62a25cf3dadf758b97e935ed3996c3b5e6b565614b0e6b18c583af0291c9/bearychat-0.4.0.tar.gz"
+      "size": 8532,
+      "upload_time": "2017-06-22T03:54:29",
+      "url": "https://files.pythonhosted.org/packages/a4/3a/7ef60639dfbc53afeb77162868c6e5a1c2eed6044481fade2828c138c877/bearychat-0.4.1.tar.gz"
     }
   ]
 }
