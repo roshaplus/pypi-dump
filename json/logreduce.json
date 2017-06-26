@@ -1,0 +1,74 @@
+{
+  "info": {
+    "author": "Tristan Cacqueray",
+    "author_email": "tdecacqu@redhat.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Intended Audience :: Developers",
+      "Intended Audience :: System Administrators",
+      "License :: OSI Approved :: Apache Software License",
+      "Programming Language :: Python",
+      "Programming Language :: Python :: 3.5",
+      "Topic :: Scientific/Engineering"
+    ],
+    "description": "logreduce - extract anomaly from log files\n==========================================\n\nBased on success logs, logreduce highlights useful text in failed logs.\nThe goal is to assist in debugging failure and reduce effort needed to read\nboring log files.\n\nOn average, learning run at 10k lines per second, and\nTesting run at 0.3k lines per seconds.\n\n\nHow it works\n------------\n\nlogreduce uses a *model* to learn successful logs and detect outliers in\nfailed log that doesn't fit the model. The model is constructed as follow:\n\n* Random words are manually removed using regular expression\n* Striped lines are converted into a dictionary based numeric vector\n  (using **CountVectorizer**),\n* Vector are weighted based on term frequencies times inverse\n  document-frequency (using **TfidfTransformer**),\n* Then vector are used in a nearest neighbor approximator called Locality Sensitive\n  Hashing Forest (using **LSHForest**).\n\nIn short, logreduce relies heavy line stripping with a bag-of-words technique and\nit uses the distance to known sentence to detect outliers.\n\nFor example this input:\n\n.. code-block:: console\n\n  2017-06-21 04:37:45,827 INFO [nodepool.builder.UploadWorker.0] Uploading DIB image build 0000000002 from /tmpxvLOTg/fake-image-0000000002.qcow2 to fake-provider\n\nResults in:\n\n.. code-block:: console\n\n  INFO nodepool builder UploadWorker Uploading image build from /fake image fake provider\n\n\nThe tokenization makes the model a bit dependent on the target data, for example,\nto support OpenStack logs, words begining by ns- or req- are taken into account.\nFurther improvement such as characters n-gram may remove such limitation.\n\n\nInstall\n-------\n\n* Fedora:\n\n.. code-block:: console\n\n  sudo dnf install -y python3-scikit-learn lftp\n  git clone https://softwarefactory-project.io/r/logreduce\n  pushd logreduce\n  sudo python3 setup.py develop\n  popd\n\n* Pip:\n\n.. code-block:: console\n\n  pip install --user logreduce\n\n\nUsage\n-----\n\nLog files can be:\n\n* A single file\n* A directory\n* A jenkins job name\n\nLogreduce needs a **--baseline** for success log training, and a **target**\nfor the log to reduce.\n\nLogreduce will print anomalies on the console, the log files are not modified.\nWhen using the text **--output-format**, anomalies are printed using this format:\n\n.. code-block:: console\n\n  # \"%(distance)f | %(log_path)s:%(line_number)d: %(log_line)s\"\n\n  $ logreduce --baseline testr-nodepool-01/output.good testr-nodepool-01/output.fail\n  [...]\n  0.232 | testr-nodepool-01/output.fail:0677:\t  File \"voluptuous/schema_builder.py\", line 370, in validate_mapping\n  0.462 | testr-nodepool-01/output.fail:0678:\t    raise er.MultipleInvalid(errors)\n  0.650 | testr-nodepool-01/output.fail:0679:\tvoluptuous.error.MultipleInvalid: required key not provided @ data['providers'][2]['cloud']\n\nWhen using jenkins, the log syntax is *jenkins*:*job-name*[:*job-number*].\nWhen job-number is omited, logreduce automatically uses the lastSuccessfulBuild as baseline\nand the lastFailedBuild for the target.\n\nThe model can be trained and saved for re-use using **--save**.\nWhen using **--load** logreduce doesn't need a **--baseline**.\n\nFull usage:\n\n.. code-block:: console\n\n  $ logreduce --help\n  usage: logreduce [-h] [--debug] [--debug-token]\n                   [--output-format {text,json,yaml,pprint}] [--save FILE]\n                   [--load FILE] [--jenkins-url JENKINS_URL]\n                   [--max-distance MAX_DISTANCE]\n                   [--merge-distance MERGE_DISTANCE]\n                   [--context-length CONTEXT_LENGTH] [--baseline LOG]\n                   [target [target ...]]\n\n  positional arguments:\n    target                The log to reduce\n\n  optional arguments:\n    -h, --help            show this help message and exit\n    --debug               Print debug\n    --debug-token         Print tokenization process\n    --output-format {text,json,yaml,pprint}\n    --save FILE           Save the model\n    --load FILE           Load a previous model\n    --jenkins-url JENKINS_URL\n                          Target a custom Jenkins service\n    --max-distance MAX_DISTANCE\n                          Outlier distance threshold, set to 0.0 to display all\n                          log, 1.0 to only display obvious anomalies\n    --merge-distance MERGE_DISTANCE\n                          Distance between chunks to merge in a continuous one\n    --context-length CONTEXT_LENGTH\n                          Amount of lines to include before the anomaly\n    --baseline LOG        A success log\n\n\nSee bellow for some examples\n\n\nExamples\n--------\n\n* Look for anomalies in a flaky jenkins jobs. The DLRN-rpmbuild is used by\n  different projects, thus the output varies even between successful jobs.\n  In this case we can uses the **--max-distance** parameter to reduces false-positive:\n\n.. code-block:: console\n\n  $ logreduce --baseline jenkins:DLRN-rpmbuild --max-distance 0.4 --jenkins-url https://review.rdoproject.org/jenkins\n  [...]\n  0.425 | DLRN-rpmbuild/12483/console:7530: 2017-06-24 13:36:02,886 INFO:dlrn-build:DEBUG: IOError: [Errno 2] No such file or directory: u'/builddir/build/BUILD/python-openstackclient-3.11.1.dev52/man/.doctrees/man/openstack.doctree'\n  0.731 | DLRN-rpmbuild/12483/console:7535: 2017-06-24 13:36:02,950 INFO:dlrn-build:DEBUG: error: Bad exit status from /var/tmp/rpm-tmp.rhaVaW (%install)\n\n  # -> Reduced 7654 lines to 71\n\n* Look for anomalies in a job artifacts:\n\n.. code-block:: console\n\n  $ logreduce  --baseline jenkins:gate-weirdo-dlrn-master-puppet-scenario001:804 \\\n                          jenkins:gate-weirdo-dlrn-master-puppet-scenario001:805 \\\n               --max-distance 0.7 --jenkins-url https://review.rdoproject.org/jenkins\n  [...]\n  0.935 | scenario001/805/console:1460: AssertionError: From test \"assert no delete metrics have the gabbilive policy\" :\n  0.813 | scenario001/805/console:1479:   \"message\": \"The request you have made requires authentication.\",\n\n  # -> Reduced 3475 lines to 34\n  # Re-run above command with --fetch-artifacts\n\n  $ logreduce  --baseline jenkins:gate-weirdo-dlrn-master-puppet-scenario001:804 \\\n                          jenkins:gate-weirdo-dlrn-master-puppet-scenario001:805 \\\n               --max-distance 0.7 --jenkins-url https://review.rdoproject.org/jenkins \\\n\t       --fetch-artifacts\n  [...]\n  0.736 | scenario001/805/artifacts/artifacts/weirdo-project/logs/aodh/evaluator.txt.gz:0205:      2017-06-20 09:34:56.710 32167 ERROR aodh.evaluator.threshold EndpointNotFound: public endpoint for metering service in RegionOne region not found\n  0.893 | scenario001/805/artifacts/artifacts/weirdo-project/logs/keystone/keystone.txt.gz:0082:   2017-06-20 09:01:04.573 31269 ERROR keystone OperationalError: (pymysql.err.OperationalError) (1045, u\"Access denied for user 'keystone'@'localhost' (using password: YES)\")\n  0.747 | scenario001/805/artifacts/artifacts/weirdo-project/logs/neutron/l3-agent.txt.gz:4953:    2017-06-20 09:35:18.750 30696 ERROR neutron.agent.linux.ip_lib ProcessExecutionError: Exit code: 2; Stdin: ; Stdout: ; Stderr: arping: Device qr-eab5db5e-2b not available.\n  0.880 | scenario001/805/artifacts/artifacts/weirdo-project/logs/neutron/server.txt.gz:7395:      2017-06-20 09:24:16.539 1290 DEBUG oslo_db.api [req-5a32c588-c96d-43a5-a3c0-207232c3f399 75837f1fbb1645deb29271c270bfe910 37e84afc107a43f6bc40a74e35c294b2 - default default] Performing DB retry for function neutron.plugins.ml2.plugin.create_port: NeutronDbObjectDuplicateEntry: Failed to create a duplicate IpamAllocation: for attribute(s) ['PRIMARY'] with value(s) 10.100.0.2-8e029793-091b-4870-97a5-37e02c86a239 wrapper /usr/lib/python2.7/site-packages/oslo_db/api.py:152\n  0.847 | scenario001/805/artifacts/artifacts/weirdo-project/logs/openvswitch/ovsdb-server.txt.gz:0022:    2017-06-20T09:33:06.479Z|00022|reconnect|ERR|tcp:127.0.0.1:34002: no response to inactivity probe after 6.32 seconds, disconnecting\n\n  # -> Reduced 233185 log lines to 321\n\n* Look for new events in log files:\n\n.. code-block:: console\n\n  $ logreduce --baseline /var/log/audit/audit.log.4 /var/log/audit/audit.log --context-length 0\n  0.276 | /var/log/audit/audit.log:0606: type=USER_AUTH msg=audit(1498373150.931:1661763): pid=20252 uid=0 auid=1000 ses=19490 subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023 msg='op=PAM:authentication grantors=pam_rootok acct=\"root\" exe=\"/usr/bin/su\" hostname=? addr=? terminal=pts/0 res=success'\n  0.287 | /var/log/audit/audit.log:0607: type=USER_ACCT msg=audit(1498373150.931:1661764): pid=20252 uid=0 auid=1000 ses=19490 subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023 msg='op=PAM:accounting grantors=pam_succeed_if acct=\"root\" exe=\"/usr/bin/su\" hostname=? addr=? terminal=pts/0 res=success'\n\n  # Today the 'su' program was indeed used to recover a sudo bug...\n\n* Re-using a model:\n\n.. code-block:: console\n\n  $ logreduce --baseline /var/log/audit/audit.log.4 --save ~/audit.model\n  $ logreduce --load ~/audit.model /var/log/audit/audit.log\n\n\nlogreduce-tests\n---------------\n\nThis package contains tests data for different type of log such as testr\nor syslog. Each tests includes a pre-computed list of the anomalies in log\nfailures.\n\nThis package also includes a command line utility to run logreduce against all\ntests data and print a summary of its performance.\n\n\nTest format\n...........\n\nEach tests case is composed of:\n\n* A *.good* file (or directory) that holds the baseline\n* A *.fail* file (or directory)\n* A *info.yaml* file that describe expected output:\n\n.. code-block:: yaml\n\n  max-distance: float # set the distance threshold for the test\n  anomalies:\n    - optional: bool  # to define minor anomalies not considered false positive\n      lines: |        # the expected lines to be highlighted\n        Traceback...\n        RuntimeError...\n\n\nEvaluate\n........\n\nTo run the evaluation, first install logreduce-tests:\n\n.. code-block:: console\n\n  git clone https://softwarefactory-project.io/r/logreduce-tests\n  pushd logreduce-tests\n  sudo python3 setup.py develop\n\nlogreduce-tests expect tests directories as argument:\n\n.. code-block:: console\n\n  $ logreduce-tests tests/testr-zuul-[0-9]*\n  [testr-zuul-01]: 100.00% accuracy,  5.00% false-positive\n  [testr-zuul-02]:  80.00% accuracy,  0.00% false-positive\n  ...\n  Summary:  90.00% accuracy,  2.50% false-positive\n\nAdd --debug to display false positive and missing chunks.\n\n\nRoadmap/todo\n------------\n\n* Add gerrit support to target a review directly\n* Add travis/github support to target a pull request directly\n* Support automatic log analysis and reporting when a job failed,\n  e.g. through jenkins publisher or zuul post jobs.\n* Add html output\n* Add tarball traversal in utils.files_iterator\n* Improve tokenization tests\n* Discard files that are 100% anomalous\n* Run test in paralelle\n\nOther ideas:\n\n* Compare logreduce performance between two versions, perhaps using logreduce\n  itself... logception!\n* Find an alternative to lshf, the model currently spend 97% of the time in the\n  lsh.kneighbors method...\n* Investigate character n-gram instead of word vectorisation\n* Investigate more advance model such as recurrent neural net, perhaps using\n  tensorflow instead of scikit-learn\n* Investigate learning failed logs to reduce common/useless failure expression\n\n\nContribute\n----------\n\nContribution are most welcome, use **git-review** to propose a change.\nSetup your ssh keys after sign in https://softwarefactory-project.io/auth/login",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://logreduce.softwarefactory-project.io/",
+    "keywords": "machine learning,ci,anomaly detection",
+    "license": "",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "logreduce",
+    "platform": "",
+    "project_url": "https://pypi.org/project/logreduce/",
+    "release_url": "https://pypi.org/project/logreduce/0.0.1/",
+    "requires_dist": [],
+    "requires_python": "",
+    "summary": "extract anomaly from log files",
+    "version": "0.0.1"
+  },
+  "releases": {
+    "0.0.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "514f3991354afdb60117fe94d33b5ded",
+          "sha256": "e2a10b3bfeb1162925742004e7e5601428955dce41322ff889bc3afc780c2875"
+        },
+        "downloads": 0,
+        "filename": "logreduce-0.0.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "514f3991354afdb60117fe94d33b5ded",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 17012,
+        "upload_time": "2017-06-26T07:02:34",
+        "url": "https://files.pythonhosted.org/packages/35/5e/6e179d7d8404d2ae485c4d7ac6b04fe4310074ca5525e24ff968d625ba88/logreduce-0.0.1.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "514f3991354afdb60117fe94d33b5ded",
+        "sha256": "e2a10b3bfeb1162925742004e7e5601428955dce41322ff889bc3afc780c2875"
+      },
+      "downloads": 0,
+      "filename": "logreduce-0.0.1.tar.gz",
+      "has_sig": false,
+      "md5_digest": "514f3991354afdb60117fe94d33b5ded",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 17012,
+      "upload_time": "2017-06-26T07:02:34",
+      "url": "https://files.pythonhosted.org/packages/35/5e/6e179d7d8404d2ae485c4d7ac6b04fe4310074ca5525e24ff968d625ba88/logreduce-0.0.1.tar.gz"
+    }
+  ]
+}
