@@ -22,7 +22,7 @@
       "Programming Language :: Python :: Implementation :: CPython",
       "Topic :: Internet :: WWW/HTTP"
     ],
-    "description": "Django REST Witchcraft\n======================\n\n|Build Status| |Read The Docs| |PyPI version| |Coveralls Status|\n\n**Django REST Framework integration with SQLAlchemy**\n\ndjango-rest-witchcraft is an extension for Django REST Framework that adds support for SQLAlchemy. It aims to provide\na similar development experience to building REST api's with Django REST Framework with Django ORM, except with\nSQLAlchemy.\n\nInstallation\n============\n\n::\n\n    pip install django-rest-witchcraft\n\nQuick Start\n===========\n\nFirst up, lets define some simple models:\n\n.. code:: python\n\n    import sqlalchemy as sa\n    import sqlalchemy.orm  # noqa\n    from sqlalchemy.ext.declarative import declarative_base\n\n    engine = sa.create_engine('sqlite:///:memory:', echo=True)\n    session = sa.orm.scoped_session(sa.orm.sessionmaker(bind=engine))\n\n    Base = declarative_base()\n    Base.query = session.query_property()\n\n\n    class Group(Base):\n        __tablename__ = 'groups'\n\n        id = sa.Column(sa.Integer(), primary_key=True, autoincrement=True)\n        name = sa.Column(sa.String())\n\n\n    class User(Base):\n        __tablename__ = 'users'\n\n        id = sa.Column(sa.Integer(), primary_key=True, autoincrement=True)\n        name = sa.Column(sa.String())\n        fullname = sa.Column(sa.String())\n        password = sa.Column(sa.String())\n\n        _group_id = sa.Column('group_id', sa.Integer(), sa.ForeignKey('groups.id'))\n        group = sa.orm.relationship(Group, backref='users')\n\n\n    class Address(Base):\n        __tablename__ = 'addresses'\n\n        id = sa.Column(sa.Integer(), primary_key=True, autoincrement=True)\n        email_address = sa.Column(sa.String(), nullable=False)\n\n        _user_id = sa.Column(sa.Integer(), sa.ForeignKey('users.id'))\n        user = sa.orm.relationship(User, backref='addresses')\n\n    Base.metadata.create_all(engine)\n\n\nNothing fancy here, we have a ``User`` class that can belongs to a ``Group`` instance and has many ``Address``\ninstances\n\nThis serializer can handle nested create, update or partial update operations.\n\nLets define a serializer for ``User`` with all the fields:\n\n.. code:: python\n\n    class UserSerializer(serializers.ModelSerializer):\n\n        class Meta:\n            model = User\n            session = session\n            fields = '__all__'\n\nThis will create the following serializer for us:\n\n::\n\n    >>> serializer = UserSerializer()\n\n    >>> serializer\n    UserSerializer():\n        id = IntegerField(allow_null=False, help_text=None, label='Id', required=True)\n        name = CharField(allow_null=True, help_text=None, label='Name', max_length=None, required=False)\n        fullname = CharField(allow_null=True, help_text=None, label='Fullname', max_length=None, required=False)\n        password = CharField(allow_null=True, help_text=None, label='Password', max_length=None, required=False)\n        group = GroupSerializer(allow_null=True, is_nested=True, required=False):\n            id = IntegerField(allow_null=False, help_text=None, label='Id', required=False)\n            name = CharField(allow_null=True, help_text=None, label='Name', max_length=None, required=False)\n        addresses = AddressSerializer(allow_null=True, many=True, required=False):\n            id = IntegerField(allow_null=False, help_text=None, label='Id', required=False)\n            email_address = CharField(allow_null=False, help_text=None, label='Email_address', max_length=None, required=True)\n        url = UriField(read_only=True)\n\nLets try to create a ``User`` instance with our brand new serializer:\n\n.. code:: python\n\n    serializer = UserSerializer(data={\n        'name': 'shosca',\n        'password': 'swordfish',\n    })\n    serializer.is_valid()\n    serializer.save()\n\n    user = serializer.instance\n\nThis will create the following user for us:\n\n::\n\n    >>> user\n    User(_group_id=None, id=1, name='shosca', fullname=None, password='swordfish')\n\nLets try to update our user ``User`` instance and change its password:\n\n.. code:: python\n\n    serializer = UserSerializer(user, data={\n        'name': 'shosca',\n        'password': 'password',\n    })\n    serializer.is_valid()\n    serializer.save()\n\n    user = serializer.instance\n\nOur user now looks like:\n\n::\n\n    >>> user\n    User(_group_id=None, id=1, name='shosca', fullname=None, password='password')\n\nLets try to update our ``User`` instance again, but this time lets change its password only:\n\n.. code:: python\n\n    serializer = UserSerializer(user, data={\n        'password': 'swordfish',\n    }, partial=True)\n    serializer.is_valid()\n    serializer.save()\n\n    user = serializer.instance\n\nThis will update the following user for us:\n\n::\n\n    >>> user\n    User(_group_id=None, id=1, name='shosca', fullname=None, password='swordfish')\n\nOur user does not belong to a ``Group``, lets fix that:\n\n.. code:: python\n\n    group = Group(name='Admin')\n    session.add(group)\n    session.flush()\n\n    serializer = UserSerializer(user, data={\n        'group': {'id': group.id\n    })\n    serializer.is_valid()\n    serializer.save()\n\n    user = serializer.instance\n\nNow, our user looks like:\n\n::\n\n    >>> user\n    User(_group_id=1, id=1, name='shosca', fullname=None, password='swordfish')\n\n    >>> user.group\n    Group(id=1, name='Admin')\n\nWe can also change the name of our user's group through the user using nested updates:\n\n.. code:: python\n\n    class UserSerializer(serializers.ModelSerializer):\n\n        class Meta:\n            model = User\n            session = session\n            fields = '__all__'\n            extra_kwargs = {\n                'group': {'allow_nested_updates': True}\n            }\n\n    serializer = UserSerializer(user, data={\n        'group': {'name': 'Super User'}\n    }, partial=True)\n    serializer.is_valid()\n    serializer.save()\n\n    user = serializer.instance\n\nNow, our user looks like:\n\n::\n\n    >>> user\n    User(_group_id=1, id=1, name='shosca', fullname=None, password='swordfish')\n\n    >>> user.group\n    Group(id=1, name='Super User')\n\nWe can use this serializer in a viewset like::\n\n    from rest_witchcraft import viewsets\n\n    class UserViewSet(viewsets.ModelViewSet):\n        queryset = User.query\n        serializer_class = UserSerializer\n\nAnd we can register this viewset in our ``urls.py`` like::\n\n    from rest_witchcraft import routers\n\n    router = routers.DefaultRouter()\n    router.register(r'users', UserViewSet)\n\n    urlpatterns = [\n        ...\n        url(r'^', include(router.urls)),\n        ...\n    ]\n\n\n.. |Build Status| image:: https://travis-ci.org/shosca/django-rest-witchcraft.svg?branch=master\n   :target: https://travis-ci.org/shosca/django-rest-witchcraft\n.. |Read The Docs| image:: https://readthedocs.org/projects/django-rest-witchcraft/badge/?version=latest\n   :target: http://django-rest-witchcraft.readthedocs.io/en/latest/?badge=latest\n.. |PyPI version| image:: https://badge.fury.io/py/django-rest-witchcraft.svg\n   :target: https://badge.fury.io/py/django-rest-witchcraft\n.. |Coveralls Status| image:: https://coveralls.io/repos/github/shosca/django-rest-witchcraft/badge.svg?branch=master\n   :target: https://coveralls.io/github/shosca/django-rest-witchcraft?branch=master\n\n\n\n",
+    "description": "Django REST Witchcraft\n======================\n\n|Build Status| |Read The Docs| |PyPI version| |Coveralls Status|\n\n**Django REST Framework integration with SQLAlchemy**\n\ndjango-rest-witchcraft is an extension for Django REST Framework that adds support for SQLAlchemy. It aims to provide\na similar development experience to building REST api's with Django REST Framework with Django ORM, except with\nSQLAlchemy.\n\nInstallation\n============\n\n::\n\n    pip install django-rest-witchcraft\n\nQuick Start\n===========\n\nFirst up, lets define some simple models:\n\n.. code:: python\n\n    import sqlalchemy as sa\n    import sqlalchemy.orm  # noqa\n    from sqlalchemy.ext.declarative import declarative_base\n\n    engine = sa.create_engine('sqlite:///:memory:', echo=True)\n    session = sa.orm.scoped_session(sa.orm.sessionmaker(bind=engine))\n\n    Base = declarative_base()\n    Base.query = session.query_property()\n\n\n    class Group(Base):\n        __tablename__ = 'groups'\n\n        id = sa.Column(sa.Integer(), primary_key=True, autoincrement=True)\n        name = sa.Column(sa.String())\n\n\n    class User(Base):\n        __tablename__ = 'users'\n\n        id = sa.Column(sa.Integer(), primary_key=True, autoincrement=True)\n        name = sa.Column(sa.String())\n        fullname = sa.Column(sa.String())\n        password = sa.Column(sa.String())\n\n        _group_id = sa.Column('group_id', sa.Integer(), sa.ForeignKey('groups.id'))\n        group = sa.orm.relationship(Group, backref='users')\n\n\n    class Address(Base):\n        __tablename__ = 'addresses'\n\n        id = sa.Column(sa.Integer(), primary_key=True, autoincrement=True)\n        email_address = sa.Column(sa.String(), nullable=False)\n\n        _user_id = sa.Column(sa.Integer(), sa.ForeignKey('users.id'))\n        user = sa.orm.relationship(User, backref='addresses')\n\n    Base.metadata.create_all(engine)\n\n\nNothing fancy here, we have a ``User`` class that can belongs to a ``Group`` instance and has many ``Address``\ninstances\n\nThis serializer can handle nested create, update or partial update operations.\n\nLets define a serializer for ``User`` with all the fields:\n\n.. code:: python\n\n    class UserSerializer(serializers.ModelSerializer):\n\n        class Meta:\n            model = User\n            session = session\n            fields = '__all__'\n\nThis will create the following serializer for us:\n\n::\n\n    >>> serializer = UserSerializer()\n\n    >>> serializer\n    UserSerializer():\n        id = IntegerField(allow_null=False, help_text=None, label='Id', required=True)\n        name = CharField(allow_null=True, help_text=None, label='Name', max_length=None, required=False)\n        fullname = CharField(allow_null=True, help_text=None, label='Fullname', max_length=None, required=False)\n        password = CharField(allow_null=True, help_text=None, label='Password', max_length=None, required=False)\n        group = GroupSerializer(allow_null=True, is_nested=True, required=False):\n            id = IntegerField(allow_null=False, help_text=None, label='Id', required=False)\n            name = CharField(allow_null=True, help_text=None, label='Name', max_length=None, required=False)\n        addresses = AddressSerializer(allow_null=True, many=True, required=False):\n            id = IntegerField(allow_null=False, help_text=None, label='Id', required=False)\n            email_address = CharField(allow_null=False, help_text=None, label='Email_address', max_length=None, required=True)\n        url = UriField(read_only=True)\n\nLets try to create a ``User`` instance with our brand new serializer:\n\n.. code:: python\n\n    serializer = UserSerializer(data={\n        'name': 'shosca',\n        'password': 'swordfish',\n    })\n    serializer.is_valid()\n    serializer.save()\n\n    user = serializer.instance\n\nThis will create the following user for us:\n\n::\n\n    >>> user\n    User(_group_id=None, id=1, name='shosca', fullname=None, password='swordfish')\n\nLets try to update our user ``User`` instance and change its password:\n\n.. code:: python\n\n    serializer = UserSerializer(user, data={\n        'name': 'shosca',\n        'password': 'password',\n    })\n    serializer.is_valid()\n    serializer.save()\n\n    user = serializer.instance\n\nOur user now looks like:\n\n::\n\n    >>> user\n    User(_group_id=None, id=1, name='shosca', fullname=None, password='password')\n\nLets try to update our ``User`` instance again, but this time lets change its password only:\n\n.. code:: python\n\n    serializer = UserSerializer(user, data={\n        'password': 'swordfish',\n    }, partial=True)\n    serializer.is_valid()\n    serializer.save()\n\n    user = serializer.instance\n\nThis will update the following user for us:\n\n::\n\n    >>> user\n    User(_group_id=None, id=1, name='shosca', fullname=None, password='swordfish')\n\nOur user does not belong to a ``Group``, lets fix that:\n\n.. code:: python\n\n    group = Group(name='Admin')\n    session.add(group)\n    session.flush()\n\n    serializer = UserSerializer(user, data={\n        'group': {'id': group.id\n    })\n    serializer.is_valid()\n    serializer.save()\n\n    user = serializer.instance\n\nNow, our user looks like:\n\n::\n\n    >>> user\n    User(_group_id=1, id=1, name='shosca', fullname=None, password='swordfish')\n\n    >>> user.group\n    Group(id=1, name='Admin')\n\nWe can also change the name of our user's group through the user using nested updates:\n\n.. code:: python\n\n    class UserSerializer(serializers.ModelSerializer):\n\n        class Meta:\n            model = User\n            session = session\n            fields = '__all__'\n            extra_kwargs = {\n                'group': {'allow_nested_updates': True}\n            }\n\n    serializer = UserSerializer(user, data={\n        'group': {'name': 'Super User'}\n    }, partial=True)\n    serializer.is_valid()\n\n    user = serializer.save()\n\nNow, our user looks like:\n\n::\n\n    >>> user\n    User(_group_id=1, id=1, name='shosca', fullname=None, password='swordfish')\n\n    >>> user.group\n    Group(id=1, name='Super User')\n\nWe can use this serializer in a viewset like:\n\n.. code:: python\n\n    from rest_witchcraft import viewsets\n\n    class UserViewSet(viewsets.ModelViewSet):\n        queryset = User.query\n        serializer_class = UserSerializer\n\nAnd we can register this viewset in our ``urls.py`` like:\n\n.. code:: python\n\n    from rest_witchcraft import routers\n\n    router = routers.DefaultRouter()\n    router.register(r'users', UserViewSet)\n\n    urlpatterns = [\n        ...\n        url(r'^', include(router.urls)),\n        ...\n    ]\n\n\n.. |Build Status| image:: https://travis-ci.org/shosca/django-rest-witchcraft.svg?branch=master\n   :target: https://travis-ci.org/shosca/django-rest-witchcraft\n.. |Read The Docs| image:: https://readthedocs.org/projects/django-rest-witchcraft/badge/?version=latest\n   :target: http://django-rest-witchcraft.readthedocs.io/en/latest/?badge=latest\n.. |PyPI version| image:: https://badge.fury.io/py/django-rest-witchcraft.svg\n   :target: https://badge.fury.io/py/django-rest-witchcraft\n.. |Coveralls Status| image:: https://coveralls.io/repos/github/shosca/django-rest-witchcraft/badge.svg?branch=master\n   :target: https://coveralls.io/github/shosca/django-rest-witchcraft?branch=master\n\n\n\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -38,17 +38,17 @@
     "name": "django-rest-witchcraft",
     "platform": "",
     "project_url": "https://pypi.org/project/django-rest-witchcraft/",
-    "release_url": "https://pypi.org/project/django-rest-witchcraft/0.4.0/",
+    "release_url": "https://pypi.org/project/django-rest-witchcraft/0.4.1/",
     "requires_dist": [
+      "sqlalchemy",
       "six",
       "pipenv",
       "djangorestframework",
-      "SQLAlchemy",
-      "Django"
+      "django"
     ],
     "requires_python": "",
     "summary": "Django REST Framework and SQLAlchemy integration",
-    "version": "0.4.0"
+    "version": "0.4.1"
   },
   "releases": {
     "0.0.1": [
@@ -696,40 +696,74 @@
         "upload_time": "2017-06-28T12:44:38",
         "url": "https://files.pythonhosted.org/packages/b9/91/8ba14f9a1f271f78b6b6458cf14c91c214976303f15a712e2ed5dc3b9e66/django-rest-witchcraft-0.4.0.tar.gz"
       }
+    ],
+    "0.4.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "cef09a16c7e5baded74d0e4a73203057",
+          "sha256": "76a1386e6f5d63f0dec1031f9134d287285bdaf7971f01002f9b43b8ce37598b"
+        },
+        "downloads": 0,
+        "filename": "django_rest_witchcraft-0.4.1-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "cef09a16c7e5baded74d0e4a73203057",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 18594,
+        "upload_time": "2017-07-01T14:52:50",
+        "url": "https://files.pythonhosted.org/packages/29/8a/db7d8bee880cd9cc232f2758bde89a65fee4ef90bdb4142859a7a4ef315a/django_rest_witchcraft-0.4.1-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1eb176af664724ecd0dd6af4c7adef40",
+          "sha256": "c8f9eb7a1768eca126478c4e66e02dcc3a07fb83cf43f665fa3704502e08dc68"
+        },
+        "downloads": 0,
+        "filename": "django-rest-witchcraft-0.4.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1eb176af664724ecd0dd6af4c7adef40",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 23081,
+        "upload_time": "2017-07-01T14:52:52",
+        "url": "https://files.pythonhosted.org/packages/cd/0a/b2c834385d224d1eeafa883df86f3999ad801397cac370b81bdce7b441e8/django-rest-witchcraft-0.4.1.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "c34e9c8172d4e92b46f105cf0e6986fc",
-        "sha256": "cfd04a43f1b9de9135f43983ce252ce79d8241b9b4829fbd9f832fa30e9cebc4"
+        "md5": "cef09a16c7e5baded74d0e4a73203057",
+        "sha256": "76a1386e6f5d63f0dec1031f9134d287285bdaf7971f01002f9b43b8ce37598b"
       },
       "downloads": 0,
-      "filename": "django_rest_witchcraft-0.4.0-py2.py3-none-any.whl",
+      "filename": "django_rest_witchcraft-0.4.1-py2.py3-none-any.whl",
       "has_sig": false,
-      "md5_digest": "c34e9c8172d4e92b46f105cf0e6986fc",
+      "md5_digest": "cef09a16c7e5baded74d0e4a73203057",
       "packagetype": "bdist_wheel",
       "python_version": "py2.py3",
-      "size": 18447,
-      "upload_time": "2017-06-28T12:44:36",
-      "url": "https://files.pythonhosted.org/packages/1e/3c/5e7e511646616eb3375cfb18cc0cd3dfc15596ec6b89c4f4cec5365a32df/django_rest_witchcraft-0.4.0-py2.py3-none-any.whl"
+      "size": 18594,
+      "upload_time": "2017-07-01T14:52:50",
+      "url": "https://files.pythonhosted.org/packages/29/8a/db7d8bee880cd9cc232f2758bde89a65fee4ef90bdb4142859a7a4ef315a/django_rest_witchcraft-0.4.1-py2.py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "6d966ec868ff0ab56a1d6a80a9bc3986",
-        "sha256": "d2fdcbc6c6d68d4cc1ca22ae0c2f0bebba523d2c2e68e5526814dd44dca062d3"
+        "md5": "1eb176af664724ecd0dd6af4c7adef40",
+        "sha256": "c8f9eb7a1768eca126478c4e66e02dcc3a07fb83cf43f665fa3704502e08dc68"
       },
       "downloads": 0,
-      "filename": "django-rest-witchcraft-0.4.0.tar.gz",
+      "filename": "django-rest-witchcraft-0.4.1.tar.gz",
       "has_sig": false,
-      "md5_digest": "6d966ec868ff0ab56a1d6a80a9bc3986",
+      "md5_digest": "1eb176af664724ecd0dd6af4c7adef40",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 22863,
-      "upload_time": "2017-06-28T12:44:38",
-      "url": "https://files.pythonhosted.org/packages/b9/91/8ba14f9a1f271f78b6b6458cf14c91c214976303f15a712e2ed5dc3b9e66/django-rest-witchcraft-0.4.0.tar.gz"
+      "size": 23081,
+      "upload_time": "2017-07-01T14:52:52",
+      "url": "https://files.pythonhosted.org/packages/cd/0a/b2c834385d224d1eeafa883df86f3999ad801397cac370b81bdce7b441e8/django-rest-witchcraft-0.4.1.tar.gz"
     }
   ]
 }
