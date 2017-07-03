@@ -4,7 +4,7 @@
     "author_email": "daveshawley@gmail.com",
     "bugtrack_url": "",
     "classifiers": [
-      "Development Status :: 3 - Alpha",
+      "Development Status :: 4 - Beta",
       "Intended Audience :: Developers",
       "License :: OSI Approved :: BSD License",
       "Operating System :: OS Independent",
@@ -15,9 +15,9 @@
       "Programming Language :: Python :: Implementation :: CPython",
       "Programming Language :: Python :: Implementation :: PyPy"
     ],
-    "description": "glinda\r\n======\r\n\r\n|ReadTheDocs| |Travis| |CodeClimate|\r\n\r\nGlinda is a companion library for `tornado`_.  It is an attempt to make your\r\ntime with the framework less painful.  In fact, I want to make it downright\r\nenjoyable.  I started down the path of developing HTTP endpoints in Tornado\r\nand needing to test them.  The `tornado.testing`_ package is handy for\r\ntesting endpoints in isolation.  But what do you do when you have a HTTP\r\nservice that is calling other HTTP services asynchronously.  It turns out\r\nthat testing that is not as easy as it should be.  That is the first thing\r\nthat I tackled and it is the first thing that this library is going to\r\noffer -- *a way to test non-trivial services*.\r\n\r\nOnce you can test your application, the next step is to write a well-behaved\r\napplication that fits into the WWW nicely.  Tornado does a pretty nice job\r\nof handling the nitty gritty HTTP details (e.g., CTE, transfer encodings).\r\nIt doesn't provide a clean way to handle representations transparently so\r\nI decided to add that into this library as well.\r\n\r\nContent Handling\r\n----------------\r\nTornado has some internal content decoding accessible by calling the\r\n``get_body_arguments`` method of ``tornado.web.RequestHandler``.  It will\r\ndecode basic form data, ``application/x-www-form-urlencoded`` and\r\n``multipart/form-data`` specifically.  Anything else is left up to you.\r\n``glinda`` exposes a content handling mix-in that imbues a standard\r\n``RequestHandler`` with a property that is the decoded request body and\r\na new method to encode a response.  Here's what it looks like:\r\n\r\n.. code-block:: python\r\n\r\n   class MyHandler(glinda.content.HandlerMixin, web.RequestHandler):\r\n       def post(self, *args, **kwargs):\r\n           body_argument = self.request_body['arg']\r\n           # do stuff\r\n           self.send_response(response_dict)\r\n           self.finish()\r\n\r\n   if __name__ == '__main__':\r\n       glinda.content.register_text_type('application/json',\r\n                                         default_charset='utf-8',\r\n                                         dumper=json.dumps, loader=json.loads)\r\n       glinda.content.register_binary_type('application/msgpack',\r\n                                           msgpack.dumpb, msgpack.loadb)\r\n\r\nWhen the client sends a post with a content type of ``application/json``, it\r\nwill decode the binary body to a string according to the HTTP headers and\r\ncall ``json.loads`` to decode the body when you reference the ``request_body``\r\nproperty.  Failures are handled by raising a ``HTTPError(400)`` so you don't\r\nhave to worry about handling malformed messages.  The ``send_response``\r\nmethod will take care of figuring out the appropriate content type based on\r\nany included ``Accept`` headers.  All that you have to do is install\r\nencoding and decoding handlers for expected content types.\r\n\r\nThe ``glinda.content`` package implements content handling as described in\r\n`RFC7231`_.  Specifically, it decodes request bodies as described in\r\n`section 3.1`_ and proactive content negotiation as described in sections\r\n`3.4.1`_ and `5.3`_.\r\n\r\nTesting\r\n-------\r\nHere's an example of testing a Tornado endpoint that asynchronously calls\r\nanother service.  In this case, the application interacts with  with the\r\n``/add`` endpoint of some other service.  Testing in isolation can be tricky\r\nwithout having to have a copy of the service running.  You could mock out\r\nthe ``AsyncHTTPClient`` and return fake futures and what not but that has\r\nthe nasty side-effect of hiding defects around how content type or headers\r\nare handled -- no HTTP requests means that you have untested assumptions.\r\n\r\nThe following snippet tests the application under test using the\r\n``ServiceLayer`` abstraction that ``glinda.testing`` provides.\r\n\r\n.. code-block:: python\r\n\r\n   from tornado import testing\r\n   from glinda.testing import services\r\n\r\n\r\n   class MyServiceTests(testing.AsyncHTTPTestCase):\r\n\r\n      def setUp(self):\r\n         service_layer = services.ServiceLayer()\r\n         self.service = service_layer['adder']\r\n         # TODO configured your application here using\r\n         # self.service.url_for('/add') or self.service.host\r\n         super(MyServiceTests, self).setUp()\r\n\r\n      def get_app(self):\r\n         return MyApplication()\r\n\r\n      def test_that_my_service_calls_other_service(self):\r\n         self.service.add_response(\r\n            services.Request('POST', '/add'),\r\n            services.Response(200, body='{\"result\": 10}'))\r\n         self.fetch(self.get_url('/do-stuff'), method='GET')\r\n\r\n         recorded = self.service.get_request('/add')\r\n         self.assertEqual(recorded.method, 'POST')\r\n         self.assertEqual(recorded.body, '[1,2,3,4]')\r\n         self.assertEqual(recorded.headers['Content-Type'], 'application/json')\r\n\r\nThe application under test is linked in by implementing the standard\r\n``tornado.testing.AsyncHTTPTestCase.get_app`` method.  Then you add in\r\na ``glinda.testing.services.ServiceLayer`` object and configure it to look\r\nlike the services that you depend on by adding endpoints and then configuring\r\nyour application to point at the service layer.  When you invoke the\r\napplication under test using ``self.fetch(...)``, it will send HTTP requests\r\nthrough the Tornado stack (using the testing ``ioloop``) to the service layer\r\nwhich will respond appropriately.  The beauty is that the entire HTTP stack is\r\nexercised locally so that you can easily test edge cases such as correct\r\nhandling of status codes, custom headers, or malformed bodies without\r\nresorting to deep mocking.\r\n\r\nWhere?\r\n------\r\n+---------------+-------------------------------------------------+\r\n| Source        | https://github.com/dave-shawley/glinda          |\r\n+---------------+-------------------------------------------------+\r\n| Status        | https://travis-ci.org/dave-shawley/glinda       |\r\n+---------------+-------------------------------------------------+\r\n| Download      | https://pypi.python.org/pypi/glinda             |\r\n+---------------+-------------------------------------------------+\r\n| Documentation | http://glinda.readthedocs.org/en/latest         |\r\n+---------------+-------------------------------------------------+\r\n| Issues        | https://github.com/dave-shawley/glinda          |\r\n+---------------+-------------------------------------------------+\r\n\r\n.. _tornado: http://tornadoweb.org/\r\n.. _tornado.testing: http://www.tornadoweb.org/en/latest/testing.html\r\n.. _RFC7231: http://tools.ietf.org/html/rfc7231\r\n.. _section 3.1: http://tools.ietf.org/html/rfc7231#section-3.1\r\n.. _3.4.1: http://tools.ietf.org/html/rfc7231#section-3.4.1\r\n.. _5.3: http://tools.ietf.org/html/rfc7231#section-5.3\r\n\r\n.. |ReadTheDocs| image:: https://readthedocs.org/projects/glinda/badge/\r\n   :target: https://glinda.readthedocs.org/\r\n.. |Travis| image:: https://travis-ci.org/dave-shawley/glinda.svg\r\n   :target: https://travis-ci.org/dave-shawley/glinda\r\n.. |CodeClimate| image:: https://codeclimate.com/github/dave-shawley/glinda/badges/gpa.svg\r\n   :target: https://codeclimate.com/github/dave-shawley/glinda",
+    "description": "\nglinda\n======\n\n|ReadTheDocs| |Travis| |CodeClimate|\n\nGlinda is a companion library for `tornado`_.  It is an attempt to make your\ntime with the framework less painful.  In fact, I want to make it downright\nenjoyable.  I started down the path of developing HTTP endpoints in Tornado\nand needing to test them.  The `tornado.testing`_ package is handy for\ntesting endpoints in isolation.  But what do you do when you have a HTTP\nservice that is calling other HTTP services asynchronously.  It turns out\nthat testing that is not as easy as it should be.  That is the first thing\nthat I tackled and it is the first thing that this library is going to\noffer -- *a way to test non-trivial services*.\n\nOnce you can test your application, the next step is to write a well-behaved\napplication that fits into the WWW nicely.  Tornado does a pretty nice job\nof handling the nitty gritty HTTP details (e.g., CTE, transfer encodings).\nIt doesn't provide a clean way to handle representations transparently so\nI decided to add that into this library as well.\n\nContent Handling\n----------------\nTornado has some internal content decoding accessible by calling the\n``get_body_arguments`` method of ``tornado.web.RequestHandler``.  It will\ndecode basic form data, ``application/x-www-form-urlencoded`` and\n``multipart/form-data`` specifically.  Anything else is left up to you.\n``glinda`` exposes a content handling mix-in that imbues a standard\n``RequestHandler`` with a property that is the decoded request body and\na new method to encode a response.  Here's what it looks like:\n\n.. code-block:: python\n\n   class MyHandler(glinda.content.HandlerMixin, web.RequestHandler):\n       def post(self, *args, **kwargs):\n           body_argument = self.request_body['arg']\n           # do stuff\n           self.send_response(response_dict)\n           self.finish()\n\n   if __name__ == '__main__':\n       glinda.content.register_text_type('application/json',\n                                         default_charset='utf-8',\n                                         dumper=json.dumps, loader=json.loads)\n       glinda.content.register_binary_type('application/msgpack',\n                                           msgpack.dumpb, msgpack.loadb)\n\nWhen the client sends a post with a content type of ``application/json``, it\nwill decode the binary body to a string according to the HTTP headers and\ncall ``json.loads`` to decode the body when you reference the ``request_body``\nproperty.  Failures are handled by raising a ``HTTPError(400)`` so you don't\nhave to worry about handling malformed messages.  The ``send_response``\nmethod will take care of figuring out the appropriate content type based on\nany included ``Accept`` headers.  All that you have to do is install\nencoding and decoding handlers for expected content types.\n\nThe ``glinda.content`` package implements content handling as described in\n`RFC7231`_.  Specifically, it decodes request bodies as described in\n`section 3.1`_ and proactive content negotiation as described in sections\n`3.4.1`_ and `5.3`_.\n\nTesting\n-------\nHere's an example of testing a Tornado endpoint that asynchronously calls\nanother service.  In this case, the application interacts with  with the\n``/add`` endpoint of some other service.  Testing in isolation can be tricky\nwithout having to have a copy of the service running.  You could mock out\nthe ``AsyncHTTPClient`` and return fake futures and what not but that has\nthe nasty side-effect of hiding defects around how content type or headers\nare handled -- no HTTP requests means that you have untested assumptions.\n\nThe following snippet tests the application under test using the\n``ServiceLayer`` abstraction that ``glinda.testing`` provides.\n\n.. code-block:: python\n\n   from tornado import testing\n   from glinda.testing import services\n\n\n   class MyServiceTests(testing.AsyncHTTPTestCase):\n\n      def setUp(self):\n         service_layer = services.ServiceLayer()\n         self.service = service_layer['adder']\n         # TODO configured your application here using\n         # self.service.url_for('/add') or self.service.host\n         super(MyServiceTests, self).setUp()\n\n      def get_app(self):\n         return MyApplication()\n\n      def test_that_my_service_calls_other_service(self):\n         self.service.add_response(\n            services.Request('POST', '/add'),\n            services.Response(200, body='{\"result\": 10}'))\n         self.fetch(self.get_url('/do-stuff'), method='GET')\n\n         recorded = self.service.get_request('/add')\n         self.assertEqual(recorded.method, 'POST')\n         self.assertEqual(recorded.body, '[1,2,3,4]')\n         self.assertEqual(recorded.headers['Content-Type'], 'application/json')\n\nThe application under test is linked in by implementing the standard\n``tornado.testing.AsyncHTTPTestCase.get_app`` method.  Then you add in\na ``glinda.testing.services.ServiceLayer`` object and configure it to look\nlike the services that you depend on by adding endpoints and then configuring\nyour application to point at the service layer.  When you invoke the\napplication under test using ``self.fetch(...)``, it will send HTTP requests\nthrough the Tornado stack (using the testing ``ioloop``) to the service layer\nwhich will respond appropriately.  The beauty is that the entire HTTP stack is\nexercised locally so that you can easily test edge cases such as correct\nhandling of status codes, custom headers, or malformed bodies without\nresorting to deep mocking.\n\nWhere?\n------\n+---------------+-------------------------------------------------+\n| Source        | https://github.com/dave-shawley/glinda          |\n+---------------+-------------------------------------------------+\n| Status        | https://travis-ci.org/dave-shawley/glinda       |\n+---------------+-------------------------------------------------+\n| Download      | https://pypi.python.org/pypi/glinda             |\n+---------------+-------------------------------------------------+\n| Documentation | http://glinda.readthedocs.org/en/latest         |\n+---------------+-------------------------------------------------+\n| Issues        | https://github.com/dave-shawley/glinda          |\n+---------------+-------------------------------------------------+\n\n.. _tornado: http://tornadoweb.org/\n.. _tornado.testing: http://www.tornadoweb.org/en/latest/testing.html\n.. _RFC7231: http://tools.ietf.org/html/rfc7231\n.. _section 3.1: http://tools.ietf.org/html/rfc7231#section-3.1\n.. _3.4.1: http://tools.ietf.org/html/rfc7231#section-3.4.1\n.. _5.3: http://tools.ietf.org/html/rfc7231#section-5.3\n\n.. |ReadTheDocs| image:: https://readthedocs.org/projects/glinda/badge/\n   :target: https://glinda.readthedocs.org/\n.. |Travis| image:: https://travis-ci.org/dave-shawley/glinda.svg\n   :target: https://travis-ci.org/dave-shawley/glinda\n.. |CodeClimate| image:: https://codeclimate.com/github/dave-shawley/glinda/badges/gpa.svg\n   :target: https://codeclimate.com/github/dave-shawley/glinda\n\n\n",
     "docs_url": null,
-    "download_url": "UNKNOWN",
+    "download_url": "",
     "downloads": {
       "last_day": 0,
       "last_month": 0,
@@ -25,16 +25,20 @@
     },
     "home_page": "http://github.com/dave-shawley/glinda",
     "keywords": "",
-    "license": "UNKNOWN",
+    "license": "",
     "maintainer": "",
     "maintainer_email": "",
     "name": "glinda",
     "platform": "any",
     "project_url": "https://pypi.org/project/glinda/",
-    "release_url": "https://pypi.org/project/glinda/0.0.3/",
-    "requires_python": null,
+    "release_url": "https://pypi.org/project/glinda/0.1.0/",
+    "requires_dist": [
+      "tornado (>=3,<4.5)",
+      "ietfparse (>=1.2.2,<2)"
+    ],
+    "requires_python": "",
     "summary": "Helping your through the Tornado.",
-    "version": "0.0.3"
+    "version": "0.1.0"
   },
   "releases": {
     "0.0.1": [
@@ -106,40 +110,74 @@
         "upload_time": "2015-05-30T20:30:00",
         "url": "https://files.pythonhosted.org/packages/b1/6c/197f4989d73d7b151da415a3e06db1cefe8ceb32bf3996915c42dd7f5c88/glinda-0.0.3.tar.gz"
       }
+    ],
+    "0.1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0ff681ff7c804fe41ace81fe80d7bea3",
+          "sha256": "30f0858d837c33271374a905d52cbb4c9a62d6380bc54a51e51c1210d15d21bc"
+        },
+        "downloads": 0,
+        "filename": "glinda-0.1.0-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "0ff681ff7c804fe41ace81fe80d7bea3",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 15456,
+        "upload_time": "2017-07-03T16:02:38",
+        "url": "https://files.pythonhosted.org/packages/28/c6/11570e30046d8dfdf296322c72e469ad17c8f3e2da3bfe581e17745a268f/glinda-0.1.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "72fa49df1f14b2aad2e477c5576bc036",
+          "sha256": "91535c74cf00e8e53e3d3737037ba2d65f2a685486fd77d18ab3059ad7f5af75"
+        },
+        "downloads": 0,
+        "filename": "glinda-0.1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "72fa49df1f14b2aad2e477c5576bc036",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 24203,
+        "upload_time": "2017-07-03T16:02:39",
+        "url": "https://files.pythonhosted.org/packages/ad/f7/74078c2edfa6871786c4aa9ccc733f7f67af7756c809855140db5689514b/glinda-0.1.0.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "ddeac514593218f30b08af17bfb3da8c",
-        "sha256": "e8160bf2b220b0bc8f05b99c0840fa2159dc8cf75303ff8f2c25dcaebde64dd2"
+        "md5": "0ff681ff7c804fe41ace81fe80d7bea3",
+        "sha256": "30f0858d837c33271374a905d52cbb4c9a62d6380bc54a51e51c1210d15d21bc"
       },
-      "downloads": 1044,
-      "filename": "glinda-0.0.3-py2.py3-none-any.whl",
+      "downloads": 0,
+      "filename": "glinda-0.1.0-py2.py3-none-any.whl",
       "has_sig": false,
-      "md5_digest": "ddeac514593218f30b08af17bfb3da8c",
+      "md5_digest": "0ff681ff7c804fe41ace81fe80d7bea3",
       "packagetype": "bdist_wheel",
-      "python_version": "3.4",
-      "size": 15206,
-      "upload_time": "2015-05-30T20:30:04",
-      "url": "https://files.pythonhosted.org/packages/ce/77/d6934dde32c1a4b943283acf4f84bc3594f6bf46eea37b8f86422131c879/glinda-0.0.3-py2.py3-none-any.whl"
+      "python_version": "py2.py3",
+      "size": 15456,
+      "upload_time": "2017-07-03T16:02:38",
+      "url": "https://files.pythonhosted.org/packages/28/c6/11570e30046d8dfdf296322c72e469ad17c8f3e2da3bfe581e17745a268f/glinda-0.1.0-py2.py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "21d4ab5a0424eee8d6d4b2dd5fe1aad0",
-        "sha256": "9993db6640efdadc112d96594d8ad73a5aa1719df7cc88a7dafd2b52942c427d"
+        "md5": "72fa49df1f14b2aad2e477c5576bc036",
+        "sha256": "91535c74cf00e8e53e3d3737037ba2d65f2a685486fd77d18ab3059ad7f5af75"
       },
-      "downloads": 976,
-      "filename": "glinda-0.0.3.tar.gz",
+      "downloads": 0,
+      "filename": "glinda-0.1.0.tar.gz",
       "has_sig": false,
-      "md5_digest": "21d4ab5a0424eee8d6d4b2dd5fe1aad0",
+      "md5_digest": "72fa49df1f14b2aad2e477c5576bc036",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 21429,
-      "upload_time": "2015-05-30T20:30:00",
-      "url": "https://files.pythonhosted.org/packages/b1/6c/197f4989d73d7b151da415a3e06db1cefe8ceb32bf3996915c42dd7f5c88/glinda-0.0.3.tar.gz"
+      "size": 24203,
+      "upload_time": "2017-07-03T16:02:39",
+      "url": "https://files.pythonhosted.org/packages/ad/f7/74078c2edfa6871786c4aa9ccc733f7f67af7756c809855140db5689514b/glinda-0.1.0.tar.gz"
     }
   ]
 }
