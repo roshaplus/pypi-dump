@@ -11,9 +11,9 @@
       "Programming Language :: Python :: 2",
       "Programming Language :: Python :: 2.7"
     ],
-    "description": "Installation\n============\n\nTo install ``portia_porter``:\n\n::\n\n    pip install portia2code\n\nPurpose\n=======\n\nThe purpose of this project is to give more options to users of Portia\nand Scrapy.\n\nIn some cases when a spider is created with Portia it doesn't extract\nthe data correctly or some custom logic is needed to join different\npages together. This project allows you to get around those issues by\nconverting spiders from the JSON format used by Portia to Scrapy spiders\nwritten in Python. With the Python code it can allow users to create\ntheir own custom logic for extracting data.\n\nFor scrapy users it can give you the ability to bootstrap a spider using\nPortia. Rather than going to a site in your browser and manually finding\nthe CSS/XPath selectors you can use the Portia tool to do that work for\nyou and export the spider as python code ready to be customised.\n\nPort your project\n=================\n\nOnce You have installed the tool you can port your project using the\ncommand:\n\n::\n\n    portia_porter PROJECT_DIR OUT_DIR\n\nYou can download your portia project as python using\n\n::\n\n    export PROJECT_ID=\"PROJECT_ID\"\n    curl https://portia/api/projects/$PROJECT_ID/download?format=code\n\n\n\nHow it works\n============\n\nSpiders built with Portia consist of JSON definitions of which urls a\nspider should crawl and how it should extract data from the data at\nthose urls. When running these spiders the JSON definitions are compiled\ninto a custom Scrapy spider with trained samples used for extraction.\nThe trained samples are used with the ``scrapely`` library to extract\ndata from similar pages. To build one of these trained samples an\nannotated page must be passed to scrapely so it knows what data to\nextract. In older versions of Portia these annotations were found in the\npage by adding an attribute to each element called ``data-tagid=N``\nwhere ``N`` is a unique incrementing integer for each open or self\nclosing tag on the page. Newer versions of Portia have changed this and\nnow use unique selectors for each annotated element on the page. Using\nthese unique selectors we are able to build an extraction tree that can\nuse item loaders on a page to extract the annotated data.\n\nCustomising Your Spiders\n========================\n\nIf you want to change the functionality you can do so as you would with\nany other scrapy spider. The spiders produced by Portia2Code are a\ncustom ``scrapy.CrawlSpider``, the code for which is included in the\ndownloaded project.\n\nThe example below demonstrates how to make an additional API request to\na metrics site when there is a meta property with the name ``metrics``\non the page.\n\n    In the example the extended spider is separated out from the\n    original spider, this is just to demonstrate the changes that you\n    need to make when modifying the spider. In practice you would make\n    changes to the spider in the same class.\n\n.. code:: python\n\n    from scrapy.linkextractors import LinkExtractor\n    from scrapy.spiders import Rule\n\n    from ..utils.spiders import BasePortiaSpider\n    from ..utils.processors import Field\n    from ..utils.processors import Item\n    from ..items import ArticleItem\n\n\n    class ExampleCom(BasePortiaSpider):\n        name = \"www.example.com\"\n        start_urls = [u'http://www.example.com/search/?q=articles']\n        allowed_domains = [u'www.example.com']\n        rules = [\n            Rule(LinkExtractor(allow=(ur'\\d{6}'), deny=()), callback='parse_item',\n                 follow=True)\n        ]\n        items = [\n            [Item(ArticleItem, None, u'#content', [\n                  Field(u'title', u'.page_title *::text', []),\n                  Field(u'Article', u'.article *::text', []),\n                  Field(u'published', u'.date *::text', []),\n                  Field(u'Authors', u'.authors *::text', []),\n                  Field(u'pdf', u'#pdf-link::attr(href)', [])])]\n        ]\n\n\n    import json\n    from scrapy import Request\n    from six.moves.urllib.parse import urljoin\n\n\n    class ExtendedExampleCom(ExampleCom):\n        base_api_url = 'https://api.examplemetrics.com/v1/metrics/'\n        allowed_domains = [u'www.example.com', u'api.examplemetrics.com']\n\n        def parse_item(self, response):\n            for item in super(ExtendedExampleCom, self).parse_item(response):\n                score = response.css('meta[name=\"metrics\"]::attr(content)')\n                if score:\n                    yield Request(\n                        url=urljoin(self.base_api_url, score.extract()[0]),\n                        callback=self.add_score, meta={'item': item})\n                else:\n                    yield item\n\n        def add_score(self, response):\n            item = response.meta['item']\n            item['score'] = json.loads(response.body)['score']\n            return item\n\nWhat's happening here?\n----------------------\n\nHere is an example meta tag\n``<meta name=\"metrics\" content=\"area/1234\">`` on this site. The content\nattribute needs to be joined with a ``base_api_url`` to produce the full\nurl where the metrics are hosted.\n\nThe ``base_api_url`` is hosted at a different domain to the rest of the\nsite so we need to add the domain to ``allowed_domains`` so that it\ndoesn't get filtered by the offsite middleware.\n\nSince the goal here is to add an additional field to the items that are\nextracted from the definitons the first step is to overwrite the\n``parse_item`` function for this class. The most important part of this\nis to loop over the ``parse_item`` function in the superclass,\n``for item in super(ClassName, self).parse_item(response):``. After this\nthe custom logic is added. First, checking if the meta property metrics\nis present. If it is present then another request is sent with the\ncurrent item stored in the request meta, after the request is resolved\nthe ``score`` property is added to the item in the ``add_score`` method\nfrom the json response and the item is returned. If the property is not\npresent then the item itself is returned.\n\n    The ``parse_item`` method uses the ``items`` definitions to extract\n    data from the response. The ``parse_item`` function from\n    ``BasePortiaSpider`` only outputs ``scrapy.Item`` items so you don't\n    need to handle ``scrapy.Request`` or other types of items when\n    calling the function.\n\nThis pattern is quite common in spiders built with Portia. There are\nsome pages where to get some data like this the page would need to be\nloaded in Splash which will greatly increase the time it takes to crawl\na site. Using this approach the additional data can be received using a\nsingle small request rather than needing to load all additional\njavascript and CSS just to have this data stored in the page.\n\nMissing Features\n================\n\nSome features from Portia are still not available though this porting\nmechanism but will hopefully be added in the future:\n\n-  Load pages using Splash depending on crawl rules\n-  Follow links automatically\n-  Text data extractors (annotations generated by highlighting text)\n\nFuture Improvements\n===================\n\n-  Only Portia 2.0 spiders are supported for now but we will be adding\n   support for Portia 1.0 spiders.\n\n",
+    "description": "UNKNOWN\n\n\n",
     "docs_url": null,
-    "download_url": "https://github.com/scrapinghub/portia2code/tarball/portia2code-0.0.14",
+    "download_url": "https://github.com/scrapinghub/portia2code/tarball/portia2code-0.0.15",
     "downloads": {
       "last_day": 0,
       "last_month": 0,
@@ -27,7 +27,7 @@
     "name": "portia2code",
     "platform": "Any",
     "project_url": "https://pypi.org/project/portia2code/",
-    "release_url": "https://pypi.org/project/portia2code/0.0.14/",
+    "release_url": "https://pypi.org/project/portia2code/0.0.15/",
     "requires_dist": [
       "w3lib",
       "slybot (>=0.13.0)",
@@ -40,7 +40,7 @@
     ],
     "requires_python": "",
     "summary": "Convert portia spider definitions to python scrapy spiders",
-    "version": "0.0.14"
+    "version": "0.0.15"
   },
   "releases": {
     "0.0.1": [],
@@ -214,6 +214,40 @@
         "url": "https://files.pythonhosted.org/packages/64/a1/bd8b7d8c5a45250e459d6c6eb5bdda55357343d39e30a0894ec0fa7b52e4/portia2code-0.0.14.tar.gz"
       }
     ],
+    "0.0.15": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9a111942e11e574cf8a1f9fe45b41c15",
+          "sha256": "3d4db7faeadd53da7aef0fb86ee56ec8efb9a1788953a551c045f1b485e0ebfe"
+        },
+        "downloads": 0,
+        "filename": "portia2code-0.0.15-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "9a111942e11e574cf8a1f9fe45b41c15",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2",
+        "size": 17606,
+        "upload_time": "2017-07-05T15:18:55",
+        "url": "https://files.pythonhosted.org/packages/ca/23/fcdd6502068f7490266fa892aa4af955246f42fa66ad53cf9aa476b028d5/portia2code-0.0.15-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "67bf90380fb1a6c19de0baeed6856eba",
+          "sha256": "1736d4395a861cc5210144eca5d205e462abc34f3184454297d2cd774ab01bd1"
+        },
+        "downloads": 0,
+        "filename": "portia2code-0.0.15.tar.gz",
+        "has_sig": false,
+        "md5_digest": "67bf90380fb1a6c19de0baeed6856eba",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16491,
+        "upload_time": "2017-07-05T15:18:57",
+        "url": "https://files.pythonhosted.org/packages/47/39/3a1da90128b19a5c71007e98d2ab5af0e2c476a0049c9a0dc840df3fcb62/portia2code-0.0.15.tar.gz"
+      }
+    ],
     "0.0.3": [],
     "0.0.4": [
       {
@@ -376,34 +410,34 @@
     {
       "comment_text": "",
       "digests": {
-        "md5": "320e24dd10bf7deadec48e1715eb583f",
-        "sha256": "41db41406ed22d5aabd4c18a43101553f600d397857180d8abd3cdae789ecf12"
+        "md5": "9a111942e11e574cf8a1f9fe45b41c15",
+        "sha256": "3d4db7faeadd53da7aef0fb86ee56ec8efb9a1788953a551c045f1b485e0ebfe"
       },
       "downloads": 0,
-      "filename": "portia2code-0.0.14-py2-none-any.whl",
+      "filename": "portia2code-0.0.15-py2-none-any.whl",
       "has_sig": false,
-      "md5_digest": "320e24dd10bf7deadec48e1715eb583f",
+      "md5_digest": "9a111942e11e574cf8a1f9fe45b41c15",
       "packagetype": "bdist_wheel",
       "python_version": "py2",
-      "size": 17600,
-      "upload_time": "2017-06-27T12:43:36",
-      "url": "https://files.pythonhosted.org/packages/52/1c/cce011e2e4eada83a50399b15218859881377c04615c0d57ad9659303576/portia2code-0.0.14-py2-none-any.whl"
+      "size": 17606,
+      "upload_time": "2017-07-05T15:18:55",
+      "url": "https://files.pythonhosted.org/packages/ca/23/fcdd6502068f7490266fa892aa4af955246f42fa66ad53cf9aa476b028d5/portia2code-0.0.15-py2-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "943d6a25a5f75aa5bda70c5a66e5b07c",
-        "sha256": "97e9e3017396bad652cd9eb1238760b6467205b0c0e46504afb24cc5b3a1e9e1"
+        "md5": "67bf90380fb1a6c19de0baeed6856eba",
+        "sha256": "1736d4395a861cc5210144eca5d205e462abc34f3184454297d2cd774ab01bd1"
       },
       "downloads": 0,
-      "filename": "portia2code-0.0.14.tar.gz",
+      "filename": "portia2code-0.0.15.tar.gz",
       "has_sig": false,
-      "md5_digest": "943d6a25a5f75aa5bda70c5a66e5b07c",
+      "md5_digest": "67bf90380fb1a6c19de0baeed6856eba",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 16482,
-      "upload_time": "2017-06-27T12:43:38",
-      "url": "https://files.pythonhosted.org/packages/64/a1/bd8b7d8c5a45250e459d6c6eb5bdda55357343d39e30a0894ec0fa7b52e4/portia2code-0.0.14.tar.gz"
+      "size": 16491,
+      "upload_time": "2017-07-05T15:18:57",
+      "url": "https://files.pythonhosted.org/packages/47/39/3a1da90128b19a5c71007e98d2ab5af0e2c476a0049c9a0dc840df3fcb62/portia2code-0.0.15.tar.gz"
     }
   ]
 }
