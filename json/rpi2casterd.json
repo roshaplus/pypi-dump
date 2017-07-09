@@ -1,0 +1,75 @@
+{
+  "info": {
+    "author": "Christophe Slychan",
+    "author_email": "krzysztof.slychan@gmail.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 5 - Production/Stable",
+      "Framework :: Flask",
+      "License :: OSI Approved :: MIT License",
+      "Natural Language :: English",
+      "Operating System :: POSIX :: Linux",
+      "Programming Language :: Python :: 3 :: Only",
+      "Topic :: System :: Hardware :: Hardware Drivers"
+    ],
+    "description": "rpi2casterd\n=================\n\nHardware driver and web API for rpi2caster\n------------------------------------------\n\nThis is a machine control daemon for the ``rpi2caster`` typesetting and casting software.\nIt is supposed to run on a Raspberry Pi (any model) with an output expander based on two\nMCP23017 chips to provide 32 additional outputs. These are connected to solenoid valves,\nwhich in turn send the pneumatic signals to a Monotype composition caster or tape punch.\n\nThis driver uses a ``RPi.GPIO`` library for GPIO control, \n\nThere are several available output control backends:\n\n1. SMBus (via ``smbus-cffi`` or ``smbus2`` package),\n2. ``WiringPi`` library.\n\nWhen ready to use, the daemon lights a LED on a specified \"ready LED\" GPIO.\nAn additional functionality of this daemon is control over the power and reboot buttons.\nAfter one of these buttons is held for 2 seconds, the LED flashes and the shutdown or reboot\nprocedure begins.\n\nThe program uses ``Flask`` to provide a rudimentary JSON API for caster control.\nIt accepts POST requests to start and stop the machine, turn the valves on and off,\nchange the operation and row 16 addressing modes and send specified signals to the caster or perforator.\nGET requests are used for obtaining the interface's state current, default and supported modes,\nconfiguration, water/air/motor/pump/machine state, rotation speed and current justification wedge positions.\n\nInitializing\n------------\n\nWhen starting to work with the interface, change its mode of operation or row 16 addressing.\n\nIf a new operation or row 16 addressing mode is unsupported by the interface's configuration\n(for example, the device is meant for being installed on a caster without any row 16 attachments),\nthe ``modes`` request will get an error message, stating that a mode we want to use is not supported.\n\nThe ``casting`` operation mode limits the choice of row 16 addressing modes to the supported modes only,\nwhereas the ``punching`` mode can use all row 16 addressing modes.\n\nStarting\n--------\n\nThe interface needs to be started up in order to work. The startup procedure ensures that:\n\n1. the interface is not busy - has not been claimed by any other client,\n2. air and (for casting only) water and motor is turned on, if the hardware supports this,\n3. (for casting) the machine is actually turning,\n4. an \"interface in use\" LED (green) is turned on, if hardware supports this,\n5. the interface will stay busy until released by the ``stop`` method.\n\nStopping\n--------\n\nStopping the interface ensures that:\n\n1. if the pump is working, it is stopped (see the pump control section),\n2. air and (for casting) water and motor is turned off, if hardware supports this,\n3. the \"interface in use\" LED is turned off, if hardware supports this,\n4. the interface is released for the future clients to claim.\n\nStopping is done by a request to ``/machine``, or a ``MachineStopped`` exception occurring in the program.\nThis happens if the machine has been waiting for the signal from the cycle sensor for too long, or was stopped\nwith an emergency stop button (for those control computers which support it).\n\nPump control\n------------\n\nThe ``/pump`` endpoint gets or sets the status of the Monotype caster's pump.\n\nDuring the pump switch-off procedure, an \"alarm\" LED (red) is lit to prompt the operator to turh the\nmachine's main shaft a few times. The interface will then send a ``NJS+0005+X`` signals combination, where X is the\ncurrent 0005 justification wedge's position. This way, stopping the pump does not reset the wedge position.\n\nThe pump switch-on procedure sends the ``NKS+0075+Y`` combination, where Y is the current 0075 justification\nwedge's position.\n\nMotor control\n-------------\n\nThe ``/motor`` endpoint gets the status of the caster's motor.\n``PUT``, ``POST`` or ``DELETE`` requests change its state.\nIf the interface's configuration does not support motor relay, the server replies with ``501 Not Implemented``.\n\n\nSending signals\n---------------\n\nThe most important part of the controller.\n\nBased on the caster's current testing/operation mode and row 16 addressing mode, the signals are changed\nin order to activate the mechanisms such as ribbon advance and row 16 addressing attachment.\n\nThe signals can be sent for repeated casting/punching.\n\nSending signals can take place only when the interface has been previously started and claimed as busy;\notherwise, ``InterfaceNotStarted`` is raised in the casting mode, and the startup is done automatically\nin the punching and testing modes.\n\nIf sending no signals, the valves are closed.\n\n\nOperation modes\n_______________\n\nThe interface / driver can operate in different modes, denoted by the ``mode`` parameter\nin the ``modes`` POST request's JSON payload. Depending on the mode, the behavior and signals sent vary.\n\ncasting\n~~~~~~~\n\nSignals O and 15 are stripped, as they are the signals the caster defaults to\nif no signal in the ribbon is found.\nWhen the machine is working, the interface driver:\n\n1. waits for a machine cycle sensor (photodiode) going ON,\n2. activates specified valves,\n3. waits until the cycle sensor goes OFF,\n4. checks the current pump status,\n5. turns all valves off,\n6. returns a reply to the request, allowing the client to cast the next combination.\n\nHowever, a machine sometimes stops during casting (e.g. when the operator sees a lead squirt\nand has to stop immediately to prevent damage). In this case, the driver will check whether\nthe pump is working, and if this is the case, run a full signals send cycle with a pump stop\ncombination (NJS 0005 0075), which works both with unit-adding system on and off.\nAfter the pump stop procedure is completed, the interface replies with an error message.\n\npunching\n~~~~~~~~\n\nThis mode modifies the signals, so that at least two of them are always present in a combination.\nThis way the pneumatic perforator from the Monotype keyboard can advance the ribbon.\nWhen less than two signals are present, the driver adds an extra O+15 signal driven by the 32nd valve\n(not used when casting). The compressed air from this valve is routed to O and 15 blind punches,\nwhich make no perforation in the ribbon, but trigger the ribbon advance mechanism.\n\nThis mode is fully automatic and driven by a configureble timer.\nThe control sequence is as follows:\n\n1. turn the valves on,\n2. wait time_on for punches to go up,\n3. turn the valves off,\n4. wait time_off for punches to come back down,\n5. return a success reply to the request.\n\n\nTesting mode\n------------\n\nAll signals are sent as specified. ``O`` and ``15`` are converted to the combined ``O15`` signal\nand present on the output. Row 16 addressing modifications are also done, based on mode. \n\nThe driver closes any open valves, then turns on the valves corresponding to the signals\nfound in request, and returns a success message.\n\n\nAdditional row 16 addressing modes\n----------------------------------\n\nA ``row16_mode`` parameter in the ``modes`` POST request JSON sets the interface's\nrow 16 addressing mode. Once the interface is working, this mode will not change.\nIf ``mode`` is ``casting``, the choice of ``row16_mode`` is limited by the\n``supported_row16_modes`` configuration parameters. On the other hands, the ``testing``,\n``punching`` and ``manual punching`` modes can operate with all four row 16 addressing modes.\nDepending on the selection, the signals sent to valves will be changed to fit the control system in use.\n\nWhy all this?\n~~~~~~~~~~~~~\n\nThe typical Monotype matrix case contained 15 rows and 15 or 17 columns.\nIn 1950s and 1960s a further extension by an additional row was introduced,\nwhich allowed more flexibility in defining the matrix case layouts, and\nmade it possible to contain more characters in the diecase.\nSome Monotype casters (especially from 1960s and later) are equipped with special\nattachments (either from the very beginning, or retrofitted) for addressing\nthe additional row. There were three such systems.\n\noff = ``False``\n~~~~~~~~~~~~~~~\n\nThis means that a sort will be cast from row 15 instead of 16.\nNo modification to signals apart from replacing row 16 with 15.\n\n``HMN``\n~~~~~~~\n\nThe earliest system, devised by one of Monotype's customers.\nIt is based on combined signals (similar to N+I, N+L addressing of two additional columns).\nFor rows 1...15 no modifications are done.\nFor row 16, additional signals are introduced based on column:\n\n1. NI, NL, M - add H - HNI, HNL, HM\n2. H - add N - HN\n3. N - add M - MN\n4. O (no signal) - add HMN\n5. {ABCDEFGIJKL} - add HM - HM{ABCDEFGIJKL}\n\n``KMN``\n~~~~~~~\n\nDevised by Monotype and similar to HMN.\nThe extra signals are a little bit different.\n\n1. NI, NL, M - add K - KNI, KNL, KM\n2. K - add N - KN\n3. N - add M - KM\n4. O (no signal) - add KMN\n5. {ABCDEFGHIJL} - add KM - KM{ABCDEFGHIJL}\n\n``unit shift``\n~~~~~~~~~~~~~~\n\nIntroduced by Monotype in 1963 and standard on all machines soon after.\nWhen the attachment is activated, a signal D is re-routed to an additional pin on\nthe front pin block, which boosts the left-right (rows) matrix case draw rod,\nso that its end goes into an upper socket in the special matrix jaw. This socket is offset\nby 0.2\" to the left, allowing the matrix case to go a full row farther.\n\nColumn D addressing is done with a combined E+F signals instead.\nSo:\n\n1. replace D with EF in the original combination,\n2. add D if addressing the row 16.\n\nAdvanced features\n-----------------\n\nThe Raspberry Pi based controller can be coupled with more devices than the basic functionality requires.\n\nThe program supports configuring multiple control interfaces (i.e. sensor + valve sets).\n\nApart from getting the machine cycle sensor state and sending signals to solenoid valves,\nthe program can start and stop the machine's motor, control additional water and air cutoff valves,\nuse an emergency stop button to stop the machine when something bad happens, and light a LED\nwhen the controller is trying to stop the caster's pump.\n\nAPI documentation\n=================\n\nto be added later...\n",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "http://github.com/elegantandrogyne/rpi2casterd",
+    "keywords": "",
+    "license": "MIT",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "rpi2casterd",
+    "platform": "",
+    "project_url": "https://pypi.org/project/rpi2casterd/",
+    "release_url": "https://pypi.org/project/rpi2casterd/1.0/",
+    "requires_dist": [],
+    "requires_python": "",
+    "summary": "Hardware control daemon for rpi2caster",
+    "version": "1.0"
+  },
+  "releases": {
+    "1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ce16198ec0cbce8119f4d1c000ed7fe9",
+          "sha256": "330839107d18093b2bd5c26c05fcb8a11a291689a9f16ab9239482112fb56a76"
+        },
+        "downloads": 0,
+        "filename": "rpi2casterd-1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ce16198ec0cbce8119f4d1c000ed7fe9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 19381,
+        "upload_time": "2017-07-09T13:40:55",
+        "url": "https://files.pythonhosted.org/packages/88/04/d13eb1593654a1a2f2f4134852f2f3673190b3a4def8c879408681319fb9/rpi2casterd-1.0.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "ce16198ec0cbce8119f4d1c000ed7fe9",
+        "sha256": "330839107d18093b2bd5c26c05fcb8a11a291689a9f16ab9239482112fb56a76"
+      },
+      "downloads": 0,
+      "filename": "rpi2casterd-1.0.tar.gz",
+      "has_sig": false,
+      "md5_digest": "ce16198ec0cbce8119f4d1c000ed7fe9",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 19381,
+      "upload_time": "2017-07-09T13:40:55",
+      "url": "https://files.pythonhosted.org/packages/88/04/d13eb1593654a1a2f2f4134852f2f3673190b3a4def8c879408681319fb9/rpi2casterd-1.0.tar.gz"
+    }
+  ]
+}
