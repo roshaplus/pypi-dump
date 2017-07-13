@@ -9,12 +9,13 @@
       "Intended Audience :: Developers",
       "Operating System :: OS Independent",
       "Programming Language :: Python :: 2.7",
+      "Programming Language :: Python :: 3.4",
       "Topic :: Internet",
       "Topic :: Software Development :: Libraries :: Python Modules",
       "Topic :: Text Processing :: Indexing",
       "Topic :: Utilities"
     ],
-    "description": "Sasila\r\n======\r\n.. image:: https://img.shields.io/badge/version-0.0.1-green.svg\r\n   :target: https://pypi.python.org/pypi/Sasila\r\n   :alt: Sasila Version\r\n\r\n.. image:: https://img.shields.io/badge/pypi-v1.4.0-green.svg\r\n   :target: https://pypi.python.org/pypi/Sasila\r\n   :alt: Wheel Status\r\n\r\nOverview\r\n========\r\nsasila is a simple spider system\r\n\r\nInstall\r\n=======\r\n\r\nThe quick way::\r\n\r\n    pip install sasila\r\n\r\nTutorial\r\n=======\r\ncar_processor.py::\r\n\r\n    #!/usr/bin/env python\r\n    # -*- coding: utf-8 -*-\r\n    from sasila.system_normal.spider.spider_core import SpiderCore\r\n    from sasila.system_normal.pipeline.console_pipeline import ConsolePipeline\r\n    from sasila.system_normal.pipeline.text_pipeline import TextPipelineCar\r\n    from sasila.system_normal.processor.base_processor import BaseProcessor\r\n    from sasila.system_normal.downloader.http.spider_request import Request\r\n    from sasila.system_normal.utils.decorator import checkResponse\r\n\r\n    from bs4 import BeautifulSoup as bs\r\n    import json\r\n    import time\r\n    import sys\r\n\r\n    reload(sys)\r\n    sys.setdefaultencoding(\"utf-8\")\r\n\r\n\r\n    class Car_Processor(BaseProcessor):\r\n        spider_id = \"car_spider\"\r\n        spider_name = \"car_spider\"\r\n        allowed_domains = [\"che168.com\"]\r\n        start_requests = [Request(url=\"http://www.che168.com\", priority=0)]\r\n\r\n        @checkResponse\r\n        def process(self, response):\r\n            soup = bs(response.m_response.content, \"lxml\")\r\n            province_div_list = soup.select(\"div.city-list div.cap-city > div.fn-clear\")\r\n            for province_div in province_div_list:\r\n                province_name = province_div.select(\"span.capital a\")[0].text\r\n                city_list = province_div.select(\"div.city a\")\r\n                for city in city_list:\r\n                    city_name = city.text\r\n                    pinyin = city[\"href\"].strip(\"/\").split(\"/\")[0]\r\n                    request = Request(\r\n                            url=\"http://www.che168.com/handler/usedcarlistv5.ashx?action=brandlist&area=%s\" % pinyin,\r\n                            priority=1, callback=self.process_page_1)\r\n                    request.meta[\"province\"] = province_name\r\n                    request.meta[\"city\"] = city_name\r\n                    yield request\r\n\r\n        @checkResponse\r\n        def process_page_1(self, response):\r\n            brand_list = list(json.loads(response.m_response.content.decode(\"gb2312\")))\r\n            for brand in brand_list:\r\n                brand_dict = dict(brand)\r\n                brand_name = brand_dict[\"name\"]\r\n                url = response.nice_join(brand_dict[\"url\"]) + \"/\"\r\n                request = Request(url=url, priority=2, callback=self.process_page_2)\r\n                request.meta[\"province\"] = response.request.meta[\"province\"]\r\n                request.meta[\"city\"] = response.request.meta[\"city\"]\r\n                request.meta[\"brand\"] = brand_name\r\n                yield request\r\n\r\n        @checkResponse\r\n        def process_page_2(self, response):\r\n            soup = bs(response.m_response.content, \"lxml\")\r\n            cars_line_list = soup.select(\"div#series div.content-area dl.model-list dd a\")\r\n            for cars_line in cars_line_list:\r\n                cars_line_name = cars_line.text\r\n                url = \"http://www.che168.com\" + cars_line[\"href\"]\r\n                request = Request(url=url, priority=3, callback=self.process_page_3)\r\n                request.meta[\"province\"] = response.request.meta[\"province\"]\r\n                request.meta[\"city\"] = response.request.meta[\"city\"]\r\n                request.meta[\"brand\"] = response.request.meta[\"brand\"]\r\n                request.meta[\"cars_line\"] = cars_line_name\r\n                yield request\r\n\r\n        @checkResponse\r\n        def process_page_3(self, response):\r\n            soup = bs(response.m_response.content, \"lxml\")\r\n            car_info_list = soup.select(\"div#a2 ul#viewlist_ul li a.carinfo\")\r\n            for car_info in car_info_list:\r\n                url = \"http://www.che168.com\" + car_info[\"href\"]\r\n                request = Request(url=url, priority=4, callback=self.process_page_4)\r\n                request.meta[\"province\"] = response.request.meta[\"province\"]\r\n                request.meta[\"city\"] = response.request.meta[\"city\"]\r\n                request.meta[\"brand\"] = response.request.meta[\"brand\"]\r\n                request.meta[\"cars_line\"] = response.request.meta[\"cars_line\"]\r\n                yield request\r\n            next_page = soup.find(lambda tag: tag.name == \"a\" and \"\u4e0b\u4e00\u9875\" in tag.text)\r\n            if next_page:\r\n                url = \"http://www.che168.com\" + next_page[\"href\"]\r\n                request = Request(url=url, priority=3, callback=self.process_page_3)\r\n                request.meta[\"province\"] = response.request.meta[\"province\"]\r\n                request.meta[\"city\"] = response.request.meta[\"city\"]\r\n                request.meta[\"brand\"] = response.request.meta[\"brand\"]\r\n                request.meta[\"cars_line\"] = response.request.meta[\"cars_line\"]\r\n                yield request\r\n\r\n        @checkResponse\r\n        def process_page_4(self, response):\r\n            soup = bs(response.m_response.content, \"lxml\")\r\n            # <html><head><title>Object moved</title></head><body>\r\n            # <h2>Object moved to <a href=\"/CarDetail/wrong.aspx?errorcode=5&amp;backurl=/&amp;infoid=21415515\">here</a>.</h2>\r\n            # </body></html>\r\n            if len(soup.select(\"div.car-title h2\")) != 0:\r\n                car = soup.select(\"div.car-title h2\")[0].text\r\n                detail_list = soup.select(\"div.details li\")\r\n                if len(detail_list) == 0:\r\n                    soup = bs(response.m_response.content, \"html5lib\")\r\n                    detail_list = soup.select(\"div.details li\")\r\n                mileage = detail_list[0].select(\"span\")[0].text.replace(\"\u4e07\u516c\u91cc\", \"\")\r\n                first_borad_date = detail_list[1].select(\"span\")[0].text\r\n                gear = detail_list[2].select(\"span\")[0].text.split(\"\uff0f\")[0]\r\n                displacement = detail_list[2].select(\"span\")[0].text.split(\"\uff0f\")[1]\r\n                price = soup.select(\"div.car-price ins\")[0].text.replace(\"\uffe5\", \"\")\r\n                crawl_date = time.strftime(\"%Y-%m-%d\", time.localtime(time.time()))\r\n\r\n                item = dict()\r\n                item[\"car\"] = car\r\n                item[\"mileage\"] = mileage\r\n                item[\"first_borad_date\"] = first_borad_date\r\n                item[\"gear\"] = gear\r\n                item[\"displacement\"] = displacement\r\n                item[\"price\"] = price\r\n                item[\"crawl_date\"] = crawl_date\r\n\r\n                item[\"province\"] = response.request.meta[\"province\"]\r\n                item[\"city\"] = response.request.meta[\"city\"]\r\n                item[\"brand\"] = response.request.meta[\"brand\"]\r\n                item[\"cars_line\"] = response.request.meta[\"cars_line\"]\r\n                yield item\r\n\r\nmain.py::\r\n\r\n    #!/usr/bin/env python\r\n    # -*- coding: utf-8 -*-\r\n    from car_processor import Car_Processor\r\n    from sasila.system_normal.pipeline.console_pipeline import ConsolePipeline\r\n    from sasila.system_normal.spider.spider_core import SpiderCore\r\n    from sasila.system_normal.manager import manager\r\n    import sasila\r\n\r\n    spider_car = SpiderCore(Car_Processor()).set_pipeline(ConsolePipeline())\r\n    manager.set_spider(spider_car)\r\n    sasila.start()\r\n\r\nthen start your redis and run script::\r\n\r\n    python main.py\r\n\r\nthen start your spider in your browser::\r\n\r\n    http://127.0.0.1:5000/slow_spider/start?spider_id=car_spider\r\n\r\nyou can stop spider::\r\n\r\n    http://127.0.0.1:5000/slow_spider/start?spider_id=car_spider\r\n\r\n\r\n\r\n",
+    "description": "UNKNOWN\n\n\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -30,7 +31,7 @@
     "name": "sasila",
     "platform": "all",
     "project_url": "https://pypi.org/project/sasila/",
-    "release_url": "https://pypi.org/project/sasila/0.0.6/",
+    "release_url": "https://pypi.org/project/sasila/0.0.10/",
     "requires_dist": [
       "unittest2 (>=0.5.1); extra == 'test'",
       "coverage; extra == 'test'",
@@ -55,7 +56,7 @@
     ],
     "requires_python": "",
     "summary": "a simple spider system",
-    "version": "0.0.6"
+    "version": "0.0.10"
   },
   "releases": {
     "0.0.1": [
@@ -74,6 +75,40 @@
         "size": 51401,
         "upload_time": "2017-07-04T08:30:04",
         "url": "https://files.pythonhosted.org/packages/c0/bc/a93c4f0ed172448d31fb8fcfc086c8f1f9b87c7cca67a281ced7dcd9a5a3/sasila-0.0.1-py2.py3-none-any.whl"
+      }
+    ],
+    "0.0.10": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3220d5cf84a1b7533cdcd20070d11572",
+          "sha256": "61553a1e3a9c66481de41a300656fad3949872ff7a9b791603e8aa98d601b7fc"
+        },
+        "downloads": 0,
+        "filename": "sasila-0.0.10-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "3220d5cf84a1b7533cdcd20070d11572",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2",
+        "size": 55438,
+        "upload_time": "2017-07-13T16:54:07",
+        "url": "https://files.pythonhosted.org/packages/e6/b4/0bee832a72989aad2fe4f48ede308f704571d76f6842560224ffbf1bca66/sasila-0.0.10-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "aa724e7d7d4515081f72025d0ca37aa9",
+          "sha256": "22815677d9a38b3f3435eddca22614939604801864f55a413b06c51cc51d02f7"
+        },
+        "downloads": 0,
+        "filename": "sasila-0.0.10.tar.gz",
+        "has_sig": false,
+        "md5_digest": "aa724e7d7d4515081f72025d0ca37aa9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 21710,
+        "upload_time": "2017-07-13T16:54:08",
+        "url": "https://files.pythonhosted.org/packages/12/a7/fdd769f105c0fe1ef2501c2ecf55cf0f6901bb320c057888806f33983cfe/sasila-0.0.10.tar.gz"
       }
     ],
     "0.0.2": [
@@ -165,24 +200,74 @@
         "upload_time": "2017-07-12T05:20:10",
         "url": "https://files.pythonhosted.org/packages/56/3f/55605d193c3181a89cabb60e8cf81361762572a6fd5196093b3d476744ad/sasila-0.0.6-py2.py3-none-any.whl"
       }
+    ],
+    "0.0.9": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "541642e954613643e62b9e42b3158670",
+          "sha256": "83df564597b8588f7ae02ced9b47171c05104ed1f5be9b3c811356aa4d323242"
+        },
+        "downloads": 0,
+        "filename": "sasila-0.0.9-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "541642e954613643e62b9e42b3158670",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2",
+        "size": 59036,
+        "upload_time": "2017-07-13T11:44:53",
+        "url": "https://files.pythonhosted.org/packages/f2/f8/664b5f9894ff89f6cb87eb17e76ca73fc599e54f49854ca95d9ca573bd5b/sasila-0.0.9-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a64d88acc23708b314a1ecd29d411551",
+          "sha256": "a612b0186cb23eb55ed688c4c0cff8fdd7cdc9726094eccab651f4afecedde67"
+        },
+        "downloads": 0,
+        "filename": "sasila-0.0.9.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a64d88acc23708b314a1ecd29d411551",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 25044,
+        "upload_time": "2017-07-13T11:44:54",
+        "url": "https://files.pythonhosted.org/packages/61/7c/59c6957d4933858ddd610ad59952664cf880c1138705319356e8335a9fb1/sasila-0.0.9.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "ecb6258adff70c2940c95f6844001d6e",
-        "sha256": "1d27e6aecb6a406d81fe8d469eb2274891609b1484db81088fbe20be1b2e4d00"
+        "md5": "3220d5cf84a1b7533cdcd20070d11572",
+        "sha256": "61553a1e3a9c66481de41a300656fad3949872ff7a9b791603e8aa98d601b7fc"
       },
       "downloads": 0,
-      "filename": "sasila-0.0.6-py2.py3-none-any.whl",
+      "filename": "sasila-0.0.10-py2-none-any.whl",
       "has_sig": false,
-      "md5_digest": "ecb6258adff70c2940c95f6844001d6e",
+      "md5_digest": "3220d5cf84a1b7533cdcd20070d11572",
       "packagetype": "bdist_wheel",
-      "python_version": "py2.py3",
-      "size": 58057,
-      "upload_time": "2017-07-12T05:20:10",
-      "url": "https://files.pythonhosted.org/packages/56/3f/55605d193c3181a89cabb60e8cf81361762572a6fd5196093b3d476744ad/sasila-0.0.6-py2.py3-none-any.whl"
+      "python_version": "py2",
+      "size": 55438,
+      "upload_time": "2017-07-13T16:54:07",
+      "url": "https://files.pythonhosted.org/packages/e6/b4/0bee832a72989aad2fe4f48ede308f704571d76f6842560224ffbf1bca66/sasila-0.0.10-py2-none-any.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "aa724e7d7d4515081f72025d0ca37aa9",
+        "sha256": "22815677d9a38b3f3435eddca22614939604801864f55a413b06c51cc51d02f7"
+      },
+      "downloads": 0,
+      "filename": "sasila-0.0.10.tar.gz",
+      "has_sig": false,
+      "md5_digest": "aa724e7d7d4515081f72025d0ca37aa9",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 21710,
+      "upload_time": "2017-07-13T16:54:08",
+      "url": "https://files.pythonhosted.org/packages/12/a7/fdd769f105c0fe1ef2501c2ecf55cf0f6901bb320c057888806f33983cfe/sasila-0.0.10.tar.gz"
     }
   ]
 }
