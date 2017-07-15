@@ -18,7 +18,7 @@
       "Programming Language :: Python :: 3.6",
       "Topic :: Software Development :: Libraries :: Python Modules"
     ],
-    "description": "",
+    "description": "============\nparallel-ssh\n============\n\nAsynchronous parallel SSH client library.\n\nRun SSH commands over many - hundreds/hundreds of thousands - number of servers asynchronously and with minimal system load on the client host.\n\n.. image:: https://img.shields.io/badge/License-LGPL%20v2-blue.svg\n  :target: https://pypi.python.org/pypi/parallel-ssh\n  :alt: License\n.. image:: https://img.shields.io/pypi/v/parallel-ssh.svg\n  :target: https://pypi.python.org/pypi/parallel-ssh\n  :alt: Latest Version\n.. image:: https://travis-ci.org/ParallelSSH/parallel-ssh.svg?branch=master\n  :target: https://travis-ci.org/ParallelSSH/parallel-ssh\n.. image:: https://coveralls.io/repos/ParallelSSH/parallel-ssh/badge.png?branch=master\n  :target: https://coveralls.io/r/ParallelSSH/parallel-ssh?branch=master\n.. image:: https://readthedocs.org/projects/parallel-ssh/badge/?version=latest\n  :target: http://parallel-ssh.readthedocs.org/en/latest/\n  :alt: Latest documentation\n\n.. _`read the docs`: http://parallel-ssh.readthedocs.org/en/latest/\n\n.. contents::\n\n************\nInstallation\n************\n\n.. code-block:: shell\n\n   pip install parallel-ssh\n\n*************\nUsage Example\n*************\n\nSee documentation on `read the docs`_ for more complete examples.\n\n\nRun ``ls`` on two remote hosts in parallel with ``sudo``.\n\n.. code-block:: python\n\n  from pprint import pprint\n  from pssh.pssh_client import ParallelSSHClient\n\n  hosts = ['myhost1', 'myhost2']\n  client = ParallelSSHClient(hosts)\n\n  output = client.run_command('ls -ltrh /tmp/', sudo=True)\n  pprint(output)\n\n:Output:\n\n   .. code-block:: python\n\n      {'myhost1':\n            host=myhost1\n\t    cmd=<Greenlet>\n\t    channel=<channel>\n\t    stdout=<generator>\n\t    stderr=<generator>\n\t    stdin=<channel>\n\t    exception=None\n       'myhost2':\n            <..>\n      }\n\nStandard output buffers are available in output object. Iterating on them can be used to get output as it becomes available. Iteration ends *only when command has finished*, though it may be interrupted and resumed at any point.\n\n`Host output <http://parallel-ssh.readthedocs.io/en/latest/output.html>`_ attributes are available in host output object, for example ``output['myhost1'].stdout``.\n\n.. code-block:: python\n\n  for host in output:\n     for line in output[host].stdout:\n         pprint(\"Host %s - output: %s\" % (host, line))\n\n:Output:\n\n   .. code-block:: shell\n\n      Host myhost1 - output: drwxr-xr-x  6 xxx xxx 4.0K Jan  1 00:00 xxx\n      Host myhost1 - output: <..>\n      Host myhost2 - output: drwxr-xr-x  6 xxx xxx 4.0K Jan  1 00:00 xxx\n      Host myhost2 - output: <..>\n\nExit codes become available once output is iterated on to completion *or* ``client.join(output)`` is called.\n\n.. code-block:: python\n\n  for host in output:\n      print(output[host].exit_code)\n\n:Output:\n   .. code-block:: python\n\n      0\n      0\n\nThe client's ``join`` function can be used to block and wait for all parallel commands to finish:\n\n.. code-block:: python\n\n  client.join(output)\n\nSimilarly, output and exit codes are available after ``client.join`` is called:\n\n.. code-block:: python\n\n  output = client.run_command('exit 0')\n\n  # Block and gather exit codes. Output is updated in-place\n  client.join(output)\n  pprint(output.values()[0].exit_code)\n\n  # Output is available\n  for line in output.values()[0].stdout:\n      pprint(line)\n\n:Output:\n   .. code-block:: python\n\n      0\n      <..stdout..>\n\n.. note::\n\n  In versions prior to ``1.0.0`` only, ``client.join`` would consume standard output.\n\nThere is also a built in host logger that can be enabled to log output from remote hosts. The helper function ``pssh.utils.enable_host_logger`` will enable host logging to stdout, for example:\n\n.. code-block:: python\n\n  import pssh.utils\n  pssh.utils.enable_host_logger()\n  client.join(client.run_command('uname'))\n\n:Output:\n   .. code-block:: shell\n\n      [localhost]\tLinux\n\n*****************\nDesign And Goals\n*****************\n\n``ParallelSSH``'s design goals and motivation are to provide a *library* for running *asynchronous* SSH commands in parallel with little to no load induced on the system by doing so with the intended usage being completely programmatic and non-interactive.\n\nTo meet these goals, API driven solutions are preferred first and foremost. This frees up the developer to drive the library via any method desired, be that environment variables, CI driven tasks, command line tools, existing OpenSSH or new configuration files, from within an application et al.\n\n********\nScaling\n********\n\nSome guide lines on scaling ``ParallelSSH`` client and pool size numbers.\n\nIn general, long lived commands with little or no output *gathering* will scale better. Pool sizes in the multiple thousands have been used successfully with little CPU overhead in the single process running them in these use cases.\n\nConversely, many short lived commands with output gathering will not scale as well. In this use case, smaller pool sizes in the hundreds are likely to perform better with regards to CPU overhead in the event loop. Multiple python processes, each with its own event loop, may be used to scale this use case further as CPU overhead allows.\n\nGathering is highlighted here as output generation does not affect scaling. Only when output is gathered either over multiple still running commands, or while more commands are being triggered, is overhead increased.\n\nTechnical Details\n******************\n\nTo understand why this is, consider that in co-operative multi tasking, which is being used in this project via the ``gevent`` library, a co-routine (greenlet) needs to ``yield`` the event loop to allow others to execute - *co-operation*. When one co-routine is constantly grabbing the event loop in order to gather output, or when co-routines are constantly trying to start new short-lived commands, it causes overhead with other co-routines that also want to use the event loop.\n\nThis manifests itself as increased CPU usage in the process running the event loop and reduced performance with regards to scaling improvements from increasing pool size.\n\nOn the other end of the spectrum, long lived remote commands that generate *no* output only need the event loop at the start, when they are establishing connections, and at the end, when they are finished and need to gather exit codes, which results in practically zero CPU overhead at any time other than start or end of command execution.\n\nOutput *generation* is done remotely and has no effect on the event loop until output is gathered - output buffers are iterated on. Only at that point does the event loop need to be held.\n\n********\nSFTP/SCP\n********\n\nSFTP is supported (SCP version 2) natively, no ``scp`` binary required.\n\nFor example to copy a local file to remote hosts in parallel:\n\n.. code-block:: python\n\n  from pssh import ParallelSSHClient, utils\n  from gevent import joinall\n\n  utils.enable_logger(utils.logger)\n  hosts = ['myhost1', 'myhost2']\n  client = ParallelSSHClient(hosts)\n  greenlets = client.copy_file('../test', 'test_dir/test')\n  joinall(greenlets, raise_error=True)\n\n:Output:\n   .. code-block:: python\n\n      Copied local file ../test to remote destination myhost1:test_dir/test\n      Copied local file ../test to remote destination myhost2:test_dir/test\n\nThere is similar capability to copy remote files to local ones suffixed with the host's name with the ``copy_remote_file`` function.\n\nDirectory recursion is supported in both cases via the ``recurse`` parameter - defaults to off.\n\nSee `SFTP documentation <http://parallel-ssh.readthedocs.io/en/latest/advanced.html#sftp>`_ for more examples.\n\n**************************\nFrequently asked questions\n**************************\n\n:Q:\n   Why should I use this library and not, for example, `fabric <https://github.com/fabric/fabric>`_?\n\n:A:\n   In short, the tools are intended for different use cases.\n\n   ``ParallelSSH`` is a parallel SSH client library that scales well over hundreds to hundreds of thousands of hosts - per `Design And Goals`_ - a use case that is very common on cloud platforms and virtual machine automation. It would be best used where it is a good fit for the use case at hand.\n\n   Fabric and tools like it on the other hand are not well suited to such use cases, for many reasons, performance and differing design goals in particular. The similarity is only that these tools also make use of SSH to run commands.\n\n   ``ParallelSSH`` is in other words well suited to be the SSH client tools like Fabric and Ansible and others use to run their commands rather than a direct replacement for.\n\n   By focusing on providing a well defined, lightweight - actual code is a few hundred lines - library, ``ParallelSSH`` is far better suited for *run this command on X number of hosts* tasks for which frameworks like Fabric, Capistrano and others are overkill and unsuprisignly, as it is not what they are for, ill-suited to and do not perform particularly well with.\n\n   Fabric and tools like it are high level deployment frameworks - as opposed to general purpose libraries - for building deployment tasks to perform on hosts matching a role with task chaining, a DSL like syntax and are primarily intended for command line use for which the framework is a good fit for - very far removed from an SSH client *library*.\n\n   Fabric in particular is a port of `Capistrano <https://github.com/capistrano/capistrano>`_ from Ruby to Python. Its design goals are to provide a faithful port of Capistrano with its `tasks` and `roles` framework to python with interactive command line being the intended usage.\n\n   Furthermore, Fabric's use as a library is non-standard and in `many <https://github.com/fabric/fabric/issues/521>`_ `cases <https://github.com/fabric/fabric/pull/674>`_ `just <https://github.com/fabric/fabric/pull/1215>`_ `plain <https://github.com/fabric/fabric/issues/762>`_ `broken <https://github.com/fabric/fabric/issues/1068>`_ and currently stands at over 7,000 lines of code most of which is lacking code testing.\n\n   In addition, Fabric's parallel command implementation uses a combination of both threads and processes with extremely high CPU usage and system load while running with as little as hosts in the single digits.\n\n:Q:\n   Is Windows supported?\n\n:A:\n   The library installs and works on Windows though not formally supported as unit tests are currently Posix system based.\n\n   Pip versions >= 8.0 are required for binary package installation of ``gevent`` on Windows, a dependency of ``ParallelSSH``. \n\n   Though ``ParallelSSH`` is pure python code and will run on any platform that has a working Python interpreter, its ``gevent`` dependency and certain dependencies of ``paramiko`` contain native code which either needs a binary package to be provided for the platform or to be built from source. Binary packages for ``gevent`` are provided for OSX, Linux and Windows platforms as of this time of writing.\n\n:Q:\n   Is there a user's group for feedback and discussion about ParallelSSH?\n\n:A:\n   There is a public `ParallelSSH Google group <https://groups.google.com/forum/#!forum/parallelssh>`_ setup for this purpose - both posting and viewing are open to the public.\n\n\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -26,7 +26,7 @@
       "last_month": 0,
       "last_week": 0
     },
-    "home_page": "https://github.com/pkittenis/parallel-ssh",
+    "home_page": "https://github.com/ParallelSSH/parallel-ssh",
     "keywords": "",
     "license": "",
     "maintainer": "",
@@ -34,10 +34,14 @@
     "name": "parallel-ssh",
     "platform": "",
     "project_url": "https://pypi.org/project/parallel-ssh/",
-    "release_url": "https://pypi.org/project/parallel-ssh/1.0.1/",
+    "release_url": "https://pypi.org/project/parallel-ssh/1.1.0/",
+    "requires_dist": [
+      "paramiko (<2)",
+      "gevent (>=1.1)"
+    ],
     "requires_python": "",
     "summary": "Asynchronous parallel SSH library",
-    "version": "1.0.1"
+    "version": "1.1.0"
   },
   "releases": {
     "0.1": [
@@ -971,40 +975,108 @@
         "upload_time": "2017-03-31T09:44:40",
         "url": "https://files.pythonhosted.org/packages/38/ad/d9a3739ee7fed6b0ca913352fc9b7f644b0403a879bee766e81897bde370/parallel-ssh-1.0.1.tar.gz"
       }
+    ],
+    "1.0.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c7a02496aa0be1a4e3ac64552eae83b6",
+          "sha256": "f62b9cd1a27ebc7ab6ad507af8a73b1573acc5b4db719c74d88ab3d5e4d3667d"
+        },
+        "downloads": 0,
+        "filename": "parallel_ssh-1.0.2-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "c7a02496aa0be1a4e3ac64552eae83b6",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 39606,
+        "upload_time": "2017-06-13T10:32:46",
+        "url": "https://files.pythonhosted.org/packages/cd/5b/4b1758ea531a49828305bded0ce005e83b8f72746f08ff3164abecdd9a34/parallel_ssh-1.0.2-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "16202c8e5faafd3703fb8a055e73dca2",
+          "sha256": "8c933a35cd0337d7ee35699fdd6d9e6bae1499a5d0c0ba2694b4977c5ad8e4b6"
+        },
+        "downloads": 0,
+        "filename": "parallel-ssh-1.0.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "16202c8e5faafd3703fb8a055e73dca2",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 48517,
+        "upload_time": "2017-06-13T10:32:47",
+        "url": "https://files.pythonhosted.org/packages/d9/9b/0b86e741ca10cc5f44eb28639348cd36c60552e0a21d2a5b16b50ccdb64f/parallel-ssh-1.0.2.tar.gz"
+      }
+    ],
+    "1.1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "332f74936a0d302f76dfd225bad1226b",
+          "sha256": "4dc96f38db2518ff7cf3eea85ee2b4bdc38330b32526b866a6647452331dd270"
+        },
+        "downloads": 0,
+        "filename": "parallel_ssh-1.1.0-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "332f74936a0d302f76dfd225bad1226b",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 37838,
+        "upload_time": "2017-07-15T14:12:05",
+        "url": "https://files.pythonhosted.org/packages/91/fd/3653ff57030af9ce6e621e66dcb43bbb965c74f4f34a167dc93fac057277/parallel_ssh-1.1.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "edd20437962c0423f331fa92f0617375",
+          "sha256": "0eab2dbd77cfc58f23eb51b10e143e2999a27cd8f8c62759e97df49dd574a9a9"
+        },
+        "downloads": 0,
+        "filename": "parallel-ssh-1.1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "edd20437962c0423f331fa92f0617375",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 45825,
+        "upload_time": "2017-07-15T14:12:06",
+        "url": "https://files.pythonhosted.org/packages/2a/e9/78a692b8f4a5ac96c6589906c1aaa0d4d96c0a872dc6f5df3959cd1e2611/parallel-ssh-1.1.0.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "04492883bdc2abf5d3c3a072ece47634",
-        "sha256": "0af558b441b7e6b8e744700ea9d0bcce207e6b143059d2d2a0a90a62e6bcec11"
+        "md5": "332f74936a0d302f76dfd225bad1226b",
+        "sha256": "4dc96f38db2518ff7cf3eea85ee2b4bdc38330b32526b866a6647452331dd270"
       },
-      "downloads": 444,
-      "filename": "parallel_ssh-1.0.1-py2.py3-none-any.whl",
+      "downloads": 0,
+      "filename": "parallel_ssh-1.1.0-py2.py3-none-any.whl",
       "has_sig": false,
-      "md5_digest": "04492883bdc2abf5d3c3a072ece47634",
+      "md5_digest": "332f74936a0d302f76dfd225bad1226b",
       "packagetype": "bdist_wheel",
-      "python_version": "2.7",
-      "size": 29734,
-      "upload_time": "2017-03-31T09:44:41",
-      "url": "https://files.pythonhosted.org/packages/e2/8a/8ae24f4a50d05161a8a3239b5b863551581a73ad90c003cdaae87e5b7573/parallel_ssh-1.0.1-py2.py3-none-any.whl"
+      "python_version": "py2.py3",
+      "size": 37838,
+      "upload_time": "2017-07-15T14:12:05",
+      "url": "https://files.pythonhosted.org/packages/91/fd/3653ff57030af9ce6e621e66dcb43bbb965c74f4f34a167dc93fac057277/parallel_ssh-1.1.0-py2.py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "2ac9ae3de479ffadb83065534bcae0da",
-        "sha256": "0f08481ceb6c3e24cf2609fa1f680970edd372276f233a1c0411de5d74b16a33"
+        "md5": "edd20437962c0423f331fa92f0617375",
+        "sha256": "0eab2dbd77cfc58f23eb51b10e143e2999a27cd8f8c62759e97df49dd574a9a9"
       },
-      "downloads": 19,
-      "filename": "parallel-ssh-1.0.1.tar.gz",
+      "downloads": 0,
+      "filename": "parallel-ssh-1.1.0.tar.gz",
       "has_sig": false,
-      "md5_digest": "2ac9ae3de479ffadb83065534bcae0da",
+      "md5_digest": "edd20437962c0423f331fa92f0617375",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 44414,
-      "upload_time": "2017-03-31T09:44:40",
-      "url": "https://files.pythonhosted.org/packages/38/ad/d9a3739ee7fed6b0ca913352fc9b7f644b0403a879bee766e81897bde370/parallel-ssh-1.0.1.tar.gz"
+      "size": 45825,
+      "upload_time": "2017-07-15T14:12:06",
+      "url": "https://files.pythonhosted.org/packages/2a/e9/78a692b8f4a5ac96c6589906c1aaa0d4d96c0a872dc6f5df3959cd1e2611/parallel-ssh-1.1.0.tar.gz"
     }
   ]
 }
