@@ -13,8 +13,7 @@
       "Programming Language :: Python :: 2",
       "Programming Language :: Python :: 2.7",
       "Programming Language :: Python :: 3",
-      "Programming Language :: Python :: 3.3",
-      "Programming Language :: Python :: 3.4"
+      "Programming Language :: Python :: 3.5"
     ],
     "description": "======\npaunch\n======\n\nUtility to launch and manage containers using YAML based configuration data\n\n* Free software: Apache license\n* Documentation: https://docs.openstack.org/developer/paunch\n* Source: http://git.openstack.org/cgit/openstack/paunch\n* Bugs: http://bugs.launchpad.net/paunch\n\nFeatures\n--------\n\n* Single host only, operations are performed via the docker client on the\n  currently configured docker service.\n* Zero external state, only labels on running containers are used when\n  determining which containers an operation will perform on.\n* Single threaded and blocking, containers which are not configured to detach\n  will halt further configuration until they exit.\n* Co-exists with other container configuration tools. Only containers created\n  by paunch will be modified by paunch. Unique container names are assigned if\n  the desired name is taken, and containers are renamed when the desired name\n  becomes available.\n* Accessable via the ``paunch`` command line utility, or by importing python\n  package ``paunch``.\n\nRunning Paunch Commands\n-----------------------\n\nThe only state that paunch is aware of is the labels that it sets on running\ncontainers, so it is up to the user to keep track of what paunch configs\n*should* be running so that others can be deleted on cleanup. For these\nexamples we're going to store that state in a simple text file:\n\n::\n\n    $ touch paunch-state.txt\n\nWe'll start of by deleting any containers that were started by previous calls\nto ``paunch apply``:\n\n::\n\n    $ paunch --verbose cleanup $(cat paunch-state.txt)\n\nNext we'll apply a simple hello-world config found in\n``examples/hello-world.yml`` which contains the following:\n\n::\n\n    hello:\n      image: hello-world\n      detach: false\n\nApplied by running:\n\n::\n\n    $ paunch --verbose apply --file examples/hello-world.yml --config-id hi\n    $ echo hi >> paunch-state.txt\n\nA container called ``hello`` will be created, print a Hello World message, then\nexit. You can confirm that it still exists by running ``docker ps -a``.\n\nNow lets try running the exact same ``paunch apply`` command:\n\n::\n\n    $ paunch --verbose apply --file examples/hello-world.yml --config-id hi\n\nThis will not make any changes at all due to the idempotency behaviour of\npaunch.\n\nLets try again with a unique --config-id:\n\n::\n\n    $ paunch --verbose apply --file examples/hello-world.yml --config-id hi-again\n    $ echo hi-again >> paunch-state.txt\n\nDoing a ``docker ps -a`` now will show that there are now 2 containers, one\ncalled ``hello`` and the other called ``hello-(random suffix)``. Lets delete the\none associated with the ``hi`` config-id:\n\n::\n\n    $ cat paunch-state.txt\n    $ echo hi-again > paunch-state.txt\n    $ cat paunch-state.txt\n    $ paunch --verbose cleanup $(cat paunch-state.txt)\n\nDoing a ``docker ps -a`` will show that the original ``hello`` container has been\ndeleted and ``hello-(random suffix)`` has been renamed to ``hello``\n\nGenerally ``paunch cleanup`` will be run first to delete containers for configs\nthat are no longer apply. Then a series of ``paunch apply`` commands can be run.\nIf these ``apply`` calls are part of a live upgrade where a mixture of old and\nnew containers are left running, the upgrade can be completed in the next run\nto ``paunch cleanup`` with the updated list of config-id state.\n\nPaunch can also be used as a library by other tools. By default running the\n``paunch`` command won't affect these other containers due to the different ``managed_by``\nlabel being set on those containers. For example if you wanted to run paunch\ncommands masquerading as the\n`heat-agents <http://git.openstack.org/cgit/openstack/heat-agents/tree/>`_\n`docker-cmd hook <http://git.openstack.org/cgit/openstack/heat-agents/tree/heat-config-docker-cmd>`_\nthen you can run:\n\n::\n\n  paunch --verbose apply --file examples/hello-world.yml --config-id hi --managed-by docker-cmd\n\nThis will result in a ``hello`` container being run, which will be deleted the\nnext time the ``docker-cmd`` hook does its own ``cleanup`` run since it won't\nbe aware of a ``config_id`` called ``hi``.\n\nIdempotency Behaviour\n---------------------\n\nIn many cases the user will want to use the same --config-id with changed\nconfig data.  The aim of the idempotency behaviour is to leave containers\nrunning when their config has not changed, but replace containers which have\nmodified config.\n\nWhen ``paunch apply`` is run with the same ``--config-id`` but modified config\ndata, the following logic is applied:\n\n* For each existing container with a matching config_id and managed_by:\n  * delete containers which no longer exist in config\n  * delete containers with missing config_data label\n  * delete containers where config_data label differs from current config\n* Do a full rename to desired names since deletes have occured\n* Only create containers from config if there is no container running with that name\n* ``exec`` actions will be run regardless, so commands they run may require\n  their own idempotency behaviour\n\nOnly configuration data is used to determine whether something has changed to\ntrigger replacing the container during ``apply``. This means that changing the\ncontents of a file referred to in ``env_file`` will *not* trigger replacement\nunless something else changes in the configuration data (such as the path\nspecified in ``env_file``).\n\nThe most common reason to restart containers is to have them running with an\nupdated image. As such it is recommended that stable image tags such as\n``latest`` are not used when specifying the ``image``, and that changing the\nrelease version tag in the configuration data is the recommended way of\npropagating image changes to the running containers.\n\nConfiguration Format\n--------------------\n\nThe current format is loosely based on a subset of the `docker-compose v1\nformat <https://docs.docker.com/compose/compose-file/compose-file-v1/>`_ with\nmodifications. The intention is for the format to evolve to faithfully\nimplement existing formats such as the\n`Kubernetes Pod format <https://kubernetes.io/docs/concepts/workloads/pods/pod/>`_.\n\nThe top-level of the YAML format is a dict where the keys (generally)\ncorrespond to the name of the container to be created.  The following config\ncreates 2 containers called ``hello1`` and ``hello2``:\n\n::\n\n    hello1:\n      image: hello-world\n    hello2:\n      image: hello-world\n\nThe values are a dict which specifies the arguments that are used when the\ncontainer is launched. Supported keys which comply with the docker-compose v1\nformat are as follows:\n\ncommand:\n  String or list. Overrides the default command.\n\ndetach:\n  Boolean, defaults to true. If true the container is run in the background. If\n  false then paunch will block until the container has exited.\n\nenvironment:\n  List of the format ['KEY1=value1', 'KEY2=value2']. Sets environment variables\n  that are available to the process launched in the container.\n\nenv_file:\n  List of file paths containing line delimited environment variables.\n\nimage:\n  String, mandatory. Specify the image to start the container from. Can either\n  be a repositorys/tag or a partial image ID.\n\nnet:\n  String. Set the network mode for the container.\n\npid:\n  String. Set the PID mode for the container.\n\nprivileged:\n  Boolean, defaults to false. If true, give extended privileges to this container.\n\nrestart:\n  String. Restart policy to apply when a container exits.\n\nuser:\n  String. Sets the username or UID used and optionally the groupname or GID for\n  the specified command.\n\nvolumes:\n  List of strings. Specify the bind mount for this container.\n\nvolumes_from:\n  List of strings. Mount volumes from the specified container(s).\n\n\n\n",
     "docs_url": null,
@@ -32,10 +31,14 @@
     "name": "paunch",
     "platform": "",
     "project_url": "https://pypi.org/project/paunch/",
-    "release_url": "https://pypi.org/project/paunch/1.2.0/",
+    "release_url": "https://pypi.org/project/paunch/1.3.0/",
+    "requires_dist": [
+      "pbr (>=2.0.0,!=2.1.0)",
+      "cliff (>=2.6.0)"
+    ],
     "requires_python": "",
     "summary": "Utility to launch and manage containers using YAML based configuration data",
-    "version": "1.2.0"
+    "version": "1.3.0"
   },
   "releases": {
     "0.0.1.dev16": [],
@@ -140,40 +143,74 @@
         "upload_time": "2017-06-08T20:18:16",
         "url": "https://files.pythonhosted.org/packages/26/e8/c26f95373e9223ff6c6cd69d8d96dc67d2c684454279a5b12dfa5190ced3/paunch-1.2.0.tar.gz"
       }
+    ],
+    "1.3.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d0f9b02f5c48111ba313918e7205a689",
+          "sha256": "22c73c6d07f00a31f27bd53265a50a7601aecaf08a43d0fdc44f065d68d2664c"
+        },
+        "downloads": 0,
+        "filename": "paunch-1.3.0-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "d0f9b02f5c48111ba313918e7205a689",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2",
+        "size": 22654,
+        "upload_time": "2017-07-20T13:43:22",
+        "url": "https://files.pythonhosted.org/packages/95/71/95dd428dfd97aef2d46e9ebaf1cfb7f63720533b035606585ae576c0d663/paunch-1.3.0-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a62c572ee65f346a31bd10e5a4c94c49",
+          "sha256": "564bd73eb1de1b71dd6503311050ee891ab4717ac0af46863b11afb9e8b19d58"
+        },
+        "downloads": 0,
+        "filename": "paunch-1.3.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a62c572ee65f346a31bd10e5a4c94c49",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 25013,
+        "upload_time": "2017-07-20T13:43:25",
+        "url": "https://files.pythonhosted.org/packages/73/6f/3e24b8342b72c2e1474e8ed73b8eb3d615b46193146035022217a74553e0/paunch-1.3.0.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "a607eabd0e37feaf0ffe87e372a0f5fd",
-        "sha256": "56623598a7a761ddc94e3da3abcaf2bc23dc851d0726cd2ea7a0fbfb3a5a9c5d"
+        "md5": "d0f9b02f5c48111ba313918e7205a689",
+        "sha256": "22c73c6d07f00a31f27bd53265a50a7601aecaf08a43d0fdc44f065d68d2664c"
       },
       "downloads": 0,
-      "filename": "paunch-1.2.0-py2-none-any.whl",
+      "filename": "paunch-1.3.0-py2-none-any.whl",
       "has_sig": false,
-      "md5_digest": "a607eabd0e37feaf0ffe87e372a0f5fd",
+      "md5_digest": "d0f9b02f5c48111ba313918e7205a689",
       "packagetype": "bdist_wheel",
       "python_version": "py2",
-      "size": 22442,
-      "upload_time": "2017-06-08T20:18:13",
-      "url": "https://files.pythonhosted.org/packages/7b/b7/ff8661d0d39dbd78f289bf2452e2b7a261ed37eb535bd8db3156807ffb6f/paunch-1.2.0-py2-none-any.whl"
+      "size": 22654,
+      "upload_time": "2017-07-20T13:43:22",
+      "url": "https://files.pythonhosted.org/packages/95/71/95dd428dfd97aef2d46e9ebaf1cfb7f63720533b035606585ae576c0d663/paunch-1.3.0-py2-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "81c88d95a67aeb1eebd99a4c1c542338",
-        "sha256": "f30ddaa0b517883fc8ef5a66284ca9b597edf2303400be41231ac54f3304b299"
+        "md5": "a62c572ee65f346a31bd10e5a4c94c49",
+        "sha256": "564bd73eb1de1b71dd6503311050ee891ab4717ac0af46863b11afb9e8b19d58"
       },
       "downloads": 0,
-      "filename": "paunch-1.2.0.tar.gz",
+      "filename": "paunch-1.3.0.tar.gz",
       "has_sig": false,
-      "md5_digest": "81c88d95a67aeb1eebd99a4c1c542338",
+      "md5_digest": "a62c572ee65f346a31bd10e5a4c94c49",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 27326,
-      "upload_time": "2017-06-08T20:18:16",
-      "url": "https://files.pythonhosted.org/packages/26/e8/c26f95373e9223ff6c6cd69d8d96dc67d2c684454279a5b12dfa5190ced3/paunch-1.2.0.tar.gz"
+      "size": 25013,
+      "upload_time": "2017-07-20T13:43:25",
+      "url": "https://files.pythonhosted.org/packages/73/6f/3e24b8342b72c2e1474e8ed73b8eb3d615b46193146035022217a74553e0/paunch-1.3.0.tar.gz"
     }
   ]
 }

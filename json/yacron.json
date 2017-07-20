@@ -12,7 +12,7 @@
       "Programming Language :: Python :: 3.6",
       "Programming Language :: Python :: 3 :: Only"
     ],
-    "description": "================\nYet Another Cron\n================\n\n\nA modern Cron replacement that is Docker-friendly\n\n\n* Free software: MIT license\n\n\nFeatures\n--------\n\n* \"Crontab\" is in YAML format\n* Builtin sending of Sentry and Mail outputs when cron jobs fail\n* Flexible configuration: you decide how to determine if a cron job fails or not\n* Designed for running in Docker, Kubernetes, or 12 factor environments:\n\n  * Runs in the foreground\n  * Logs everything to stdout/stderr\n\n* Option to automatically retry failing cron jobs, with exponential backoff\n",
+    "description": "================\nYet Another Cron\n================\n\n\nA modern Cron replacement that is Docker-friendly\n\n\n* Free software: MIT license\n\n\nFeatures\n--------\n\n* \"Crontab\" is in YAML format;\n* Builtin sending of Sentry and Mail outputs when cron jobs fail;\n* Flexible configuration: you decide how to determine if a cron job fails or not;\n* Designed for running in Docker, Kubernetes, or 12 factor environments:\n\n  * Runs in the foreground;\n  * Logs everything to stdout/stderr [1]_;\n\n* Option to automatically retry failing cron jobs, with exponential backoff.\n\n.. [1] Whereas vixie cron only logs to syslog, requiring a syslog daemon to be running in the background or else you don't get logs!\n\nStatus\n--------------\nThe project is still in alpha stage: not all features are complete, and you might still find bugs.\n\nInstallation\n------------\nyacron requires Python >= 3.5.  It is advisable to install it in a Python virtual environment, for example:\n\n.. code-block:: shell\n\n    virtualenv -p python3 yacronenv\n    . yacronenv/bin/activate\n    pip install yacron\n\nUsage\n-----\n\nConfiguration is in YAML format.  To start yacron, give it a configuration file\nor directory path as the ``-c`` argument.  For example::\n\n    yacron -c /tmp/my-crontab.yaml\n\nThis starts yacron (always in the foreground!), reading ``/tmp/my-crontab.yaml``\nas configuration file.\n\nConfiguration basics\n++++++++++++++++++++\n\nThis configuration runs a command every 5 minutes:\n\n.. code-block:: yaml\n\n    jobs:\n      - name: test-01\n        command: echo \"foobar\"\n        shell: /bin/bash\n        schedule: \"*/5 * * * *\"\n\nThe command can be a string or a list of strings.  If command is a string,\nyacron runs it through a shell, which is ``/bin/bash`` in the above example, but\nis ``/bin/sh`` by default.\n\nIf the command is a list of strings, the command is executed directly, without a\nshell.  The ARGV of the command to execute is extracted directly from the\nconfiguration:\n\n.. code-block:: yaml\n\n    jobs:\n      - name: test-01\n        command:\n          - echo\n          - foobar\n        schedule: \"*/5 * * * *\"\n\n\nThe `schedule` option can be a string in the traditional crontab format, or can\nbe an object with properties.  The following configuration runs a command every\n5 minutes, but only on the specific date 2017-07-19, and doesn't run it in any\nother date:\n\n.. code-block:: yaml\n\n    jobs:\n      - name: test-01\n        command: echo \"foobar\"\n        schedule:\n          minute: \"*/5\"\n          dayOfMonth: 19\n          month: 7\n          year: 2017\n          dayOfWeek: \"*\"\n\nYou can ask for environment variables to be defined for command execution:\n\n.. code-block:: yaml\n\n    jobs:\n      - name: test-01\n        command: echo \"foobar\"\n        shell: /bin/bash\n        schedule: \"*/5 * * * *\"\n        environment:\n          - key: PATH\n            value: /bin:/usr/bin\n\nSpecifying defaults\n+++++++++++++++++++\n\n\nThere can be a special ``defaults`` section in the config.  Any attributes\ndefined in this section provide default values for cron jobs to inherit.\nAlthough cron jobs can still override the defaults, as needed:\n\n.. code-block:: yaml\n\n    defaults:\n        environment:\n          - key: PATH\n            value: /bin:/usr/bin\n        shell: /bin/bash\n    jobs:\n      - name: test-01\n        command: echo \"foobar\"  # runs with /bin/bash as shell\n        schedule: \"*/5 * * * *\"\n      - name: test-02  # runs with /bin/sh as shell\n        command: echo \"zbr\"\n        shell: /bin/sh\n        schedule: \"*/5 * * * *\"\n\nReporting\n+++++++++\n\nYacron has builtin support for reporting jobs failure (more on that below) by\nemail and Sentry (additional reporting methods might be added in the future):\n\n.. code-block:: yaml\n\n  - name: test-01\n    command: |\n      echo \"hello\" 1>&2\n      sleep 1\n      exit 10\n    schedule:\n      minute: \"*/2\"\n    captureStderr: true\n    onFailure:\n      report:\n        sentry:\n           dsn:\n             value: example\n             # Alternatively:\n             # fromFile: /etc/secrets/my-secret-dsn\n             # fromEnvVar: SENTRY_DSN\n        mail:\n          from: example@foo.com\n          to: example@bar.com\n          smtp_host: 127.0.0.1\n\nHere, the ``onFailure`` object indicates that what to do when a job failure\nis detected.  In this case we ask for it to be reported both to sentry and by\nsending an email.\n\nThe ``captureStderr: true`` part instructs yacron to capture output from the the\nprogram's `standard error`, so that it can be included in the report.  We could\nalso turn on `standard output` capturing via the ``captureStdout: true`` option.\nBy default, yacron captures only standard error.  If a cron job's standard error\nor standard output capturing is not enabled, these streams will simply write to\nthe same standard output and standard error as yacron itself.\n\nIt is possible also to report job success, as well as failure, via the\n``onSuccess`` option.\n\n.. code-block:: yaml\n\n  - name: test-01\n    command: echo \"hello world\"\n    schedule:\n      minute: \"*/2\"\n    captureStdout: true\n    onSuccess:\n      report:\n        mail:\n          from: example@foo.com\n          to: example@bar.com\n          smtp_host: 127.0.0.1\n\nHandling failure\n++++++++++++++++\n\nBy default, yacron considers that a job has `failed` if either the process\nreturns a non-zero code or if it generates output to `standard error` (and\nstandard error capturing is enabled, of course).\n\nYou can instruct yacron how to determine if a job has failed or not via the\n``failsWhen`` option:\n\n.. code-block:: yaml\n\n  failsWhen:\n    producesStdout: false\n    producesStderr: true\n    nonzeroReturn: true\n\nproducesStdout\n    If true, any captured standard output causes yacron to consider the job\n    as failed.  This is false by default.\n\nproducesStderr\n    If true, any captured standard error causes yacron to consider the job\n    as failed.  This is true by default.\n\nnonzeroReturn\n    If true, if the job process returns a code other than zero causes yacron\n    to consider the job as failed.  This is true by default.\n\nIt is possible to instruct yacron to retry failing cron jobs by adding a\n``retry`` option inside ``onFailure``:\n\n.. code-block:: yaml\n\n  - name: test-01\n    command: |\n      echo \"hello\" 1>&2\n      sleep 1\n      exit 10\n    schedule:\n      minute: \"*/10\"\n    captureStderr: true\n    onFailure:\n      report:\n        mail:\n          from: example@foo.com\n          to: example@bar.com\n          smtp_host: 127.0.0.1\n      retry:\n        maximumRetries: 10\n        initialDelay: 1\n        maximumDelay: 30\n        backoffMultiplier: 2\n\nThe above settings tell yacron to retry the job up to 10 times, with the delay\nbetween retries defined by an exponential backoff process: initially 1 second,\ndoubling for every retry up to a maximum of 30 seconds.\n\nIf the cron job is expected to fail sometimes, you may wish to report only in\nthe case the cron job ultimately fails after all retries and we give up on it.\nFor that situation, you can use the ``onPermanentFailure`` option:\n\n.. code-block:: yaml\n\n  - name: test-01\n    command: |\n      echo \"hello\" 1>&2\n      sleep 1\n      exit 10\n    schedule:\n      minute: \"*/10\"\n    captureStderr: true\n    onFailure:\n      retry:\n        maximumRetries: 10\n        initialDelay: 1\n        maximumDelay: 30\n        backoffMultiplier: 2\n    onPermanentFailure:\n      report:\n        mail:\n          from: example@foo.com\n          to: example@bar.com\n          smtp_host: 127.0.0.1\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -28,11 +28,11 @@
     "name": "yacron",
     "platform": "",
     "project_url": "https://pypi.org/project/yacron/",
-    "release_url": "https://pypi.org/project/yacron/0.3.1/",
+    "release_url": "https://pypi.org/project/yacron/0.3.3/",
     "requires_dist": [],
     "requires_python": "",
     "summary": "A modern Cron replacement that is Docker-friendly",
-    "version": "0.3.1"
+    "version": "0.3.3"
   },
   "releases": {
     "0.1.2": [
@@ -170,40 +170,108 @@
         "upload_time": "2017-07-19T15:28:46",
         "url": "https://files.pythonhosted.org/packages/ce/84/b1973c13c9be4c29e0e78d16afc37359fd06184c6d3e40885ec404644149/yacron-0.3.1.tar.gz"
       }
+    ],
+    "0.3.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "14cf97d9976a71ca833bc8525fee4f57",
+          "sha256": "af22632839b05ccd84ae3ae4bdc504b14037421a58f01d95de233cd2aa96fde8"
+        },
+        "downloads": 0,
+        "filename": "yacron-0.3.2-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "14cf97d9976a71ca833bc8525fee4f57",
+        "packagetype": "bdist_wheel",
+        "python_version": "3.5",
+        "size": 14917,
+        "upload_time": "2017-07-20T13:16:42",
+        "url": "https://files.pythonhosted.org/packages/a5/f6/4138c6272889d7a31725b93093b492a39a55cd75eea5bcecc528fa493ebe/yacron-0.3.2-py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "81ef865b62491843772979a225421a9f",
+          "sha256": "745b50270a24c8a6f9e0c63595ad432d3b0996dcbe4ea04e24098c14dd9af655"
+        },
+        "downloads": 0,
+        "filename": "yacron-0.3.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "81ef865b62491843772979a225421a9f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 13529,
+        "upload_time": "2017-07-20T13:16:41",
+        "url": "https://files.pythonhosted.org/packages/8b/e5/922590f76d0c11501c6e0ce7182918b640ff7152d9e2c2d48cdcd683caf2/yacron-0.3.2.tar.gz"
+      }
+    ],
+    "0.3.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1d48b0ddeaed23ce1bc81d973f2be1df",
+          "sha256": "52f5826a3f031e66fbfcb3bf17ccc1f406b7a7ce78c4b0cba355b27844077083"
+        },
+        "downloads": 0,
+        "filename": "yacron-0.3.3-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "1d48b0ddeaed23ce1bc81d973f2be1df",
+        "packagetype": "bdist_wheel",
+        "python_version": "3.5",
+        "size": 15421,
+        "upload_time": "2017-07-20T15:17:41",
+        "url": "https://files.pythonhosted.org/packages/8f/7e/ae312f418a5bd97ab87e955c5c86da63c51d729c7481de7aa2b678bf645c/yacron-0.3.3-py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "92c727f4a1c219e3acbdc33e1c19f024",
+          "sha256": "98e097c5fefa101e8c1358b594d531758d88ef7fbd024df6685b147c0bc3acb8"
+        },
+        "downloads": 0,
+        "filename": "yacron-0.3.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "92c727f4a1c219e3acbdc33e1c19f024",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 13904,
+        "upload_time": "2017-07-20T15:17:40",
+        "url": "https://files.pythonhosted.org/packages/97/7b/3082574e9e6c11015b0038d26228c5fb562cfb2b6523d49036823bf9963d/yacron-0.3.3.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "1468f84e129e7cc3b3ee3051fc3fe055",
-        "sha256": "b9470790db54e4048ea14a2ddd6fb114be9161469206edd86264cae8624ef031"
+        "md5": "1d48b0ddeaed23ce1bc81d973f2be1df",
+        "sha256": "52f5826a3f031e66fbfcb3bf17ccc1f406b7a7ce78c4b0cba355b27844077083"
       },
       "downloads": 0,
-      "filename": "yacron-0.3.1-py3-none-any.whl",
+      "filename": "yacron-0.3.3-py3-none-any.whl",
       "has_sig": false,
-      "md5_digest": "1468f84e129e7cc3b3ee3051fc3fe055",
+      "md5_digest": "1d48b0ddeaed23ce1bc81d973f2be1df",
       "packagetype": "bdist_wheel",
       "python_version": "3.5",
-      "size": 10556,
-      "upload_time": "2017-07-19T15:28:49",
-      "url": "https://files.pythonhosted.org/packages/52/66/4a178a43ceee46f8a4b0cbc1f1597f4c331b71b245b00e537241a72c6299/yacron-0.3.1-py3-none-any.whl"
+      "size": 15421,
+      "upload_time": "2017-07-20T15:17:41",
+      "url": "https://files.pythonhosted.org/packages/8f/7e/ae312f418a5bd97ab87e955c5c86da63c51d729c7481de7aa2b678bf645c/yacron-0.3.3-py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "b89c1bfa6a5d51f59aed1a0d2b61dce1",
-        "sha256": "7be78d4ae91982446953ab22f85be7d2d176b0f06d3036560c5cf13501becf38"
+        "md5": "92c727f4a1c219e3acbdc33e1c19f024",
+        "sha256": "98e097c5fefa101e8c1358b594d531758d88ef7fbd024df6685b147c0bc3acb8"
       },
       "downloads": 0,
-      "filename": "yacron-0.3.1.tar.gz",
+      "filename": "yacron-0.3.3.tar.gz",
       "has_sig": false,
-      "md5_digest": "b89c1bfa6a5d51f59aed1a0d2b61dce1",
+      "md5_digest": "92c727f4a1c219e3acbdc33e1c19f024",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 10615,
-      "upload_time": "2017-07-19T15:28:46",
-      "url": "https://files.pythonhosted.org/packages/ce/84/b1973c13c9be4c29e0e78d16afc37359fd06184c6d3e40885ec404644149/yacron-0.3.1.tar.gz"
+      "size": 13904,
+      "upload_time": "2017-07-20T15:17:40",
+      "url": "https://files.pythonhosted.org/packages/97/7b/3082574e9e6c11015b0038d26228c5fb562cfb2b6523d49036823bf9963d/yacron-0.3.3.tar.gz"
     }
   ]
 }
