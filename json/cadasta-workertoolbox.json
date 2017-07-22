@@ -6,7 +6,7 @@
     "classifiers": [
       "Development Status :: 3 - Alpha"
     ],
-    "description": "Cadasta Worker Toolbox\n======================\n\n|PyPI version| |Build Status| |Requirements Status|\n\nA collection of helpers to assist in quickly building asynchronous\nworkers for the Cadasta system.\n\nArchitecture\n------------\n\n.. figure:: https://user-images.githubusercontent.com/897290/28102799-e9b04182-668e-11e7-84ae-51c6fa307303.png\n   :alt: Async System Architecture Diagram\n\n   Async System Architecture Diagram\n\nThe Cadasta asynchronous system is designed so that both the scheduled\ntasks and the task results can be tracked by the central `Cadasta\nPlatform <https://github.com/Cadasta/cadasta-platform>`__. To ensure\nthat this takes place, all Celery workers must be correctly configured\nto support these features.\n\nTracking Scheduled Tasks\n~~~~~~~~~~~~~~~~~~~~~~~~\n\nTo keep our system aware of all tasks being scheduled, the Cadasta\nPlatform has a process running to consume task messages off of a\ntask-monitor queue and insert those messages into our database. To\nsupport this design, all task producers (including worker nodes) must\npublish their task messages to both the normal destination queues and\nthe task-monitor queue. This is acheived by registering all queues with\na `Topic\nExchange <http://docs.celeryproject.org/en/latest/userguide/routing.html#topic-exchanges>`__,\nsetting the task-monitor queue to subscribe to all messages sent to the\nexchange, and setting standard work queues to subscribe to messages with\na matching ``routing_key``. Being that the Cadasta Platform is designed\nto work with Amazon SQS and the `SQS backend only keeps exchange/queue\ndeclarations in\nmemory <http://docs.celeryproject.org/projects/kombu/en/v4.0.2/introduction.html#f1>`__,\neach message producer must have this set up within their configuration.\n\nTracking Task Results\n~~~~~~~~~~~~~~~~~~~~~\n\nTasks results are inserted by each worker into the Platform DB. For this\nreason, it is important that each worker have network access to the\nPlatform DB (via AWS Security Groups). Additionally, each worker should\nhave a provided username and password that grants them authorization to\nwrite to the Platform DB's Result Table. For reasons of security, it is\nadvised that these credentials be permitted to only access this single\ntable. The Result Table has a one-to-one relation via the ``task_id``\ncolumn to the Task Table. This should not be enforced via a constraint,\nas it is possible for a task's result to be entered into the DB *before*\nthe sync-tasks service enters the task into the Task Table.\n\nLibrary\n-------\n\n``cadasta.workertoolbox.conf.Config``\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nThe ``Config`` class was built to simplify configuring Celery settings,\nhelping to ensure that all workers adhere to the architecture\nrequirements of the Cadasta asynchronous system. It essentially offers a\ndiff between Celery's default configuration and the configuration\nrequired by our system. It is the aim of the class to not require much\ncustomization on the part of the developer, however some customization\nmay be needed when altering configuration between environments (e.g. if\ndev settings vary greatly from prod settings).\n\nAny `Celery\nsetting <http://docs.celeryproject.org/en/v4.0.2/userguide/configuration.html#new-lowercase-settings>`__\nmay be submitted. It is internal convention that we use the Celery's\nnewer lowercase settings rather than their older uppercase counterparts.\nThis will ensure that they are displayed when calling ``repr`` on the\n``Conf`` instance.\n\nOnce applied, all settings (and internal variables) are available on the\nCelery ``app`` instance's ``app.conf`` object.\n\nProvided Configuration\n^^^^^^^^^^^^^^^^^^^^^^\n\n``result_backend``\n''''''''''''''''''\n\nDefaults to\n``'db+postgresql://{0.RESULT_DB_USER}:{0.RESULT_DB_PASS}@{0.RESULT_DB_HOST}/{0.RESULT_DB_NAME}'``\nrendered with ``self``.\n\n``broker_transport``\n''''''''''''''''''''\n\nDefaults to ``'sqs``'.\n\n``broker_transport_options``\n''''''''''''''''''''''''''''\n\nDefaults to:\n\n.. code:: python\n\n    {\n        'region': 'us-west-2',\n        'queue_name_prefix': '{}-'.format(QUEUE_NAME_PREFIX)\n    }\n\n``task_queues``\n'''''''''''''''\n\nDefaults to the following ``set`` of ``kombu.Queue`` objects, where\n``queues`` is the configuration's internal ``QUEUES`` variable and\n``exchange`` is a ``kombu.Exchange`` object constructed from the\n``task_default_exchange`` and ``task_default_exchange_type`` settings:\n\n.. code:: python\n\n    set([\n        Queue('celery', exchange, routing_key='celery'),\n        Queue(platform_queue, exchange, routing_key='#'),\n    ] + [\n        Queue(q_name, exchange, routing_key=q_name)\n        for q_name in queues\n    ])\n\n*Note: It is recommended that developers not alter this setting.*\n\n``task_routes``\n'''''''''''''''\n\nDefaults to a function that will generate a dict with the\n``routing_key`` matching the value at the first index of a task name\nsplit on the ``.`` and the ``exchange`` set to a ``kombu.Exchange``\nobject constructed from the ``task_default_exchange`` and\n``task_default_exchange_type`` settings\n\n*Note: It is recommended that developers not alter this setting.*\n\n``task_default_exchange``\n'''''''''''''''''''''''''\n\nDefaults to ``'task_exchange'``\n\n``task_default_exchange_type``\n''''''''''''''''''''''''''''''\n\nDefaults to ``'topic'``\n\n``task_track_started``\n''''''''''''''''''''''\n\nDefaults to ``True``.\n\nInternal Variables\n^^^^^^^^^^^^^^^^^^\n\nBy convention, all variables used to construct Celery configuration\nshould should be written entirely uppercase.\n\n``QUEUES``\n''''''''''\n\nThis should contain an array of names for all service-related queues\nused by the Cadasta Platform. These values are used to construct the\n``task_queues`` configuration. For the purposes of routing followup\ntasks, it's important that every task consumer is aware of all queues\navailable. For this reason, if a queue is used by any service worker\nthen it should be specified within this array. It is not necessary to\ninclude the ``'celery'`` or ``'platform.fifo'`` queues. Defaults to the\ncontents of the ``DEFAULT_QUEUES`` variable in the modules\n```__init__.py`` file </cadasta/workertoolbox/__init__.py>`__.\n\n``PLATFORM_QUEUE_NAME``\n'''''''''''''''''''''''\n\nDefaults to ``'platform.fifo'``.\n\n*Note: It is recommended that developers not alter this setting.*\n\n``QUEUE_NAME_PREFIX``\n'''''''''''''''''''''\n\nUsed to populate the ``queue_name_prefix`` value of the connections\n``broker_transport_options``. Defaults to value of ``QUEUE_PREFIX``\nenvironment variable if populated, ``'dev'`` if not.\n\n``RESULT_DB_USER``\n''''''''''''''''''\n\nUsed to populate the default ``result_backend`` template. Defaults to\n``RESULT_DB_USER`` environment variable if populated, ``'cadasta'`` if\nnot.\n\n``RESULT_DB_PASS``\n''''''''''''''''''\n\nUsed to populate the default ``result_backend`` template. Defaults to\n``RESULT_DB_PASS`` environment variable if populated, ``'cadasta'`` if\nnot.\n\n``RESULT_DB_HOST``\n''''''''''''''''''\n\nUsed to populate the default ``result_backend`` template. Defaults to\n``RESULT_DB_HOST`` environment variable if populated, ``'localhost'`` if\nnot.\n\n``RESULT_DB_PORT``\n''''''''''''''''''\n\nUsed to populate the default ``result_backend`` template. Defaults to\n``RESULT_DB_PORT`` environment variable if populated, ``'cadasta'`` if\nnot.\n\n``RESULT_DB_NAME``\n''''''''''''''''''\n\nUsed to populate the default ``result_backend`` template. Defaults to\n``RESULT_DB_PORT`` environment variable if populated, ``'5432'`` if not.\n\n``cadasta.workertoolbox.tests.build_functional_tests``\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nWhen provided with a Celery app instance, this function generates a\nsuite of functional tests to ensure that the provided application's\nconfiguration and functionality conforms with the architecture of the\nCadasta asynchronous system.\n\nAn example, where an instanciated and configured ``Celery()`` app\ninstance exists in a parallel ``celery`` module:\n\n.. code:: python\n\n    from cadasta.workertoolbox.tests import build_functional_tests\n\n    from .celery import app\n\n    FunctionalTests = build_functional_tests(app)\n\nTo run these tests, use your standard test runner (e.g. ``pytest``) or\ncall manually from the command-line:\n\n.. code:: bash\n\n    python -m unittest path/to/tests.py\n\nDevelopment\n-----------\n\nTesting\n~~~~~~~\n\n.. code:: bash\n\n    pip install -r requirements-test.txt\n    ./runtests\n\nDeploying\n~~~~~~~~~\n\n.. code:: bash\n\n    pip install -r requirements-deploy.txt\n    python setup.py test clean build publish tag\n\n.. |PyPI version| image:: https://badge.fury.io/py/cadasta-workertoolbox.svg\n   :target: https://badge.fury.io/py/cadasta-workertoolbox\n.. |Build Status| image:: https://travis-ci.org/Cadasta/cadasta-workertoolbox.svg?branch=master\n   :target: https://travis-ci.org/Cadasta/cadasta-workertoolbox\n.. |Requirements Status| image:: https://requires.io/github/Cadasta/cadasta-workertoolbox/requirements.svg?branch=master\n   :target: https://requires.io/github/Cadasta/cadasta-workertoolbox/requirements/?branch=master\n\n\n",
+    "description": "Cadasta Worker Toolbox\n======================\n\n|PyPI version| |Build Status| |Requirements Status|\n\nA collection of helpers to assist in quickly building asynchronous\nworkers for the Cadasta system.\n\nArchitecture\n------------\n\n.. figure:: https://user-images.githubusercontent.com/897290/28102799-e9b04182-668e-11e7-84ae-51c6fa307303.png\n   :alt: Async System Architecture Diagram\n\n   Async System Architecture Diagram\n\nThe Cadasta asynchronous system is designed so that both the scheduled\ntasks and the task results can be tracked by the central `Cadasta\nPlatform <https://github.com/Cadasta/cadasta-platform>`__. To ensure\nthat this takes place, all Celery workers must be correctly configured\nto support these features.\n\nTracking Scheduled Tasks\n~~~~~~~~~~~~~~~~~~~~~~~~\n\nTo keep our system aware of all tasks being scheduled, the Cadasta\nPlatform has a process running to consume task messages off of a\ntask-monitor queue and insert those messages into our database. To\nsupport this design, all task producers (including worker nodes) must\npublish their task messages to both the normal destination queues and\nthe task-monitor queue. This is acheived by registering all queues with\na `Topic\nExchange <http://docs.celeryproject.org/en/latest/userguide/routing.html#topic-exchanges>`__,\nsetting the task-monitor queue to subscribe to all messages sent to the\nexchange, and setting standard work queues to subscribe to messages with\na matching ``routing_key``. Being that the Cadasta Platform is designed\nto work with Amazon SQS and the `SQS backend only keeps exchange/queue\ndeclarations in\nmemory <http://docs.celeryproject.org/projects/kombu/en/v4.0.2/introduction.html#f1>`__,\neach message producer must have this set up within their configuration.\n\nTracking Task Results\n~~~~~~~~~~~~~~~~~~~~~\n\nTasks results are inserted by each worker into the Platform DB. For this\nreason, it is important that each worker have network access to the\nPlatform DB (via AWS Security Groups). Additionally, each worker should\nhave a provided username and password that grants them authorization to\nwrite to the Platform DB's Result Table. For reasons of security, it is\nadvised that these credentials be permitted to only access this single\ntable. The Result Table has a one-to-one relation via the ``task_id``\ncolumn to the Task Table. This should not be enforced via a constraint,\nas it is possible for a task's result to be entered into the DB *before*\nthe sync-tasks service enters the task into the Task Table.\n\nLibrary\n-------\n\n``cadasta.workertoolbox.conf.Config``\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nThe ``Config`` class was built to simplify configuring Celery settings,\nhelping to ensure that all workers adhere to the architecture\nrequirements of the Cadasta asynchronous system. It essentially offers a\ndiff between Celery's default configuration and the configuration\nrequired by our system. It is the aim of the class to not require much\ncustomization on the part of the developer, however some customization\nmay be needed when altering configuration between environments (e.g. if\ndev settings vary greatly from prod settings).\n\nAny `Celery\nsetting <http://docs.celeryproject.org/en/v4.0.2/userguide/configuration.html#new-lowercase-settings>`__\nmay be submitted. It is internal convention that we use the Celery's\nnewer lowercase settings rather than their older uppercase counterparts.\nThis will ensure that they are displayed when calling ``repr`` on the\n``Conf`` instance.\n\nOnce applied, all settings (and internal variables) are available on the\nCelery ``app`` instance's ``app.conf`` object.\n\nProvided Configuration\n^^^^^^^^^^^^^^^^^^^^^^\n\n``result_backend``\n''''''''''''''''''\n\nDefaults to\n``'db+postgresql://{0.RESULT_DB_USER}:{0.RESULT_DB_PASS}@{0.RESULT_DB_HOST}/{0.RESULT_DB_NAME}'``\nrendered with ``self``.\n\n``broker_transport``\n''''''''''''''''''''\n\nDefaults to ``'sqs``'.\n\n``broker_transport_options``\n''''''''''''''''''''''''''''\n\nDefaults to:\n\n.. code:: python\n\n    {\n        'region': 'us-west-2',\n        'queue_name_prefix': '{}-'.format(QUEUE_NAME_PREFIX)\n    }\n\n``task_queues``\n'''''''''''''''\n\nDefaults to the following ``set`` of ``kombu.Queue`` objects, where\n``queues`` is the configuration's internal ``QUEUES`` variable and\n``exchange`` is a ``kombu.Exchange`` object constructed from the\n``task_default_exchange`` and ``task_default_exchange_type`` settings:\n\n.. code:: python\n\n    set([\n        Queue('celery', exchange, routing_key='celery'),\n        Queue(platform_queue, exchange, routing_key='#'),\n    ] + [\n        Queue(q_name, exchange, routing_key=q_name)\n        for q_name in queues\n    ])\n\n*Note: It is recommended that developers not alter this setting.*\n\n``task_routes``\n'''''''''''''''\n\nDefaults to a function that will generate a dict with the\n``routing_key`` matching the value at the first index of a task name\nsplit on the ``.`` and the ``exchange`` set to a ``kombu.Exchange``\nobject constructed from the ``task_default_exchange`` and\n``task_default_exchange_type`` settings\n\n*Note: It is recommended that developers not alter this setting.*\n\n``task_default_exchange``\n'''''''''''''''''''''''''\n\nDefaults to ``'task_exchange'``\n\n``task_default_exchange_type``\n''''''''''''''''''''''''''''''\n\nDefaults to ``'topic'``\n\n``task_track_started``\n''''''''''''''''''''''\n\nDefaults to ``True``.\n\nInternal Variables\n^^^^^^^^^^^^^^^^^^\n\nBy convention, all variables used to construct Celery configuration\nshould should be written entirely uppercase.\n\n``QUEUES``\n''''''''''\n\nThis should contain an array of names for all service-related queues\nused by the Cadasta Platform. These values are used to construct the\n``task_queues`` configuration. For the purposes of routing followup\ntasks, it's important that every task consumer is aware of all queues\navailable. For this reason, if a queue is used by any service worker\nthen it should be specified within this array. It is not necessary to\ninclude the ``'celery'`` or ``'platform.fifo'`` queues. Defaults to the\ncontents of the ``DEFAULT_QUEUES`` variable in the modules\n```__init__.py`` file </cadasta/workertoolbox/__init__.py>`__.\n\n``PLATFORM_QUEUE_NAME``\n'''''''''''''''''''''''\n\nDefaults to ``'platform.fifo'``.\n\n*Note: It is recommended that developers not alter this setting.*\n\n``QUEUE_NAME_PREFIX``\n'''''''''''''''''''''\n\nUsed to populate the ``queue_name_prefix`` value of the connections\n``broker_transport_options``. Defaults to value of ``QUEUE_PREFIX``\nenvironment variable if populated, ``'dev'`` if not.\n\n``RESULT_DB_USER``\n''''''''''''''''''\n\nUsed to populate the default ``result_backend`` template. Defaults to\n``RESULT_DB_USER`` environment variable if populated, ``'cadasta'`` if\nnot.\n\n``RESULT_DB_PASS``\n''''''''''''''''''\n\nUsed to populate the default ``result_backend`` template. Defaults to\n``RESULT_DB_PASS`` environment variable if populated, ``'cadasta'`` if\nnot.\n\n``RESULT_DB_HOST``\n''''''''''''''''''\n\nUsed to populate the default ``result_backend`` template. Defaults to\n``RESULT_DB_HOST`` environment variable if populated, ``'localhost'`` if\nnot.\n\n``RESULT_DB_PORT``\n''''''''''''''''''\n\nUsed to populate the default ``result_backend`` template. Defaults to\n``RESULT_DB_PORT`` environment variable if populated, ``'cadasta'`` if\nnot.\n\n``RESULT_DB_NAME``\n''''''''''''''''''\n\nUsed to populate the default ``result_backend`` template. Defaults to\n``RESULT_DB_PORT`` environment variable if populated, ``'5432'`` if not.\n\n``CHORD_UNLOCK_MAX_RETRIES``\n''''''''''''''''''''''''''''\n\nUsed to set the maximum number of times a ``celery.chord_unlock`` task\nmay retry before giving up. See celery/celery#2725. Defaults to\n``43200`` (meaning to give up after 6 hours, assuming the default of the\ntask's ``default_retry_delay`` being set to 1 second).\n\n``cadasta.workertoolbox.tests.build_functional_tests``\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nWhen provided with a Celery app instance, this function generates a\nsuite of functional tests to ensure that the provided application's\nconfiguration and functionality conforms with the architecture of the\nCadasta asynchronous system.\n\nAn example, where an instanciated and configured ``Celery()`` app\ninstance exists in a parallel ``celery`` module:\n\n.. code:: python\n\n    from cadasta.workertoolbox.tests import build_functional_tests\n\n    from .celery import app\n\n    FunctionalTests = build_functional_tests(app)\n\nTo run these tests, use your standard test runner (e.g. ``pytest``) or\ncall manually from the command-line:\n\n.. code:: bash\n\n    python -m unittest path/to/tests.py\n\nDevelopment\n-----------\n\nTesting\n~~~~~~~\n\n.. code:: bash\n\n    pip install -r requirements-test.txt\n    ./runtests\n\nDeploying\n~~~~~~~~~\n\n.. code:: bash\n\n    pip install -r requirements-deploy.txt\n    python setup.py test clean build publish tag\n\n.. |PyPI version| image:: https://badge.fury.io/py/cadasta-workertoolbox.svg\n   :target: https://badge.fury.io/py/cadasta-workertoolbox\n.. |Build Status| image:: https://travis-ci.org/Cadasta/cadasta-workertoolbox.svg?branch=master\n   :target: https://travis-ci.org/Cadasta/cadasta-workertoolbox\n.. |Requirements Status| image:: https://requires.io/github/Cadasta/cadasta-workertoolbox/requirements.svg?branch=master\n   :target: https://requires.io/github/Cadasta/cadasta-workertoolbox/requirements/?branch=master\n\n\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -22,7 +22,7 @@
     "name": "cadasta-workertoolbox",
     "platform": "",
     "project_url": "https://pypi.org/project/cadasta-workertoolbox/",
-    "release_url": "https://pypi.org/project/cadasta-workertoolbox/0.1.10/",
+    "release_url": "https://pypi.org/project/cadasta-workertoolbox/0.1.11/",
     "requires_dist": [
       "pycurl (>=7.43.0,<=7.44)",
       "psycopg2 (>=2.7.1)",
@@ -30,11 +30,11 @@
       "kombu (>=4.1.0,<=4.2)",
       "celery (>=4.0.2)",
       "boto3 (<=1.5,>=1.4.4)",
-      "SQLAlchemy (>=1.1.11,<=1.2)"
+      "SQLAlchemy (<=1.2,>=1.1.11)"
     ],
     "requires_python": "",
     "summary": "Cadasta Worker Toolbox",
-    "version": "0.1.10"
+    "version": "0.1.11"
   },
   "releases": {
     "0.0.2": [
@@ -343,6 +343,40 @@
         "url": "https://files.pythonhosted.org/packages/78/2a/8c27fc76f172c30eaa13ffc7a71443a70c727e05be67009fa4f794bdaee0/cadasta-workertoolbox-0.1.10.tar.gz"
       }
     ],
+    "0.1.11": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2142481fd345095cf2e4a51e06f85b32",
+          "sha256": "45d44bb59a61ef6e2a117ba9f60ad0b7af10b2c699e6a225653e6b5605c34b08"
+        },
+        "downloads": 0,
+        "filename": "cadasta_workertoolbox-0.1.11-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "2142481fd345095cf2e4a51e06f85b32",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 14080,
+        "upload_time": "2017-07-22T05:03:32",
+        "url": "https://files.pythonhosted.org/packages/db/ee/e5bee7e0980f86aa264cfa4e4923dd0aea4d738e13c8b31ab85015d89563/cadasta_workertoolbox-0.1.11-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "796fbad2d7389174d944b1a44dc94b9f",
+          "sha256": "e7e242349158d2bcc3d7d2325d70b497f8d27bdc4253d9f09f4d9308d47bf62d"
+        },
+        "downloads": 0,
+        "filename": "cadasta-workertoolbox-0.1.11.tar.gz",
+        "has_sig": false,
+        "md5_digest": "796fbad2d7389174d944b1a44dc94b9f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 8687,
+        "upload_time": "2017-07-22T05:03:33",
+        "url": "https://files.pythonhosted.org/packages/66/bb/7d238c5c3d527068dcaae283fd44110ff66aa5ab36920f282098b122a0b6/cadasta-workertoolbox-0.1.11.tar.gz"
+      }
+    ],
     "0.1.2": [
       {
         "comment_text": "",
@@ -620,34 +654,34 @@
     {
       "comment_text": "",
       "digests": {
-        "md5": "2682155270a444dd4c5c0f2782eeb68f",
-        "sha256": "8ffd4742b637eec03068cd1cd05cb0fcba51efc7c921a4fbc88df582b1a0ffb5"
+        "md5": "2142481fd345095cf2e4a51e06f85b32",
+        "sha256": "45d44bb59a61ef6e2a117ba9f60ad0b7af10b2c699e6a225653e6b5605c34b08"
       },
       "downloads": 0,
-      "filename": "cadasta_workertoolbox-0.1.10-py2.py3-none-any.whl",
+      "filename": "cadasta_workertoolbox-0.1.11-py2.py3-none-any.whl",
       "has_sig": false,
-      "md5_digest": "2682155270a444dd4c5c0f2782eeb68f",
+      "md5_digest": "2142481fd345095cf2e4a51e06f85b32",
       "packagetype": "bdist_wheel",
       "python_version": "py2.py3",
-      "size": 13107,
-      "upload_time": "2017-07-21T16:48:49",
-      "url": "https://files.pythonhosted.org/packages/ef/c6/0061e9cd52e8519d8be59c8a74aea77ae3a6579a5e18487e35c0c8abbaf9/cadasta_workertoolbox-0.1.10-py2.py3-none-any.whl"
+      "size": 14080,
+      "upload_time": "2017-07-22T05:03:32",
+      "url": "https://files.pythonhosted.org/packages/db/ee/e5bee7e0980f86aa264cfa4e4923dd0aea4d738e13c8b31ab85015d89563/cadasta_workertoolbox-0.1.11-py2.py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "76577bd37188e2c6e0fe8170f4bfa594",
-        "sha256": "53b66a8ba1eccfa6225ce6bcb4f935fa282fc4c16ea2bde70a0610f368ade470"
+        "md5": "796fbad2d7389174d944b1a44dc94b9f",
+        "sha256": "e7e242349158d2bcc3d7d2325d70b497f8d27bdc4253d9f09f4d9308d47bf62d"
       },
       "downloads": 0,
-      "filename": "cadasta-workertoolbox-0.1.10.tar.gz",
+      "filename": "cadasta-workertoolbox-0.1.11.tar.gz",
       "has_sig": false,
-      "md5_digest": "76577bd37188e2c6e0fe8170f4bfa594",
+      "md5_digest": "796fbad2d7389174d944b1a44dc94b9f",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 8122,
-      "upload_time": "2017-07-21T16:48:50",
-      "url": "https://files.pythonhosted.org/packages/78/2a/8c27fc76f172c30eaa13ffc7a71443a70c727e05be67009fa4f794bdaee0/cadasta-workertoolbox-0.1.10.tar.gz"
+      "size": 8687,
+      "upload_time": "2017-07-22T05:03:33",
+      "url": "https://files.pythonhosted.org/packages/66/bb/7d238c5c3d527068dcaae283fd44110ff66aa5ab36920f282098b122a0b6/cadasta-workertoolbox-0.1.11.tar.gz"
     }
   ]
 }
