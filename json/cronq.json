@@ -4,7 +4,7 @@
     "author_email": "opensource@seatgeek.com",
     "bugtrack_url": null,
     "classifiers": [],
-    "description": "=====\nCronQ\n=====\n\nA cron-like system to run your application tasks across any node, instead of one special snowflake. This is done by keeping your tasks in MySQL and publishing them over AMQP to workers that will run your tasks and eventually save the results back into the DB. This was started as a hackathon project at SeatGeek_\n\nRequirements\n============\n\n- Python 2.7\n- RabbitMQ 3.x\n- MySQL 5.x\n\nInstallation\n============\n\nUsing PIP via PyPi::\n\n    pip install cronq\n\nUsing PIP via Github::\n\n    pip install git+git://github.com/seatgeek/cronq.git@0.20.0#egg=cronq\n\nAdding to your ``requirements.txt`` file (run ``pip install -r requirements.txt`` afterwards)::\n\n    git+ssh://git@github.com/seatgeek/python-cronq.git@0.20.0#egg=cronq\n\nUsage\n=====\n\nThere are various workers that are used by Cronq, as well as a web admin.\n\ncronq-runner\n============\n\nThe ``runner`` executes tasks, and should be run on hosts that will actually perform work. There is no limit to the number of runners that can execute.\n\nThe runner requires ``/var/log/cronq/`` to exist and be writable by the user executing the runner. If it is not, logs will be written to ``/tmp``.\n\n.. code-block:: bash\n\n    # setup rabbitmq connection info\n    export RABBITMQ_HOST=localhost\n    export RABBITMQ_USER=guest\n    export RABBITMQ_PASS=guest\n\n    # specify the rabbitmq queue to listen to\n    export CRONQ_QUEUE=cronq_jobs # `cronq_jobs` is the default queue\n\n    # log job output to stdout *as well as* /var/log/cronq\n    export CRONQ_RUNNER_LOG_TO_STDOUT=1\n\n    # run commands\n    cronq-runner\n\nWhen run, `cronq-runner` will:\n\n- Setup a rabbitmq connection\n- Listen to the `cronq_jobs` queue\n- Retrieve commands from the queue\n- Publish a message saying the command is started\n- Run the command in a shell subprocess\n- Publish a message on success/failure to the ``cronq`` exchange and ``cronq_results`` queue. This is not configurable.\n- Listen for more messages\n\ncronq-injector\n==============\n\n    The ``cronq-injector`` command will non-destructively create any necessary ``cronq`` tables, though it will need a database to perform this action against. Please note that if you do not have tables created, it is helpful to run the injector first.\n\nThe ``injector`` is used to retrieve jobs from the database and publish them to AMQP. Jobs are published in the following format:\n\n.. code-block:: python\n\n    # where job is a database record\n    {\n        'name': job.name,\n        'command': unicode(job.command),\n        'id': job.id,\n    }\n\nYou can ostensibly run as many injectors as necessary. MySQL isolation levels are used to attain locks on job records.\n\n.. code-block:: bash\n\n    # setup rabbitmq connection info\n    export RABBITMQ_HOST=localhost\n    export RABBITMQ_USER=guest\n    export RABBITMQ_PASS=guest\n\n    # specify the database connection string\n    export CRONQ_MYSQL=mysql+pymysql://cronq:cronq@localhost/cronq\n\n    # run the comand injector\n    cronq-injector\n\n``cronq-injector`` perform a 1 second sleep between job injections, but may perform an unlimited number of job injections in that time period.\n\nNote that jobs are not queued up at the *exact* time you specify in the database. Rather, jobs that matches the following heuristic are queued one-at-a-time until no jobs are left to be queued for that injection cycle::\n\n    Job.next_run < NOW() OR Job.run_now = 1\n\ncronq-results\n=============\n\nThe `results` aggregator listens to the ``cronq_results`` queue for the results of ``cronq-runner`` executions. You can run as many of these as possible, as they will retrieve results one-at-a-time from rabbitmq.\n\n.. code-block:: bash\n\n    # setup rabbitmq connection info\n    export RABBITMQ_HOST=localhost\n    export RABBITMQ_USER=guest\n    export RABBITMQ_PASS=guest\n\n    # specify the database connection string\n    export CRONQ_MYSQL=mysql+pymysql://cronq:cronq@localhost/cronq\n\n    # run the results-aggregator\n    cronq-results\n\nThese results can be viewed for particular commands within the web-admin, or by inspecting the database.\n\ncronq-web\n=========\n\nThe web view is a WSGI app run from ``cronq.web:app`` and requires only database access. The following is an example for running the web admin using webscale technologies:\n\n.. code-block:: bash\n\n    # install libevent-dev\n    sudo apt-get install libevent-dev\n\n    # install required python libraries\n    sudo pip install greenlet gevent gunicorn\n\n    # specify the database connection string\n    export CRONQ_MYSQL=mysql+pymysql://cronq:cronq@localhost/cronq\n\n    # if you have an aggregated log dashboard, you can provide a search url\n    # template. it will be used in the web dashboard for linking to logs\n    # the following strings will be replaced:\n    #\n    # {job_id} : replaced with the job's job_id\n    # {run_id} : replaced with the job's run_id\n    # {start_time} : replaced with job's start time in ISO format url quoted\n    #                ex - \"2016-08-15T08%3A00%3A11.000Z\"\n    # {end_time} : replaced with job's end time, or now if job is still running, in ISO format url quoted\n                   ex - \"2016-08-15T08%3A00%3A31.999Z\"\n    export CRONQ_LOG_URL_TEMPLATE=\"https://logs.service/search?run_id={run_id}&from={start_time}&to={end_time}\"\n\n    # run the web admin\n    gunicorn --access-logfile - -w 2 --worker-class=gevent cronq.web:app\n\n    # access the panel on http://127.0.0.1:8000\n\nThe web admin will list available commands, their result history, and a button to allow you to immediately schedule a job.\n\nCategories Api\n==============\n\nThe web admin exposes a ``category`` endpoint which allows you to replace a set of jobs with a single API call\n\n.. code-block:: bash\n\n    curl -v 'localhost:5000/api/category/example' -f -XPUT -H 'content-type: application/json' -d '\n    {\n        \"category\": \"example\",\n        \"jobs\": [{\n            \"name\": \"Test Job\",\n            \"schedule\": \"R/2013-05-29T00:00:00/PT1M\",\n            \"command\": \"sleep 10\",\n            \"routing_key\": \"slow\"\n        }]\n    }'\n\nThis adds / updates a job named ``Test Job`` in the ``example`` category. The time format is ISO 8601. Any jobs no longer defined for the example category will be removed. This allows you to script job additions / removes in your VCS.\n\n\nLicense\n=======\n\nBSD\n\n.. _SeatGeek: https://seatgeek.com\n",
+    "description": "=====\nCronQ\n=====\n\nA cron-like system to run your application tasks across any node, instead of one special snowflake. This is done by keeping your tasks in MySQL and publishing them over AMQP to workers that will run your tasks and eventually save the results back into the DB. This was started as a hackathon project at SeatGeek_\n\nRequirements\n============\n\n- Python 2.7\n- RabbitMQ 3.x\n- MySQL 5.x\n\nInstallation\n============\n\nUsing PIP via PyPi::\n\n    pip install cronq\n\nUsing PIP via Github::\n\n    pip install git+git://github.com/seatgeek/cronq.git@0.21.1#egg=cronq\n\nAdding to your ``requirements.txt`` file (run ``pip install -r requirements.txt`` afterwards)::\n\n    git+ssh://git@github.com/seatgeek/python-cronq.git@0.21.1#egg=cronq\n\nUsage\n=====\n\nThere are various workers that are used by Cronq, as well as a web admin.\n\ncronq-runner\n============\n\nThe ``runner`` executes tasks, and should be run on hosts that will actually perform work. There is no limit to the number of runners that can execute.\n\nThe runner requires ``/var/log/cronq/`` to exist and be writable by the user executing the runner. If it is not, logs will be written to ``/tmp``.\n\n.. code-block:: bash\n\n    # setup rabbitmq connection info\n    export RABBITMQ_HOST=localhost\n    export RABBITMQ_USER=guest\n    export RABBITMQ_PASS=guest\n\n    # specify the rabbitmq queue to listen to\n    export CRONQ_QUEUE=cronq_jobs # `cronq_jobs` is the default queue\n\n    # log job output to stdout *as well as* /var/log/cronq\n    export CRONQ_RUNNER_LOG_TO_STDOUT=1\n\n    # run commands\n    cronq-runner\n\nWhen run, `cronq-runner` will:\n\n- Setup a rabbitmq connection\n- Listen to the `cronq_jobs` queue\n- Retrieve commands from the queue\n- Publish a message saying the command is started\n- Run the command in a shell subprocess\n- Publish a message on success/failure to the ``cronq`` exchange and ``cronq_results`` queue. This is not configurable.\n- Listen for more messages\n\ncronq-injector\n==============\n\n    The ``cronq-injector`` command will non-destructively create any necessary ``cronq`` tables, though it will need a database to perform this action against. Please note that if you do not have tables created, it is helpful to run the injector first.\n\nThe ``injector`` is used to retrieve jobs from the database and publish them to AMQP. Jobs are published in the following format:\n\n.. code-block:: python\n\n    # where job is a database record\n    {\n        'name': job.name,\n        'command': unicode(job.command),\n        'id': job.id,\n    }\n\nYou can ostensibly run as many injectors as necessary. MySQL isolation levels are used to attain locks on job records.\n\n.. code-block:: bash\n\n    # setup rabbitmq connection info\n    export RABBITMQ_HOST=localhost\n    export RABBITMQ_USER=guest\n    export RABBITMQ_PASS=guest\n\n    # specify the database connection string\n    export CRONQ_MYSQL=mysql+pymysql://cronq:cronq@localhost/cronq\n\n    # run the comand injector\n    cronq-injector\n\n``cronq-injector`` perform a 1 second sleep between job injections, but may perform an unlimited number of job injections in that time period.\n\nNote that jobs are not queued up at the *exact* time you specify in the database. Rather, jobs that matches the following heuristic are queued one-at-a-time until no jobs are left to be queued for that injection cycle::\n\n    Job.next_run < NOW() OR Job.run_now = 1\n\ncronq-results\n=============\n\nThe `results` aggregator listens to the ``cronq_results`` queue for the results of ``cronq-runner`` executions. You can run as many of these as possible, as they will retrieve results one-at-a-time from rabbitmq.\n\n.. code-block:: bash\n\n    # setup rabbitmq connection info\n    export RABBITMQ_HOST=localhost\n    export RABBITMQ_USER=guest\n    export RABBITMQ_PASS=guest\n\n    # specify the database connection string\n    export CRONQ_MYSQL=mysql+pymysql://cronq:cronq@localhost/cronq\n\n    # run the results-aggregator\n    cronq-results\n\nThese results can be viewed for particular commands within the web-admin, or by inspecting the database.\n\ncronq-web\n=========\n\nThe web view is a WSGI app run from ``cronq.web:app`` and requires only database access. The following is an example for running the web admin using webscale technologies:\n\n.. code-block:: bash\n\n    # install libevent-dev\n    sudo apt-get install libevent-dev\n\n    # install required python libraries\n    sudo pip install greenlet gevent gunicorn\n\n    # specify the database connection string\n    export CRONQ_MYSQL=mysql+pymysql://cronq:cronq@localhost/cronq\n\n    # if you have an aggregated log dashboard, you can provide a search url\n    # template. it will be used in the web dashboard for linking to logs\n    # the following strings will be replaced:\n    #\n    # {job_id} : replaced with the job's job_id\n    # {run_id} : replaced with the job's run_id\n    # {start_time} : replaced with job's start time in ISO format url quoted\n    #                ex - \"2016-08-15T08%3A00%3A11.000Z\"\n    # {end_time} : replaced with job's end time, or now if job is still running, in ISO format url quoted\n                   ex - \"2016-08-15T08%3A00%3A31.999Z\"\n    export CRONQ_LOG_URL_TEMPLATE=\"https://logs.service/search?run_id={run_id}&from={start_time}&to={end_time}\"\n\n    # run the web admin\n    gunicorn --access-logfile - -w 2 --worker-class=gevent cronq.web:app\n\n    # access the panel on http://127.0.0.1:8000\n\nThe web admin will list available commands, their result history, and a button to allow you to immediately schedule a job.\n\nCategories Api\n==============\n\nThe web admin exposes a ``category`` endpoint which allows you to replace a set of jobs with a single API call\n\n.. code-block:: bash\n\n    curl -v 'localhost:5000/api/category/example' -f -XPUT -H 'content-type: application/json' -d '\n    {\n        \"category\": \"example\",\n        \"jobs\": [{\n            \"name\": \"Test Job\",\n            \"schedule\": \"R/2013-05-29T00:00:00/PT1M\",\n            \"command\": \"sleep 10\",\n            \"routing_key\": \"slow\"\n        }]\n    }'\n\nThis adds / updates a job named ``Test Job`` in the ``example`` category. The time format is ISO 8601. Any jobs no longer defined for the example category will be removed. This allows you to script job additions / removes in your VCS.\n\nConfiguration Validation\n------------------------\n\nBefore posting cronq configuration, you may wish to validate that the file is in the correct format. To do so, you can use the included ``cronq-validator`` console script.\n\n.. code-block:: bash\n\n    # looks for a cronq.config in the current directory by default\n    cronq-validator\n\n    # can be scoped to a specific file\n    cronq-validator --config cronq.json\n\nThis will check both json syntax as well as whether the contents pass the Cronq ``jsonschema``. We also include a ``cronq.validator`` module which contains the following methods:\n\n- ``cronq_schema``: Returns the jsonschema as a python dictionary\n- ``validate``: Takes a path to a config file and runs validation. May raise ``ValidationError``.\n\nLicense\n=======\n\nBSD\n\n.. _SeatGeek: https://seatgeek.com\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -20,11 +20,11 @@
     "name": "cronq",
     "platform": "",
     "project_url": "https://pypi.org/project/cronq/",
-    "release_url": "https://pypi.org/project/cronq/0.20.0/",
+    "release_url": "https://pypi.org/project/cronq/0.21.1/",
     "requires_dist": [],
     "requires_python": "",
     "summary": "A Cron-like system for running tasks",
-    "version": "0.20.0"
+    "version": "0.21.1"
   },
   "releases": {
     "0.0.1": [
@@ -1485,6 +1485,74 @@
         "url": "https://files.pythonhosted.org/packages/5c/47/98247641f8749fe4397a5c9f898e2703e8bd0861a5622cc89f0c38ebb52f/cronq-0.20.0.tar.gz"
       }
     ],
+    "0.21.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "64fc5305249eb966fe543419d766f2d9",
+          "sha256": "d671ee9681446af0060b186f55098a15099c3e3dd0a9784269fe69565df4dcfe"
+        },
+        "downloads": 0,
+        "filename": "cronq-0.21.0-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "64fc5305249eb966fe543419d766f2d9",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 165708,
+        "upload_time": "2017-07-24T21:06:34",
+        "url": "https://files.pythonhosted.org/packages/95/2e/ca5c000c59cc3400e51411903002a25f49bfa729872020b558e04abf3609/cronq-0.21.0-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "79d5f8fe6d34dfcbb6a6d0f9a1feb002",
+          "sha256": "dd765f0f8e1081ab428238dba7d13144d7654c6b21529e946f0e92c03821a049"
+        },
+        "downloads": 0,
+        "filename": "cronq-0.21.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "79d5f8fe6d34dfcbb6a6d0f9a1feb002",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 157486,
+        "upload_time": "2017-07-24T21:06:32",
+        "url": "https://files.pythonhosted.org/packages/61/b2/e40e77b8c5fb91f08e9d72f61173311ace36f72ba0fe46ee2b242c2666da/cronq-0.21.0.tar.gz"
+      }
+    ],
+    "0.21.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "541462959713ccee4b2fdf90eda64407",
+          "sha256": "f0d4fdbb85d6aa4acd868c9b53a2f7a230e6d04df5b4798a45b5d291a0a57566"
+        },
+        "downloads": 0,
+        "filename": "cronq-0.21.1-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "541462959713ccee4b2fdf90eda64407",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 166341,
+        "upload_time": "2017-07-24T21:12:28",
+        "url": "https://files.pythonhosted.org/packages/1b/90/8116439db2c8310bec7c957efd9cce11d0caeb7e22b1b4b877d4ac519b83/cronq-0.21.1-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "87c87d16bbbf3f288320d9a010cab019",
+          "sha256": "6e99cab32bc04f5f21a07ae27a859fb364d1d1c14e531d03eb8a2932d3b64d6a"
+        },
+        "downloads": 0,
+        "filename": "cronq-0.21.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "87c87d16bbbf3f288320d9a010cab019",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 158119,
+        "upload_time": "2017-07-24T21:12:23",
+        "url": "https://files.pythonhosted.org/packages/bc/7b/3e41883095fca5e320792af9b18e1b5a0d31a67ccda2a503d0223dac38b6/cronq-0.21.1.tar.gz"
+      }
+    ],
     "0.3.0": [
       {
         "comment_text": "",
@@ -2004,34 +2072,34 @@
     {
       "comment_text": "",
       "digests": {
-        "md5": "3215bbe3773c66bbe15a82760783aaa6",
-        "sha256": "baa1a3d50e7f3395fa8e60a23c47c3dfe9bc06a1254d2502e2d744f1be13ec94"
+        "md5": "541462959713ccee4b2fdf90eda64407",
+        "sha256": "f0d4fdbb85d6aa4acd868c9b53a2f7a230e6d04df5b4798a45b5d291a0a57566"
       },
       "downloads": 0,
-      "filename": "cronq-0.20.0-py2-none-any.whl",
+      "filename": "cronq-0.21.1-py2-none-any.whl",
       "has_sig": false,
-      "md5_digest": "3215bbe3773c66bbe15a82760783aaa6",
+      "md5_digest": "541462959713ccee4b2fdf90eda64407",
       "packagetype": "bdist_wheel",
       "python_version": "2.7",
-      "size": 164839,
-      "upload_time": "2017-07-09T04:33:59",
-      "url": "https://files.pythonhosted.org/packages/35/01/fefe9575cf791babad933016c78db1fb33da6e268f8587d30f67d39b45b0/cronq-0.20.0-py2-none-any.whl"
+      "size": 166341,
+      "upload_time": "2017-07-24T21:12:28",
+      "url": "https://files.pythonhosted.org/packages/1b/90/8116439db2c8310bec7c957efd9cce11d0caeb7e22b1b4b877d4ac519b83/cronq-0.21.1-py2-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "b768b720462afd33882a7a6e12ec357f",
-        "sha256": "7031d17a037f57243f707e2958c8d827b403214c6440d556ddcaabe63998fefa"
+        "md5": "87c87d16bbbf3f288320d9a010cab019",
+        "sha256": "6e99cab32bc04f5f21a07ae27a859fb364d1d1c14e531d03eb8a2932d3b64d6a"
       },
       "downloads": 0,
-      "filename": "cronq-0.20.0.tar.gz",
+      "filename": "cronq-0.21.1.tar.gz",
       "has_sig": false,
-      "md5_digest": "b768b720462afd33882a7a6e12ec357f",
+      "md5_digest": "87c87d16bbbf3f288320d9a010cab019",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 156979,
-      "upload_time": "2017-07-09T04:33:57",
-      "url": "https://files.pythonhosted.org/packages/5c/47/98247641f8749fe4397a5c9f898e2703e8bd0861a5622cc89f0c38ebb52f/cronq-0.20.0.tar.gz"
+      "size": 158119,
+      "upload_time": "2017-07-24T21:12:23",
+      "url": "https://files.pythonhosted.org/packages/bc/7b/3e41883095fca5e320792af9b18e1b5a0d31a67ccda2a503d0223dac38b6/cronq-0.21.1.tar.gz"
     }
   ]
 }
