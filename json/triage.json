@@ -1,0 +1,154 @@
+{
+  "info": {
+    "author": "Center for Data Science and Public Policy",
+    "author_email": "datascifellows@gmail.com",
+    "bugtrack_url": null,
+    "classifiers": [],
+    "description": "Copyright \u00a92017.  The University of Chicago (\u201cChicago\u201d). All Rights Reserved.  \n\nPermission to use, copy, modify, and distribute this software, including all object code and source code, and any accompanying documentation (together the \u201cProgram\u201d) for educational and not-for-profit research purposes, without fee and without a signed licensing agreement, is hereby granted, provided that the above copyright notice, this paragraph and the following three paragraphs appear in all copies, modifications, and distributions. For the avoidance of doubt, educational and not-for-profit research purposes excludes any service or part of selling a service that uses the Program. To obtain a commercial license for the Program, contact the Technology Commercialization and Licensing, Polsky Center for Entrepreneurship and Innovation, University of Chicago, 1452 East 53rd Street, 2nd floor, Chicago, IL 60615.\n\nCreated by Data Science and Public Policy, University of Chicago\n\nThe Program is copyrighted by Chicago. The Program is supplied \"as is\", without any accompanying services from Chicago. Chicago does not warrant that the operation of the Program will be uninterrupted or error-free. The end-user understands that the Program was developed for research purposes and is advised not to rely exclusively on the Program for any reason.\n\nIN NO EVENT SHALL CHICAGO BE LIABLE TO ANY PARTY FOR DIRECT, INDIRECT, SPECIAL, INCIDENTAL, OR CONSEQUENTIAL DAMAGES, INCLUDING LOST PROFITS, ARISING OUT OF THE USE OF THE PROGRAM, EVEN IF CHICAGO HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. CHICAGO SPECIFICALLY DISCLAIMS ANY WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE. THE PROGRAM PROVIDED HEREUNDER IS PROVIDED \"AS IS\". CHICAGO HAS NO OBLIGATION TO PROVIDE MAINTENANCE, SUPPORT, UPDATES, ENHANCEMENTS, OR MODIFICATIONS.\n\nDescription: # Triage\n        \n        Risk modeling and prediction\n        \n        [![Build Status](https://travis-ci.org/dssg/triage.svg?branch=master)](https://travis-ci.org/dssg/triage)\n        [![codecov](https://codecov.io/gh/dssg/triage/branch/master/graph/badge.svg)](https://codecov.io/gh/dssg/triage)\n        [![codeclimate](https://codeclimate.com/github/dssg/triage.png)](https://codeclimate.com/github/dssg/triage)\n        \n        \n        Predictive analytics projects require the coordination of many different tasks, such as feature generation, classifier training, evaluation, and list generation. These tasks are complicated in their own right, but in addition have to be combined in different ways throughout the course of the project. \n        \n        Triage aims to provide interfaces to these different phases of a project, such as an `Experiment`. Each phase is defined by configuration specific to the needs of the project, and an arrangement of core data science components that work together to produce the output of that phase.\n        \n        ## Experiment\n        \n        The first phase implemented in triage is the `Experiment`. An experiment represents the initial research work of creating design matrices from source data, and training/testing/evaluating a model grid on those matrices. At the end of the experiment, a relational database with results metadata is populated, allowing for evaluation by the researcher.\n        \n        ### Prerequisites\n        \n        To use a Triage experiment, you first need:\n        \n        - Python 3+\n        - A PostgreSQL database with your source data (events, geographical data, etc) loaded.\n        - Ample space on an available disk (or S3) to store the needed matrices and models for your experiment\n        \n        \n        ### Experiment Run Example\n        \n        The basic execution of an experiment looks something like the following:\n        \n        ```\n        \tSingleThreadedExperiment(\n        \t\tconfig=experiment_config,\n        \t\tdb_engine=sqlalchemy.create_engine(...),\n        \t\tmodel_storage_class=FSModelStorageEngine,\n        \t\tproject_path='/path/to/directory/to/save/data'\n        \t).run()\n        ```\n        \n        These lines are a bit dense: what is happening here?\n        \n        - `SingleThreadedExperiment`:  There are different Experiment classes available in `triage.experiments` to use, and they each represent a different way of executing the experiment, which we'll talk about in more detail later. The simplest (but slowest) is the SingleThreadedExperiment.\n        - `config=experiment_config`: The bulk of the work needed in designing an experiment will be in creating this experiment configuration. An up-to-date example is at [example_experiment_config.yaml](example_experiment_config.yaml); more detailed instructions on each section are located in the example file. Generally these would be easiest to store as a file (or multiple files that you construct together) like that YAML file, but the configuration is passed in dict format to the Experiment constructor and you can store it however you wish.\n        - `db_engine=sqlalchemy.create_engine(...)`: A SQLAlchemy database engine. This will be used both for querying your source tables and writing results metadata.\n        - `model_storage_class=FSModelStorageEngine`: The path to a model storage engine class. The library that triage uses for model training and evaluation, [catwalk](https://github.com/dssg/catwalk), provides multiple classes that handle storing trained models in different mediums, such as on the local filesystem or Amazon S3. We recommend starting with the `catwalk.storage.FSModelStorageEngine` to save models on the local filesystem.\n        - `project_path='/path/to/directory/to/save/data'`: The path to where you would like to store design matrices and trained models.\n        \n        With that in mind, a more full version of the experiment run script might look like this:\n        \n        ```\n        import sqlalchemy\n        import yaml\n        \n        from catwalk.storage import FSModelStorageEngine\n        from triage.experiments import SingleThreadedExperiment\n        \n        with open('my_experiment_config.yaml') as f:\n        \texperiment_config = yaml.load(f)\n        with open('my_database_creds') as f:\n        \tdb_connection_string = yaml.load(f)['db_connection_string']\n        \n        experiment = SingleThreadedExperiment(\n        \tconfig=experiment_config,\n        \tdb_engine=sqlalchemy.create_engine(db_connection_string),\n        \tmodel_storage_class=FSModelStorageEngine,\n        \tproject_path='/home/research/myproject'\n        )\n        \n        experiment.run()\n        ```\n        \n        \n        ### Evaluating results of an Experiment\n        \n        After the experiment run, a results schema will be created and populated in the configured database with the following tables:\n        - experiments - The experiment configuration and a hash\n        - models - A model describes a trained classifier; you'll have one row for each trained file that gets saved.\n        - model_groups - A model groups refers to all models that share parameters like classifier type, hyperparameters, etc, but *have different training windows*. Look at these to see how classifiers perform over different training windows.\n        - feature_importances - The sklearn feature importances results for each trained model\n        - predictions - Prediction probabilities for entities generated against trained models\n        - evaluations - Metric scores of trained models over given testing windows\n        \n        Here's an example query, which returns the top 10 model groups by precision at the top 100 entities:\n        ```\n        select\n        \tmodel_groups.model_group_id,\n        \tmodel_groups.model_type,\n        \tmodel_groups.model_parameters,\n        \tmax(evaluations.value) as max_precision\n        from model_groups\n        \tjoin models using (model_group_id)\n        \tjoin evaluations using (model_id)\n        where\n        \tmetric = 'precision@'\n        \tand parameter = '100_abs'\n        group by 1,2,3\n        order by 4 desc\n        limit 10\n        ```\n        \n        The resulting schema is also readable by [Tyra](https://github.com/tyra), our model evaluation webapp.\n        \n        \n        ### Restarting an Experiment\n        \n        If an experiment fails for any reason, you can restart it. Each matrix and each model file is saved with a filename matching a hash of its unique attributes, so when the experiment is rerun, it will by default reuse the matrix or model instead of rebuilding it. If you would like to change this behavior and replace existing versions of matrices and models, set `replace=True` in the Experiment constructor.\n        \n        \n        ### Inspecting an Experiment before running\n        \n        Before you run an experiment, you can inspect properties of the Experiment object to ensure that it is configured in the way you want. Some examples:\n        \n        - `experiment.all_as_of_times` for debugging temporal config. This will show all dates that features and labels will be calculated at.\n        - `experiment.feature_dicts` will output a list of feature dictionaries, representing the feature tables and columns configured in this experiment\n        - `experiment.matrix_build_tasks` will output a list representing each matrix that will be built.\n        \n        \n        ### Experiment Classes\n        \n        - *SingleThreadedExperiment*: An experiment that performs all tasks serially in a single thread. Good for simple use on small datasets, or for understanding the general flow of data through a pipeline.\n        - *MultiCoreExperiment*: An experiment that makes use of the multiprocessing library to parallelize various time-consuming steps. Takes an `n_processes` keyword argument to control how many workers to use.\n        \n        \n        ## Background\n        \n        Triage is developed at the University of Chicago's [Center For Data Science and Public Policy](http://dsapp.uchicago.edu). We created it in response to commonly occuring challenges we've encountered and patterns we've developed while working on projects for our partners.\n        \n        ## Major Components Used by Triage\n        \n        Triage makes use of many core data science components developed at DSaPP. These components can be useful in their own right, and are worth checking out if \n        \n        - [Architect](https://github.com/dssg/architect): Plan, design and build train and test matrices. Includes feature and label generation.\n        - [Collate](https://github.com/dssg/collate): Aggregation SQL Query Builder. This is used by the Architect to build features.\n        - [Timechop](https://github.com/dssg/timechop): Generate temporal cross-validation time windows for matrix creation\n        - [Metta-Data](https://github.com/dssg/metta-data): Train and test matrix storage\n        - [Catwalk](https://github.com/dssg/catwalk): Training, testing, and evaluating machine learning classifier models\n        - [Results Schema](https://github.com/dssg/results-schema): Generate a database schema suitable for storing the results of modeling runs\n        \n        \n        ## Design Goals\n        \n        There are two overarching design goals for Triage:\n        \n        - All configuration necessary to run the full experiment from the external interface (ie, Experiment subclasses) from beginning to end must be easily serializable and machine-constructable, to allow the eventual development of tools for users to design experiments. \n        \n        - All core functionality must be usable outside of a specific pipeline context or workflow manager. There are many good workflow managers; everybody has their favorite, and core functionality should not be designed to work with specific execution expectations.\n        \n        \n        ## Future Plans\n        \n        - Generation and Management of lists (ie for inspections) by various criteria\n        - Integration of components with various workflow managers, like [Drain](https://github.com/dssg/drain) and [Luigi](https://github.com/spotify/luigi).\n        - Comprehensive leakage testing of an experiment's modeling run\n        - Feature Generation Wizard\n        \nKeywords: triage\nPlatform: UNKNOWN\nClassifier: Development Status :: 2 - Pre-Alpha\nClassifier: Intended Audience :: Developers\nClassifier: License :: OSI Approved :: MIT License\nClassifier: Natural Language :: English\nClassifier: Programming Language :: Python :: 3\nClassifier: Programming Language :: Python :: 3.3\nClassifier: Programming Language :: Python :: 3.4\nClassifier: Programming Language :: Python :: 3.5\n",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/dssg/triage",
+    "keywords": "",
+    "license": "BY DOWNLOADING triage PROGRAM YOU AGREE TO THE FOLLOWING TERMS OF USE:",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "triage",
+    "platform": "",
+    "project_url": "https://pypi.org/project/triage/",
+    "release_url": "https://pypi.org/project/triage/1.0.0/",
+    "requires_dist": [
+      "timechop (==0.1.3)",
+      "tables (==3.3.0)",
+      "sqlalchemy-postgres-copy",
+      "sklearn",
+      "scipy",
+      "retrying",
+      "results-schema (==1.1.0)",
+      "python-dateutil",
+      "psycopg2",
+      "pandas",
+      "numpy (>=1.12)",
+      "model-catwalk (==0.2.1)",
+      "metta-data (==0.3.0)",
+      "matrix-architect (==0.2.0)",
+      "inflection",
+      "collate (==0.2.1)",
+      "click",
+      "boto3",
+      "SQLAlchemy",
+      "PyYAML"
+    ],
+    "requires_python": "",
+    "summary": "Risk modeling and prediction",
+    "version": "1.0.0"
+  },
+  "releases": {
+    "0.5.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7c466b2f41bf9de1fd5abef329d855d4",
+          "sha256": "0b16e1b397d9de9c1130e90c886429789e43c819138ca53efa17b503b69af390"
+        },
+        "downloads": 0,
+        "filename": "triage-0.5.0-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "7c466b2f41bf9de1fd5abef329d855d4",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 19084,
+        "upload_time": "2017-07-28T02:39:44",
+        "url": "https://files.pythonhosted.org/packages/a1/dd/a1d0b9688f4d8543f9d553233aeccc8171d118cad6efb32788497a1e34cb/triage-0.5.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "eb0e2e14c13c8e953113c0bfa62d4f10",
+          "sha256": "02e81d0624e6aedd5060f8b6546bca81be2baa4b1a087680f62f5a75889bc1aa"
+        },
+        "downloads": 0,
+        "filename": "triage-0.5.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "eb0e2e14c13c8e953113c0bfa62d4f10",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 21041,
+        "upload_time": "2017-07-28T02:39:44",
+        "url": "https://files.pythonhosted.org/packages/4f/34/525f1ec50f0d3843f0f809e600dd472bf575ebf8abd4162bfa2c16163419/triage-0.5.0.tar.gz"
+      }
+    ],
+    "1.0.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "bf6b900fe240b8fab7e7170f0b6b4549",
+          "sha256": "918b301bb2ac43ec5c5f005e77169830a1808fdeb44e2fe4e2218afbe746ff13"
+        },
+        "downloads": 0,
+        "filename": "triage-1.0.0-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "bf6b900fe240b8fab7e7170f0b6b4549",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 19083,
+        "upload_time": "2017-07-28T02:47:43",
+        "url": "https://files.pythonhosted.org/packages/9e/63/07b570639c705e0766e21282f5e4401edf047e57e37fda201d73736173d4/triage-1.0.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f4ef0856d239aa29303be47dfc720647",
+          "sha256": "571ff2febb39d38e1ddbf2049ca1551b263b3164c2917df4ed7b43058faaa450"
+        },
+        "downloads": 0,
+        "filename": "triage-1.0.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f4ef0856d239aa29303be47dfc720647",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 21044,
+        "upload_time": "2017-07-28T02:47:44",
+        "url": "https://files.pythonhosted.org/packages/af/ec/22e95b1ec9ac88b87d08a66a0e7b6a447e64ef7327e08f5e7f415b28b627/triage-1.0.0.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "bf6b900fe240b8fab7e7170f0b6b4549",
+        "sha256": "918b301bb2ac43ec5c5f005e77169830a1808fdeb44e2fe4e2218afbe746ff13"
+      },
+      "downloads": 0,
+      "filename": "triage-1.0.0-py2.py3-none-any.whl",
+      "has_sig": false,
+      "md5_digest": "bf6b900fe240b8fab7e7170f0b6b4549",
+      "packagetype": "bdist_wheel",
+      "python_version": "py2.py3",
+      "size": 19083,
+      "upload_time": "2017-07-28T02:47:43",
+      "url": "https://files.pythonhosted.org/packages/9e/63/07b570639c705e0766e21282f5e4401edf047e57e37fda201d73736173d4/triage-1.0.0-py2.py3-none-any.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "f4ef0856d239aa29303be47dfc720647",
+        "sha256": "571ff2febb39d38e1ddbf2049ca1551b263b3164c2917df4ed7b43058faaa450"
+      },
+      "downloads": 0,
+      "filename": "triage-1.0.0.tar.gz",
+      "has_sig": false,
+      "md5_digest": "f4ef0856d239aa29303be47dfc720647",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 21044,
+      "upload_time": "2017-07-28T02:47:44",
+      "url": "https://files.pythonhosted.org/packages/af/ec/22e95b1ec9ac88b87d08a66a0e7b6a447e64ef7327e08f5e7f415b28b627/triage-1.0.0.tar.gz"
+    }
+  ]
+}

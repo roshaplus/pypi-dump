@@ -1,0 +1,115 @@
+{
+  "info": {
+    "author": "Center for Data Science and Public Policy",
+    "author_email": "datascifellows@gmail.com",
+    "bugtrack_url": null,
+    "classifiers": [],
+    "description": "Copyright \u00a92017,.  The University of Chicago (\u201cChicago\u201d). All Rights Reserved.  \n\nPermission to use, copy, modify, and distribute this software, including all object code and source code, and any accompanying documentation (together the \u201cProgram\u201d) for educational and not-for-profit research purposes, without fee and without a signed licensing agreement, is hereby granted, provided that the above copyright notice, this paragraph and the following three paragraphs appear in all copies, modifications, and distributions. For the avoidance of doubt, educational and not-for-profit research purposes excludes any service or part of selling a service that uses the Program. To obtain a commercial license for the Program, contact the Technology Commercialization and Licensing, Polsky Center for Entrepreneurship and Innovation, University of Chicago, 1452 East 53rd Street, 2nd floor, Chicago, IL 60615.\n\nCreated by Data Science and Public Policy, University of Chicago\n\nThe Program is copyrighted by Chicago. The Program is supplied \"as is\", without any accompanying services from Chicago. Chicago does not warrant that the operation of the Program will be uninterrupted or error-free. The end-user understands that the Program was developed for research purposes and is advised not to rely exclusively on the Program for any reason.\n\nIN NO EVENT SHALL CHICAGO BE LIABLE TO ANY PARTY FOR DIRECT, INDIRECT, SPECIAL, INCIDENTAL, OR CONSEQUENTIAL DAMAGES, INCLUDING LOST PROFITS, ARISING OUT OF THE USE OF THE PROGRAM, EVEN IF CHICAGO HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. CHICAGO SPECIFICALLY DISCLAIMS ANY WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE. THE PROGRAM PROVIDED HEREUNDER IS PROVIDED \"AS IS\". CHICAGO HAS NO OBLIGATION TO PROVIDE MAINTENANCE, SUPPORT, UPDATES, ENHANCEMENTS, OR MODIFICATIONS.\n\nDescription: # Catwalk\n        \n        Training, testing, and evaluating machine learning classifier models\n        \n        [![Build Status](https://travis-ci.org/dssg/catwalk.svg?branch=master)](https://travis-ci.org/dssg/catwalk)\n        [![codecov](https://codecov.io/gh/dssg/catwalk/branch/master/graph/badge.svg)](https://codecov.io/gh/dssg/catwalk)\n        [![codeclimate](https://codeclimate.com/github/dssg/catwalk.png)](https://codeclimate.com/github/dssg/catwalk)\n        \n        At the core of many predictive analytics applications is the need to train classifiers on large set of design matrices, test and temporally cross-validate them, and generate evaluation metrics about them.\n        \n        Python's scikit-learn package provides much of this functionality, but it is not trivial to design large experiments with it in a persistable way . Catwalk builds upon the functionality offered by scikit-learn by implementing:\n        \n        - Saving of modeling results and metadata in a [Postgres database](https://github.com/dssg/results-schema) for later analysis\n        - Exposure of computationally-intensive tasks as discrete workloads that can be used with different parallelization solutions (e.g. multiprocessing, Celery)\n        - Different model persistence strategies such as on-filesystem or Amazon S3, that can be easily switched between\n        - Hashing classifier model configuration to only retrain a model if necessary.\n        - Various best practices in areas like input scaling for different classifier types and feature importance\n        - Common scikit-learn model evaluation metrics as well as the ability to bundle custom evaluation metrics\n        \n        \n        ## Components\n        \n        This functionality is concentrated in the following components:\n        \n        - [catwalk.ModelTrainer](catwalk/model_trainers.py): Train a configured experiment grid on pre-made design matrices, and store each model's metadata and feature importances in a database.\n        - [catwalk.Predictor](catwalk/predictors.py): Given a trained model and another matrix (ie, a test matrix), generate prediction probabilities and store them in a database.\n        - [catwalk.ModelEvaluator](catwalk/evaluation.py): Given a set of model prediction probabilities, generate metrics (for instance, precision and recall at various thresholds) and store them in a database.\n        \n        ## Usage\n        \n        Below is a complete sample usage of the three Catwalk components.\n        \n        ```\n        \n        import datetime\n        \n        import pandas\n        from sqlalchemy import create_engine\n        \n        from metta import metta_io as metta\n        \n        from catwalk.storage import FSModelStorageEngine, MettaCSVMatrixStore\n        from catwalk.model_trainers import ModelTrainer\n        from catwalk.predictors import Predictor\n        from catwalk.evaluation import ModelEvaluator\n        from catwalk.utils import save_experiment_and_get_hash\n        \n        \n        # create a sqlalchemy database engine pointing to a Postgres database\n        db_engine = create_engine(...)\n        \n        # A path on your filesystem under which to store matrices and models\n        project_path = 'mytestproject/modeling'\n        \n        # create a toy train matrix from scratch\n        # and saving it using metta to generate a unique id for its metadata\n        # catwalk uses both the matrix and metadata\n        train_matrix = pandas.DataFrame.from_dict({\n        \t'entity_id': [1, 2],\n        \t'feature_one': [3, 4],\n        \t'feature_two': [5, 6],\n        \t'label': [7, 8]\n        }).set_index('entity_id')\n        train_metadata = {\n        \t'beginning_of_time': datetime.date(2012, 12, 20),\n        \t'end_time': datetime.date(2016, 12, 20),\n        \t'label_name': 'label',\n        \t'label_window': '1y',\n        \t'feature_names': ['ft1', 'ft2'],\n        }\n        train_matrix_uuid = metta.archive_matrix(train_metadata, train_matrix, format='csv')\n        \n        # The MettaCSVMatrixStore bundles the matrix and metadata together\n        # for catwalk to use\n        train_matrix_store = MettaCSVMatrixStore(\n        \tmatrix_path='{}.csv'.format(train_matrix_uuid),\n        \tmetadata_path='{}.yaml'.format(train_matrix_uuid)\n        )\n        \n        \n        # Similarly, create a test matrix\n        as_of_date = datetime.date(2016, 12, 21)\n        \n        test_matrix = pandas.DataFrame.from_dict({\n        \t'entity_id': [3],\n        \t'feature_one': [8],\n        \t'feature_two': [5],\n        \t'label': [5]\n        }).set_index('entity_id')\n        \n        test_metadata = {\n        \t'label_name': 'label',\n        \t'label_window': '1y',\n        \t'end_time': as_of_date,\n        }\n        test_matrix_uuid = metta.archive_matrix(test_metadata, test_matrix, format='csv')\n        \n        # The MettaCSVMatrixStore bundles the matrix and metadata together\n        # for catwalk to use\n        test_matrix_store = MettaCSVMatrixStore(\n        \tmatrix_path='{}.csv'.format(test_matrix_uuid),\n        \tmetadata_path='{}.yaml'.format(test_matrix_uuid)\n        )\n        \n        # The ModelStorageEngine handles the persistence of model pickles\n        # In this case, we are using FSModelStorageEngine to use the local filesystem\n        model_storage_engine = FSModelStorageEngine(project_path)\n        \n        # To ensure that we can relate all of our persistent database records with\n        # each other, we bind them together with an experiment hash. This is based\n        # on the hash of experiment configuration that you pass in here, so if the\n        # code fails halfway through and has to run a second time, it will use the\n        # already-trained models but save the new ones under the same experment\n        # hash.\n        \n        # Here, we will just save a trivial experiment configuration.\n        # You can put any information you want in here, as long as it is hashable\n        experiment_hash = save_experiment_and_get_hash({'name': 'myexperimentname'}, db_engine)\n        \n        # instantiate pipeline objects. these will to the brunt of the work\n        trainer = ModelTrainer(\n        \tproject_path=project_path,\n        \texperiment_hash=experiment_hash,\n        \tmodel_storage_engine=model_storage_engine,\n        \tdb_engine=db_engine,\n        \tmodel_group_keys=['label_name', 'label_window']\n        )\n        predictor = Predictor(\n        \tproject_path,\n        \tmodel_storage_engine,\n        \tdb_engine\n        )\n        model_evaluator = ModelEvaluator(\n        \t[{'metrics': ['precision@'], 'thresholds': {'top_n': [5]}}],\n        \tdb_engine\n        )\n        \n        # run the pipeline\n        grid_config = {\n        \t'sklearn.linear_model.LogisticRegression': {\n        \t\t'C': [0.00001, 0.0001],\n        \t\t'penalty': ['l1', 'l2'],\n        \t\t'random_state': [2193]\n        \t}\n        }\n        \n        # trainer.train_models will run the entire specified grid\n        # and return database ids for each model\n        model_ids = trainer.train_models(\n        \tgrid_config=grid_config,\n        \tmisc_db_parameters=dict(test=True),\n        \tmatrix_store=train_matrix_store\n        )\n        \n        for model_id in model_ids:\n        \tpredictions_proba = predictor.predict(\n        \t\tmodel_id=model_id,\n        \t\tmatrix_store=test_matrix_store,\n        \t\tmisc_db_parameters=dict(),\n        \t\ttrain_matrix_columns=['feature_one', 'feature_two']\n        \t)\n        \n        \tmodel_evaluator.evaluate(\n        \t\tpredictions_proba=predictions_proba,\n        \t\tlabels=test_store.labels(),\n        \t\tmodel_id=model_id,\n        \t\tevaluation_start_time=as_of_date,\n        \t\tevaluation_end_time=as_of_date,\n        \t\texample_frequency='6month'\n        \t)\n        \n        ```\n        After running the above code, results will be stored in your Postgres database in [this structure](https://github.com/dssg/results-schema/blob/master/results_schema/schema.py)\n        \n        In addition to being usable on the design matrices of your current project, Catwalk's functionality is used in [triage](https://github.com/dssg/triage) as a part of an entire modeling experiment that incorporates earlier tasks like feature generation and matrix building.\n        \nPlatform: UNKNOWN\nClassifier: Development Status :: 2 - Pre-Alpha\nClassifier: Intended Audience :: Developers\nClassifier: Natural Language :: English\nClassifier: Programming Language :: Python :: 3.4\nClassifier: Programming Language :: Python :: 3.5\n",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/dssg/catwalk",
+    "keywords": "",
+    "license": "BY DOWNLOADING catwalk PROGRAM YOU AGREE TO THE FOLLOWING TERMS OF USE:",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "model-catwalk",
+    "platform": "",
+    "project_url": "https://pypi.org/project/model-catwalk/",
+    "release_url": "https://pypi.org/project/model-catwalk/0.2.1/",
+    "requires_dist": [
+      "tables (==3.3.0)",
+      "sqlalchemy-postgres-copy",
+      "sklearn",
+      "scipy",
+      "retrying",
+      "results-schema",
+      "python-dateutil",
+      "psycopg2",
+      "pandas",
+      "numpy (>=1.12)",
+      "metta-data",
+      "inflection",
+      "boto3",
+      "SQLAlchemy",
+      "PyYAML"
+    ],
+    "requires_python": "",
+    "summary": "Training, testing, and evaluating machine learning classifier models",
+    "version": "0.2.1"
+  },
+  "releases": {
+    "0.2.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "bcb00316199daaee9e55570b829161a4",
+          "sha256": "a31a7b6bc6f3b7f2fb8de016124147a1aa4ef63600919dd84ec8b36e98effcd1"
+        },
+        "downloads": 0,
+        "filename": "model_catwalk-0.2.1-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "bcb00316199daaee9e55570b829161a4",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 28455,
+        "upload_time": "2017-07-28T01:53:45",
+        "url": "https://files.pythonhosted.org/packages/e0/a9/4b1674c483831a6a174060ba6ea220db49bf272cfa6605aaff8e70410b5e/model_catwalk-0.2.1-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5289e5537a1fe426d44688114a82feb2",
+          "sha256": "80d2ccb9dcacd98f9bc0c8f95bb0b2a78fa25d96bed0faebe0628f25cf1610e7"
+        },
+        "downloads": 0,
+        "filename": "model-catwalk-0.2.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5289e5537a1fe426d44688114a82feb2",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 19632,
+        "upload_time": "2017-07-28T01:53:46",
+        "url": "https://files.pythonhosted.org/packages/2f/38/72fe2f2ff85c7320dd85ef734b0e9663ce6c99e82e35dff72969e67abb18/model-catwalk-0.2.1.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "bcb00316199daaee9e55570b829161a4",
+        "sha256": "a31a7b6bc6f3b7f2fb8de016124147a1aa4ef63600919dd84ec8b36e98effcd1"
+      },
+      "downloads": 0,
+      "filename": "model_catwalk-0.2.1-py2.py3-none-any.whl",
+      "has_sig": false,
+      "md5_digest": "bcb00316199daaee9e55570b829161a4",
+      "packagetype": "bdist_wheel",
+      "python_version": "py2.py3",
+      "size": 28455,
+      "upload_time": "2017-07-28T01:53:45",
+      "url": "https://files.pythonhosted.org/packages/e0/a9/4b1674c483831a6a174060ba6ea220db49bf272cfa6605aaff8e70410b5e/model_catwalk-0.2.1-py2.py3-none-any.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "5289e5537a1fe426d44688114a82feb2",
+        "sha256": "80d2ccb9dcacd98f9bc0c8f95bb0b2a78fa25d96bed0faebe0628f25cf1610e7"
+      },
+      "downloads": 0,
+      "filename": "model-catwalk-0.2.1.tar.gz",
+      "has_sig": false,
+      "md5_digest": "5289e5537a1fe426d44688114a82feb2",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 19632,
+      "upload_time": "2017-07-28T01:53:46",
+      "url": "https://files.pythonhosted.org/packages/2f/38/72fe2f2ff85c7320dd85ef734b0e9663ce6c99e82e35dff72969e67abb18/model-catwalk-0.2.1.tar.gz"
+    }
+  ]
+}
