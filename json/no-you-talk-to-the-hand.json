@@ -1,0 +1,179 @@
+{
+  "info": {
+    "author": "flashashen",
+    "author_email": "flashashen@gmail.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 5 - Production/Stable",
+      "Environment :: Console",
+      "License :: OSI Approved :: MIT License",
+      "Operating System :: MacOS",
+      "Operating System :: POSIX :: Linux",
+      "Programming Language :: Python :: 2.7",
+      "Topic :: System :: Networking",
+      "Topic :: System :: Networking :: Firewalls"
+    ],
+    "description": "# no,*YOU* talk to the hand!\n\nAccess all your corporate stuff and web stuff at the same time without thinking\n\n**You want this if you're being worn out by:**\n- Seeing the 'talk to the hand' page from the corporate web proxy/filter\n- Re-entering ssh credentials over and over (key based auth isn't allowed everywhere)\n- Tunnel/proxy setup in too many places and in too many ways\n- Not having application specific tunnels (dbvis, datagrip) available from the console\n- Tunnels dropping silently\n- Forgetting to manually bring up tunnels after logging onto vpn\n\nno-YOU-talk-to-the-hand really has **solved all these issues** for me, by providing a straight-forward combination of [sshuttle](https://github.com/sshuttle/sshuttle) for the heavy network lifting, supervisord to keep everything up and manageable, and yaml to keep it simple and organized\n\nWorks with Linux and MacOS but **not MS Windows** due to sshuttle\n\n\n## What it does\n\n- *Sets up your tunnels automatically* when your VPN connects\n- *Takes down your tunnels automatically* when your VPN disconnects\n- *Keeps your tunnels up* when they should be up\n- *Organizes your tunnels* with a single, simple, YAML configuration \n- *Enters passwords for you* as needed ([sshpass](https://gist.github.com/arunoda/7790979) required for now)\n- Supports *multiple root VPNs*. Have different vpns that require separate tunnels? Define them in one place and only tunnels dependent on the vpn that is up are established \n- Supports any number of *simultaneous tunnels* (thanks to [sshuttle](https://github.com/sshuttle/sshuttle) )\n- Supportes *nested dependencies*. For example: (qa_db, prod_db) -- depends --> (corp_private) -- depends --> (corp_vpn)\n\n\n### Yaml replaces all your tunnel scripts/aliases, ssh setup inside db tools, application specific web proxy setup, etc.\n\n```yaml\n\n# Watch for connection to corporate VPN. This is the 'root', external tunnel\nvpn:\n    check:\n        host: *HOST_CORP_JUMP\n        port: 22\n\n# Bypass corporate network for web browsing, skype, streaming music, etc. \n# Anything at a public ip.\npersonal:\ndepends: vpn\nproxy:\n  host: *HOST_PERSONAL_PROXY\n  port: 22\nforwards:\n    # includes and excludes. items can be ips, subnets, or lists of ip/subnets.\n    include:\n    - 0/0\n    exclude:\n    - *ALL_PRIVATE_ADDRESSES\n\n# Forward traffic destined for restricted subnets through a corporate jump server.\ncorp_restricted:\n    depends: vpn\n    proxy:\n        host: *HOST_CORP_JUMP\n        user: *CORP_USER\n        pass: *CORP_PASS\n    # verify by checking ssh access to the privileged app server\n    check:\n        host: *HOST_CORP_PRIVILEGED_APP\n        port: 22\n    forwards:\n        # includes and excludes. items can be ips, subnets, or lists of ip/subnets.\n        include:\n          - *SUBNETS_CORP_RESTRICTED\n        exclude:\n          - *HOST_CORP_SEURE_DB\n\n# Tunnel to access a secure db server from a privliged app server. This tunnel depends \n# on corp_restricted being established\nprod_db:\ndepends: corp_restricted\n    proxy:\n        host: *HOST_CORP_PRIVILEGED_APP\n        user: *CORP_USER\n        pass: *CORP_PASS\n    forwards:\n        # includes and excludes. items can be ips, subnets, or lists of ip/subnets.\n        include:\n          - *HOST_CORP_SECURE_DB\n```\n\n## Running\n\nBelow are some sample commands.\n\n**Note:** Before running a configuration file called config.yml must be created in the project directory. Look at sample_config.yml as a start.\n\n\n#### Start - Start the supervisord process and begin managing the configured tunnels\n\n```\n$ python no_you_talk_to_the_hand.py start\n```\n\n\n#### Stop - Stop supervisord process and all tunnels with it\n\n```\n$ python no_you_talk_to_the_hand.py stop\n```\n\n\n#### Status - View status of all defined tunnels\n\nwhen VPN is down:\n\n``` \n$ python no_YOU_talk_to_the_hand.py status\n\nProcess   Depends   State     Check     \n----------------------------------------\nvpn                 N/A       down      \nrfindb    itun      STOPPED   skipped   \ndbtun     vpn       STOPPED   skipped   \netun      vpn       STOPPED   skipped   \nitun      vpn       STOPPED   skipped   \nqadb      vpn       STOPPED   skipped   \n```\n\nwhen VPN is up:\n\n```\n$ python no_YOU_talk_to_the_hand.py status\n\nProcess   Depends   State     Check     \n----------------------------------------\nvpn                 N/A       up        \nrfindb    itun      RUNNING   up        \ndbtun     vpn       RUNNING   up        \netun      vpn       RUNNING   up        \nitun      vpn       RUNNING   up        \nqadb      vpn       RUNNING   up        \n```\n\n#### Tail - Tail the tunnel monitor that checks tunnel statuses and brings them up or down as needed.\n\nwhen VPN Disconnects:\n\n```\n$ python no_YOU_talk_to_the_hand.py tail\n2017-05-17 11:51:44,701 DEBUG nyttth: checking tunnels\n2017-05-17 11:51:55,000 DEBUG nyttth: checking tunnels\n2017-05-17 11:52:05,265 DEBUG nyttth: checking tunnels\n2017-05-17 11:52:07,269 DEBUG nyttth: vpn is down\n2017-05-17 11:52:07,274 INFO nyttth: qadb depends on vpn which is down. stopping\n2017-05-17 11:52:07,281 INFO nyttth: itun depends on vpn which is down. stopping\n2017-05-17 11:52:07,286 INFO nyttth: rfindb depends on itun which is down. stopping\n2017-05-17 11:52:07,292 INFO nyttth: dbtun depends on vpn which is down. stopping\n2017-05-17 11:52:07,299 INFO nyttth: etun depends on vpn which is down. stopping\n2017-05-17 11:52:17,306 DEBUG nyttth: checking tunnels\n2017-05-17 11:52:19,310 DEBUG nyttth: vpn is down\n2017-05-17 11:52:29,324 DEBUG nyttth: checking tunnels\n2017-05-17 11:52:31,329 DEBUG nyttth: vpn is down\n2017-05-17 11:52:41,340 DEBUG nyttth: checking tunnels\n2017-05-17 11:52:43,345 DEBUG nyttth: vpn is down\n```\n\nwhen VPN Connects:\n\n```\n2017-05-17 11:52:53,357 DEBUG nyttth: checking tunnels\n2017-05-17 11:52:53,497 INFO nyttth: qadb is down. starting\n2017-05-17 11:52:53,498 INFO nyttth: dbtun is down. starting\n2017-05-17 11:52:53,907 INFO nyttth: etun is down. starting\n2017-05-17 11:52:55,493 INFO nyttth: itun is down. starting\n2017-05-17 11:53:06,527 DEBUG nyttth: checking tunnels\n2017-05-17 11:53:06,814 INFO nyttth: rfindb is down. starting\n2017-05-17 11:53:17,826 DEBUG nyttth: checking tunnels\n2017-05-17 11:53:28,129 DEBUG nyttth: checking tunnels\n\n```\n\n\n## Install\n\nFor now:\n\n- git clone https://github.com/flashashen/no-YOU-talk-to-the-hand.git\n- cd no-YOU-talk-to-the-hand\n- pip install -r requirements.txt\n\n*Note* If you configure a password for any remote server then [sshpass](https://gist.github.com/arunoda/7790979) is required\n\n## Notes\n\nThis docs ignores whatever technical differences there are between tunnels and forwards and just uses the word 'tunnels'. \n\nRemote ssh servers through which trafffic is forwarded, are referred to as proxies. \n\nVP, but technically this is just a 'root' tunnel in the configuration that specifies no proxy setup or forwards\n\n\n",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/flashashen/no-YOU-talk-to-the-hand",
+    "keywords": "ssh vpn tunnel forward daemonn",
+    "license": "MIT",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "no-you-talk-to-the-hand",
+    "platform": "osx",
+    "project_url": "https://pypi.org/project/no-you-talk-to-the-hand/",
+    "release_url": "https://pypi.org/project/no-you-talk-to-the-hand/1.0.0/",
+    "requires_dist": [
+      "supervisor",
+      "pyyaml",
+      "jinja2",
+      "Click"
+    ],
+    "requires_python": "",
+    "summary": "Boss your corporate network effortlessly. Automatic and organized tunneling with sshuttle + supervisord + yaml",
+    "version": "1.0.0"
+  },
+  "releases": {
+    "0.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "fed2f6d996aaa82eb8bd497d0ae0c81f",
+          "sha256": "1a6e201987c1f41bd2dbf835cee08e06229150bf33b71ee8096f0fdc957d56fc"
+        },
+        "downloads": 0,
+        "filename": "no_you_talk_to_the_hand-0.3-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "fed2f6d996aaa82eb8bd497d0ae0c81f",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 6323,
+        "upload_time": "2017-08-02T18:25:49",
+        "url": "https://files.pythonhosted.org/packages/5d/47/1b6cce9bf286894ac6e337d08d9ffe588ed8100b3bf8724e2e8fe0076ce4/no_you_talk_to_the_hand-0.3-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "93a17bc695a117da5de635a54a7fafc1",
+          "sha256": "30eb41101bf4e663a4be66393858c3fea16b6e94fcca4a656d1f906d35b901aa"
+        },
+        "downloads": 0,
+        "filename": "no_you_talk_to_the_hand-0.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "93a17bc695a117da5de635a54a7fafc1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 5376,
+        "upload_time": "2017-08-02T18:25:52",
+        "url": "https://files.pythonhosted.org/packages/2a/d1/7ee1275f58ccb8a70ef7637a16e4f386a496bf64d6b708db2f11f47dcead/no_you_talk_to_the_hand-0.3.tar.gz"
+      }
+    ],
+    "1.0.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6db70159adc719e7f4c8237114954f62",
+          "sha256": "a696f01e5e01b6920cc60776111fe49ad56870a6c4c0a2fa245500803942024a"
+        },
+        "downloads": 0,
+        "filename": "no_you_talk_to_the_hand-1.0.0-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "6db70159adc719e7f4c8237114954f62",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2",
+        "size": 13966,
+        "upload_time": "2017-08-02T18:25:50",
+        "url": "https://files.pythonhosted.org/packages/5f/71/13205ca54f9f6ec8ed0a2fb5f3e3a1c0969796e7cf5ea2ccf9c6f0f2b868/no_you_talk_to_the_hand-1.0.0-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "01e9c03baf8d77dedab21fd54c61fcd6",
+          "sha256": "20611d470e1bb5d28a2b1ae744f8150d7fa06aa492182b0227e4e7124eb3efff"
+        },
+        "downloads": 0,
+        "filename": "no_you_talk_to_the_hand-1.0.0-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "01e9c03baf8d77dedab21fd54c61fcd6",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "size": 12043,
+        "upload_time": "2017-08-02T18:25:51",
+        "url": "https://files.pythonhosted.org/packages/3f/41/ca44cc8cb4259da79869487ef9173da96c670a7059a84f05d8570da8ab1c/no_you_talk_to_the_hand-1.0.0-py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9a4ce5cbc8b494aa0fd69544a2cfc802",
+          "sha256": "285d4873a6810987c8ca894d45c40239e439a0d2c86c9c6d36ae8d198e9d35a7"
+        },
+        "downloads": 0,
+        "filename": "no_you_talk_to_the_hand-1.0.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "9a4ce5cbc8b494aa0fd69544a2cfc802",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 8072,
+        "upload_time": "2017-08-02T18:25:54",
+        "url": "https://files.pythonhosted.org/packages/61/aa/3f1398f9fab0e4fe948aac51d8fd717c090be24beacffd7c9ea187b29f36/no_you_talk_to_the_hand-1.0.0.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "6db70159adc719e7f4c8237114954f62",
+        "sha256": "a696f01e5e01b6920cc60776111fe49ad56870a6c4c0a2fa245500803942024a"
+      },
+      "downloads": 0,
+      "filename": "no_you_talk_to_the_hand-1.0.0-py2-none-any.whl",
+      "has_sig": false,
+      "md5_digest": "6db70159adc719e7f4c8237114954f62",
+      "packagetype": "bdist_wheel",
+      "python_version": "py2",
+      "size": 13966,
+      "upload_time": "2017-08-02T18:25:50",
+      "url": "https://files.pythonhosted.org/packages/5f/71/13205ca54f9f6ec8ed0a2fb5f3e3a1c0969796e7cf5ea2ccf9c6f0f2b868/no_you_talk_to_the_hand-1.0.0-py2-none-any.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "01e9c03baf8d77dedab21fd54c61fcd6",
+        "sha256": "20611d470e1bb5d28a2b1ae744f8150d7fa06aa492182b0227e4e7124eb3efff"
+      },
+      "downloads": 0,
+      "filename": "no_you_talk_to_the_hand-1.0.0-py3-none-any.whl",
+      "has_sig": false,
+      "md5_digest": "01e9c03baf8d77dedab21fd54c61fcd6",
+      "packagetype": "bdist_wheel",
+      "python_version": "py3",
+      "size": 12043,
+      "upload_time": "2017-08-02T18:25:51",
+      "url": "https://files.pythonhosted.org/packages/3f/41/ca44cc8cb4259da79869487ef9173da96c670a7059a84f05d8570da8ab1c/no_you_talk_to_the_hand-1.0.0-py3-none-any.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "9a4ce5cbc8b494aa0fd69544a2cfc802",
+        "sha256": "285d4873a6810987c8ca894d45c40239e439a0d2c86c9c6d36ae8d198e9d35a7"
+      },
+      "downloads": 0,
+      "filename": "no_you_talk_to_the_hand-1.0.0.tar.gz",
+      "has_sig": false,
+      "md5_digest": "9a4ce5cbc8b494aa0fd69544a2cfc802",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 8072,
+      "upload_time": "2017-08-02T18:25:54",
+      "url": "https://files.pythonhosted.org/packages/61/aa/3f1398f9fab0e4fe948aac51d8fd717c090be24beacffd7c9ea187b29f36/no_you_talk_to_the_hand-1.0.0.tar.gz"
+    }
+  ]
+}
