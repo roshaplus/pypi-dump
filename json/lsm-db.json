@@ -1,29 +1,30 @@
 {
   "info": {
     "author": "Charles Leifer",
-    "author_email": "UNKNOWN",
+    "author_email": "",
     "bugtrack_url": null,
     "classifiers": [],
-    "description": "![Python LSM-DB](http://media.charlesleifer.com/blog/photos/lsm.png)\n\nFast Python bindings for [SQLite4's LSM key/value store](http://www.sqlite.org/src4/doc/trunk/www/lsmusr.wiki>).\n\nFeatures:\n\n* Embedded zero-conf database.\n* Keys support in-order traversal using cursors.\n* Transactional (including nested transactions).\n* Single writer/multiple reader MVCC based transactional concurrency model.\n* On-disk database stored in a single file.\n* Data is durable in the face of application or power failure.\n* Thread-safe.\n* Python 2.x and 3.x\n\nLimitations:\n\n* Not tested on Windoze.\n\nThe source for Python lsm-db is [hosted on GitHub](https://github.com/coleifer/python-lsm-db).\n\nIf you encounter any bugs in the library, please [open an issue](https://github.com/coleifer/python-lsm-db/issues/new), including a description of the bug and any related traceback.\n\n## Quick-start\n\nBelow is a sample interactive console session designed to show some of the basic features and functionality of the ``lsm-db`` Python library. Also check out the [API documentation](https://lsm-db.readthedocs.io/en/latest/api.html).\n\nTo begin, instantiate a `LSM` object, specifying a path to a database file.\n\n```python\n\n>>> from lsm import LSM\n>>> db = LSM('test.ldb')\n```\n\n### Key/Value Features\n\n`lsm-db` is a key/value store, and has a dictionary-like API:\n\n```python\n\n>>> db['foo'] = 'bar'\n>>> print db['foo']\nbar\n\n>>> for i in range(4):\n...     db['k%s' % i] = str(i)\n...\n\n>>> 'k3' in db\nTrue\n>>> 'k4' in db\nFalse\n\n>>> del db['k3']\n>>> db['k3']\nTraceback (most recent call last):\n  File \"<stdin>\", line 1, in <module>\n  File \"lsm.pyx\", line 973, in lsm.LSM.__getitem__ (lsm.c:7142)\n  File \"lsm.pyx\", line 777, in lsm.LSM.fetch (lsm.c:5756)\n  File \"lsm.pyx\", line 778, in lsm.LSM.fetch (lsm.c:5679)\n  File \"lsm.pyx\", line 1289, in lsm.Cursor.seek (lsm.c:12122)\n  File \"lsm.pyx\", line 1311, in lsm.Cursor.seek (lsm.c:12008)\nKeyError: 'k3'\n```\n\nBy default when you attempt to look up a key, ``lsm-db`` will search for an exact match. You can also search for the closest key, if the specific key you are searching for does not exist:\n\n```python\n\n>>> from lsm import SEEK_LE, SEEK_GE\n>>> db['k1xx', SEEK_LE]  # Here we will match \"k1\".\n'1'\n>>> db['k1xx', SEEK_GE]  # Here we will match \"k2\".\n'2'\n```\n\n`LSM` supports other common dictionary methods such as:\n\n* `keys()`\n* `values()`\n* `update()`\n\n### Slices and Iteration\n\nThe database can be iterated through directly, or sliced. When you are slicing the database the start and end keys need not exist -- ``lsm-db`` will find the closest key (details can be found in the [LSM.fetch_range()](https://lsm-db.readthedocs.io/en/latest/api.html#lsm.LSM.fetch_range) documentation).\n\n```python\n\n>>> [item for item in db]\n[('foo', 'bar'), ('k0', '0'), ('k1', '1'), ('k2', '2')]\n\n>>> db['k0':'k99']\n<generator object at 0x7f2ae93072f8>\n\n>>> list(db['k0':'k99'])\n[('k0', '0'), ('k1', '1'), ('k2', '2')]\n```\n\nYou can use open-ended slices. If the lower- or upper-bound is outside the range of keys an empty list is returned.\n\n```python\n\n>>> list(db['k0':])\n[('k0', '0'), ('k1', '1'), ('k2', '2')]\n\n>>> list(db[:'k1'])\n[('foo', 'bar'), ('k0', '0'), ('k1', '1')]\n\n>>> list(db[:'aaa'])\n[]\n```\n\nTo retrieve keys in reverse order, simply use a higher key as the first parameter of your slice. If you are retrieving an open-ended slice, you can specify ``True`` as the ``step`` parameter of the slice.\n\n```python\n\n>>> list(db['k1':'aaa'])  # Since 'k1' > 'aaa', keys are retrieved in reverse:\n[('k1', '1'), ('k0', '0'), ('foo', 'bar')]\n\n>>> list(db['k1'::True])  # Open-ended slices specify True for step:\n[('k1', '1'), ('k0', '0'), ('foo', 'bar')]\n```\n\nYou can also **delete** slices of keys, but note that the delete **will not** include the keys themselves:\n\n```python\n\n>>> del db['k0':'k99']\n\n>>> list(db)  # Note that 'k0' still exists.\n[('foo', 'bar'), ('k0', '0')]\n```\n\n### Cursors\n\nWhile slicing may cover most use-cases, for finer-grained control you can use cursors for traversing records.\n\n```python\n\n>>> with db.cursor() as cursor:\n...     for key, value in cursor:\n...         print key, '=>', value\n...\nfoo => bar\nk0 => 0\n\n>>> db.update({'k1': '1', 'k2': '2', 'k3': '3'})\n\n>>> with db.cursor() as cursor:\n...     cursor.first()\n...     print cursor.key()\n...     cursor.last()\n...     print cursor.key()\n...     cursor.previous()\n...     print cursor.key()\n...\nfoo\nk3\nk2\n\n>>> with db.cursor() as cursor:\n...     cursor.seek('k0', SEEK_GE)\n...     print list(cursor.fetch_until('k99'))\n...\n[('k0', '0'), ('k1', '1'), ('k2', '2'), ('k3', '3')]\n```\n\nIt is very important to close a cursor when you are through using it. For this reason, it is recommended you use the `LSM.cursor()` context-manager, which ensures the cursor is closed properly.\n\n### Transactions\n\n``lsm-db`` supports nested transactions. The simplest way to use transactions is with the `LSM.transaction()` method, which doubles as a context-manager or decorator.\n\n```python\n\n>>> with db.transaction() as txn:\n...     db['k1'] = '1-mod'\n...     with db.transaction() as txn2:\n...         db['k2'] = '2-mod'\n...         txn2.rollback()\n...\nTrue\n>>> print db['k1'], db['k2']\n1-mod 2\n```\n\nYou can commit or roll-back transactions part-way through a wrapped block:\n\n```python\n\n>>> with db.transaction() as txn:\n...    db['k1'] = 'outer txn'\n...    txn.commit()  # The write is preserved.\n...\n...    db['k1'] = 'outer txn-2'\n...    with db.transaction() as txn2:\n...        db['k1'] = 'inner-txn'  # This is commited after the block ends.\n...    print db['k1']  # Prints \"inner-txn\".\n...    txn.rollback()  # Rolls back both the changes from txn2 and the preceding write.\n...    print db['k1']\n...\n1              <- Return value from call to commit().\ninner-txn      <- Printed after end of txn2.\nTrue           <- Return value of call to rollback().\nouter txn      <- Printed after rollback.\n```\n\nIf you like, you can also explicitly call `LSM.begin()`, `LSM.commit()`, and `LSM.rollback()`.\n\n```python\n\n>>> db.begin()\n>>> db['foo'] = 'baze'\n>>> print db['foo']\nbaze\n>>> db.rollback()\nTrue\n>>> print db['foo']\nbar\n```\n\n### Reading more\n\nFor more information, check out the project's documentation, hosted at readthedocs:\n\nhttps://lsm-db.readthedocs.io/en/latest/\n",
+    "description": "",
     "docs_url": null,
-    "download_url": "UNKNOWN",
+    "download_url": "",
     "downloads": {
       "last_day": 0,
       "last_month": 0,
       "last_week": 0
     },
-    "home_page": "UNKNOWN",
-    "keywords": null,
-    "license": "UNKNOWN",
-    "maintainer": null,
-    "maintainer_email": null,
+    "home_page": "",
+    "keywords": "",
+    "license": "",
+    "maintainer": "",
+    "maintainer_email": "",
     "name": "lsm-db",
-    "platform": "UNKNOWN",
+    "platform": "",
     "project_url": "https://pypi.org/project/lsm-db/",
-    "release_url": "https://pypi.org/project/lsm-db/0.4.0/",
-    "requires_python": null,
+    "release_url": "https://pypi.org/project/lsm-db/0.5.0/",
+    "requires_dist": [],
+    "requires_python": "",
     "summary": "Python bindings for the SQLite4 LSM database.",
-    "version": "0.4.0"
+    "version": "0.5.0"
   },
   "releases": {
     "0.1.0": [
@@ -277,24 +278,42 @@
         "upload_time": "2016-10-25T17:14:14",
         "url": "https://files.pythonhosted.org/packages/13/5e/fb7f026aaac09537a3cd27084c79ba1a37054781c83c3cf042919ff3a6a9/lsm-db-0.4.0.tar.gz"
       }
+    ],
+    "0.5.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "318c049fd1464f5eafec21be556418c8",
+          "sha256": "7629dae9babf15f590a64c313958891f4b760b0e93e19e94861cb1c5a881c1af"
+        },
+        "downloads": 0,
+        "filename": "lsm-db-0.5.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "318c049fd1464f5eafec21be556418c8",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 306608,
+        "upload_time": "2017-08-03T15:24:19",
+        "url": "https://files.pythonhosted.org/packages/67/f4/10e5295df3562393e73368c14df95c5e20da37c097d53583748b586e6155/lsm-db-0.5.0.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "d8cab06c29d8479cbd80fd63441893ab",
-        "sha256": "0a15193c0e780a678d1caa5f2dbe81df594479df2a04bb518a7fa663a95d09e2"
+        "md5": "318c049fd1464f5eafec21be556418c8",
+        "sha256": "7629dae9babf15f590a64c313958891f4b760b0e93e19e94861cb1c5a881c1af"
       },
-      "downloads": 260,
-      "filename": "lsm-db-0.4.0.tar.gz",
+      "downloads": 0,
+      "filename": "lsm-db-0.5.0.tar.gz",
       "has_sig": false,
-      "md5_digest": "d8cab06c29d8479cbd80fd63441893ab",
+      "md5_digest": "318c049fd1464f5eafec21be556418c8",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 291131,
-      "upload_time": "2016-10-25T17:14:14",
-      "url": "https://files.pythonhosted.org/packages/13/5e/fb7f026aaac09537a3cd27084c79ba1a37054781c83c3cf042919ff3a6a9/lsm-db-0.4.0.tar.gz"
+      "size": 306608,
+      "upload_time": "2017-08-03T15:24:19",
+      "url": "https://files.pythonhosted.org/packages/67/f4/10e5295df3562393e73368c14df95c5e20da37c097d53583748b586e6155/lsm-db-0.5.0.tar.gz"
     }
   ]
 }
