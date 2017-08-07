@@ -31,7 +31,7 @@
       "Topic :: Software Development :: Libraries :: Python Modules",
       "Topic :: Utilities"
     ],
-    "description": "fdict\r\n=====\r\n\r\n|PyPI-Status| |PyPI-Versions|\r\n\r\n|Build-Status| |Branch-Coverage-Status| |Codacy-Grade|\r\n\r\n|LICENCE|\r\n\r\n\r\nEasy out-of-core computing with recursive data structures in Python with a drop-in dict replacement. Just use ``sfdict()`` instead of ``dict()``, you are good to go!\r\n\r\n``fdict`` and ``sfdict`` can be initialized with a standard ``dict``:\r\n\r\n.. code:: python\r\n\r\n    from fdict import fdict, sfdict\r\n    d = fdict({'a': {'b': 1, 'c': [2, 3]}, 'd': 4})\r\n\r\n``Out: {'a/c': [2, 3], 'd': 4, 'a/b': 1}``\r\n\r\nNested dicts will be converted on-the-fly:\r\n\r\n.. code:: python\r\n\r\n    d['e'] = {'f': {'g': {'h': 5}}}\r\n\r\n``Out: {'e/f/g/h': 5, 'a/c': [2, 3], 'd': 4, 'a/b': 1}``\r\n\r\nAnd it can be converted back to a dict at any time:\r\n\r\n.. code:: python\r\n\r\n    d.to_dict_nested()\r\n\r\n``Out: {'a': {'c': [2, 3], 'b': 1}, 'e': {'f': {'g': {'h': 5}}}, 'd': 4}``\r\n\r\nThe intention of this module is to provide a very easy and pythonic data structure to do out-of-core computing of very nested/recursive big data, while still having reasonably acceptable performances. Currently, no other library can do out-of-core computing of very recursive data, because they all serialize at 1st level nodes. Hence, the goal is to provide a very easy way to prototype out-of-core applications, which you can later replace with a faster datatype.\r\n\r\nHence, this module provides ``fdict()`` and ``sfdict()``, which both provide a similar interface to ``dict()`` with flattened keys for the first and out-of-core storage for the second (using native ``shelve`` library). There is no third-party dependancy.\r\n\r\nThe ``fdict()`` class provides the basic system allowing to have an internal flattened representation of a nested dict, then you can subclass it to support your favorite out-of-core library as long as it implements dict-like methods: an exemple is provided with ``sfdict()`` using ``shelve``, but you can subclass to use ``chest``, ``shove``, ``sqlite``, ``zodb``, etc.\r\n\r\nNote: if you use ``sfdict()``, do not forget to ``.sync()`` and ``.close()`` to commit the changes back to the file.\r\n\r\nAn alternative based on numpy can be found in the `wendelin.core project <https://github.com/Nexedi/wendelin.core>`__, and there is also dask for pandas dataframes.\r\n\r\nDifferences with dict\r\n----------------------------\r\n\r\nAlthough maximum compatibility was the primary goal, a different implementation of course brings differences that are unavoidable.\r\n\r\nThe primary difference is that calling `items()`, `keys()`, `values()` and `view*` methods will return all children leaves nested at any level, whereas a dict returns only the direct children. Also, by default, these methods return only leaves (non-dict objects) and not nodes, although you can override this by suppling the `nodes=True` argument.\r\n\r\nAnother difference is conflicts: you can have an item being both a leaf and a node, because there is no way to check that there is no node without walking all items (ie, using ``viewitems()``, and this method is the limitation of ``fdict`` data structure).\r\n\r\nThis also means that when assigning an item that was already assigned, nodes will NOT get replaced, but singleton will be correctly replaced. To be more explicit:\r\n\r\nThis works:\r\n\r\n.. code:: python\r\n\r\n    d = fdict({'a': 1, 'b': {'c': 2}})\r\n    d['a'] = -1\r\n    print(d)\r\n    d['a'] = {'d': 3, 'e': 4}\r\n    print(d)\r\n\r\n``{'a': -1, 'b/c': 2}\r\n{'a/d': 3, 'a/e': 4, 'b/c': 2}``\r\n\r\nBut this does NOT work as expected:\r\n\r\n.. code:: python\r\n\r\n    d = fdict({'a': 1, 'b': {'c': 2}})\r\n    d['b'] = -1\r\n    print(d)\r\n\r\n``{'a': 1, 'b': -1, 'b/c': 2}``\r\n\r\nPerformances\r\n--------------------\r\n\r\n``fdict`` was made with maximum compatibility with existing code using ``dict`` and with reasonable performances. That's in theory, in practice ``fdict`` are slower than ``dict`` for most purposes, except setitem and getitem if you use direct access form (eg, x['a/b/c'] instead of x['a']['b']['c']).\r\n\r\nAs such, you can expect O(1) performance just like ``dict`` for any operation on leaves (non-dict objects): getitem, setitem, delitem, eq contains. In practice, ``fdict`` is about 10x slower than ``dict`` using indirect access on leaves (ie, x['a']['b']['c']), and is as fast as ``dict`` using direct access (ie, x['a/b/c']).\r\n\r\nThe drawback comes when you work on nodes (nested dict objects): since all keys are flattened and on the same level, the only way to get only the children of a nested dict (aka a branch) is to walk through all keys and filter out the ones not matching the current branch. This means that any operation on nodes will be in O(n) where n is the total number of items in the whole fdict. Affected operations are: items, keys, values, view*, iter*, delitem on nodes, eq on nodes, contains on nodes.\r\n\r\nInterestingly, getitem on nodes is not affected, because we use a lazy approach: getting a nested dict will not build anything, it will just spawn a new fdict with a different filtering rootpath. Nothing gets evaluated, until you either attain a leaf (in this case we return the non-dict object value) or you use an operation on node such as items(). Keep in mind that any nested fdict will share the same internal flattened dict, so any nested fdict will also have access to all items at any level!\r\n\r\nThis was done by design: ``fdict`` is made to be as fast as ``dict`` to build and to retrieve leaves, in exchange for slower exploration. In other words, you can expect blazingly fast creation of ``fdict`` as well as getting any leaf object at any nested level, but you should be careful when exploring. However, even if your dict is bigger than RAM, you can use the view* methods (viewitems, viewkeys, viewvalues) to walk all the items as a generator.\r\n\r\nTo circumvent this pitfall, two things were implemented:\r\n\r\n    * ``extract()`` method can be used on a nested fdict to filter all keys once and build a new fdict containing only the pertinent nested items. Usage is ``extracted_fdict = fdict({'a': {'b': 1, 'c': [2, 3]}})['a'].extract()``.\r\n\r\n    * ``fastview=True`` argument can be used when creating a fdict to enable the FastView mode. This mode will imply a small memory/space overhead to store nodes and also will increase complexity of setitem on nodes to O(m*l) where m is the number of parents of the current leaf added, and l the number of leaves added (usually one but if you set a dict it will be converted to multiple leaves). On the other hand, it will make items, keys, values, view* and other nodes operations methods as fast as with a ``dict`` by using lookup tables to access direct children directly, which was O(n) where n was the whole list of items at any level in the fdict. It is possible to convert a non-fastview fdict to a fastview fdict, just by supplying it as the initialization dict.\r\n\r\nThus, if you want to do data exploration on a ``fdict``, you can use either of these two approaches to speed up your exploration to a reasonable time, with performances close to a ``dict``. In practice, ``extract`` is better if you have lots of items per nesting level, whereas ``fastview`` might be better if you have a very nested structure with few items per level but lots of levels.\r\n\r\nLICENCE\r\n-------------\r\n\r\nThis library is licensed under MIT License.\r\nIncluded are the ``flatkeys`` function by `bfontaine <https://github.com/bfontaine/flatkeys>`__  and ``_count_iter_items`` by `zuo <https://stackoverflow.com/a/15112059/1121352>`__.\r\n\r\n\r\n.. |Build-Status| image:: https://travis-ci.org/lrq3000/fdict.svg?branch=master\r\n   :target: https://travis-ci.org/lrq3000/fdict\r\n.. |LICENCE| image:: https://img.shields.io/pypi/l/fdict.svg\r\n   :target: https://raw.githubusercontent.com/lrq3000/fdict/master/LICENCE\r\n.. |PyPI-Status| image:: https://img.shields.io/pypi/v/fdict.svg\r\n   :target: https://pypi.python.org/pypi/fdict\r\n.. |PyPI-Downloads| image:: https://img.shields.io/pypi/dm/fdict.svg\r\n   :target: https://pypi.python.org/pypi/fdict\r\n.. |PyPI-Versions| image:: https://img.shields.io/pypi/pyversions/fdict.svg\r\n   :target: https://pypi.python.org/pypi/fdict\r\n.. |Branch-Coverage-Status| image:: https://codecov.io/github/lrq3000/fdict/coverage.svg?branch=master\r\n   :target: https://codecov.io/github/lrq3000/fdict?branch=master\r\n.. |Codacy-Grade| image:: https://api.codacy.com/project/badge/Grade/3f965571598f44549c7818f29cdcf177\r\n   :target: https://www.codacy.com/app/lrq3000/fdict?utm_source=github.com&amp;utm_medium=referral&amp;utm_content=lrq3000/fdict&amp;utm_campaign=Badge_Grade\r\n\r\n",
+    "description": "fdict\r\n=====\r\n\r\n|PyPI-Status| |PyPI-Versions|\r\n\r\n|Build-Status| |Branch-Coverage-Status| |Codacy-Grade|\r\n\r\n|LICENCE|\r\n\r\n\r\nEasy out-of-core computing with recursive data structures in Python with a drop-in dict replacement. Just use ``sfdict()`` instead of ``dict()``, you are good to go!\r\n\r\n``fdict`` and ``sfdict`` can be initialized with a standard ``dict``:\r\n\r\n.. code:: python\r\n\r\n    from fdict import fdict, sfdict\r\n    d = fdict({'a': {'b': 1, 'c': [2, 3]}, 'd': 4})\r\n\r\n``Out: {'a/c': [2, 3], 'd': 4, 'a/b': 1}``\r\n\r\nNested dicts will be converted on-the-fly:\r\n\r\n.. code:: python\r\n\r\n    d['e'] = {'f': {'g': {'h': 5}}}\r\n\r\n``Out: {'e/f/g/h': 5, 'a/c': [2, 3], 'd': 4, 'a/b': 1}``\r\n\r\nAnd it can be converted back to a dict at any time:\r\n\r\n.. code:: python\r\n\r\n    d.to_dict_nested()\r\n\r\n``Out: {'a': {'c': [2, 3], 'b': 1}, 'e': {'f': {'g': {'h': 5}}}, 'd': 4}``\r\n\r\nTo store all items on disk (out-of-core computing), use ``sfdict``, a subclass of ``fdict`` using ``shelve`` internally:\r\n\r\n.. code:: python\r\n\r\n    # Initialize an empty database in file myshelf.db\r\n    d = sfdict(filename='myshelf.db')\r\n    d['a'] = {'b': 1, 'c': [2, 3]}\r\n    d.sync()  # synchronize all changes back to disk\r\n    d.close()  # should always close a db\r\n\r\n    # Reopen the same database\r\n    d2 = sfdict(filename='myshelf.db')\r\n    print(d2)\r\n    d2.close()\r\n\r\n``Out: {'a/b': 1, 'a/c': [2, 3]}``\r\n\r\nThe intention of this module is to provide a very easy and pythonic data structure to do out-of-core computing of very nested/recursive big data, while still having reasonably acceptable performances. Currently, no other library can do out-of-core computing of very recursive data, because they all serialize at 1st level nodes. Hence, the goal is to provide a very easy way to prototype out-of-core applications, which you can later replace with a faster datatype.\r\n\r\nHence, this module provides ``fdict()`` and ``sfdict()``, which both provide a similar interface to ``dict()`` with flattened keys for the first and out-of-core storage for the second (using native ``shelve`` library). There is no third-party dependancy.\r\n\r\nThe ``fdict()`` class provides the basic system allowing to have an internal flattened representation of a nested dict, then you can subclass it to support your favorite out-of-core library as long as it implements dict-like methods: an exemple is provided with ``sfdict()`` using ``shelve``, but you can subclass to use ``chest``, ``shove``, ``sqlite``, ``zodb``, etc.\r\n\r\nNote: if you use ``sfdict()``, do not forget to ``.sync()`` and ``.close()`` to commit the changes back to the file.\r\n\r\nAn alternative based on numpy can be found in the `wendelin.core project <https://github.com/Nexedi/wendelin.core>`__, and there is also dask for pandas dataframes.\r\n\r\nDifferences with dict\r\n----------------------------\r\n\r\nAlthough maximum compatibility was the primary goal, a different implementation of course brings differences that are unavoidable.\r\n\r\nThe primary difference is that calling `items()`, `keys()`, `values()` and `view*` methods will return all children leaves nested at any level, whereas a dict returns only the direct children. Also, by default, these methods return only leaves (non-dict objects) and not nodes, although you can override this by suppling the `nodes=True` argument.\r\n\r\nAnother difference is conflicts: you can have an item being both a leaf and a node, because there is no way to check that there is no node without walking all items (ie, using ``viewitems()``, and this method is the limitation of ``fdict`` data structure).\r\n\r\nThis also means that when assigning an item that was already assigned, nodes will NOT get replaced, but singleton will be correctly replaced. To be more explicit:\r\n\r\nThis works:\r\n\r\n.. code:: python\r\n\r\n    d = fdict({'a': 1, 'b': {'c': 2}})\r\n    d['a'] = -1\r\n    print(d)\r\n    d['a'] = {'d': 3, 'e': 4}\r\n    print(d)\r\n\r\n``{'a': -1, 'b/c': 2}``\r\n``{'a/d': 3, 'a/e': 4, 'b/c': 2}``\r\n\r\nBut this does NOT work as expected:\r\n\r\n.. code:: python\r\n\r\n    d = fdict({'a': 1, 'b': {'c': 2}})\r\n    d['b'] = -1\r\n    print(d)\r\n\r\n``{'a': 1, 'b': -1, 'b/c': 2}``\r\n\r\nPerformances\r\n--------------------\r\n\r\n``fdict`` was made with maximum compatibility with existing code using ``dict`` and with reasonable performances. That's in theory, in practice ``fdict`` are slower than ``dict`` for most purposes, except setitem and getitem if you use direct access form (eg, x['a/b/c'] instead of x['a']['b']['c']).\r\n\r\nAs such, you can expect O(1) performance just like ``dict`` for any operation on leaves (non-dict objects): getitem, setitem, delitem, eq contains. In practice, ``fdict`` is about 10x slower than ``dict`` because of class overhead and key string manipulation, for both indirect access (ie, ``x['a']['b']['c']``) and 3x slower for direct access on leaves (ie, ``x['a/b/c']``). Thus direct access form might be preferable if you want a faster set and get. This performance cost is acceptable for a quick prototype of a bigdata database, since building and retrieving items are the most common operations.\r\n\r\nThe major drawback comes when you work on nodes (nested dict objects): since all keys are flattened and on the same level, the only way to get only the children of a nested dict (aka a branch) is to walk through all keys and filter out the ones not matching the current branch. This means that any operation on nodes will be in O(n) where n is the total number of items in the whole fdict. Affected operations are: items, keys, values, view*, iter*, delitem on nodes, eq on nodes, contains on nodes.\r\n\r\nInterestingly, getitem on nodes is not affected, because we use a lazy approach: getting a nested dict will not build anything, it will just spawn a new fdict with a different filtering rootpath. Nothing gets evaluated, until you either attain a leaf (in this case we return the non-dict object value) or you use an operation on node such as items(). Keep in mind that any nested fdict will share the same internal flattened dict, so any nested fdict will also have access to all items at any level!\r\n\r\nThis was done by design: ``fdict`` is made to be as fast as ``dict`` to build and to retrieve leaves, in exchange for slower exploration. In other words, you can expect blazingly fast creation of ``fdict`` as well as getting any leaf object at any nested level, but you should be careful when exploring. However, even if your dict is bigger than RAM, you can use the view* methods (viewitems, viewkeys, viewvalues) to walk all the items as a generator.\r\n\r\nTo circumvent this pitfall, two things were implemented:\r\n\r\n    * ``extract()`` method can be used on a nested fdict to filter all keys once and build a new fdict containing only the pertinent nested items. Usage is ``extracted_fdict = fdict({'a': {'b': 1, 'c': [2, 3]}})['a'].extract()``.\r\n\r\n    * ``fastview=True`` argument can be used when creating a fdict to enable the FastView mode. This mode will imply a small memory/space overhead to store nodes and also will increase complexity of setitem on nodes to O(m*l) where m is the number of parents of the current leaf added, and l the number of leaves added (usually one but if you set a dict it will be converted to multiple leaves). On the other hand, it will make items, keys, values, view* and other nodes operations methods as fast as with a ``dict`` by using lookup tables to access direct children directly, which was O(n) where n was the whole list of items at any level in the fdict. It is possible to convert a non-fastview fdict to a fastview fdict, just by supplying it as the initialization dict.\r\n\r\nThus, if you want to do data exploration on a ``fdict``, you can use either of these two approaches to speed up your exploration to a reasonable time, with performances close to a ``dict``. In practice, ``extract`` is better if you have lots of items per nesting level, whereas ``fastview`` might be better if you have a very nested structure with few items per level but lots of levels.\r\n\r\nThere is probably room for speed optimization, if you have any idea please feel free to open an issue on Github.\r\n\r\nIn any case, this module is primarily meant to do quick prototypes of bigdata databases, that you can then switch to another faster database after reworking the structure a bit.\r\n\r\nA good example is the retrieval of online data: in this case, you care less about the data structure performance since it is negligible compared to network bandwidth and I/O. Then, when you have the data, you can rework it to convert to another type of database with a flat schema (by extracting only the fields you are interested in).\r\n\r\nAlso you can convert a ``fdict`` or ``sfdict`` to a flat ``dict`` using the ``to_dict()`` method, or to a nested (natural) ``dict`` using ``to_dict_nested()``, you will then get a standard ``dict`` stored in RAM that you can access at full speed, or use as an input to initialize another type of out-of-core database.\r\n\r\nLICENCE\r\n-------------\r\n\r\nThis library is licensed under MIT License.\r\nIncluded are the ``flatkeys`` function by `bfontaine <https://github.com/bfontaine/flatkeys>`__  and ``_count_iter_items`` by `zuo <https://stackoverflow.com/a/15112059/1121352>`__.\r\n\r\n\r\n.. |Build-Status| image:: https://travis-ci.org/lrq3000/fdict.svg?branch=master\r\n   :target: https://travis-ci.org/lrq3000/fdict\r\n.. |LICENCE| image:: https://img.shields.io/pypi/l/fdict.svg\r\n   :target: https://raw.githubusercontent.com/lrq3000/fdict/master/LICENCE\r\n.. |PyPI-Status| image:: https://img.shields.io/pypi/v/fdict.svg\r\n   :target: https://pypi.python.org/pypi/fdict\r\n.. |PyPI-Downloads| image:: https://img.shields.io/pypi/dm/fdict.svg\r\n   :target: https://pypi.python.org/pypi/fdict\r\n.. |PyPI-Versions| image:: https://img.shields.io/pypi/pyversions/fdict.svg\r\n   :target: https://pypi.python.org/pypi/fdict\r\n.. |Branch-Coverage-Status| image:: https://codecov.io/github/lrq3000/fdict/coverage.svg?branch=master\r\n   :target: https://codecov.io/github/lrq3000/fdict?branch=master\r\n.. |Codacy-Grade| image:: https://api.codacy.com/project/badge/Grade/3f965571598f44549c7818f29cdcf177\r\n   :target: https://www.codacy.com/app/lrq3000/fdict?utm_source=github.com&amp;utm_medium=referral&amp;utm_content=lrq3000/fdict&amp;utm_campaign=Badge_Grade\r\n\r\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -47,11 +47,11 @@
     "name": "fdict",
     "platform": "any",
     "project_url": "https://pypi.org/project/fdict/",
-    "release_url": "https://pypi.org/project/fdict/0.6.2/",
+    "release_url": "https://pypi.org/project/fdict/0.6.5/",
     "requires_dist": [],
     "requires_python": "",
     "summary": "Easy out-of-core computing of recursive dict",
-    "version": "0.6.2"
+    "version": "0.6.5"
   },
   "releases": {
     "0.6.2": [
@@ -87,40 +87,108 @@
         "upload_time": "2017-08-06T17:00:16",
         "url": "https://files.pythonhosted.org/packages/f4/6f/9823af27567000fe6ca5904b0cc03df4085f7454a8113b031a9b30fb2f56/fdict-0.6.2.tar.gz"
       }
+    ],
+    "0.6.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9e732807c73fdcb6d384cd6f8241781f",
+          "sha256": "96c08d55e730c870e5eba38c4896ed562f254f54441313808dceec967c9b6ce3"
+        },
+        "downloads": 0,
+        "filename": "fdict-0.6.4-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "9e732807c73fdcb6d384cd6f8241781f",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2",
+        "size": 22764,
+        "upload_time": "2017-08-06T21:40:58",
+        "url": "https://files.pythonhosted.org/packages/e2/5d/5873bd4befdf2a40369ad83efaa15376b3beec39eee189d722c56a908d1c/fdict-0.6.4-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7f072df24c06c6f3163fd4792eed7ecd",
+          "sha256": "ece24ed1fae0fcb08c4547f17eec93122b9f22cfecd95e288f67e00192b82cc1"
+        },
+        "downloads": 0,
+        "filename": "fdict-0.6.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7f072df24c06c6f3163fd4792eed7ecd",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 26997,
+        "upload_time": "2017-08-06T21:41:00",
+        "url": "https://files.pythonhosted.org/packages/da/2d/7498bbc947600b0b535738b99bfa586d154e24e01df14f829e612456f7b1/fdict-0.6.4.tar.gz"
+      }
+    ],
+    "0.6.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a17a853bfc622a0802063df58e3cc1a8",
+          "sha256": "e71b36dfdcd2bc1170223bdcf7443a31644fee95bdb99ca7c01f9b32ad1b0b5f"
+        },
+        "downloads": 0,
+        "filename": "fdict-0.6.5-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "a17a853bfc622a0802063df58e3cc1a8",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2",
+        "size": 21041,
+        "upload_time": "2017-08-07T15:20:21",
+        "url": "https://files.pythonhosted.org/packages/64/a3/b50bd463f85fb39c7c7d8cbe15ed29ae4b1b75ba36bebbdc265c8b6379ad/fdict-0.6.5-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "dc307e3fcf17b2515a28e31e5d2239fb",
+          "sha256": "6b3c1b94874b2edad3b7cf14e24d2d37084d2929fc0436cebfa004615bb0121f"
+        },
+        "downloads": 0,
+        "filename": "fdict-0.6.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "dc307e3fcf17b2515a28e31e5d2239fb",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 25800,
+        "upload_time": "2017-08-07T15:20:24",
+        "url": "https://files.pythonhosted.org/packages/8b/2b/8081ac5be1a3606a7a03af2e9704719f3475b71b951ee07d500b610bb66f/fdict-0.6.5.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "8cd10c2c256eabb4dcd84be6f878eecc",
-        "sha256": "8daf73447b294cf26627cf3ca8c9551c78fa407648a997774d42c3faa2532e96"
+        "md5": "a17a853bfc622a0802063df58e3cc1a8",
+        "sha256": "e71b36dfdcd2bc1170223bdcf7443a31644fee95bdb99ca7c01f9b32ad1b0b5f"
       },
       "downloads": 0,
-      "filename": "fdict-0.6.2-py2-none-any.whl",
+      "filename": "fdict-0.6.5-py2-none-any.whl",
       "has_sig": false,
-      "md5_digest": "8cd10c2c256eabb4dcd84be6f878eecc",
+      "md5_digest": "a17a853bfc622a0802063df58e3cc1a8",
       "packagetype": "bdist_wheel",
       "python_version": "py2",
-      "size": 19485,
-      "upload_time": "2017-08-06T17:00:14",
-      "url": "https://files.pythonhosted.org/packages/12/8d/01d71a460087d74c7fbf961def15ad8e03a414be15677798c503fc8dd38c/fdict-0.6.2-py2-none-any.whl"
+      "size": 21041,
+      "upload_time": "2017-08-07T15:20:21",
+      "url": "https://files.pythonhosted.org/packages/64/a3/b50bd463f85fb39c7c7d8cbe15ed29ae4b1b75ba36bebbdc265c8b6379ad/fdict-0.6.5-py2-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "aa30330c67a56cf2e0ed807baf913af4",
-        "sha256": "87d67b694dc184e107ceb022f79c205cb0c30b508432c97420db6d85c1d6c4b6"
+        "md5": "dc307e3fcf17b2515a28e31e5d2239fb",
+        "sha256": "6b3c1b94874b2edad3b7cf14e24d2d37084d2929fc0436cebfa004615bb0121f"
       },
       "downloads": 0,
-      "filename": "fdict-0.6.2.tar.gz",
+      "filename": "fdict-0.6.5.tar.gz",
       "has_sig": false,
-      "md5_digest": "aa30330c67a56cf2e0ed807baf913af4",
+      "md5_digest": "dc307e3fcf17b2515a28e31e5d2239fb",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 24493,
-      "upload_time": "2017-08-06T17:00:16",
-      "url": "https://files.pythonhosted.org/packages/f4/6f/9823af27567000fe6ca5904b0cc03df4085f7454a8113b031a9b30fb2f56/fdict-0.6.2.tar.gz"
+      "size": 25800,
+      "upload_time": "2017-08-07T15:20:24",
+      "url": "https://files.pythonhosted.org/packages/8b/2b/8081ac5be1a3606a7a03af2e9704719f3475b71b951ee07d500b610bb66f/fdict-0.6.5.tar.gz"
     }
   ]
 }
