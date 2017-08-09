@@ -11,7 +11,7 @@
       "Programming Language :: Python :: 3",
       "Topic :: Software Development"
     ],
-    "description": "Responses\n=========\n\n.. image:: https://travis-ci.org/getsentry/responses.svg?branch=master\n\t:target: https://travis-ci.org/getsentry/responses\n\nA utility library for mocking out the `requests` Python library.\n\n.. note:: Responses requires Python 2.7 or newer, and requests >= 2.0\n\nBasics\n------\n\nThe core of ``responses`` comes from registering mock responses:\n\n.. code-block:: python\n\n    import responses\n\n    @responses.activate\n    def test_simple():\n        responses.add(responses.GET, 'http://twitter.com/api/1/foobar',\n                      json={'error': 'not found'}, status=404)\n\n        resp = requests.get('http://twitter.com/api/1/foobar')\n\n        assert resp.json() == {\"error\": \"not found\"}\n\n        assert len(responses.calls) == 1\n        assert responses.calls[0].request.url == 'http://twitter.com/api/1/foobar'\n        assert responses.calls[0].response.text == '{\"error\": \"not found\"}'\n\nIf you attempt to fetch a url which doesn't hit a match, ``responses`` will raise\na ``ConnectionError``:\n\n.. code-block:: python\n\n    import responses\n\n    from requests.exceptions import ConnectionError\n\n    @responses.activate\n    def test_simple():\n        with pytest.raises(ConnectionError):\n            requests.get('http://twitter.com/api/1/foobar')\n\nLastly, you can pass an ``Exception`` as the body to trigger an error on the request:\n\n.. code-block:: python\n\n    import responses\n\n    @responses.activate\n    def test_simple():\n        responses.add(responses.GET, 'http://twitter.com/api/1/foobar',\n                      body=Exception('...'))\n        with pytest.raises(Exception):\n            requests.get('http://twitter.com/api/1/foobar')\n\nResponse Parameters\n-------------------\n\nResponses are automatically registered via params on ``add``, but can also be\npassed directly:\n\n.. code-block:: python\n\n    import responses\n\n    responses.add(\n        responses.Response(\n            method='GET',\n            url='http://example.com',\n        ),\n    )\n\nThe following attributes can be passed to a Response mock:\n\nmethod (``str``)\n  The HTTP method (GET, POST, etc).\n\nurl (``str`` or compiled regular expression)\n  The full resource URL.\n\nmatch_querystring (``bool``)\n  Disabled by default. Include the query string when matching requests.\n\nbody (``str`` or ``BufferedReader``)\n  The response body.\n\njson\n  A python object representing the JSON response body. Automatically configures\n  the appropriate Content-Type.\n\nstatus (``int``)\n  The HTTP status code.\n\ncontent_type (``content_type``)\n  Defaults to ``text/plain``.\n\nheaders (``dict``)\n  Response headers.\n\nstream (``bool``)\n  Disabled by default. Indicates the response should use the streaming API.\n\n\n\n\nDynamic Responses\n-----------------\n\nYou can utilize callbacks to provide dynamic responses. The callback must return\na tuple of (``status``, ``headers``, ``body``).\n\n.. code-block:: python\n\n    import json\n\n    import responses\n    import requests\n\n    @responses.activate\n    def test_calc_api():\n\n        def request_callback(request):\n            payload = json.loads(request.body)\n            resp_body = {'value': sum(payload['numbers'])}\n            headers = {'request-id': '728d329e-0e86-11e4-a748-0c84dc037c13'}\n            return (200, headers, json.dumps(resp_body))\n\n        responses.add_callback(\n            responses.POST, 'http://calc.com/sum',\n            callback=request_callback,\n            content_type='application/json',\n        )\n\n        resp = requests.post(\n            'http://calc.com/sum',\n            json.dumps({'numbers': [1, 2, 3]}),\n            headers={'content-type': 'application/json'},\n        )\n\n        assert resp.json() == {'value': 6}\n\n        assert len(responses.calls) == 1\n        assert responses.calls[0].request.url == 'http://calc.com/sum'\n        assert responses.calls[0].response.text == '{\"value\": 6}'\n        assert (\n            responses.calls[0].response.headers['request-id'] ==\n            '728d329e-0e86-11e4-a748-0c84dc037c13'\n        )\n\n\nResponses as a context manager\n------------------------------\n\n.. code-block:: python\n\n    import responses\n    import requests\n\n\n    def test_my_api():\n        with responses.RequestsMock() as rsps:\n            rsps.add(responses.GET, 'http://twitter.com/api/1/foobar',\n                     body='{}', status=200,\n                     content_type='application/json')\n            resp = requests.get('http://twitter.com/api/1/foobar')\n\n            assert resp.status_code == 200\n\n        # outside the context manager requests will hit the remote server\n        resp = requests.get('http://twitter.com/api/1/foobar')\n        resp.status_code == 404\n\n\nAssertions on declared responses\n--------------------------------\n\nWhen used as a context manager, Responses will, by default, raise an assertion\nerror if a url was registered but not accessed. This can be disabled by passing\nthe ``assert_all_requests_are_fired`` value:\n\n.. code-block:: python\n\n    import responses\n    import requests\n\n\n    def test_my_api():\n        with responses.RequestsMock(assert_all_requests_are_fired=False) as rsps:\n            rsps.add(responses.GET, 'http://twitter.com/api/1/foobar',\n                     body='{}', status=200,\n                     content_type='application/json')\n\nMultiple Responses\n------------------\nYou can also add multiple responses for the same url:\n\n.. code-block:: python\n\n    import responses\n    import requests\n\n    @responses.activate\n    def test_my_api():\n        responses.add(responses.GET, 'http://twitter.com/api/1/foobar', status=500)\n        responses.add(responses.GET, 'http://twitter.com/api/1/foobar',\n                      body='{}', status=200,\n                      content_type='application/json')\n\n        resp = requests.get('http://twitter.com/api/1/foobar')\n        assert resp.status_code == 500\n        resp = requests.get('http://twitter.com/api/1/foobar')\n        assert resp.status_code == 200\n\nUsing a callback to modify the response\n---------------------------------------\n\nIf you use customized processing in `requests` via subclassing/mixins, or if you\nhave library tools that interact with `requests` at a low level, you may need\nto add extended processing to the mocked Response object to fully simlulate the\nenvironment for your tests.  A `response_callback` can be used, which will be\nwrapped by the library before being returned to the caller.  The callback\naccepts a `response` as it's single argument, and is expected to return a\nsingle `response` object.\n\n\n.. code-block:: python\n\n    import responses\n    import requests\n\n\tdef response_callback(resp):\n\t\tresp.callback_processed = True\n\t\treturn resp\n\n\twith responses.RequestsMock(response_callback=response_callback) as m:\n\t\tm.add(responses.GET, 'http://example.com', body=b'test')\n\t\tresp = requests.get('http://example.com')\n\t\tassert resp.text == \"test\"\n\t\tassert hasattr(resp, 'callback_processed')\n\t\tassert resp.callback_processed is True\n",
+    "description": "Responses\n=========\n\n.. image:: https://travis-ci.org/getsentry/responses.svg?branch=master\n\t:target: https://travis-ci.org/getsentry/responses\n\nA utility library for mocking out the `requests` Python library.\n\n.. note:: Responses requires Python 2.7 or newer, and requests >= 2.0\n\nBasics\n------\n\nThe core of ``responses`` comes from registering mock responses:\n\n.. code-block:: python\n\n    import responses\n\n    @responses.activate\n    def test_simple():\n        responses.add(responses.GET, 'http://twitter.com/api/1/foobar',\n                      json={'error': 'not found'}, status=404)\n\n        resp = requests.get('http://twitter.com/api/1/foobar')\n\n        assert resp.json() == {\"error\": \"not found\"}\n\n        assert len(responses.calls) == 1\n        assert responses.calls[0].request.url == 'http://twitter.com/api/1/foobar'\n        assert responses.calls[0].response.text == '{\"error\": \"not found\"}'\n\nIf you attempt to fetch a url which doesn't hit a match, ``responses`` will raise\na ``ConnectionError``:\n\n.. code-block:: python\n\n    import responses\n\n    from requests.exceptions import ConnectionError\n\n    @responses.activate\n    def test_simple():\n        with pytest.raises(ConnectionError):\n            requests.get('http://twitter.com/api/1/foobar')\n\nLastly, you can pass an ``Exception`` as the body to trigger an error on the request:\n\n.. code-block:: python\n\n    import responses\n\n    @responses.activate\n    def test_simple():\n        responses.add(responses.GET, 'http://twitter.com/api/1/foobar',\n                      body=Exception('...'))\n        with pytest.raises(Exception):\n            requests.get('http://twitter.com/api/1/foobar')\n\nResponse Parameters\n-------------------\n\nResponses are automatically registered via params on ``add``, but can also be\npassed directly:\n\n.. code-block:: python\n\n    import responses\n\n    responses.add(\n        responses.Response(\n            method='GET',\n            url='http://example.com',\n        ),\n    )\n\nThe following attributes can be passed to a Response mock:\n\nmethod (``str``)\n  The HTTP method (GET, POST, etc).\n\nurl (``str`` or compiled regular expression)\n  The full resource URL.\n\nmatch_querystring (``bool``)\n  Disabled by default. Include the query string when matching requests.\n\nbody (``str`` or ``BufferedReader``)\n  The response body.\n\njson\n  A python object representing the JSON response body. Automatically configures\n  the appropriate Content-Type.\n\nstatus (``int``)\n  The HTTP status code.\n\ncontent_type (``content_type``)\n  Defaults to ``text/plain``.\n\nheaders (``dict``)\n  Response headers.\n\nstream (``bool``)\n  Disabled by default. Indicates the response should use the streaming API.\n\n\n\n\nDynamic Responses\n-----------------\n\nYou can utilize callbacks to provide dynamic responses. The callback must return\na tuple of (``status``, ``headers``, ``body``).\n\n.. code-block:: python\n\n    import json\n\n    import responses\n    import requests\n\n    @responses.activate\n    def test_calc_api():\n\n        def request_callback(request):\n            payload = json.loads(request.body)\n            resp_body = {'value': sum(payload['numbers'])}\n            headers = {'request-id': '728d329e-0e86-11e4-a748-0c84dc037c13'}\n            return (200, headers, json.dumps(resp_body))\n\n        responses.add_callback(\n            responses.POST, 'http://calc.com/sum',\n            callback=request_callback,\n            content_type='application/json',\n        )\n\n        resp = requests.post(\n            'http://calc.com/sum',\n            json.dumps({'numbers': [1, 2, 3]}),\n            headers={'content-type': 'application/json'},\n        )\n\n        assert resp.json() == {'value': 6}\n\n        assert len(responses.calls) == 1\n        assert responses.calls[0].request.url == 'http://calc.com/sum'\n        assert responses.calls[0].response.text == '{\"value\": 6}'\n        assert (\n            responses.calls[0].response.headers['request-id'] ==\n            '728d329e-0e86-11e4-a748-0c84dc037c13'\n        )\n\n\nResponses as a context manager\n------------------------------\n\n.. code-block:: python\n\n    import responses\n    import requests\n\n\n    def test_my_api():\n        with responses.RequestsMock() as rsps:\n            rsps.add(responses.GET, 'http://twitter.com/api/1/foobar',\n                     body='{}', status=200,\n                     content_type='application/json')\n            resp = requests.get('http://twitter.com/api/1/foobar')\n\n            assert resp.status_code == 200\n\n        # outside the context manager requests will hit the remote server\n        resp = requests.get('http://twitter.com/api/1/foobar')\n        resp.status_code == 404\n\n\nAssertions on declared responses\n--------------------------------\n\nWhen used as a context manager, Responses will, by default, raise an assertion\nerror if a url was registered but not accessed. This can be disabled by passing\nthe ``assert_all_requests_are_fired`` value:\n\n.. code-block:: python\n\n    import responses\n    import requests\n\n\n    def test_my_api():\n        with responses.RequestsMock(assert_all_requests_are_fired=False) as rsps:\n            rsps.add(responses.GET, 'http://twitter.com/api/1/foobar',\n                     body='{}', status=200,\n                     content_type='application/json')\n\nMultiple Responses\n------------------\nYou can also add multiple responses for the same url:\n\n.. code-block:: python\n\n    import responses\n    import requests\n\n    @responses.activate\n    def test_my_api():\n        responses.add(responses.GET, 'http://twitter.com/api/1/foobar', status=500)\n        responses.add(responses.GET, 'http://twitter.com/api/1/foobar',\n                      body='{}', status=200,\n                      content_type='application/json')\n\n        resp = requests.get('http://twitter.com/api/1/foobar')\n        assert resp.status_code == 500\n        resp = requests.get('http://twitter.com/api/1/foobar')\n        assert resp.status_code == 200\n\nUsing a callback to modify the response\n---------------------------------------\n\nIf you use customized processing in `requests` via subclassing/mixins, or if you\nhave library tools that interact with `requests` at a low level, you may need\nto add extended processing to the mocked Response object to fully simlulate the\nenvironment for your tests.  A `response_callback` can be used, which will be\nwrapped by the library before being returned to the caller.  The callback\naccepts a `response` as it's single argument, and is expected to return a\nsingle `response` object.\n\n\n.. code-block:: python\n\n    import responses\n    import requests\n\n\tdef response_callback(resp):\n\t\tresp.callback_processed = True\n\t\treturn resp\n\n\twith responses.RequestsMock(response_callback=response_callback) as m:\n\t\tm.add(responses.GET, 'http://example.com', body=b'test')\n\t\tresp = requests.get('http://example.com')\n\t\tassert resp.text == \"test\"\n\t\tassert hasattr(resp, 'callback_processed')\n\t\tassert resp.callback_processed is True\n\n\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -27,11 +27,20 @@
     "name": "responses",
     "platform": "",
     "project_url": "https://pypi.org/project/responses/",
-    "release_url": "https://pypi.org/project/responses/0.6.2/",
-    "requires_dist": [],
+    "release_url": "https://pypi.org/project/responses/0.7.0/",
+    "requires_dist": [
+      "pytest-cov; extra == 'tests'",
+      "pytest; extra == 'tests'",
+      "flake8; extra == 'tests'",
+      "coverage (>=3.7.1,<5.0.0); extra == 'tests'",
+      "mock; python_version in \"2.6, 2.7, 3.2\"",
+      "six",
+      "requests (>=2.0)",
+      "cookies"
+    ],
     "requires_python": "",
     "summary": "A utility library for mocking out the `requests` Python library.",
-    "version": "0.6.2"
+    "version": "0.7.0"
   },
   "releases": {
     "0.1.0": [
@@ -329,40 +338,74 @@
         "upload_time": "2017-08-08T17:24:46",
         "url": "https://files.pythonhosted.org/packages/11/f4/d79b9ec5dca176341b5c3230f69237d8fdce98165c9769af4d91076bd536/responses-0.6.2.tar.gz"
       }
+    ],
+    "0.7.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "47b4582d1c7624d494db1f816320dfa5",
+          "sha256": "860f2ac3aed6954b6dfc79ee27a229d423c77ad7a4c242f26c1489bdd702d8e4"
+        },
+        "downloads": 0,
+        "filename": "responses-0.7.0-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "47b4582d1c7624d494db1f816320dfa5",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 13174,
+        "upload_time": "2017-08-08T22:03:22",
+        "url": "https://files.pythonhosted.org/packages/b9/a0/34a963e592b645ab7b9a072f003b84b300e7bafed63058f071c9dfd4a737/responses-0.7.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8e3926c519cf5eb855c50ac931fe4e3e",
+          "sha256": "912da86d9d9ca6e02f00e5ecd61d08992ab1511858260bd5df8b2b1e51a6dc9f"
+        },
+        "downloads": 0,
+        "filename": "responses-0.7.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8e3926c519cf5eb855c50ac931fe4e3e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 14979,
+        "upload_time": "2017-08-08T22:03:23",
+        "url": "https://files.pythonhosted.org/packages/40/3a/bccc47f14d2ac1daeab1f574fbe985b9858ce343188fdbbfe2cea8c1ce4e/responses-0.7.0.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "78ed113a1e2375ffcd62339e30648299",
-        "sha256": "d41d5b1b61530863b7d795572c50c84e0d620dc2704d521097cff84f8850de19"
+        "md5": "47b4582d1c7624d494db1f816320dfa5",
+        "sha256": "860f2ac3aed6954b6dfc79ee27a229d423c77ad7a4c242f26c1489bdd702d8e4"
       },
       "downloads": 0,
-      "filename": "responses-0.6.2-py2.py3-none-any.whl",
+      "filename": "responses-0.7.0-py2.py3-none-any.whl",
       "has_sig": false,
-      "md5_digest": "78ed113a1e2375ffcd62339e30648299",
+      "md5_digest": "47b4582d1c7624d494db1f816320dfa5",
       "packagetype": "bdist_wheel",
-      "python_version": "2.7",
-      "size": 13036,
-      "upload_time": "2017-08-08T17:24:45",
-      "url": "https://files.pythonhosted.org/packages/35/2c/969021e85463519df4e15627204650a996f04e95d3d10aadc44eca364feb/responses-0.6.2-py2.py3-none-any.whl"
+      "python_version": "py2.py3",
+      "size": 13174,
+      "upload_time": "2017-08-08T22:03:22",
+      "url": "https://files.pythonhosted.org/packages/b9/a0/34a963e592b645ab7b9a072f003b84b300e7bafed63058f071c9dfd4a737/responses-0.7.0-py2.py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "3802a1313ff414953173276123d51974",
-        "sha256": "d51f2a91a01c2309d03d414013b93a8fdfa3ef6fe9d3f94f623f4f7af7db25f6"
+        "md5": "8e3926c519cf5eb855c50ac931fe4e3e",
+        "sha256": "912da86d9d9ca6e02f00e5ecd61d08992ab1511858260bd5df8b2b1e51a6dc9f"
       },
       "downloads": 0,
-      "filename": "responses-0.6.2.tar.gz",
+      "filename": "responses-0.7.0.tar.gz",
       "has_sig": false,
-      "md5_digest": "3802a1313ff414953173276123d51974",
+      "md5_digest": "8e3926c519cf5eb855c50ac931fe4e3e",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 14784,
-      "upload_time": "2017-08-08T17:24:46",
-      "url": "https://files.pythonhosted.org/packages/11/f4/d79b9ec5dca176341b5c3230f69237d8fdce98165c9769af4d91076bd536/responses-0.6.2.tar.gz"
+      "size": 14979,
+      "upload_time": "2017-08-08T22:03:23",
+      "url": "https://files.pythonhosted.org/packages/40/3a/bccc47f14d2ac1daeab1f574fbe985b9858ce343188fdbbfe2cea8c1ce4e/responses-0.7.0.tar.gz"
     }
   ]
 }
