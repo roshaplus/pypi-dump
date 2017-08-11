@@ -7,14 +7,17 @@
       "Development Status :: 3 - Alpha",
       "Intended Audience :: Developers",
       "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
-      "Programming Language :: PL/SQL",
+      "Programming Language :: Python",
+      "Programming Language :: Python :: 3",
+      "Programming Language :: Python :: 3.4",
+      "Programming Language :: Python :: 3.5",
       "Programming Language :: Python :: 3.6",
       "Programming Language :: Python :: 3 :: Only",
       "Programming Language :: SQL",
       "Topic :: Database",
       "Topic :: Utilities"
     ],
-    "description": ".. -*- coding: utf-8 -*-\n.. :Project:   pg_query -- Pythonic wrapper around libpg_query\n.. :Created:   mer 02 ago 2017 14:49:24 CEST\n.. :Author:    Lele Gaifax <lele@metapensiero.it>\n.. :License:   GNU General Public License version 3 or later\n.. :Copyright: \u00a9 2017 Lele Gaifax\n..\n\n==========\n pg_query\n==========\n\nPythonic wrapper around libpg_query and SQL prettifier\n======================================================\n\n :author: Lele Gaifax\n :contact: lele@metapensiero.it\n :license: GNU General Public License version 3 or later\n\nThis is a Python 3.6+ implementation of a wrapper to `libpg_query`__, a C library that\nrepackages the PostgreSQL__ languages parser as a standalone static library.\n\n__ https://github.com/lfittl/libpg_query\n__ https://www.postgresql.org/\n\nI needed a better SQL reformatter than the one implemented by `sqlparse`__, and was annoyed by\na few glitches (subselects__ in particular) that ruins the otherwise excellent job it does,\nconsidering that it is a generic library that tries to swallow many different SQL dialects.\n\n__ https://pypi.org/project/sqlparse/\n__ https://github.com/andialbrecht/sqlparse/issues/334\n\nWhen I found `psqlparse`__ I decided to try implementing a PostgreSQL `focused tool`__: at the\nbeginning it's been easier than I feared, but I quickly hit some shortcomings in that\nimplementation, so I opted for writing my own solution restarting from scratch, with the\nfollowing goals:\n\n__ https://github.com/alculquicondor/psqlparse\n__ https://github.com/alculquicondor/psqlparse/pull/22\n\n- target only Python 3 (more precisely, only 3.6 or higher, mainly because I'm lazy and the\n  enums extraction code uses the `auto()`__ helper of the standard library ``enum`` module)\n\n__ https://docs.python.org/3/library/enum.html#enum.auto\n\n- target PostgreSQL 10 (in `beta 2`__ as I'm writing this), taking advantage of a\n  work-in-progress `branch`__ of the libpg_query library\n\n__ https://www.postgresql.org/about/news/1763/\n__ https://github.com/lfittl/libpg_query/tree/10-latest\n\n- use a more dynamic approach to represent the *parse tree*, with a twofold advantage:\n\n  1. it is much less boring to code, because there's no need to write one Python class for each\n     PostgreSQL node tag\n\n  2. the representation is version agnostic, it can be adapted to newer/older Elephants in a\n     snap\n\n- allow exploration of parse tree in both directions, because I realized that some kinds of\n  nodes require that knowledge to determine their textual representation\n\n- avoid introducing arbitrary renames of tags and attributes, so what you read in PostgreSQL\n  documentation/sources\\ [*]_ is available without the hassle of guessing how a symbol has been\n  mapped\n\n- use a `zero copy`__ approach, keeping the original parse tree returned from the underlying\n  libpg_query functions and have each node just borrow a reference to its own subtree\n\n__ https://en.wikipedia.org/wiki/Zero-copy\n\n.. [*] Currently what you can find in the following headers:\n\n       - `nodes.h`__\n       - `primnodes.h`__\n       - `parsenodes.h`__\n       - `lockoptions.h`__\n\n__ https://git.postgresql.org/gitweb/?p=postgresql.git;a=blob;f=src/include/nodes/nodes.h;hb=HEAD\n__ https://git.postgresql.org/gitweb/?p=postgresql.git;a=blob;f=src/include/nodes/primnodes.h;hb=HEAD\n__ https://git.postgresql.org/gitweb/?p=postgresql.git;a=blob;f=src/include/nodes/parsenodes.h;hb=HEAD\n__ https://git.postgresql.org/gitweb/?p=postgresql.git;a=blob;f=src/include/nodes/lockoptions.h;hb=HEAD\n\nIntroduction\n------------\n\nAt the lower level the module exposes two libpg_query functions, ``parse_sql()`` and\n``parse_plpgsql()``, that take respectively an ``SQL`` statement and a ``PLpgSQL`` statement\nand return a *parse tree* as a hierarchy of Python dictionaries, lists and scalar values. In\nsome cases these scalars correspond to some C ``typedef enums``, that are automatically\nextracted from the PostgreSQL headers and are available as ``pg_query.enums``.\n\nAt a higher level that tree is represented by three Python classes, a ``Node`` that represents\na single node, a ``List`` that wraps a sequence of nodes and a ``Scalar`` for plain values such\na *strings*, *integers*, *booleans* or *none*.\n\nEvery node is identified by a *tag*, a string label that characterize its content that is\nexposed as a set of *attributes* as well as with a dictionary-like interface (technically they\nimplements both a ``__getattr__`` method and a ``__getitem__`` method). When asked for an\nattribute, the node returns an instance of the base classes, i.e. another ``Node``, or a\n``List`` or a ``Scalar``, depending on the data type of that item. When the node does not\ncontain the requested attribute it returns a singleton ``Missing`` marker instance.\n\nA ``List`` wraps a plain Python ``list`` and may contains a sequence of ``Node`` instances, or\nin some cases other sub-lists, that can be accessed with the usual syntax, or iterated.\n\nFinally, a ``Scalar`` carries a single value of some type, accessible through its ``value``\nattribute.\n\nOn top of that, the module implements two serializations, one that transforms a ``Node`` into a\n*raw* textual representation and another that returns a *prettified* representation. The latter\nis exposed by the ``__main__`` entry point of the package, see below for an example.\n\nInstallation\n------------\n\nAs usual, the easiest way is with pip::\n\n  $ pip install pg_query\n\nAlternatively you can clone the repository::\n\n  $ git clone https://github.com/lelit/pg_query.git --recursive\n\nand install from there::\n\n  $ pip install ./pg_query\n\nDevelopment\n-----------\n\nThere is a set of *makefiles* implementing the most common operations, a ``make help`` will\nshow a brief table of contents. A comprehensive test suite, based on pytest__, covers 98% of\nthe source lines.\n\n__ https://docs.pytest.org/en/latest/\n\nExamples of usage\n-----------------\n\n* Parse an ``SQL`` statement and get its *AST* root node::\n\n   >>> from pg_query import Node, parse_sql\n   >>> root = Node(parse_sql('SELECT foo FROM bar'))\n   >>> print(root)\n   None=[1*{RawStmt}]\n\n* Recursively traverse the parse tree::\n\n   >>> for node in root.traverse():\n   ...   print(node)\n   ...\n   None[0]={RawStmt}\n   stmt={SelectStmt}\n   fromClause[0]={RangeVar}\n   inh=<True>\n   location=<16>\n   relname=<'bar'>\n   relpersistence=<'p'>\n   op=<0>\n   targetList[0]={ResTarget}\n   location=<7>\n   val={ColumnRef}\n   fields[0]={String}\n   str=<'foo'>\n   location=<7>\n\n  As you can see, the ``repr``\\ esentation of each value is mnemonic: ``{some_tag}`` means a\n  ``Node`` with tag ``some_tag``, ``[X*{some_tag}]`` is a ``List`` containing `X` nodes of that\n  particular kind\\ [*]_ and ``<value>`` is a ``Scalar``.\n\n* Get a particular node::\n\n   >>> from_clause = root[0].stmt.fromClause\n   >>> print(from_clause)\n   fromClause=[1*{RangeVar}]\n\n* Obtain some information about a node::\n\n   >>> range_var = from_clause[0]\n   >>> print(range_var.node_tag)\n   RangeVar\n   >>> print(range_var.attribute_names)\n   dict_keys(['relname', 'inh', 'relpersistence', 'location'])\n   >>> print(range_var.parent_node)\n   stmt={SelectStmt}\n\n* Iterate over nodes::\n\n   >>> for a in from_clause:\n   ...     print(a)\n   ...     for b in a:\n   ...         print(b)\n   ...\n   fromClause[0]={RangeVar}\n   inh=<True>\n   location=<16>\n   relname=<'bar'>\n   relpersistence=<'p'>\n\n* Reformat a SQL statement\\ [*]_ from the command line::\n\n   $ echo \"select a,b,c from sometable\" | python -m pg_query\n   SELECT a\n        , b\n        , c\n   FROM sometable\n\n   $ echo 'update \"table\" set value=123 where value is null' | python -m pg_query\n   UPDATE \"table\"\n   SET value = 123\n   WHERE value IS NULL\n\n* Programmatically reformat a SQL statement::\n\n   >>> from pg_query import prettify\n   >>> print(prettify('delete from sometable where value is null'))\n   DELETE FROM sometable\n   WHERE value IS NULL\n\nDocumentation\n-------------\n\nLatest documentation is hosted by `Read the Docs`__ at http://pg-query.readthedocs.io/en/latest/\n\n__ https://readthedocs.org/\n\n\n.. [*] This is an approximation, because in principle a list could contain different kinds of\n       nodes, or even sub-lists in some cases: the ``List`` representation arbitrarily shows\n       the tag of the first object.\n\n.. [*] Currently this covers most `DML` statements such as ``SELECT``\\ s, ``INSERT``\\ s,\n       ``DELETE``\\ s and ``UPDATE``\\ s, fulfilling my needs, but I'd like to extend it to\n       handle also `DDL` statements and, why not, `PLpgSQL` instructions too.\n\n\n.. -*- coding: utf-8 -*-\n\nChanges\n-------\n\n0.8 (2017-08-10)\n~~~~~~~~~~~~~~~~\n\n- Add enums subpackages to the documentation with references to their related headers\n\n- New ``compact_lists_margin`` option to produce a more compact representation when possible\n  (see `issue #1`__)\n\n__ https://github.com/lelit/pg_query/issues/1\n\n\n0.7 (2017-08-10)\n~~~~~~~~~~~~~~~~\n\n- Fix sdist including the Sphinx documentation\n\n\n0.6 (2017-08-10)\n~~~~~~~~~~~~~~~~\n\n- New option ``--parse-tree`` on the command line tool to show just the parse tree\n\n- Sphinx documentation, available online\n\n\n0.5 (2017-08-09)\n~~~~~~~~~~~~~~~~\n\n- Handle some more cases when a name must be double-quoted\n\n- Complete the serialization of the WindowDef node, handling its frame options\n\n\n0.4 (2017-08-09)\n~~~~~~~~~~~~~~~~\n\n- Expose the actual PostgreSQL version the underlying libpg_query libray is built on thru a new\n  ``get_postgresql_version()`` function\n\n- New option `safety_belt` for the ``prettify()`` function, to protect the innocents\n\n- Handle serialization of ``CoalesceExpr`` and ``MinMaxExpr``\n\n\n0.3 (2017-08-07)\n~~~~~~~~~~~~~~~~\n\n- Handle serialization of ``ParamRef`` nodes\n\n- Expose a ``prettify()`` helper function\n\n\n0.2 (2017-08-07)\n~~~~~~~~~~~~~~~~\n\n- Test coverage at 99%\n\n- First attempt at automatic wheel upload to PyPI, let's see...\n\n\n0.1 (2017-08-07)\n~~~~~~~~~~~~~~~~\n\n- First release (\"Hi daddy!\", as my soul would tag it)\n",
+    "description": ".. -*- coding: utf-8 -*-\n.. :Project:   pg_query -- Pythonic wrapper around libpg_query\n.. :Created:   mer 02 ago 2017 14:49:24 CEST\n.. :Author:    Lele Gaifax <lele@metapensiero.it>\n.. :License:   GNU General Public License version 3 or later\n.. :Copyright: \u00a9 2017 Lele Gaifax\n..\n\n==========\n pg_query\n==========\n\nPythonic wrapper around libpg_query and SQL prettifier\n======================================================\n\n :author: Lele Gaifax\n :contact: lele@metapensiero.it\n :license: GNU General Public License version 3 or later\n\nThis is a Python 3 implementation of a wrapper to `libpg_query`__, a C library that repackages\nthe PostgreSQL__ languages parser as a standalone static library.\n\n__ https://github.com/lfittl/libpg_query\n__ https://www.postgresql.org/\n\nI needed a better SQL reformatter than the one implemented by `sqlparse`__, and was annoyed by\na few glitches (subselects__ in particular) that ruins the otherwise excellent job it does,\nconsidering that it is a generic library that tries to swallow many different SQL dialects.\n\n__ https://pypi.org/project/sqlparse/\n__ https://github.com/andialbrecht/sqlparse/issues/334\n\nWhen I found `psqlparse`__ I decided to try implementing a PostgreSQL `focused tool`__: at the\nbeginning it's been easier than I feared, but I quickly hit some shortcomings in that\nimplementation, so I opted for writing my own solution restarting from scratch, with the\nfollowing goals:\n\n__ https://github.com/alculquicondor/psqlparse\n__ https://github.com/alculquicondor/psqlparse/pull/22\n\n- target only Python 3.4+\n\n- target PostgreSQL 10 (in `beta 2`__ as I'm writing this), taking advantage of a\n  work-in-progress `branch`__ of the libpg_query library\n\n__ https://www.postgresql.org/about/news/1763/\n__ https://github.com/lfittl/libpg_query/tree/10-latest\n\n- use a more dynamic approach to represent the *parse tree*, with a twofold advantage:\n\n  1. it is much less boring to code, because there's no need to write one Python class for each\n     PostgreSQL node tag\n\n  2. the representation is version agnostic, it can be adapted to newer/older Elephants in a\n     snap\n\n- allow exploration of parse tree in both directions, because I realized that some kinds of\n  nodes require that knowledge to determine their textual representation\n\n- avoid introducing arbitrary renames of tags and attributes, so what you read in PostgreSQL\n  documentation/sources\\ [*]_ is available without the hassle of guessing how a symbol has been\n  mapped\n\n- use a `zero copy`__ approach, keeping the original parse tree returned from the underlying\n  libpg_query functions and have each node just borrow a reference to its own subtree\n\n__ https://en.wikipedia.org/wiki/Zero-copy\n\n.. [*] Currently what you can find in the following headers:\n\n       - `nodes.h`__\n       - `primnodes.h`__\n       - `parsenodes.h`__\n       - `lockoptions.h`__\n\n__ https://git.postgresql.org/gitweb/?p=postgresql.git;a=blob;f=src/include/nodes/nodes.h;hb=HEAD\n__ https://git.postgresql.org/gitweb/?p=postgresql.git;a=blob;f=src/include/nodes/primnodes.h;hb=HEAD\n__ https://git.postgresql.org/gitweb/?p=postgresql.git;a=blob;f=src/include/nodes/parsenodes.h;hb=HEAD\n__ https://git.postgresql.org/gitweb/?p=postgresql.git;a=blob;f=src/include/nodes/lockoptions.h;hb=HEAD\n\nIntroduction\n------------\n\nAt the lower level the module exposes two libpg_query functions, ``parse_sql()`` and\n``parse_plpgsql()``, that take respectively an ``SQL`` statement and a ``PLpgSQL`` statement\nand return a *parse tree* as a hierarchy of Python dictionaries, lists and scalar values. In\nsome cases these scalars correspond to some C ``typedef enums``, that are automatically\nextracted from the PostgreSQL headers and are available as ``pg_query.enums``.\n\nAt a higher level that tree is represented by three Python classes, a ``Node`` that represents\na single node, a ``List`` that wraps a sequence of nodes and a ``Scalar`` for plain values such\na *strings*, *integers*, *booleans* or *none*.\n\nEvery node is identified by a *tag*, a string label that characterize its content that is\nexposed as a set of *attributes* as well as with a dictionary-like interface (technically they\nimplements both a ``__getattr__`` method and a ``__getitem__`` method). When asked for an\nattribute, the node returns an instance of the base classes, i.e. another ``Node``, or a\n``List`` or a ``Scalar``, depending on the data type of that item. When the node does not\ncontain the requested attribute it returns a singleton ``Missing`` marker instance.\n\nA ``List`` wraps a plain Python ``list`` and may contains a sequence of ``Node`` instances, or\nin some cases other sub-lists, that can be accessed with the usual syntax, or iterated.\n\nFinally, a ``Scalar`` carries a single value of some type, accessible through its ``value``\nattribute.\n\nOn top of that, the module implements two serializations, one that transforms a ``Node`` into a\n*raw* textual representation and another that returns a *prettified* representation. The latter\nis exposed by the ``__main__`` entry point of the package, see below for an example.\n\nInstallation\n------------\n\nAs usual, the easiest way is with pip::\n\n  $ pip install pg_query\n\nAlternatively you can clone the repository::\n\n  $ git clone https://github.com/lelit/pg_query.git --recursive\n\nand install from there::\n\n  $ pip install ./pg_query\n\nDevelopment\n-----------\n\nThere is a set of *makefiles* implementing the most common operations, a ``make help`` will\nshow a brief table of contents. A comprehensive test suite, based on pytest__, covers 98% of\nthe source lines.\n\n__ https://docs.pytest.org/en/latest/\n\nExamples of usage\n-----------------\n\n* Parse an ``SQL`` statement and get its *AST* root node::\n\n   >>> from pg_query import Node, parse_sql\n   >>> root = Node(parse_sql('SELECT foo FROM bar'))\n   >>> print(root)\n   None=[1*{RawStmt}]\n\n* Recursively traverse the parse tree::\n\n   >>> for node in root.traverse():\n   ...   print(node)\n   ...\n   None[0]={RawStmt}\n   stmt={SelectStmt}\n   fromClause[0]={RangeVar}\n   inh=<True>\n   location=<16>\n   relname=<'bar'>\n   relpersistence=<'p'>\n   op=<0>\n   targetList[0]={ResTarget}\n   location=<7>\n   val={ColumnRef}\n   fields[0]={String}\n   str=<'foo'>\n   location=<7>\n\n  As you can see, the ``repr``\\ esentation of each value is mnemonic: ``{some_tag}`` means a\n  ``Node`` with tag ``some_tag``, ``[X*{some_tag}]`` is a ``List`` containing `X` nodes of that\n  particular kind\\ [*]_ and ``<value>`` is a ``Scalar``.\n\n* Get a particular node::\n\n   >>> from_clause = root[0].stmt.fromClause\n   >>> print(from_clause)\n   fromClause=[1*{RangeVar}]\n\n* Obtain some information about a node::\n\n   >>> range_var = from_clause[0]\n   >>> print(range_var.node_tag)\n   RangeVar\n   >>> print(range_var.attribute_names)\n   dict_keys(['relname', 'inh', 'relpersistence', 'location'])\n   >>> print(range_var.parent_node)\n   stmt={SelectStmt}\n\n* Iterate over nodes::\n\n   >>> for a in from_clause:\n   ...     print(a)\n   ...     for b in a:\n   ...         print(b)\n   ...\n   fromClause[0]={RangeVar}\n   inh=<True>\n   location=<16>\n   relname=<'bar'>\n   relpersistence=<'p'>\n\n* Reformat a SQL statement\\ [*]_ from the command line::\n\n   $ echo \"select a,b,c from sometable\" | python -m pg_query\n   SELECT a\n        , b\n        , c\n   FROM sometable\n\n   $ echo 'update \"table\" set value=123 where value is null' | python -m pg_query\n   UPDATE \"table\"\n   SET value = 123\n   WHERE value IS NULL\n\n* Programmatically reformat a SQL statement::\n\n   >>> from pg_query import prettify\n   >>> print(prettify('delete from sometable where value is null'))\n   DELETE FROM sometable\n   WHERE value IS NULL\n\nDocumentation\n-------------\n\nLatest documentation is hosted by `Read the Docs`__ at http://pg-query.readthedocs.io/en/latest/\n\n__ https://readthedocs.org/\n\n\n.. [*] This is an approximation, because in principle a list could contain different kinds of\n       nodes, or even sub-lists in some cases: the ``List`` representation arbitrarily shows\n       the tag of the first object.\n\n.. [*] Currently this covers most `DML` statements such as ``SELECT``\\ s, ``INSERT``\\ s,\n       ``DELETE``\\ s and ``UPDATE``\\ s, fulfilling my needs, but I'd like to extend it to\n       handle also `DDL` statements and, why not, `PLpgSQL` instructions too.\n\n\n.. -*- coding: utf-8 -*-\n\nChanges\n-------\n\n0.11 (2017-08-11)\n~~~~~~~~~~~~~~~~~\n\n- Nicer indentation for JOINs, making OUTER JOINs stand out\n\n- Minor tweaks to lists rendering, with less spurious whitespaces\n\n- New option ``--no-location`` on the command line tool\n\n\n0.10 (2017-08-11)\n~~~~~~~~~~~~~~~~~\n\n- Support Python 3.4 and Python 3.5 as well as Python 3.6\n\n\n0.9 (2017-08-10)\n~~~~~~~~~~~~~~~~\n\n- Fix spacing before the $ character\n\n- Handle type modifiers\n\n- New option ``--plpgsql`` on the command line tool, just for fun\n\n\n0.8 (2017-08-10)\n~~~~~~~~~~~~~~~~\n\n- Add enums subpackages to the documentation with references to their related headers\n\n- New ``compact_lists_margin`` option to produce a more compact representation when possible\n  (see `issue #1`__)\n\n__ https://github.com/lelit/pg_query/issues/1\n\n\n0.7 (2017-08-10)\n~~~~~~~~~~~~~~~~\n\n- Fix sdist including the Sphinx documentation\n\n\n0.6 (2017-08-10)\n~~~~~~~~~~~~~~~~\n\n- New option ``--parse-tree`` on the command line tool to show just the parse tree\n\n- Sphinx documentation, available online\n\n\n0.5 (2017-08-09)\n~~~~~~~~~~~~~~~~\n\n- Handle some more cases when a name must be double-quoted\n\n- Complete the serialization of the WindowDef node, handling its frame options\n\n\n0.4 (2017-08-09)\n~~~~~~~~~~~~~~~~\n\n- Expose the actual PostgreSQL version the underlying libpg_query libray is built on thru a new\n  ``get_postgresql_version()`` function\n\n- New option `safety_belt` for the ``prettify()`` function, to protect the innocents\n\n- Handle serialization of ``CoalesceExpr`` and ``MinMaxExpr``\n\n\n0.3 (2017-08-07)\n~~~~~~~~~~~~~~~~\n\n- Handle serialization of ``ParamRef`` nodes\n\n- Expose a ``prettify()`` helper function\n\n\n0.2 (2017-08-07)\n~~~~~~~~~~~~~~~~\n\n- Test coverage at 99%\n\n- First attempt at automatic wheel upload to PyPI, let's see...\n\n\n0.1 (2017-08-07)\n~~~~~~~~~~~~~~~~\n\n- First release (\"Hi daddy!\", as my soul would tag it)\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -30,11 +33,11 @@
     "name": "pg_query",
     "platform": "",
     "project_url": "https://pypi.org/project/pg_query/",
-    "release_url": "https://pypi.org/project/pg_query/0.8/",
+    "release_url": "https://pypi.org/project/pg_query/0.11/",
     "requires_dist": [],
     "requires_python": "",
     "summary": "Pythonic wrapper around libpg_query and SQL prettifier",
-    "version": "0.8"
+    "version": "0.11"
   },
   "releases": {
     "0.1": [
@@ -53,6 +56,234 @@
         "size": 1434905,
         "upload_time": "2017-08-07T09:15:38",
         "url": "https://files.pythonhosted.org/packages/56/a1/5d75e24d382400e9432467223cc57fe3bfbb05b17ce039f71b3bbb938b09/pg_query-0.1.tar.gz"
+      }
+    ],
+    "0.10": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "14589110bb13729b04f4f043839d91ae",
+          "sha256": "57c2cfb5193c9ace9609edcdcbacaf2b9e4d1822f35e75fa299cf72ea03571cb"
+        },
+        "downloads": 0,
+        "filename": "pg_query-0.10-cp34-cp34m-manylinux1_i686.whl",
+        "has_sig": false,
+        "md5_digest": "14589110bb13729b04f4f043839d91ae",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 1011998,
+        "upload_time": "2017-08-11T10:31:33",
+        "url": "https://files.pythonhosted.org/packages/7e/4c/006828bb126019a7dda8a04ce7fbf173b10b534e1eac298f2c25e0362122/pg_query-0.10-cp34-cp34m-manylinux1_i686.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "67884a34026523dc71a16da9d5719e64",
+          "sha256": "d7592a29f45b27e1eb1ff62bac95b1300d217f369a28c33cf8917eec4a026664"
+        },
+        "downloads": 0,
+        "filename": "pg_query-0.10-cp34-cp34m-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "67884a34026523dc71a16da9d5719e64",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 1045223,
+        "upload_time": "2017-08-11T10:31:35",
+        "url": "https://files.pythonhosted.org/packages/38/ce/397a35e6c2ac53995d9fef3620b9ef38578aa0a704130ed27f203543004d/pg_query-0.10-cp34-cp34m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8c1ef95a72c6dddf3b793b85df3e9208",
+          "sha256": "fe9c7956fc21dc18310dc615af52b9a59da056da404330c6e19766409ad869d5"
+        },
+        "downloads": 0,
+        "filename": "pg_query-0.10-cp35-cp35m-manylinux1_i686.whl",
+        "has_sig": false,
+        "md5_digest": "8c1ef95a72c6dddf3b793b85df3e9208",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 1010502,
+        "upload_time": "2017-08-11T10:31:37",
+        "url": "https://files.pythonhosted.org/packages/5f/5b/a1af9ebf8a485828fdfd4ee2ca2c62c0486c9c3a32e46e5a1dccd681a601/pg_query-0.10-cp35-cp35m-manylinux1_i686.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "602d6051d7231fcbf1ddcf4490173d88",
+          "sha256": "dbf3627ee5b94340dd2ec61efb1af5a5468d2bafcbeec432ae356963cccaa5fb"
+        },
+        "downloads": 0,
+        "filename": "pg_query-0.10-cp35-cp35m-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "602d6051d7231fcbf1ddcf4490173d88",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 1043444,
+        "upload_time": "2017-08-11T10:31:40",
+        "url": "https://files.pythonhosted.org/packages/62/85/63873117ebf46db080475bf8a3b2d039f7ace0bbd50f934dc5eefa167bb5/pg_query-0.10-cp35-cp35m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "cce07945d85df043251352e8c9e562c8",
+          "sha256": "707973df98616c1bedb68fe36ae77ad29fc44612c941768454a789d8d5f13732"
+        },
+        "downloads": 0,
+        "filename": "pg_query-0.10-cp36-cp36m-manylinux1_i686.whl",
+        "has_sig": false,
+        "md5_digest": "cce07945d85df043251352e8c9e562c8",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "size": 1013463,
+        "upload_time": "2017-08-11T10:31:43",
+        "url": "https://files.pythonhosted.org/packages/d6/e9/79667312999066c5e69014ea6c834578eaf93f2047f0f6290a7f761e6e3a/pg_query-0.10-cp36-cp36m-manylinux1_i686.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "89cc7dba225de99ed27fdc7a35bc08e6",
+          "sha256": "6a64198447b85c4086e8cf64bd2d7dea3333cb05283068a4b86e0033c6f23544"
+        },
+        "downloads": 0,
+        "filename": "pg_query-0.10-cp36-cp36m-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "89cc7dba225de99ed27fdc7a35bc08e6",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "size": 1046627,
+        "upload_time": "2017-08-11T10:31:45",
+        "url": "https://files.pythonhosted.org/packages/6b/f0/16611547835d889501f08eba0499db30c0b0c66d21de7e2d89c96182f386/pg_query-0.10-cp36-cp36m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "cd8c8363f415e79c460ad6888b1f5645",
+          "sha256": "c2c061cef461186218b682d219a8cc245c1d199c4351c743e887d400db2dca90"
+        },
+        "downloads": 0,
+        "filename": "pg_query-0.10.tar.gz",
+        "has_sig": false,
+        "md5_digest": "cd8c8363f415e79c460ad6888b1f5645",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1454426,
+        "upload_time": "2017-08-11T10:25:34",
+        "url": "https://files.pythonhosted.org/packages/1e/31/d2cd19abc4e984759b5aabc5556488d39ad6ca6256b6f46098723f9722f3/pg_query-0.10.tar.gz"
+      }
+    ],
+    "0.11": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7ad66255fb6ee8a23ddd8fb15dbc9aa3",
+          "sha256": "ffe22c629b079baa0f9b8f8a374abf147a0eb94b92088191ef64089f2d433f13"
+        },
+        "downloads": 0,
+        "filename": "pg_query-0.11-cp34-cp34m-manylinux1_i686.whl",
+        "has_sig": false,
+        "md5_digest": "7ad66255fb6ee8a23ddd8fb15dbc9aa3",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 1012734,
+        "upload_time": "2017-08-11T18:11:45",
+        "url": "https://files.pythonhosted.org/packages/3a/57/1cc785801fa7f84a03764d77a160464a855fde2800b1b063ef058dc9eeba/pg_query-0.11-cp34-cp34m-manylinux1_i686.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c911febc023e3a4436d8a40185f8b2b0",
+          "sha256": "514c10c9569dcaf4e90a429ba5bb7bb9e91848c69826e709a05c19a19d94f3d5"
+        },
+        "downloads": 0,
+        "filename": "pg_query-0.11-cp34-cp34m-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "c911febc023e3a4436d8a40185f8b2b0",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 1045935,
+        "upload_time": "2017-08-11T18:11:47",
+        "url": "https://files.pythonhosted.org/packages/c6/74/7ac95b851325ce207af59812a6ebc17f74a616a3b9cd5dde239f41570e93/pg_query-0.11-cp34-cp34m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "fb6f5f1002a4ce6f2a0c53e96053da14",
+          "sha256": "1bc34a444ced09e1a68f885bdf18735663ff745ecd9070f69ca8068283ebce29"
+        },
+        "downloads": 0,
+        "filename": "pg_query-0.11-cp35-cp35m-manylinux1_i686.whl",
+        "has_sig": false,
+        "md5_digest": "fb6f5f1002a4ce6f2a0c53e96053da14",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 1011159,
+        "upload_time": "2017-08-11T18:11:50",
+        "url": "https://files.pythonhosted.org/packages/cb/3d/5058163b23e4856f9da4a641ce01ee3e058d22353c1709d875f50ee9ac47/pg_query-0.11-cp35-cp35m-manylinux1_i686.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "29328ffe1c8c8ba71763affbf737a6f5",
+          "sha256": "4fc3ee3f9b0175934eecb8ca28e67c51d8490aa701d9899bce8329f61f30bcaf"
+        },
+        "downloads": 0,
+        "filename": "pg_query-0.11-cp35-cp35m-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "29328ffe1c8c8ba71763affbf737a6f5",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 1044058,
+        "upload_time": "2017-08-11T18:11:53",
+        "url": "https://files.pythonhosted.org/packages/fe/be/eb3f213004242f1391635aa85534675fbd87b3ffb75d82c54a1f1c7b5984/pg_query-0.11-cp35-cp35m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d6108813c95d1ab3cd6e11924ab42773",
+          "sha256": "0ed8766dc6219421679351169df94d84f9511c0a44c9cc893c1f2a7b6e5cdf59"
+        },
+        "downloads": 0,
+        "filename": "pg_query-0.11-cp36-cp36m-manylinux1_i686.whl",
+        "has_sig": false,
+        "md5_digest": "d6108813c95d1ab3cd6e11924ab42773",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "size": 1014060,
+        "upload_time": "2017-08-11T18:11:56",
+        "url": "https://files.pythonhosted.org/packages/da/80/e7490b05e9b724cbc2b4e8d06f8ec9fd7ccacf62a1d1ed07101e6d1167b7/pg_query-0.11-cp36-cp36m-manylinux1_i686.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a14951a630bb071ea37d61facd9ac91e",
+          "sha256": "43fd80976370ccfb4de487af5add3dff3f808502127721da3caa47bd8afb1f94"
+        },
+        "downloads": 0,
+        "filename": "pg_query-0.11-cp36-cp36m-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "a14951a630bb071ea37d61facd9ac91e",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "size": 1047223,
+        "upload_time": "2017-08-11T18:11:58",
+        "url": "https://files.pythonhosted.org/packages/7b/b4/9783c32d4e7d85f4d3053b41ae6ad5a9a1515a563e0d4f755005a338324a/pg_query-0.11-cp36-cp36m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8d060d74e3e5b8f8a396d08a9ac148a0",
+          "sha256": "c2a8da616888929c3dfdf490747b9865ae0bd092ffd89655ed31e10344e46432"
+        },
+        "downloads": 0,
+        "filename": "pg_query-0.11.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8d060d74e3e5b8f8a396d08a9ac148a0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1455215,
+        "upload_time": "2017-08-11T18:05:38",
+        "url": "https://files.pythonhosted.org/packages/b2/9d/f61a0ab4870114f6a62ca39f11c8021060a877f480a17db67d78a1c07819/pg_query-0.11.tar.gz"
       }
     ],
     "0.2": [
@@ -372,56 +603,170 @@
         "upload_time": "2017-08-10T17:14:22",
         "url": "https://files.pythonhosted.org/packages/e0/b4/db0f7c0221c834aebace312cddf1a1340dbe4b9a47ae14d24734fad529a4/pg_query-0.8.tar.gz"
       }
+    ],
+    "0.9": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c054959631c3cc6d6d3c0fcd585920cd",
+          "sha256": "b734eff15a7e4fda13b03c0972139693280c76a388ceab4ec00bfb51854e0535"
+        },
+        "downloads": 0,
+        "filename": "pg_query-0.9-cp36-cp36m-manylinux1_i686.whl",
+        "has_sig": false,
+        "md5_digest": "c054959631c3cc6d6d3c0fcd585920cd",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "size": 1013455,
+        "upload_time": "2017-08-10T21:33:51",
+        "url": "https://files.pythonhosted.org/packages/5a/10/85155895a0c17b86ac72d6800439315fde85b8e17505acf62539a4f5dd21/pg_query-0.9-cp36-cp36m-manylinux1_i686.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5f490b28c008c3e16dbb971a618d72bb",
+          "sha256": "06b77e5497c443a78ef0c3d314b7ebcc68ac9910f6b36bf1c780a20e7fd83537"
+        },
+        "downloads": 0,
+        "filename": "pg_query-0.9-cp36-cp36m-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "5f490b28c008c3e16dbb971a618d72bb",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "size": 1046557,
+        "upload_time": "2017-08-10T21:33:54",
+        "url": "https://files.pythonhosted.org/packages/69/f8/569920eead335090bc12b6ee687c798270ddbc5246cc04e0cc5b22810845/pg_query-0.9-cp36-cp36m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b096c157af922722a0261f03bd242807",
+          "sha256": "e60f2eb8f63b1cc99e4a3ecdfab475d9b468f671a31be3c0f35185ccb253a791"
+        },
+        "downloads": 0,
+        "filename": "pg_query-0.9.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b096c157af922722a0261f03bd242807",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1454373,
+        "upload_time": "2017-08-10T21:29:35",
+        "url": "https://files.pythonhosted.org/packages/fd/34/95e6496daecdbbf98db93bfec54843c2f01a96260e4b6312181b5b30d324/pg_query-0.9.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "03c3baf22c7947839a92602082df1b4c",
-        "sha256": "2545a6ee3b09cc10457f19aad20e4f939a4e39c8f244ba028f1fac34582edc05"
+        "md5": "7ad66255fb6ee8a23ddd8fb15dbc9aa3",
+        "sha256": "ffe22c629b079baa0f9b8f8a374abf147a0eb94b92088191ef64089f2d433f13"
       },
       "downloads": 0,
-      "filename": "pg_query-0.8-cp36-cp36m-manylinux1_i686.whl",
+      "filename": "pg_query-0.11-cp34-cp34m-manylinux1_i686.whl",
       "has_sig": false,
-      "md5_digest": "03c3baf22c7947839a92602082df1b4c",
+      "md5_digest": "7ad66255fb6ee8a23ddd8fb15dbc9aa3",
       "packagetype": "bdist_wheel",
-      "python_version": "cp36",
-      "size": 1013107,
-      "upload_time": "2017-08-10T17:25:25",
-      "url": "https://files.pythonhosted.org/packages/65/60/8263e0874f02172355d3369f22a28b4c2804f8dd0156fef102ab10a5c901/pg_query-0.8-cp36-cp36m-manylinux1_i686.whl"
+      "python_version": "cp34",
+      "size": 1012734,
+      "upload_time": "2017-08-11T18:11:45",
+      "url": "https://files.pythonhosted.org/packages/3a/57/1cc785801fa7f84a03764d77a160464a855fde2800b1b063ef058dc9eeba/pg_query-0.11-cp34-cp34m-manylinux1_i686.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "cee86490bd3730341ceae331b951ca56",
-        "sha256": "27b2c1d3b18b5f21ba540807c2b16c1b9217ee575a226b04419eb7b1f21d7350"
+        "md5": "c911febc023e3a4436d8a40185f8b2b0",
+        "sha256": "514c10c9569dcaf4e90a429ba5bb7bb9e91848c69826e709a05c19a19d94f3d5"
       },
       "downloads": 0,
-      "filename": "pg_query-0.8-cp36-cp36m-manylinux1_x86_64.whl",
+      "filename": "pg_query-0.11-cp34-cp34m-manylinux1_x86_64.whl",
       "has_sig": false,
-      "md5_digest": "cee86490bd3730341ceae331b951ca56",
+      "md5_digest": "c911febc023e3a4436d8a40185f8b2b0",
       "packagetype": "bdist_wheel",
-      "python_version": "cp36",
-      "size": 1046218,
-      "upload_time": "2017-08-10T17:25:33",
-      "url": "https://files.pythonhosted.org/packages/91/e3/a549ef2880efd21ec0fd59059e346b5b572bbbd22b0ce7581e7aaf7c27f5/pg_query-0.8-cp36-cp36m-manylinux1_x86_64.whl"
+      "python_version": "cp34",
+      "size": 1045935,
+      "upload_time": "2017-08-11T18:11:47",
+      "url": "https://files.pythonhosted.org/packages/c6/74/7ac95b851325ce207af59812a6ebc17f74a616a3b9cd5dde239f41570e93/pg_query-0.11-cp34-cp34m-manylinux1_x86_64.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "6878d8817477d2aeff435cb55979cda8",
-        "sha256": "45aec64716ff153b9b45a90652c741554b415ed8b7a24c088ae0fb70271cb75d"
+        "md5": "fb6f5f1002a4ce6f2a0c53e96053da14",
+        "sha256": "1bc34a444ced09e1a68f885bdf18735663ff745ecd9070f69ca8068283ebce29"
       },
       "downloads": 0,
-      "filename": "pg_query-0.8.tar.gz",
+      "filename": "pg_query-0.11-cp35-cp35m-manylinux1_i686.whl",
       "has_sig": false,
-      "md5_digest": "6878d8817477d2aeff435cb55979cda8",
+      "md5_digest": "fb6f5f1002a4ce6f2a0c53e96053da14",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp35",
+      "size": 1011159,
+      "upload_time": "2017-08-11T18:11:50",
+      "url": "https://files.pythonhosted.org/packages/cb/3d/5058163b23e4856f9da4a641ce01ee3e058d22353c1709d875f50ee9ac47/pg_query-0.11-cp35-cp35m-manylinux1_i686.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "29328ffe1c8c8ba71763affbf737a6f5",
+        "sha256": "4fc3ee3f9b0175934eecb8ca28e67c51d8490aa701d9899bce8329f61f30bcaf"
+      },
+      "downloads": 0,
+      "filename": "pg_query-0.11-cp35-cp35m-manylinux1_x86_64.whl",
+      "has_sig": false,
+      "md5_digest": "29328ffe1c8c8ba71763affbf737a6f5",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp35",
+      "size": 1044058,
+      "upload_time": "2017-08-11T18:11:53",
+      "url": "https://files.pythonhosted.org/packages/fe/be/eb3f213004242f1391635aa85534675fbd87b3ffb75d82c54a1f1c7b5984/pg_query-0.11-cp35-cp35m-manylinux1_x86_64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "d6108813c95d1ab3cd6e11924ab42773",
+        "sha256": "0ed8766dc6219421679351169df94d84f9511c0a44c9cc893c1f2a7b6e5cdf59"
+      },
+      "downloads": 0,
+      "filename": "pg_query-0.11-cp36-cp36m-manylinux1_i686.whl",
+      "has_sig": false,
+      "md5_digest": "d6108813c95d1ab3cd6e11924ab42773",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp36",
+      "size": 1014060,
+      "upload_time": "2017-08-11T18:11:56",
+      "url": "https://files.pythonhosted.org/packages/da/80/e7490b05e9b724cbc2b4e8d06f8ec9fd7ccacf62a1d1ed07101e6d1167b7/pg_query-0.11-cp36-cp36m-manylinux1_i686.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "a14951a630bb071ea37d61facd9ac91e",
+        "sha256": "43fd80976370ccfb4de487af5add3dff3f808502127721da3caa47bd8afb1f94"
+      },
+      "downloads": 0,
+      "filename": "pg_query-0.11-cp36-cp36m-manylinux1_x86_64.whl",
+      "has_sig": false,
+      "md5_digest": "a14951a630bb071ea37d61facd9ac91e",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp36",
+      "size": 1047223,
+      "upload_time": "2017-08-11T18:11:58",
+      "url": "https://files.pythonhosted.org/packages/7b/b4/9783c32d4e7d85f4d3053b41ae6ad5a9a1515a563e0d4f755005a338324a/pg_query-0.11-cp36-cp36m-manylinux1_x86_64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "8d060d74e3e5b8f8a396d08a9ac148a0",
+        "sha256": "c2a8da616888929c3dfdf490747b9865ae0bd092ffd89655ed31e10344e46432"
+      },
+      "downloads": 0,
+      "filename": "pg_query-0.11.tar.gz",
+      "has_sig": false,
+      "md5_digest": "8d060d74e3e5b8f8a396d08a9ac148a0",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 1453872,
-      "upload_time": "2017-08-10T17:14:22",
-      "url": "https://files.pythonhosted.org/packages/e0/b4/db0f7c0221c834aebace312cddf1a1340dbe4b9a47ae14d24734fad529a4/pg_query-0.8.tar.gz"
+      "size": 1455215,
+      "upload_time": "2017-08-11T18:05:38",
+      "url": "https://files.pythonhosted.org/packages/b2/9d/f61a0ab4870114f6a62ca39f11c8021060a877f480a17db67d78a1c07819/pg_query-0.11.tar.gz"
     }
   ]
 }
