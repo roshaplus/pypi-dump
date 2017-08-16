@@ -15,7 +15,7 @@
     ],
     "description": "=======\nAsyncme\n=======\n\n:Info: An ACME Protocol Client for AsyncIO\n:Repository: https://github.com/ArroyoNetworks/asyncme\n:Author(s): Matthew Ellison (http://github.com/seglberg)\n:Maintainer(s): Matthew Ellison (http://github.com/seglberg)\n\n.. image:: https://travis-ci.org/ArroyoNetworks/asyncme.svg?branch=master\n    :target: https://travis-ci.org/ArroyoNetworks/asyncme\n\n.. image:: https://img.shields.io/codecov/c/github/ArroyoNetworks/asyncme/master.svg?maxAge=600\n    :target: https://codecov.io/github/ArroyoNetworks/asyncme?branch=master\n\n.. image:: https://img.shields.io/pypi/v/asyncme.svg\n    :target: https://pypi.python.org/pypi/asyncme/\n\n.. image:: https://img.shields.io/github/license/ArroyoNetworks/asyncme.svg\n    :target: https://github.com/ArroyoNetworks/asyncme/blob/master/LICENSE\n\n\nIntroduction\n============\n\n.. contents:: Quick Start\n   :depth: 2\n\n.. warning::\n\n    This library is extremely new, use at your own risk. Expect large\n    changes and refactoring. Test coverage is actively being added.\n\n------------------\n\nAsyncme is an AsyncIO client and library for interacting with the ACME\n(Automatic Certificate Management Environment) protocol, such as the services\noffered by Let's Encrypt.\n\nAsyncme allows interaction with ACME servers using asynchronous http\nconnections, useful for larger async applications that may need to acquire\ncertificates automatically.\n\nFirst class support for the dns-01 challenge is included, and can automatically\nsatisfy the challenge for a large number of providers. See the `Challenges`_\nsection for more information.\n\n\nInstallation\n============\nAsyncme is now available on PyPI:\n\n.. code:: console\n\n    $ pip install asyncme\n\nDependencies\n============\nPython 3.5 or greater\n\nRequired\n--------\n\n- acme\n- arroyo-crypto\n- dnspython\n\n\nQuick Start\n===========\n\nAsyncme includes two clients:\n\nExecutorClient\n--------------\nThe executor client is a near-drop-in replacement for the official\n``python-acme`` client. The only difference is that a factory method is\nused. All blocking calls are replaced with coroutines that use\nan asyncio loop's executor to prevent blocking.\n\nBelow is the example from ``python-acme`` rewritten to use the\n``ExecutorClient``:\n\n.. code-block:: python\n\n    \"\"\"Example script showing how to use acme client API.\"\"\"\n    import logging\n    import os\n    import pkg_resources\n\n    from cryptography.hazmat.backends import default_backend\n    from cryptography.hazmat.primitives.asymmetric import rsa\n    import OpenSSL\n\n    from acme import messages\n    from acme import jose\n\n    from asyncme.client import ExecutorClient\n\n    import asyncio\n\n\n    # XXX: Assume we are already in a co-routine to simplify example.\n\n    logging.basicConfig(level=logging.DEBUG)\n\n\n    DIRECTORY_URL = 'https://acme-staging.api.letsencrypt.org/directory'\n    BITS = 2048  # minimum for Boulder\n    DOMAIN = 'example1.com'  # example.com is ignored by Boulder\n\n    # generate_private_key requires cryptography>=0.5\n    key = jose.JWKRSA(key=rsa.generate_private_key(\n        public_exponent=65537,\n        key_size=BITS,\n        backend=default_backend()))\n    loop = asyncio.get_event_loop()\n    acme = ExecutorClient.connect(DIRECTORY_URL, key, loop=loop)\n\n    regr = await acme.register()\n    logging.info('Auto-accepting TOS: %s', regr.terms_of_service)\n    await acme.agree_to_tos(regr)\n    logging.debug(regr)\n\n    authzr = await acme.request_challenges(\n        identifier=messages.Identifier(typ=messages.IDENTIFIER_FQDN, value=DOMAIN),\n        new_authzr_uri=regr.new_authzr_uri)\n    logging.debug(authzr)\n\n    authzr, authzr_response = await acme.poll(authzr)\n\n    csr = OpenSSL.crypto.load_certificate_request(\n        OpenSSL.crypto.FILETYPE_ASN1, pkg_resources.resource_string(\n            'acme', os.path.join('testdata', 'csr.der')))\n    try:\n        await acme.request_issuance(jose.util.ComparableX509(csr), (authzr,))\n    except messages.Error as error:\n        print (\"This script is doomed to fail as no authorization \"\n               \"challenges are ever solved. Error from server: {0}\".format(error))\n\nAsyncmeClient\n-------------\nAsyncme provides a high-level client of its own, which leverages its own\nchallenge/challenge handler system.\n\nCurrently this client just uses the ``ExecutorClient`` but a native asynchronous client\nis planned once the ACME RFC standard is ratified and published.\n\n.. code-block:: python\n\n    import asyncio\n    from arroyo import crypto\n\n    from asyncme.client import AsyncmeClient as Client\n    from asyncme.challenges import ChallengeType, ChallengeFailure\n    from asyncme.handlers import LibcloudHandler\n\n    DIRECTORY_URL = 'https://acme-staging.api.letsencrypt.org/directory'\n    LOOP = asyncio.get_event_loop()\n    DOMAIN = \"seglberg.arroyo.io\"\n\n    AWS_ACCESS_ID = \"ACCESS_ID_HERE\"\n    AWS_SECRET_ID = \"SECRET_ID_HERE\"\n\n    ACME_KEY = crypto.PrivateKey.generate(\"RSA\")\n    CERT_KEY = crypto.PrivateKey.generate(\"RSA\", size=4096)\n\n    CSR = crypto.x509CertSignReq.generate(CERT_KEY, DOMAIN)\n\n    async def acme_test():\n\n        client = await Client.connect(DIRECTORY_URL, ACME_KEY, loop=LOOP)\n\n        if not client.has_accepted_terms():\n            await client.accept_terms()\n\n        authed = await client.is_authed_for_domain(DOMAIN)\n        if not authed:\n\n            challenges = await client.get_domain_challenges(DOMAIN)\n            dns_01 = challenges[ChallengeType.DNS_01]\n\n            creds = (AWS_ACCESS_ID, AWS_SECRET_ID)\n            handler = LibcloudHandler(dns_01, DOMAIN, provider='route53',\n                                      credentials=creds, loop=LOOP)\n\n            try:\n                await handler.perform()\n            except ChallengeFailure:\n                raise RuntimeError(\"Failed to satisfy ACME challenge\")\n\n            # Ensure that we gained authorization for the domain\n            for _ in range(10):\n                if await client.is_authed_for_domain(DOMAIN):\n                    break\n                await asyncio.sleep(1)\n            else:\n                raise RuntimeError(\"Failed to gain authorization for domain\")\n\n        cert = await client.request_cert(CSR)\n\n        return cert\n\n    if __name__ == \"__main__\":\n\n        certificate = LOOP.run_until_complete(acme_test())\n\n        # Print out the URL to the cert\n        print(\"Certificate Location: {}\".format(certificate.location))\n        certificate.to_file(\"new-cert.pem\", encoding=crypto.EncodingType.PEM)\n\n\nChallenges\n==========\n\nWhen using the ``AsyncmeClient``, challenges can be completed using Asyncme's own\nchallenge handlers.\n\nAsyncme currently maintains a single handler for DNS-01 challenges, using\n``apache-libcloud``.\n\n\nLibcloudHandler\n---------------\n\nEnsure that ``apache-libcloud`` is installed, otherwise it can be specified\nas an extra dependency when installing Asyncme.\n\n.. code-block:: bash\n\n    pip install asyncme[libcloud-handler]\n\n\n.. code-block:: python\n\n    from asyncme.handlers import LibcloudHandler\n\n\nBy leveraging Apache Libcloud, the handler is able to automatically satisfy the DNS-01 challenge\nfor the following providers (complete list `here <https://libcloud.readthedocs.io/en/latest/dns/supported_providers.html>`_):\n\n- AuroraDNS\n- BuddyNS DNS\n- CloudFlare DNS\n- DigitalOcean\n- DNSimple\n- DurableDNS\n- Gandi DNS\n- GoDaddy DNS\n- Google DNS\n- Host Virtual DNS\n- Lineode DNS\n- Liquidweb DNS\n- Luadns\n- NFSN DNS\n- NS1 DNS\n- Rackspace DNS\n- Amazon Route53\n- Softlayer DNS\n- Vultr DNS\n- World Wide DNS\n- Zerigo DNS\n- Zonomi DNS\n\n\n",
     "docs_url": null,
-    "download_url": "https://github.com/ArroyoNetworks/asyncme/archive/v0.4.2.tar.gz",
+    "download_url": "https://github.com/ArroyoNetworks/asyncme/archive/v0.4.3.tar.gz",
     "downloads": {
       "last_day": 0,
       "last_month": 0,
@@ -29,16 +29,16 @@
     "name": "asyncme",
     "platform": "any",
     "project_url": "https://pypi.org/project/asyncme/",
-    "release_url": "https://pypi.org/project/asyncme/0.4.2/",
+    "release_url": "https://pypi.org/project/asyncme/0.4.3/",
     "requires_dist": [
       "apache-libcloud (>=1.0.0); extra == 'libcloud_handler'",
       "arroyo-crypto (>=1.0)",
       "aiodns",
-      "acme (>=0.9<=0.14.2)"
+      "acme (>0.14.2)"
     ],
     "requires_python": "",
     "summary": "Async ACME Protocol Client for AsyncIO",
-    "version": "0.4.2"
+    "version": "0.4.3"
   },
   "releases": {
     "0.1b1": [
@@ -550,40 +550,42 @@
         "upload_time": "2017-08-02T21:49:00",
         "url": "https://files.pythonhosted.org/packages/d4/53/bacb905aaf10af50e3f8455a5a16803adff71fe52f1bdf292449f5e61fcf/asyncme-0.4.2.tar.gz"
       }
+    ],
+    "0.4.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c0764b616ffb1d0bb064e32cf571d9bf",
+          "sha256": "31fb0574bfccb6b228b8f0b602404711f64eb2c99f0e8069d15ac30e7713b836"
+        },
+        "downloads": 0,
+        "filename": "asyncme-0.4.3-py35.py36-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "c0764b616ffb1d0bb064e32cf571d9bf",
+        "packagetype": "bdist_wheel",
+        "python_version": "py35.py36",
+        "size": 22741,
+        "upload_time": "2017-08-15T21:40:59",
+        "url": "https://files.pythonhosted.org/packages/ce/a3/b1741143358fa624a319ec217519e604ede4ef933368d29fd227ce746be7/asyncme-0.4.3-py35.py36-none-any.whl"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "b7561d7a23940851134c6a7d68d45dac",
-        "sha256": "5aa36a47e6fd93507b6ce0574ca92c0ac88a16f9693d213e89e45e3aed430e7e"
+        "md5": "c0764b616ffb1d0bb064e32cf571d9bf",
+        "sha256": "31fb0574bfccb6b228b8f0b602404711f64eb2c99f0e8069d15ac30e7713b836"
       },
       "downloads": 0,
-      "filename": "asyncme-0.4.2-py35.py36-none-any.whl",
+      "filename": "asyncme-0.4.3-py35.py36-none-any.whl",
       "has_sig": false,
-      "md5_digest": "b7561d7a23940851134c6a7d68d45dac",
+      "md5_digest": "c0764b616ffb1d0bb064e32cf571d9bf",
       "packagetype": "bdist_wheel",
       "python_version": "py35.py36",
-      "size": 22403,
-      "upload_time": "2017-08-02T21:48:58",
-      "url": "https://files.pythonhosted.org/packages/3a/08/2d7c151fa4d65e74e335f8b5393e3844bdc89361eceeb6c76b3fe3a2ed46/asyncme-0.4.2-py35.py36-none-any.whl"
-    },
-    {
-      "comment_text": "",
-      "digests": {
-        "md5": "87cde645231639fe78c496ec77b6a20d",
-        "sha256": "17fc9b9865c6c1f7ff03441b89a2284dd337448c14c244d94acc6fb0c1ceea52"
-      },
-      "downloads": 0,
-      "filename": "asyncme-0.4.2.tar.gz",
-      "has_sig": false,
-      "md5_digest": "87cde645231639fe78c496ec77b6a20d",
-      "packagetype": "sdist",
-      "python_version": "source",
-      "size": 36246,
-      "upload_time": "2017-08-02T21:49:00",
-      "url": "https://files.pythonhosted.org/packages/d4/53/bacb905aaf10af50e3f8455a5a16803adff71fe52f1bdf292449f5e61fcf/asyncme-0.4.2.tar.gz"
+      "size": 22741,
+      "upload_time": "2017-08-15T21:40:59",
+      "url": "https://files.pythonhosted.org/packages/ce/a3/b1741143358fa624a319ec217519e604ede4ef933368d29fd227ce746be7/asyncme-0.4.3-py35.py36-none-any.whl"
     }
   ]
 }
