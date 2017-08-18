@@ -13,7 +13,7 @@
       "Programming Language :: Python :: 3",
       "Topic :: Scientific/Engineering :: GIS"
     ],
-    "description": "=====\nFiona\n=====\n\nFiona is OGR's neat, nimble, no-nonsense API for Python programmers.\n\n.. image:: https://travis-ci.org/Toblerity/Fiona.png?branch=master   \n   :target: https://travis-ci.org/Toblerity/Fiona\n\n.. image:: https://coveralls.io/repos/Toblerity/Fiona/badge.png\n   :target: https://coveralls.io/r/Toblerity/Fiona\n\nFiona is designed to be simple and dependable. It focuses on reading and\nwriting data in standard Python IO style and relies upon familiar Python types\nand protocols such as files, dictionaries, mappings, and iterators instead of\nclasses specific to OGR. Fiona can read and write real-world data using\nmulti-layered GIS formats and zipped virtual file systems and integrates\nreadily with other Python GIS packages such as pyproj_, Rtree_, and Shapely_.\n\nFor more details, see:\n\n* Fiona `home page <https://github.com/Toblerity/Fiona>`__\n* Fiona `docs and manual <http://toblerity.github.com/fiona/>`__\n* Fiona `examples <https://github.com/Toblerity/Fiona/tree/master/examples>`__\n\nUsage\n=====\n\nCollections\n-----------\n\nRecords are read from and written to ``file``-like `Collection` objects\nreturned from the ``fiona.open()`` function.  Records are mappings modeled on\nthe GeoJSON format. They don't have any spatial methods of their own, so if you\nwant to do anything fancy with them you will probably need Shapely or something\nlike it. Here is an example of using Fiona to read some records from one data\nfile, change their geometry attributes, and write them to a new data file.\n\n.. code-block:: python\n\n    import fiona\n\n    # Register format drivers with a context manager\n\n    with fiona.drivers():\n\n        # Open a file for reading. We'll call this the \"source.\"\n\n        with fiona.open('tests/data/coutwildrnp.shp') as source:\n\n            # The file we'll write to, the \"sink\", must be initialized\n            # with a coordinate system, a format driver name, and\n            # a record schema.  We can get initial values from the open\n            # collection's ``meta`` property and then modify them as\n            # desired.\n\n            meta = source.meta\n            meta['schema']['geometry'] = 'Point'\n\n            # Open an output file, using the same format driver and\n            # coordinate reference system as the source. The ``meta``\n            # mapping fills in the keyword parameters of fiona.open().\n\n            with fiona.open('test_write.shp', 'w', **meta) as sink:\n\n                # Process only the records intersecting a box.\n                for f in source.filter(bbox=(-107.0, 37.0, -105.0, 39.0)):\n\n                    # Get a point on the boundary of the record's\n                    # geometry.\n\n                    f['geometry'] = {\n                        'type': 'Point',\n                        'coordinates': f['geometry']['coordinates'][0][0]}\n\n                    # Write the record out.\n\n                    sink.write(f)\n\n        # The sink's contents are flushed to disk and the file is\n        # closed when its ``with`` block ends. This effectively\n        # executes ``sink.flush(); sink.close()``.\n\n    # At the end of the ``with fiona.drivers()`` block, context\n    # manager exits and all drivers are de-registered.\n\nThe fiona.drivers() function and context manager are new in 1.1. The\nexample above shows the way to use it to register and de-register\ndrivers in a deterministic and efficient way. Code written for Fiona 1.0\nwill continue to work: opened collections may manage the global driver\nregistry if no other manager is present.\n\nReading Multilayer data\n-----------------------\n\nCollections can also be made from single layers within multilayer files or\ndirectories of data. The target layer is specified by name or by its integer\nindex within the file or directory. The ``fiona.listlayers()`` function\nprovides an index ordered list of layer names.\n\n.. code-block:: python\n\n    with fiona.drivers():\n\n        for layername in fiona.listlayers('tests/data'):\n            with fiona.open('tests/data', layer=layername) as src:\n                print(layername, len(src))\n\n    # Output:\n    # (u'coutwildrnp', 67)\n\nLayer can also be specified by index. In this case, ``layer=0`` and\n``layer='test_uk'`` specify the same layer in the data file or directory.\n\n.. code-block:: python\n\n    with fiona.drivers():\n\n        for i, layername in enumerate(fiona.listlayers('tests/data')):\n            with fiona.open('tests/data', layer=i) as src:\n                print(i, layername, len(src))\n\n    # Output:\n    # (0, u'coutwildrnp', 67)\n\nWriting Multilayer data\n-----------------------\n\nMultilayer data can be written as well. Layers must be specified by name when\nwriting.\n\n.. code-block:: python\n\n    with fiona.drivers():\n\n        with open('tests/data/cowildrnp.shp') as src:\n            meta = src.meta\n            f = next(src)\n\n        with fiona.open('/tmp/foo', 'w', layer='bar', **meta) as dst:\n            dst.write(f)\n\n        print(fiona.listlayers('/tmp/foo'))\n\n        with fiona.open('/tmp/foo', layer='bar') as src:\n            print(len(src))\n            f = next(src)\n            print(f['geometry']['type'])\n            print(f['properties'])\n\n        # Output:\n        # [u'bar']\n        # 1\n        # Polygon\n        # OrderedDict([(u'PERIMETER', 1.22107), (u'FEATURE2', None), (u'NAME', u'Mount Naomi Wilderness'), (u'FEATURE1', u'Wilderness'), (u'URL', u'http://www.wilderness.net/index.cfm?fuse=NWPS&sec=wildView&wname=Mount%20Naomi'), (u'AGBUR', u'FS'), (u'AREA', 0.0179264), (u'STATE_FIPS', u'49'), (u'WILDRNP020', 332), (u'STATE', u'UT')])\n\nA view of the /tmp/foo directory will confirm the creation of the new files.\n\n.. code-block:: console\n\n    $ ls /tmp/foo\n    bar.cpg bar.dbf bar.prj bar.shp bar.shx\n\nCollections from archives and virtual file systems\n--------------------------------------------------\n\nZip and Tar archives can be treated as virtual filesystems and Collections can\nbe made from paths and layers within them. In other words, Fiona lets you read\nand write zipped Shapefiles.\n\n.. code-block:: python\n\n    with fiona.drivers():\n\n        for i, layername in enumerate(\n                fiona.listlayers(\n                    '/', \n                    vfs='zip://tests/data/coutwildrnp.zip')):\n            with fiona.open(\n                    '/', \n                    vfs='zip://tests/data/coutwildrnp.zip', \n                    layer=i) as src:\n                print(i, layername, len(src))\n\n    # Output:\n    # (0, u'coutwildrnp', 67)\n\nFiona CLI\n=========\n\nFiona's command line interface, named \"fio\", is documented at `docs/cli.rst\n<https://github.com/Toblerity/Fiona/blob/master/docs/cli.rst>`__. Its ``fio\ninfo`` pretty prints information about a data file.\n\n.. code-block:: console\n\n    $ fio info --indent 2 tests/data/coutwildrnp.shp\n    {\n      \"count\": 67,\n      \"crs\": \"EPSG:4326\",\n      \"driver\": \"ESRI Shapefile\",\n      \"bounds\": [\n        -113.56424713134766,\n        37.0689811706543,\n        -104.97087097167969,\n        41.99627685546875\n      ],\n      \"schema\": {\n        \"geometry\": \"Polygon\",\n        \"properties\": {\n          \"PERIMETER\": \"float:24.15\",\n          \"FEATURE2\": \"str:80\",\n          \"NAME\": \"str:80\",\n          \"FEATURE1\": \"str:80\",\n          \"URL\": \"str:101\",\n          \"AGBUR\": \"str:80\",\n          \"AREA\": \"float:24.15\",\n          \"STATE_FIPS\": \"str:80\",\n          \"WILDRNP020\": \"int:10\",\n          \"STATE\": \"str:80\"\n        }\n      }\n    }\n\nInstallation\n============\n\nFiona requires Python 2.6, 2.7, 3.3, or 3.4 and GDAL/OGR 1.8+. To build from\na source distribution you will need a C compiler and GDAL and Python\ndevelopment headers and libraries (libgdal1-dev for Debian/Ubuntu, gdal-dev for\nCentOS/Fedora).\n\nTo build from a repository copy, you will also need Cython to build C sources\nfrom the project's .pyx files. See the project's requirements-dev.txt file for\nguidance.\n\nThe `Kyngchaos GDAL frameworks\n<http://www.kyngchaos.com/software/frameworks#gdal_complete>`__ will satisfy\nthe GDAL/OGR dependency for OS X, as will Homebrew's GDAL Formula (``brew install\ngdal``).\n\nPython Requirements\n-------------------\n\nFiona depends on the modules ``six``, ``cligj``,  ``munch``, ``argparse``, and\n``ordereddict`` (the two latter modules are standard in Python 2.7+). Pip will\nfetch these requirements for you, but users installing Fiona from a Windows\ninstaller must get them separately.\n\nUnix-like systems\n-----------------\n\nAssuming you're using a virtualenv (if not, skip to the 4th command) and\nGDAL/OGR libraries, headers, and `gdal-config`_ program are installed to well\nknown locations on your system via your system's package manager (``brew\ninstall gdal`` using Homebrew on OS X), installation is this simple.\n\n.. code-block:: console\n\n  $ mkdir fiona_env\n  $ virtualenv fiona_env\n  $ source fiona_env/bin/activate\n  (fiona_env)$ pip install fiona\n\nIf gdal-config is not available or if GDAL/OGR headers and libs aren't\ninstalled to a well known location, you must set include dirs, library dirs,\nand libraries options via the setup.cfg file or setup command line as shown\nbelow (using ``git``). You must also specify the major version of the GDAL API\n(1 or 2) on the setup command line.\n\n.. code-block:: console\n\n  (fiona_env)$ git clone git://github.com/Toblerity/Fiona.git\n  (fiona_env)$ cd Fiona\n  (fiona_env)$ python setup.py build_ext -I/path/to/gdal/include -L/path/to/gdal/lib -lgdal install --gdalversion 1\n\nOr specify that build options and GDAL API version should be provided by a\nparticular gdal-config program.\n\n.. code-block:: console\n\n  (fiona_env)$ GDAL_CONFIG=/path/to/gdal-config pip install fiona\n\nWindows\n-------\n\nBinary installers are available at\nhttp://www.lfd.uci.edu/~gohlke/pythonlibs/#fiona and coming eventually to PyPI.\n\nYou can download a binary distribution of GDAL from `here\n<http://www.gisinternals.com/release.php>`_.  You will also need to download\nthe compiled libraries and headers (include files).\n\nWhen building from source on Windows, it is important to know that setup.py\ncannot rely on gdal-config, which is only present on UNIX systems, to discover \nthe locations of header files and libraries that Fiona needs to compile its \nC extensions. On Windows, these paths need to be provided by the user. \nYou will need to find the include files and the library files for gdal and \nuse setup.py as follows. You must also specify the major version of the GDAL\nAPI (1 or 2) on the setup command line.\n\n.. code-block:: console\n\n    $ python setup.py build_ext -I<path to gdal include files> -lgdal_i -L<path to gdal library> install --gdalversion 1\n\nNote: The GDAL dll (gdal111.dll) and gdal-data directory need to be in your \nWindows PATH otherwise Fiona will fail to work.\n\nDevelopment and testing\n=======================\n\nBuilding from the source requires Cython. Tests require Nose. If the GDAL/OGR\nlibraries, headers, and `gdal-config`_ program are installed to well known\nlocations on your system (via your system's package manager), you can do this::\n\n  (fiona_env)$ git clone git://github.com/Toblerity/Fiona.git\n  (fiona_env)$ cd Fiona\n  (fiona_env)$ pip install cython\n  (fiona_env)$ pip install -e .[test]\n  (fiona_env)$ nosetests\n\nOr you can use the ``pep-518-install`` script::\n\n  (fiona_env)$ git clone git://github.com/Toblerity/Fiona.git\n  (fiona_env)$ cd Fiona\n  (fiona_env)$ ./pep-518-install\n\nIf you have a non-standard environment, you'll need to specify the include and\nlib dirs and GDAL library on the command line::\n\n  (fiona_env)$ python setup.py build_ext -I/path/to/gdal/include -L/path/to/gdal/lib -lgdal --gdalversion 2 develop\n  (fiona_env)$ nosetests\n\n.. _OGR: http://www.gdal.org/ogr\n.. _pyproj: http://pypi.python.org/pypi/pyproj/\n.. _Rtree: http://pypi.python.org/pypi/Rtree/\n.. _Shapely: http://pypi.python.org/pypi/Shapely/\n.. _gdal-config: http://www.gdal.org/gdal-config.html\n\nChanges\n=======\n\nAll issue numbers are relative to https://github.com/Toblerity/Fiona/issues.\n\n1.7.8 (2017-06-20)\n------------------\n\nBug fixes:\n\n- Provide all arguments needed by CPLError based exceptions (#456).\n\n1.7.7 (2017-06-05)\n------------------\n\nBug fixes:\n\n- Switch logger `warn()` (deprecated) calls to `warning()`.\n- Replace all relative imports and cimports in Cython modules with absolute\n  imports (#450).\n- Avoid setting `PROJ_LIB` to a non-existent directory (#439).\n\n1.7.6 (2017-04-26)\n------------------\n\nBug fixes:\n\n- Fall back to `share/proj` for PROJ_LIB (#440).\n- Replace every call to `OSRDestroySpatialReference()` with `OSRRelease()`,\n  fixing the GPKG driver crasher reported in #441 (#443).\n- Add a `DriverIOError` derived from `IOError` to use for driver-specific\n  errors such as the GeoJSON driver's refusal to overwrite existing files.\n  Also we now ensure that when this error is raised by `fiona.open()` any\n  created read or write session is deleted, this eliminates spurious \n  exceptions on teardown of broken `Collection` objects (#437, #444).\n\n1.7.5 (2017-03-20)\n------------------\n\nBug fixes:\n\n- Opening a data file in read (the default) mode with `fiona.open()` using the\n  the `driver` or `drivers` keyword arguments (to specify certain format \n  drivers) would sometimes cause a crash on Windows due to improperly\n  terminated lists of strings (#428). The fix: Fiona's buggy `string_list()`\n  has been replaced by GDAL's `CSLAddString()`.\n\n1.7.4 (2017-02-20)\n------------------\n\nBug fixes:\n\n- OGR's EsriJSON detection fails when certain keys aren't found in the first\n  6000 bytes of data passed to `BytesCollection` (#422). A .json file extension\n  is now explicitly given to the in-memory file behind `BytesCollection` when\n  the `driver='GeoJSON'` keyword argument is given (#423). \n\n1.7.3 (2017-02-14)\n------------------\n\nRoses are red.\nTan is a pug.\nSoftware regression's\nthe most embarrassing bug.\n\nBug fixes:\n\n- Use __stdcall for GDAL error handling callback on Windows as in Rasterio.\n- Turn on latent support for zip:// URLs in rio-cat and rio-info (#421).\n- The 1.7.2 release broke support for zip files with absolute paths (#418).\n  This regression has been fixed with tests to confirm.\n\n1.7.2 (2017-01-27)\n------------------\n\nFuture Deprecation:\n\n- `Collection.__next__()` is buggy in that it can lead to duplication of \n  features when used in combination with `Collection.filter()` or\n  `Collection.__iter__()`. It will be removed in Fiona 2.0. Please check for\n  usage of this deprecated feature by running your tests or programs with\n  `PYTHONWARNINGS=\"always:::fiona\"` or `-W\"always:::fiona\"` and switch from\n  `next(collection)` to `next(iter(collection))` (#301).\n\nBug fix:\n\n- Zipped streams of bytes can be accessed by `BytesCollection` (#318).\n\n1.7.1.post1 (2016-12-23)\n------------------------\n- New binary wheels using version 1.2.0 of sgillies/frs-wheel-builds. See\n  https://github.com/sgillies/frs-wheel-builds/blob/master/CHANGES.txt.\n\n1.7.1 (2016-11-16)\n------------------\n\nBug Fixes:\n\n- Prevent Fiona from stumbling over 'Z', 'M', and 'ZM' geometry types\n  introduced in GDAL 2.1 (#384). Fiona 1.7.1 doesn't add explicit support for\n  these types, they are coerced to geometry types 1-7 ('Point', 'LineString',\n  etc.)\n- Raise an `UnsupportedGeometryTypeError` when a bogus or unsupported \n  geometry type is encountered in a new collection's schema or elsewhere\n  (#340).\n- Enable `--precision 0` for fio-cat (#370).\n- Prevent datetime exceptions from unnecessarily stopping collection iteration\n  by yielding `None` (#385)\n- Replace log.warn calls with log.warning calls (#379).\n- Print an error message if neither gdal-config or `--gdalversion` indicate\n  a GDAL C API version when running `setup.py` (#364).\n- Let dict-like subclasses through CRS type checks (#367).\n\n1.7.0post2 (2016-06-15)\n-----------------------\n\nPackaging: define extension modules for 'clean' and 'config' targets (#363).\n\n1.7.0post1 (2016-06-15)\n-----------------------\n\nPackaging: No files are copied for the 'clean' setup target (#361, #362).\n\n1.7.0 (2016-06-14)\n------------------\n\nThe C extension modules in this library can now be built and used with either\na 1.x or 2.x release of the GDAL library. Big thanks to Ren\u00e9 Buffat for\nleading this effort.\n\nRefactoring:\n\n- The `ogrext1.pyx` and `ogrext2.pyx` files now use separate\n  C APIs defined in `ogrext1.pxd` and `ogrex2.pxd`. The other extension\n  modules have been refactored so that they do not depend on either of these\n  modules and use subsets of the GDAL/OGR API compatible with both GDAL 1.x and\n  2.x (#359).\n\nPackaging:\n\n- Source distributions now contain two different sources for the\n  `ogrext` extension module. The `ogrext1.c` file will be used with GDAL 1.x\n  and the `ogrext2.c` file will be used with GDAL 2.x.\n\n1.7b2 (2016-06-13)\n------------------\n\n- New feature: enhancement of the `--layer` option for fio-cat and fio-dump\n  to allow separate layers of one or more multi-layer input files to be\n  selected (#349).\n\n1.7b1 (2016-06-10)\n------------------\n\n- New feature: support for GDAL version 2+ (#259).\n- New feature: a new fio-calc CLI command (#273).\n- New feature: `--layer` options for fio-info (#316) and fio-load (#299).\n- New feature: a `--no-parse` option for fio-collect that lets a careful user\n  avoid extra JSON serialization and deserialization (#306).\n- Bug fix: `+wktext` is now preserved when serializing CRS from WKT to PROJ.4\n  dicts (#352).\n- Bug fix: a small memory leak when opening a collection has been fixed (#337).\n- Bug fix: internal unicode errors now result in a log message and a \n  `UnicodeError` exception, not a `TypeError` (#356).\n\n1.6.4 (2016-05-06)\n------------------\n- Raise ImportError if the active GDAL library version is >= 2.0 instead of\n  failing unpredictably (#338, #341). Support for GDAL>=2.0 is coming in\n  Fiona 1.7.\n\n1.6.3.post1 (2016-03-27)\n------------------------\n- No changes to the library in this post-release version, but there is a\n  significant change to the distributions on PyPI: to help make Fiona more\n  compatible with Shapely on OS X, the GDAL shared library included in the\n  macosx (only) binary wheels now statically links the GEOS library. See\n  https://github.com/sgillies/frs-wheel-builds/issues/5.\n\n1.6.3 (2015-12-22)\n------------------\n- Daytime has been decreasing in the Northern Hemisphere, but is now\n  increasing again as it should.\n- Non-UTF strings were being passed into OGR functions in some situations\n  and on Windows this would sometimes crash a Python process (#303). Fiona\n  now raises errors derived from UnicodeError when field names or field\n  values can't be encoded.\n\n1.6.2 (2015-09-22)\n------------------\n- Providing only PROJ4 representations in the dataset meta property resulted in\n  loss of CRS information when using the `fiona.open(..., **src.meta) as dst`\n  pattern (#265). This bug has been addressed by adding a crs_wkt item to the`\n  meta property and extending the `fiona.open()` and the collection constructor\n  to look for and prioritize this keyword argument.\n\n1.6.1 (2015-08-12)\n------------------\n- Bug fix: Fiona now deserializes JSON-encoded string properties provided by\n  the OGR GeoJSON driver (#244, #245, #246).\n- Bug fix: proj4 data was not copied properly into binary distributions due to\n  a typo (#254).\n\nSpecial thanks to WFMU DJ Liz Berg for the awesome playlist that's fueling my\nrelease sprint. Check it out at http://wfmu.org/playlists/shows/62083. You\ncan't unhear Love Coffin.\n\n1.6.0 (2015-07-21)\n------------------\n- Upgrade Cython requirement to 0.22 (#214).\n- New BytesCollection class (#215).\n- Add GDAL's OpenFileGDB driver to registered drivers (#221).\n- Implement CLI commands as plugins (#228).\n- Raise click.abort instead of calling sys.exit, preventing suprising exits\n  (#236).\n\n1.5.1 (2015-03-19)\n------------------\n- Restore test data to sdists by fixing MANIFEST.in (#216).\n\n1.5.0 (2015-02-02)\n------------------\n- Finalize GeoJSON feature sequence options (#174).\n- Fix for reading of datasets that don't support feature counting (#190).\n- New test dataset (#188).\n- Fix for encoding error (#191).\n- Remove confusing warning (#195).\n- Add data files for binary wheels (#196).\n- Add control over drivers enabled when reading datasets (#203).\n- Use cligj for CLI options involving GeoJSON (#204).\n- Fix fio-info --bounds help (#206).\n\n1.4.8 (2014-11-02)\n------------------\n- Add missing crs_wkt property as in Rasterio (#182).\n\n1.4.7 (2014-10-28)\n------------------\n- Fix setting of CRS from EPSG codes (#149).\n\n1.4.6 (2014-10-21)\n------------------\n- Handle 3D coordinates in bounds() #178.\n\n1.4.5 (2014-10-18)\n------------------\n- Add --bbox option to fio-cat (#163).\n- Skip geopackage tests if run from an sdist (#167).\n- Add fio-bounds and fio-distrib.\n- Restore fio-dump to working order.\n\n1.4.4 (2014-10-13)\n------------------\n- Fix accidental requirement on GDAL 1.11 introduced in 1.4.3 (#164).\n\n1.4.3 (2014-10-10)\n------------------\n- Add support for geopackage format (#160).\n- Add -f and --format aliases for --driver in CLI (#162).\n- Add --version option and env command to CLI.\n\n1.4.2 (2014-10-03)\n------------------\n- --dst-crs and --src-crs options for fio cat and collect (#159).\n\n1.4.1 (2014-09-30)\n------------------\n- Fix encoding bug in collection's __getitem__ (#153).\n\n1.4.0 (2014-09-22)\n------------------\n- Add fio cat and fio collect commands (#150).\n- Return of Python 2.6 compatibility (#148).\n- Improved CRS support (#149).\n\n1.3.0 (2014-09-17)\n------------------\n- Add single metadata item accessors to fio inf (#142).\n- Move fio to setuptools entry point (#142).\n- Add fio dump and load commands (#143).\n- Remove fio translate command.\n\n1.2.0 (2014-09-02)\n------------------\n- Always show property width and precision in schema (#123).\n- Write datetime properties of features (#125).\n- Reset spatial filtering in filter() (#129).\n- Accept datetime.date objects as feature properties (#130).\n- Add slicing to collection iterators (#132).\n- Add geometry object masks to collection iterators (#136).\n- Change source layout to match Shapely and Rasterio (#138).\n\n1.1.6 (2014-07-23)\n------------------\n- Implement Collection __getitem__() (#112).\n- Leave GDAL finalization to the DLL's destructor (#113).\n- Add Collection keys(), values(), items(), __contains__() (#114).\n- CRS bug fix (#116).\n- Add fio CLI program.\n\n1.1.5 (2014-05-21)\n------------------\n- Addition of cpl_errs context manager (#108).\n- Check for NULLs with '==' test instead of 'is' (#109).\n- Open auxiliary files with encoding='utf-8' in setup for Python 3 (#110).\n\n1.1.4 (2014-04-03)\n------------------\n- Convert 'long' in schemas to 'int' (#101).\n- Carefully map Python schema to the possibly munged internal schema (#105).\n- Allow writing of features with geometry: None (#71).\n\n1.1.3 (2014-03-23)\n------------------\n- Always register all GDAL and OGR drivers when entering the DriverManager\n  context (#80, #92).\n- Skip unsupported field types with a warning (#91).\n- Allow OGR config options to be passed to fiona.drivers() (#90, #93).\n- Add a bounds() function (#100).\n- Turn on GPX driver.\n\n1.1.2 (2014-02-14)\n------------------\n- Remove collection slice left in dumpgj (#88).\n\n1.1.1 (2014-02-02)\n------------------\n- Add an interactive file inspector like the one in rasterio.\n- CRS to_string bug fix (#83).\n\n1.1 (2014-01-22)\n----------------\n- Use a context manager to manage drivers (#78), a backwards compatible but\n  big change. Fiona is now compatible with rasterio and plays better with the\n  osgeo package.\n\n1.0.3 (2014-01-21)\n------------------\n- Fix serialization of +init projections (#69).\n\n1.0.2 (2013-09-09)\n------------------\n- Smarter, better test setup (#65, #66, #67).\n- Add type='Feature' to records read from a Collection (#68).\n- Skip geometry validation when using GeoJSON driver (#61).\n- Dumpgj file description reports record properties as a list (as in\n  dict.items()) instead of a dict.\n\n1.0.1 (2013-08-16)\n------------------\n- Allow ordering of written fields and preservation of field order when\n  reading (#57).\n\n1.0 (2013-07-30)\n-----------------\n- Add prop_type() function.\n- Allow UTF-8 encoded paths for Python 2 (#51). For Python 3, paths must\n  always be str, never bytes.\n- Remove encoding from collection.meta, it's a file creation option only.\n- Support for linking GDAL frameworks (#54).\n\n0.16.1 (2013-07-02)\n-------------------\n- Add listlayers, open, prop_width to __init__py:__all__.\n- Reset reading of OGR layer whenever we ask for a collection iterator (#49).\n\n0.16 (2013-06-24)\n-----------------\n- Add support for writing layers to multi-layer files.\n- Add tests to reach 100% Python code coverage.\n\n0.15 (2013-06-06)\n-----------------\n- Get and set numeric field widths (#42).\n- Add support for multi-layer data sources (#17).\n- Add support for zip and tar virtual filesystems (#45).\n- Add listlayers() function.\n- Add GeoJSON to list of supported formats (#47).\n- Allow selection of layers by index or name.\n\n0.14 (2013-05-04)\n-----------------\n- Add option to add JSON-LD in the dumpgj program.\n- Compare values to six.string_types in Collection constructor.\n- Add encoding to Collection.meta.\n- Document dumpgj in README.\n\n0.13 (2013-04-30)\n-----------------\n- Python 2/3 compatibility in a single package. Pythons 2.6, 2.7, 3.3 now supported.\n\n0.12.1 (2013-04-16)\n-------------------\n- Fix messed up linking of README in sdist (#39).\n\n0.12 (2013-04-15)\n-----------------\n- Fix broken installation of extension modules (#35).\n- Log CPL errors at their matching Python log levels.\n- Use upper case for encoding names within OGR, lower case in Python.\n\n0.11 (2013-04-14)\n-----------------\n- Cythonize .pyx files (#34).\n- Work with or around OGR's internal recoding of record data (#35).\n- Fix bug in serialization of int/float PROJ.4 params.\n\n0.10 (2013-03-23)\n-----------------\n- Add function to get the width of str type properties.\n- Handle validation and schema representation of 3D geometry types (#29).\n- Return {'geometry': None} in the case of a NULL geometry (#31).\n\n0.9.1 (2013-03-07)\n------------------\n- Silence the logger in ogrext.so (can be overridden).\n- Allow user specification of record field encoding (like 'Windows-1252' for\n  Natural Earth shapefiles) to help when OGR can't detect it.\n\n0.9 (2013-03-06)\n----------------\n- Accessing file metadata (crs, schema, bounds) on never inspected closed files\n  returns None without exceptions.\n- Add a dict of supported_drivers and their supported modes.\n- Raise ValueError for unsupported drivers and modes.\n- Remove asserts from ogrext.pyx.\n- Add validate_record method to collections.\n- Add helpful coordinate system functions to fiona.crs.\n- Promote use of fiona.open over fiona.collection.\n- Handle Shapefile's mix of LineString/Polygon and multis (#18).\n- Allow users to specify width of shapefile text fields (#20).\n\n0.8 (2012-02-21)\n----------------\n- Replaced .opened attribute with .closed (product of collection() is always\n  opened). Also a __del__() which will close a Collection, but still not to be\n  depended upon.\n- Added writerecords method.\n- Added a record buffer and better counting of records in a collection.\n- Manage one iterator per collection/session.\n- Added a read-only bounds property.\n\n0.7 (2012-01-29)\n----------------\n- Initial timezone-naive support for date, time, and datetime fields. Don't use\n  these field types if you can avoid them. RFC 3339 datetimes in a string field\n  are much better.\n\n0.6.2 (2012-01-10)\n------------------\n- Diagnose and set the driver property of collection in read mode.\n- Fail if collection paths are not to files. Multi-collection workspaces are\n  a (maybe) TODO.\n\n0.6.1 (2012-01-06)\n------------------\n- Handle the case of undefined crs for disk collections.\n\n0.6 (2012-01-05)\n----------------\n- Support for collection coordinate reference systems based on Proj4.\n- Redirect OGR warnings and errors to the Fiona log.\n- Assert that pointers returned from the ograpi functions are not NULL before\n  using.\n\n0.5 (2011-12-19)\n----------------\n- Support for reading and writing collections of any geometry type.\n- Feature and Geometry classes replaced by mappings (dicts).\n- Removal of Workspace class.\n\n0.2 (2011-09-16)\n----------------\n- Rename WorldMill to Fiona.\n\n0.1.1 (2008-12-04)\n------------------\n- Support for features with no geometry.\n\n\nCredits\n=======\n\nFiona is written by:\n\n- Sean Gillies <sean.gillies@gmail.com>\n- Rene Buffat <buffat@gmail.com>\n- Kevin Wurster <wursterk@gmail.com>\n- Micah Cochran <micah@micahcochran.net>\n- Matthew Perry <perrygeo@gmail.com>\n- Joshua Arnott <josh@snorfalorpagus.net>\n- Kelsey Jordahl <kjordahl@enthought.com>\n- Patrick Young <patrick.mckendree.young@gmail.com>\n- Simon Norris <snorris@hillcrestgeo.ca>\n- Hannes Gr\u00e4uler <graeuler@geoplex.de>\n- Johan Van de Wauw <johan.vandewauw@gmail.com>\n- Jacob Wasserman <jwasserman@gmail.com>\n- Ryan Grout <rgrout@continuum.io>\n- Michael Weisman <mweisman@gmail.com>\n- fredj <frederic.junod@camptocamp.com>\n- Bas Couwenberg <sebastic@xs4all.nl>\n- Brendan Ward <bcward@consbio.org>\n- Michele Citterio <michele@citterio.net>\n- Miro Hron\u010dok <miro@hroncok.cz>\n- qinfeng <guo.qinfeng+github@gmail.com>\n- Michael Weisman <michael@urbanmapping.com>\n- Brandon Liu <bdon@bdon.org>\n- Ludovic Delaun\u00e9 <ludotux@gmail.com>\n- Martijn Visser <mgvisser@gmail.com>\n- Ariel Nunez <ingenieroariel@gmail.com>\n- Oliver Tonnhofer <olt@bogosoft.com>\n- Stefano Costa <steko@iosa.it>\n- dimlev <dimlev@gmail.com>\n- wilsaj <wilson.andrew.j+github@gmail.com>\n- Jesse Crocker <jesse@gaiagps.com>\n\nFiona would not be possible without the great work of Frank Warmerdam and other\nGDAL/OGR developers.\n\nSome portions of this work were supported by a grant (for Pleiades_) from the\nU.S. National Endowment for the Humanities (http://www.neh.gov).\n\n.. _Pleiades: http://pleiades.stoa.org\n\n\n",
+    "description": "=====\nFiona\n=====\n\nFiona is OGR's neat, nimble, no-nonsense API for Python programmers.\n\n.. image:: https://travis-ci.org/Toblerity/Fiona.png?branch=master   \n   :target: https://travis-ci.org/Toblerity/Fiona\n\n.. image:: https://coveralls.io/repos/Toblerity/Fiona/badge.png\n   :target: https://coveralls.io/r/Toblerity/Fiona\n\nFiona is designed to be simple and dependable. It focuses on reading and\nwriting data in standard Python IO style and relies upon familiar Python types\nand protocols such as files, dictionaries, mappings, and iterators instead of\nclasses specific to OGR. Fiona can read and write real-world data using\nmulti-layered GIS formats and zipped virtual file systems and integrates\nreadily with other Python GIS packages such as pyproj_, Rtree_, and Shapely_.\n\nFor more details, see:\n\n* Fiona `home page <https://github.com/Toblerity/Fiona>`__\n* Fiona `docs and manual <http://toblerity.github.com/fiona/>`__\n* Fiona `examples <https://github.com/Toblerity/Fiona/tree/master/examples>`__\n\nUsage\n=====\n\nCollections\n-----------\n\nRecords are read from and written to ``file``-like `Collection` objects\nreturned from the ``fiona.open()`` function.  Records are mappings modeled on\nthe GeoJSON format. They don't have any spatial methods of their own, so if you\nwant to do anything fancy with them you will probably need Shapely or something\nlike it. Here is an example of using Fiona to read some records from one data\nfile, change their geometry attributes, and write them to a new data file.\n\n.. code-block:: python\n\n    import fiona\n\n    # Register format drivers with a context manager\n\n    with fiona.drivers():\n\n        # Open a file for reading. We'll call this the \"source.\"\n\n        with fiona.open('tests/data/coutwildrnp.shp') as source:\n\n            # The file we'll write to, the \"sink\", must be initialized\n            # with a coordinate system, a format driver name, and\n            # a record schema.  We can get initial values from the open\n            # collection's ``meta`` property and then modify them as\n            # desired.\n\n            meta = source.meta\n            meta['schema']['geometry'] = 'Point'\n\n            # Open an output file, using the same format driver and\n            # coordinate reference system as the source. The ``meta``\n            # mapping fills in the keyword parameters of fiona.open().\n\n            with fiona.open('test_write.shp', 'w', **meta) as sink:\n\n                # Process only the records intersecting a box.\n                for f in source.filter(bbox=(-107.0, 37.0, -105.0, 39.0)):\n\n                    # Get a point on the boundary of the record's\n                    # geometry.\n\n                    f['geometry'] = {\n                        'type': 'Point',\n                        'coordinates': f['geometry']['coordinates'][0][0]}\n\n                    # Write the record out.\n\n                    sink.write(f)\n\n        # The sink's contents are flushed to disk and the file is\n        # closed when its ``with`` block ends. This effectively\n        # executes ``sink.flush(); sink.close()``.\n\n    # At the end of the ``with fiona.drivers()`` block, context\n    # manager exits and all drivers are de-registered.\n\nThe fiona.drivers() function and context manager are new in 1.1. The\nexample above shows the way to use it to register and de-register\ndrivers in a deterministic and efficient way. Code written for Fiona 1.0\nwill continue to work: opened collections may manage the global driver\nregistry if no other manager is present.\n\nReading Multilayer data\n-----------------------\n\nCollections can also be made from single layers within multilayer files or\ndirectories of data. The target layer is specified by name or by its integer\nindex within the file or directory. The ``fiona.listlayers()`` function\nprovides an index ordered list of layer names.\n\n.. code-block:: python\n\n    with fiona.drivers():\n\n        for layername in fiona.listlayers('tests/data'):\n            with fiona.open('tests/data', layer=layername) as src:\n                print(layername, len(src))\n\n    # Output:\n    # (u'coutwildrnp', 67)\n\nLayer can also be specified by index. In this case, ``layer=0`` and\n``layer='test_uk'`` specify the same layer in the data file or directory.\n\n.. code-block:: python\n\n    with fiona.drivers():\n\n        for i, layername in enumerate(fiona.listlayers('tests/data')):\n            with fiona.open('tests/data', layer=i) as src:\n                print(i, layername, len(src))\n\n    # Output:\n    # (0, u'coutwildrnp', 67)\n\nWriting Multilayer data\n-----------------------\n\nMultilayer data can be written as well. Layers must be specified by name when\nwriting.\n\n.. code-block:: python\n\n    with fiona.drivers():\n\n        with open('tests/data/cowildrnp.shp') as src:\n            meta = src.meta\n            f = next(src)\n\n        with fiona.open('/tmp/foo', 'w', layer='bar', **meta) as dst:\n            dst.write(f)\n\n        print(fiona.listlayers('/tmp/foo'))\n\n        with fiona.open('/tmp/foo', layer='bar') as src:\n            print(len(src))\n            f = next(src)\n            print(f['geometry']['type'])\n            print(f['properties'])\n\n        # Output:\n        # [u'bar']\n        # 1\n        # Polygon\n        # OrderedDict([(u'PERIMETER', 1.22107), (u'FEATURE2', None), (u'NAME', u'Mount Naomi Wilderness'), (u'FEATURE1', u'Wilderness'), (u'URL', u'http://www.wilderness.net/index.cfm?fuse=NWPS&sec=wildView&wname=Mount%20Naomi'), (u'AGBUR', u'FS'), (u'AREA', 0.0179264), (u'STATE_FIPS', u'49'), (u'WILDRNP020', 332), (u'STATE', u'UT')])\n\nA view of the /tmp/foo directory will confirm the creation of the new files.\n\n.. code-block:: console\n\n    $ ls /tmp/foo\n    bar.cpg bar.dbf bar.prj bar.shp bar.shx\n\nCollections from archives and virtual file systems\n--------------------------------------------------\n\nZip and Tar archives can be treated as virtual filesystems and Collections can\nbe made from paths and layers within them. In other words, Fiona lets you read\nand write zipped Shapefiles.\n\n.. code-block:: python\n\n    with fiona.drivers():\n\n        for i, layername in enumerate(\n                fiona.listlayers(\n                    '/', \n                    vfs='zip://tests/data/coutwildrnp.zip')):\n            with fiona.open(\n                    '/', \n                    vfs='zip://tests/data/coutwildrnp.zip', \n                    layer=i) as src:\n                print(i, layername, len(src))\n\n    # Output:\n    # (0, u'coutwildrnp', 67)\n\nFiona CLI\n=========\n\nFiona's command line interface, named \"fio\", is documented at `docs/cli.rst\n<https://github.com/Toblerity/Fiona/blob/master/docs/cli.rst>`__. Its ``fio\ninfo`` pretty prints information about a data file.\n\n.. code-block:: console\n\n    $ fio info --indent 2 tests/data/coutwildrnp.shp\n    {\n      \"count\": 67,\n      \"crs\": \"EPSG:4326\",\n      \"driver\": \"ESRI Shapefile\",\n      \"bounds\": [\n        -113.56424713134766,\n        37.0689811706543,\n        -104.97087097167969,\n        41.99627685546875\n      ],\n      \"schema\": {\n        \"geometry\": \"Polygon\",\n        \"properties\": {\n          \"PERIMETER\": \"float:24.15\",\n          \"FEATURE2\": \"str:80\",\n          \"NAME\": \"str:80\",\n          \"FEATURE1\": \"str:80\",\n          \"URL\": \"str:101\",\n          \"AGBUR\": \"str:80\",\n          \"AREA\": \"float:24.15\",\n          \"STATE_FIPS\": \"str:80\",\n          \"WILDRNP020\": \"int:10\",\n          \"STATE\": \"str:80\"\n        }\n      }\n    }\n\nInstallation\n============\n\nFiona requires Python 2.6, 2.7, 3.3, or 3.4 and GDAL/OGR 1.8+. To build from\na source distribution you will need a C compiler and GDAL and Python\ndevelopment headers and libraries (libgdal1-dev for Debian/Ubuntu, gdal-dev for\nCentOS/Fedora).\n\nTo build from a repository copy, you will also need Cython to build C sources\nfrom the project's .pyx files. See the project's requirements-dev.txt file for\nguidance.\n\nThe `Kyngchaos GDAL frameworks\n<http://www.kyngchaos.com/software/frameworks#gdal_complete>`__ will satisfy\nthe GDAL/OGR dependency for OS X, as will Homebrew's GDAL Formula (``brew install\ngdal``).\n\nPython Requirements\n-------------------\n\nFiona depends on the modules ``six``, ``cligj``,  ``munch``, ``argparse``, and\n``ordereddict`` (the two latter modules are standard in Python 2.7+). Pip will\nfetch these requirements for you, but users installing Fiona from a Windows\ninstaller must get them separately.\n\nUnix-like systems\n-----------------\n\nAssuming you're using a virtualenv (if not, skip to the 4th command) and\nGDAL/OGR libraries, headers, and `gdal-config`_ program are installed to well\nknown locations on your system via your system's package manager (``brew\ninstall gdal`` using Homebrew on OS X), installation is this simple.\n\n.. code-block:: console\n\n  $ mkdir fiona_env\n  $ virtualenv fiona_env\n  $ source fiona_env/bin/activate\n  (fiona_env)$ pip install fiona\n\nIf gdal-config is not available or if GDAL/OGR headers and libs aren't\ninstalled to a well known location, you must set include dirs, library dirs,\nand libraries options via the setup.cfg file or setup command line as shown\nbelow (using ``git``). You must also specify the major version of the GDAL API\n(1 or 2) on the setup command line.\n\n.. code-block:: console\n\n  (fiona_env)$ git clone git://github.com/Toblerity/Fiona.git\n  (fiona_env)$ cd Fiona\n  (fiona_env)$ python setup.py build_ext -I/path/to/gdal/include -L/path/to/gdal/lib -lgdal install --gdalversion 1\n\nOr specify that build options and GDAL API version should be provided by a\nparticular gdal-config program.\n\n.. code-block:: console\n\n  (fiona_env)$ GDAL_CONFIG=/path/to/gdal-config pip install fiona\n\nWindows\n-------\n\nBinary installers are available at\nhttp://www.lfd.uci.edu/~gohlke/pythonlibs/#fiona and coming eventually to PyPI.\n\nYou can download a binary distribution of GDAL from `here\n<http://www.gisinternals.com/release.php>`_.  You will also need to download\nthe compiled libraries and headers (include files).\n\nWhen building from source on Windows, it is important to know that setup.py\ncannot rely on gdal-config, which is only present on UNIX systems, to discover \nthe locations of header files and libraries that Fiona needs to compile its \nC extensions. On Windows, these paths need to be provided by the user. \nYou will need to find the include files and the library files for gdal and \nuse setup.py as follows. You must also specify the major version of the GDAL\nAPI (1 or 2) on the setup command line.\n\n.. code-block:: console\n\n    $ python setup.py build_ext -I<path to gdal include files> -lgdal_i -L<path to gdal library> install --gdalversion 1\n\nNote: The GDAL dll (gdal111.dll) and gdal-data directory need to be in your \nWindows PATH otherwise Fiona will fail to work.\n\nDevelopment and testing\n=======================\n\nBuilding from the source requires Cython. Tests require Nose. If the GDAL/OGR\nlibraries, headers, and `gdal-config`_ program are installed to well known\nlocations on your system (via your system's package manager), you can do this::\n\n  (fiona_env)$ git clone git://github.com/Toblerity/Fiona.git\n  (fiona_env)$ cd Fiona\n  (fiona_env)$ pip install cython\n  (fiona_env)$ pip install -e .[test]\n  (fiona_env)$ nosetests\n\nOr you can use the ``pep-518-install`` script::\n\n  (fiona_env)$ git clone git://github.com/Toblerity/Fiona.git\n  (fiona_env)$ cd Fiona\n  (fiona_env)$ ./pep-518-install\n\nIf you have a non-standard environment, you'll need to specify the include and\nlib dirs and GDAL library on the command line::\n\n  (fiona_env)$ python setup.py build_ext -I/path/to/gdal/include -L/path/to/gdal/lib -lgdal --gdalversion 2 develop\n  (fiona_env)$ nosetests\n\n.. _OGR: http://www.gdal.org/ogr\n.. _pyproj: http://pypi.python.org/pypi/pyproj/\n.. _Rtree: http://pypi.python.org/pypi/Rtree/\n.. _Shapely: http://pypi.python.org/pypi/Shapely/\n.. _gdal-config: http://www.gdal.org/gdal-config.html\n\nChanges\n=======\n\nAll issue numbers are relative to https://github.com/Toblerity/Fiona/issues.\n\n1.7.9 (2017-08-17)\n------------------\n\nBug fixes:\n\n- Acquire the GIL for GDAL error callback functions to prevent crashes when\n  GDAL errors occur when the GIL has been released by user code.\n- Sync and flush layers when closing even when the number of features is not\n  precisely known (#467).\n\n1.7.8 (2017-06-20)\n------------------\n\nBug fixes:\n\n- Provide all arguments needed by CPLError based exceptions (#456).\n\n1.7.7 (2017-06-05)\n------------------\n\nBug fixes:\n\n- Switch logger `warn()` (deprecated) calls to `warning()`.\n- Replace all relative imports and cimports in Cython modules with absolute\n  imports (#450).\n- Avoid setting `PROJ_LIB` to a non-existent directory (#439).\n\n1.7.6 (2017-04-26)\n------------------\n\nBug fixes:\n\n- Fall back to `share/proj` for PROJ_LIB (#440).\n- Replace every call to `OSRDestroySpatialReference()` with `OSRRelease()`,\n  fixing the GPKG driver crasher reported in #441 (#443).\n- Add a `DriverIOError` derived from `IOError` to use for driver-specific\n  errors such as the GeoJSON driver's refusal to overwrite existing files.\n  Also we now ensure that when this error is raised by `fiona.open()` any\n  created read or write session is deleted, this eliminates spurious \n  exceptions on teardown of broken `Collection` objects (#437, #444).\n\n1.7.5 (2017-03-20)\n------------------\n\nBug fixes:\n\n- Opening a data file in read (the default) mode with `fiona.open()` using the\n  the `driver` or `drivers` keyword arguments (to specify certain format \n  drivers) would sometimes cause a crash on Windows due to improperly\n  terminated lists of strings (#428). The fix: Fiona's buggy `string_list()`\n  has been replaced by GDAL's `CSLAddString()`.\n\n1.7.4 (2017-02-20)\n------------------\n\nBug fixes:\n\n- OGR's EsriJSON detection fails when certain keys aren't found in the first\n  6000 bytes of data passed to `BytesCollection` (#422). A .json file extension\n  is now explicitly given to the in-memory file behind `BytesCollection` when\n  the `driver='GeoJSON'` keyword argument is given (#423). \n\n1.7.3 (2017-02-14)\n------------------\n\nRoses are red.\nTan is a pug.\nSoftware regression's\nthe most embarrassing bug.\n\nBug fixes:\n\n- Use __stdcall for GDAL error handling callback on Windows as in Rasterio.\n- Turn on latent support for zip:// URLs in rio-cat and rio-info (#421).\n- The 1.7.2 release broke support for zip files with absolute paths (#418).\n  This regression has been fixed with tests to confirm.\n\n1.7.2 (2017-01-27)\n------------------\n\nFuture Deprecation:\n\n- `Collection.__next__()` is buggy in that it can lead to duplication of \n  features when used in combination with `Collection.filter()` or\n  `Collection.__iter__()`. It will be removed in Fiona 2.0. Please check for\n  usage of this deprecated feature by running your tests or programs with\n  `PYTHONWARNINGS=\"always:::fiona\"` or `-W\"always:::fiona\"` and switch from\n  `next(collection)` to `next(iter(collection))` (#301).\n\nBug fix:\n\n- Zipped streams of bytes can be accessed by `BytesCollection` (#318).\n\n1.7.1.post1 (2016-12-23)\n------------------------\n- New binary wheels using version 1.2.0 of sgillies/frs-wheel-builds. See\n  https://github.com/sgillies/frs-wheel-builds/blob/master/CHANGES.txt.\n\n1.7.1 (2016-11-16)\n------------------\n\nBug Fixes:\n\n- Prevent Fiona from stumbling over 'Z', 'M', and 'ZM' geometry types\n  introduced in GDAL 2.1 (#384). Fiona 1.7.1 doesn't add explicit support for\n  these types, they are coerced to geometry types 1-7 ('Point', 'LineString',\n  etc.)\n- Raise an `UnsupportedGeometryTypeError` when a bogus or unsupported \n  geometry type is encountered in a new collection's schema or elsewhere\n  (#340).\n- Enable `--precision 0` for fio-cat (#370).\n- Prevent datetime exceptions from unnecessarily stopping collection iteration\n  by yielding `None` (#385)\n- Replace log.warn calls with log.warning calls (#379).\n- Print an error message if neither gdal-config or `--gdalversion` indicate\n  a GDAL C API version when running `setup.py` (#364).\n- Let dict-like subclasses through CRS type checks (#367).\n\n1.7.0post2 (2016-06-15)\n-----------------------\n\nPackaging: define extension modules for 'clean' and 'config' targets (#363).\n\n1.7.0post1 (2016-06-15)\n-----------------------\n\nPackaging: No files are copied for the 'clean' setup target (#361, #362).\n\n1.7.0 (2016-06-14)\n------------------\n\nThe C extension modules in this library can now be built and used with either\na 1.x or 2.x release of the GDAL library. Big thanks to Ren\u00e9 Buffat for\nleading this effort.\n\nRefactoring:\n\n- The `ogrext1.pyx` and `ogrext2.pyx` files now use separate\n  C APIs defined in `ogrext1.pxd` and `ogrex2.pxd`. The other extension\n  modules have been refactored so that they do not depend on either of these\n  modules and use subsets of the GDAL/OGR API compatible with both GDAL 1.x and\n  2.x (#359).\n\nPackaging:\n\n- Source distributions now contain two different sources for the\n  `ogrext` extension module. The `ogrext1.c` file will be used with GDAL 1.x\n  and the `ogrext2.c` file will be used with GDAL 2.x.\n\n1.7b2 (2016-06-13)\n------------------\n\n- New feature: enhancement of the `--layer` option for fio-cat and fio-dump\n  to allow separate layers of one or more multi-layer input files to be\n  selected (#349).\n\n1.7b1 (2016-06-10)\n------------------\n\n- New feature: support for GDAL version 2+ (#259).\n- New feature: a new fio-calc CLI command (#273).\n- New feature: `--layer` options for fio-info (#316) and fio-load (#299).\n- New feature: a `--no-parse` option for fio-collect that lets a careful user\n  avoid extra JSON serialization and deserialization (#306).\n- Bug fix: `+wktext` is now preserved when serializing CRS from WKT to PROJ.4\n  dicts (#352).\n- Bug fix: a small memory leak when opening a collection has been fixed (#337).\n- Bug fix: internal unicode errors now result in a log message and a \n  `UnicodeError` exception, not a `TypeError` (#356).\n\n1.6.4 (2016-05-06)\n------------------\n- Raise ImportError if the active GDAL library version is >= 2.0 instead of\n  failing unpredictably (#338, #341). Support for GDAL>=2.0 is coming in\n  Fiona 1.7.\n\n1.6.3.post1 (2016-03-27)\n------------------------\n- No changes to the library in this post-release version, but there is a\n  significant change to the distributions on PyPI: to help make Fiona more\n  compatible with Shapely on OS X, the GDAL shared library included in the\n  macosx (only) binary wheels now statically links the GEOS library. See\n  https://github.com/sgillies/frs-wheel-builds/issues/5.\n\n1.6.3 (2015-12-22)\n------------------\n- Daytime has been decreasing in the Northern Hemisphere, but is now\n  increasing again as it should.\n- Non-UTF strings were being passed into OGR functions in some situations\n  and on Windows this would sometimes crash a Python process (#303). Fiona\n  now raises errors derived from UnicodeError when field names or field\n  values can't be encoded.\n\n1.6.2 (2015-09-22)\n------------------\n- Providing only PROJ4 representations in the dataset meta property resulted in\n  loss of CRS information when using the `fiona.open(..., **src.meta) as dst`\n  pattern (#265). This bug has been addressed by adding a crs_wkt item to the`\n  meta property and extending the `fiona.open()` and the collection constructor\n  to look for and prioritize this keyword argument.\n\n1.6.1 (2015-08-12)\n------------------\n- Bug fix: Fiona now deserializes JSON-encoded string properties provided by\n  the OGR GeoJSON driver (#244, #245, #246).\n- Bug fix: proj4 data was not copied properly into binary distributions due to\n  a typo (#254).\n\nSpecial thanks to WFMU DJ Liz Berg for the awesome playlist that's fueling my\nrelease sprint. Check it out at http://wfmu.org/playlists/shows/62083. You\ncan't unhear Love Coffin.\n\n1.6.0 (2015-07-21)\n------------------\n- Upgrade Cython requirement to 0.22 (#214).\n- New BytesCollection class (#215).\n- Add GDAL's OpenFileGDB driver to registered drivers (#221).\n- Implement CLI commands as plugins (#228).\n- Raise click.abort instead of calling sys.exit, preventing suprising exits\n  (#236).\n\n1.5.1 (2015-03-19)\n------------------\n- Restore test data to sdists by fixing MANIFEST.in (#216).\n\n1.5.0 (2015-02-02)\n------------------\n- Finalize GeoJSON feature sequence options (#174).\n- Fix for reading of datasets that don't support feature counting (#190).\n- New test dataset (#188).\n- Fix for encoding error (#191).\n- Remove confusing warning (#195).\n- Add data files for binary wheels (#196).\n- Add control over drivers enabled when reading datasets (#203).\n- Use cligj for CLI options involving GeoJSON (#204).\n- Fix fio-info --bounds help (#206).\n\n1.4.8 (2014-11-02)\n------------------\n- Add missing crs_wkt property as in Rasterio (#182).\n\n1.4.7 (2014-10-28)\n------------------\n- Fix setting of CRS from EPSG codes (#149).\n\n1.4.6 (2014-10-21)\n------------------\n- Handle 3D coordinates in bounds() #178.\n\n1.4.5 (2014-10-18)\n------------------\n- Add --bbox option to fio-cat (#163).\n- Skip geopackage tests if run from an sdist (#167).\n- Add fio-bounds and fio-distrib.\n- Restore fio-dump to working order.\n\n1.4.4 (2014-10-13)\n------------------\n- Fix accidental requirement on GDAL 1.11 introduced in 1.4.3 (#164).\n\n1.4.3 (2014-10-10)\n------------------\n- Add support for geopackage format (#160).\n- Add -f and --format aliases for --driver in CLI (#162).\n- Add --version option and env command to CLI.\n\n1.4.2 (2014-10-03)\n------------------\n- --dst-crs and --src-crs options for fio cat and collect (#159).\n\n1.4.1 (2014-09-30)\n------------------\n- Fix encoding bug in collection's __getitem__ (#153).\n\n1.4.0 (2014-09-22)\n------------------\n- Add fio cat and fio collect commands (#150).\n- Return of Python 2.6 compatibility (#148).\n- Improved CRS support (#149).\n\n1.3.0 (2014-09-17)\n------------------\n- Add single metadata item accessors to fio inf (#142).\n- Move fio to setuptools entry point (#142).\n- Add fio dump and load commands (#143).\n- Remove fio translate command.\n\n1.2.0 (2014-09-02)\n------------------\n- Always show property width and precision in schema (#123).\n- Write datetime properties of features (#125).\n- Reset spatial filtering in filter() (#129).\n- Accept datetime.date objects as feature properties (#130).\n- Add slicing to collection iterators (#132).\n- Add geometry object masks to collection iterators (#136).\n- Change source layout to match Shapely and Rasterio (#138).\n\n1.1.6 (2014-07-23)\n------------------\n- Implement Collection __getitem__() (#112).\n- Leave GDAL finalization to the DLL's destructor (#113).\n- Add Collection keys(), values(), items(), __contains__() (#114).\n- CRS bug fix (#116).\n- Add fio CLI program.\n\n1.1.5 (2014-05-21)\n------------------\n- Addition of cpl_errs context manager (#108).\n- Check for NULLs with '==' test instead of 'is' (#109).\n- Open auxiliary files with encoding='utf-8' in setup for Python 3 (#110).\n\n1.1.4 (2014-04-03)\n------------------\n- Convert 'long' in schemas to 'int' (#101).\n- Carefully map Python schema to the possibly munged internal schema (#105).\n- Allow writing of features with geometry: None (#71).\n\n1.1.3 (2014-03-23)\n------------------\n- Always register all GDAL and OGR drivers when entering the DriverManager\n  context (#80, #92).\n- Skip unsupported field types with a warning (#91).\n- Allow OGR config options to be passed to fiona.drivers() (#90, #93).\n- Add a bounds() function (#100).\n- Turn on GPX driver.\n\n1.1.2 (2014-02-14)\n------------------\n- Remove collection slice left in dumpgj (#88).\n\n1.1.1 (2014-02-02)\n------------------\n- Add an interactive file inspector like the one in rasterio.\n- CRS to_string bug fix (#83).\n\n1.1 (2014-01-22)\n----------------\n- Use a context manager to manage drivers (#78), a backwards compatible but\n  big change. Fiona is now compatible with rasterio and plays better with the\n  osgeo package.\n\n1.0.3 (2014-01-21)\n------------------\n- Fix serialization of +init projections (#69).\n\n1.0.2 (2013-09-09)\n------------------\n- Smarter, better test setup (#65, #66, #67).\n- Add type='Feature' to records read from a Collection (#68).\n- Skip geometry validation when using GeoJSON driver (#61).\n- Dumpgj file description reports record properties as a list (as in\n  dict.items()) instead of a dict.\n\n1.0.1 (2013-08-16)\n------------------\n- Allow ordering of written fields and preservation of field order when\n  reading (#57).\n\n1.0 (2013-07-30)\n-----------------\n- Add prop_type() function.\n- Allow UTF-8 encoded paths for Python 2 (#51). For Python 3, paths must\n  always be str, never bytes.\n- Remove encoding from collection.meta, it's a file creation option only.\n- Support for linking GDAL frameworks (#54).\n\n0.16.1 (2013-07-02)\n-------------------\n- Add listlayers, open, prop_width to __init__py:__all__.\n- Reset reading of OGR layer whenever we ask for a collection iterator (#49).\n\n0.16 (2013-06-24)\n-----------------\n- Add support for writing layers to multi-layer files.\n- Add tests to reach 100% Python code coverage.\n\n0.15 (2013-06-06)\n-----------------\n- Get and set numeric field widths (#42).\n- Add support for multi-layer data sources (#17).\n- Add support for zip and tar virtual filesystems (#45).\n- Add listlayers() function.\n- Add GeoJSON to list of supported formats (#47).\n- Allow selection of layers by index or name.\n\n0.14 (2013-05-04)\n-----------------\n- Add option to add JSON-LD in the dumpgj program.\n- Compare values to six.string_types in Collection constructor.\n- Add encoding to Collection.meta.\n- Document dumpgj in README.\n\n0.13 (2013-04-30)\n-----------------\n- Python 2/3 compatibility in a single package. Pythons 2.6, 2.7, 3.3 now supported.\n\n0.12.1 (2013-04-16)\n-------------------\n- Fix messed up linking of README in sdist (#39).\n\n0.12 (2013-04-15)\n-----------------\n- Fix broken installation of extension modules (#35).\n- Log CPL errors at their matching Python log levels.\n- Use upper case for encoding names within OGR, lower case in Python.\n\n0.11 (2013-04-14)\n-----------------\n- Cythonize .pyx files (#34).\n- Work with or around OGR's internal recoding of record data (#35).\n- Fix bug in serialization of int/float PROJ.4 params.\n\n0.10 (2013-03-23)\n-----------------\n- Add function to get the width of str type properties.\n- Handle validation and schema representation of 3D geometry types (#29).\n- Return {'geometry': None} in the case of a NULL geometry (#31).\n\n0.9.1 (2013-03-07)\n------------------\n- Silence the logger in ogrext.so (can be overridden).\n- Allow user specification of record field encoding (like 'Windows-1252' for\n  Natural Earth shapefiles) to help when OGR can't detect it.\n\n0.9 (2013-03-06)\n----------------\n- Accessing file metadata (crs, schema, bounds) on never inspected closed files\n  returns None without exceptions.\n- Add a dict of supported_drivers and their supported modes.\n- Raise ValueError for unsupported drivers and modes.\n- Remove asserts from ogrext.pyx.\n- Add validate_record method to collections.\n- Add helpful coordinate system functions to fiona.crs.\n- Promote use of fiona.open over fiona.collection.\n- Handle Shapefile's mix of LineString/Polygon and multis (#18).\n- Allow users to specify width of shapefile text fields (#20).\n\n0.8 (2012-02-21)\n----------------\n- Replaced .opened attribute with .closed (product of collection() is always\n  opened). Also a __del__() which will close a Collection, but still not to be\n  depended upon.\n- Added writerecords method.\n- Added a record buffer and better counting of records in a collection.\n- Manage one iterator per collection/session.\n- Added a read-only bounds property.\n\n0.7 (2012-01-29)\n----------------\n- Initial timezone-naive support for date, time, and datetime fields. Don't use\n  these field types if you can avoid them. RFC 3339 datetimes in a string field\n  are much better.\n\n0.6.2 (2012-01-10)\n------------------\n- Diagnose and set the driver property of collection in read mode.\n- Fail if collection paths are not to files. Multi-collection workspaces are\n  a (maybe) TODO.\n\n0.6.1 (2012-01-06)\n------------------\n- Handle the case of undefined crs for disk collections.\n\n0.6 (2012-01-05)\n----------------\n- Support for collection coordinate reference systems based on Proj4.\n- Redirect OGR warnings and errors to the Fiona log.\n- Assert that pointers returned from the ograpi functions are not NULL before\n  using.\n\n0.5 (2011-12-19)\n----------------\n- Support for reading and writing collections of any geometry type.\n- Feature and Geometry classes replaced by mappings (dicts).\n- Removal of Workspace class.\n\n0.2 (2011-09-16)\n----------------\n- Rename WorldMill to Fiona.\n\n0.1.1 (2008-12-04)\n------------------\n- Support for features with no geometry.\n\n\nCredits\n=======\n\nFiona is written by:\n\n- Sean Gillies <sean.gillies@gmail.com>\n- Rene Buffat <buffat@gmail.com>\n- Kevin Wurster <wursterk@gmail.com>\n- Micah Cochran <micah@micahcochran.net>\n- Matthew Perry <perrygeo@gmail.com>\n- Joshua Arnott <josh@snorfalorpagus.net>\n- Kelsey Jordahl <kjordahl@enthought.com>\n- Patrick Young <patrick.mckendree.young@gmail.com>\n- Simon Norris <snorris@hillcrestgeo.ca>\n- Hannes Gr\u00e4uler <graeuler@geoplex.de>\n- Johan Van de Wauw <johan.vandewauw@gmail.com>\n- Jacob Wasserman <jwasserman@gmail.com>\n- Ryan Grout <rgrout@continuum.io>\n- Michael Weisman <mweisman@gmail.com>\n- fredj <frederic.junod@camptocamp.com>\n- Bas Couwenberg <sebastic@xs4all.nl>\n- Brendan Ward <bcward@consbio.org>\n- Michele Citterio <michele@citterio.net>\n- Miro Hron\u010dok <miro@hroncok.cz>\n- qinfeng <guo.qinfeng+github@gmail.com>\n- Michael Weisman <michael@urbanmapping.com>\n- Brandon Liu <bdon@bdon.org>\n- Ludovic Delaun\u00e9 <ludotux@gmail.com>\n- Martijn Visser <mgvisser@gmail.com>\n- Ariel Nunez <ingenieroariel@gmail.com>\n- Oliver Tonnhofer <olt@bogosoft.com>\n- Stefano Costa <steko@iosa.it>\n- dimlev <dimlev@gmail.com>\n- wilsaj <wilson.andrew.j+github@gmail.com>\n- Jesse Crocker <jesse@gaiagps.com>\n\nFiona would not be possible without the great work of Frank Warmerdam and other\nGDAL/OGR developers.\n\nSome portions of this work were supported by a grant (for Pleiades_) from the\nU.S. National Endowment for the Humanities (http://www.neh.gov).\n\n.. _Pleiades: http://pleiades.stoa.org\n\n\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -29,10 +29,19 @@
     "name": "Fiona",
     "platform": "",
     "project_url": "https://pypi.org/project/Fiona/",
-    "release_url": "https://pypi.org/project/Fiona/1.7.8/",
+    "release_url": "https://pypi.org/project/Fiona/1.7.9/",
+    "requires_dist": [
+      "nose; extra == 'test'",
+      "shapely; extra == 'calc'",
+      "six",
+      "munch",
+      "enum34",
+      "cligj",
+      "click-plugins"
+    ],
     "requires_python": "",
     "summary": "Fiona reads and writes spatial data files",
-    "version": "1.7.8"
+    "version": "1.7.9"
   },
   "releases": {
     "0.10": [
@@ -2871,6 +2880,168 @@
         "url": "https://files.pythonhosted.org/packages/b1/2b/5276dd3b4348b7c43758f3bde48ac331b87746401063d09f0be0cb1825e6/Fiona-1.7.8.tar.gz"
       }
     ],
+    "1.7.9": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "da0fe39954f8fb5d47b77913040c0ac6",
+          "sha256": "d9a5a6a2db803f6c9230284a331d0f314e944d47830b797d9dfe0d753738676a"
+        },
+        "downloads": 0,
+        "filename": "Fiona-1.7.9-cp27-cp27m-macosx_10_6_intel.whl",
+        "has_sig": false,
+        "md5_digest": "da0fe39954f8fb5d47b77913040c0ac6",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 20927323,
+        "upload_time": "2017-08-18T03:13:20",
+        "url": "https://files.pythonhosted.org/packages/31/04/65d5e4947e40e48f43aac42045f0be92f7399e3fedb083ca5d3c54cef8ab/Fiona-1.7.9-cp27-cp27m-macosx_10_6_intel.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "870d75a7359713b1e29957f0d8ec91d8",
+          "sha256": "65d0dbc6d7708e48d69da3c1227bc034deb44130fa573858b83fc93cd26f96fc"
+        },
+        "downloads": 0,
+        "filename": "Fiona-1.7.9-cp27-cp27m-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "870d75a7359713b1e29957f0d8ec91d8",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 48510958,
+        "upload_time": "2017-08-18T03:16:12",
+        "url": "https://files.pythonhosted.org/packages/aa/78/24663b0c7016621ad12c0baac0e0be22e1277db08abbcd94aec083bbc47e/Fiona-1.7.9-cp27-cp27m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "72b4f86a96a663b28eaf7362270bba9f",
+          "sha256": "9abe173068e81a79b2104eb98873f500f69387fbe576d0a623f625e8ef2ff8a1"
+        },
+        "downloads": 0,
+        "filename": "Fiona-1.7.9-cp27-cp27mu-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "72b4f86a96a663b28eaf7362270bba9f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 48510941,
+        "upload_time": "2017-08-18T03:19:19",
+        "url": "https://files.pythonhosted.org/packages/bf/dd/97498c4f512963479d2dc8470fc37fa2c1dcfabaa42006dcff794c37e722/Fiona-1.7.9-cp27-cp27mu-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "47c74264cfecdd32ce6928a07af4dae9",
+          "sha256": "f1f71d8cb11b4071c8f17d6514114c4bab511596a4fdc189e3fd1e0426d5412e"
+        },
+        "downloads": 0,
+        "filename": "Fiona-1.7.9-cp34-cp34m-macosx_10_6_intel.whl",
+        "has_sig": false,
+        "md5_digest": "47c74264cfecdd32ce6928a07af4dae9",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 20925459,
+        "upload_time": "2017-08-18T03:20:43",
+        "url": "https://files.pythonhosted.org/packages/34/b7/768e5c558fc499d365f60967510f4a50caea6fe92e91179b9fb073da8306/Fiona-1.7.9-cp34-cp34m-macosx_10_6_intel.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "84380ca0a1904ead0319e09c88e74515",
+          "sha256": "dd4b439f03b8b1cce9c6c7156d6f2a3efa0d4cf22df0f7e9d3981ad98531cc03"
+        },
+        "downloads": 0,
+        "filename": "Fiona-1.7.9-cp34-cp34m-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "84380ca0a1904ead0319e09c88e74515",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 48687595,
+        "upload_time": "2017-08-18T03:23:53",
+        "url": "https://files.pythonhosted.org/packages/57/c1/425e9f9ceb1752a58deb3c7c5e616e556dc4e2e1f762ef506d3a5852f798/Fiona-1.7.9-cp34-cp34m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d8cdc2f14d8c3f033cd0512518daa65f",
+          "sha256": "5bc7266fb630c8f7237c20f6e3b539122c828e21611341c8a9a8ca138166400e"
+        },
+        "downloads": 0,
+        "filename": "Fiona-1.7.9-cp35-cp35m-macosx_10_6_intel.whl",
+        "has_sig": false,
+        "md5_digest": "d8cdc2f14d8c3f033cd0512518daa65f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 20898422,
+        "upload_time": "2017-08-18T03:25:21",
+        "url": "https://files.pythonhosted.org/packages/03/83/87dd1f043149c91c9024341e712d309d850710abbb14136ff2df26e80307/Fiona-1.7.9-cp35-cp35m-macosx_10_6_intel.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "505c1ebc634b89e6475b85d6e7e055dc",
+          "sha256": "3183ca8cb00b7b1e49215b61b8c6767ca625f883ac64cf4eda41e6584fa16100"
+        },
+        "downloads": 0,
+        "filename": "Fiona-1.7.9-cp35-cp35m-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "505c1ebc634b89e6475b85d6e7e055dc",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 48651546,
+        "upload_time": "2017-08-18T03:28:20",
+        "url": "https://files.pythonhosted.org/packages/5b/95/a1638a107a438e6ac926c4ffd6144d37a9353c6c9dd9ab26ec4d21b075a9/Fiona-1.7.9-cp35-cp35m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3c2033ef889358d60b0a955a9ac28e01",
+          "sha256": "99752563d9865269b8e0c2452781eb8eaadc97a3605b5acbbd1aee32c1ff8039"
+        },
+        "downloads": 0,
+        "filename": "Fiona-1.7.9-cp36-cp36m-macosx_10_6_intel.whl",
+        "has_sig": false,
+        "md5_digest": "3c2033ef889358d60b0a955a9ac28e01",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "size": 20899261,
+        "upload_time": "2017-08-18T03:29:39",
+        "url": "https://files.pythonhosted.org/packages/16/a5/71eb4b499723d0fec35604decbca9f97ba6ebd9c1342fcf4f396b4538644/Fiona-1.7.9-cp36-cp36m-macosx_10_6_intel.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "447aac66584fc289da6b779d90b9dbbb",
+          "sha256": "d1fdf134aa4d0eaa22a242949d43fd758a02f3c883a7fad6c89f179b44b9bd7f"
+        },
+        "downloads": 0,
+        "filename": "Fiona-1.7.9-cp36-cp36m-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "447aac66584fc289da6b779d90b9dbbb",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "size": 48700772,
+        "upload_time": "2017-08-18T03:32:42",
+        "url": "https://files.pythonhosted.org/packages/da/df/ec5c7ecd704c5b23e20c6357156fc7d8411f56c40b23bb2035344d4c2c48/Fiona-1.7.9-cp36-cp36m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e5c6a7859cfb1510cdd1188ca6d657cc",
+          "sha256": "91bb71b744a7444c3d96472158b74af1569ec2bc934737397658b968dd7dadba"
+        },
+        "downloads": 0,
+        "filename": "Fiona-1.7.9.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e5c6a7859cfb1510cdd1188ca6d657cc",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 682209,
+        "upload_time": "2017-08-18T03:32:56",
+        "url": "https://files.pythonhosted.org/packages/ff/d4/35b57521ba8772cdd3cc074ffc280bc82ab9194b9864f45311920f1745f9/Fiona-1.7.9.tar.gz"
+      }
+    ],
     "1.7b1": [
       {
         "comment_text": "",
@@ -2942,162 +3113,162 @@
     {
       "comment_text": "",
       "digests": {
-        "md5": "ac9dbc32079d7ea6f5b1445d6bdb1cac",
-        "sha256": "5b62537f90c94348ad8d04e40b503b7158f0dce1aa361186428e80c7627f0948"
+        "md5": "da0fe39954f8fb5d47b77913040c0ac6",
+        "sha256": "d9a5a6a2db803f6c9230284a331d0f314e944d47830b797d9dfe0d753738676a"
       },
       "downloads": 0,
-      "filename": "Fiona-1.7.8-cp27-cp27m-macosx_10_6_intel.whl",
+      "filename": "Fiona-1.7.9-cp27-cp27m-macosx_10_6_intel.whl",
       "has_sig": false,
-      "md5_digest": "ac9dbc32079d7ea6f5b1445d6bdb1cac",
+      "md5_digest": "da0fe39954f8fb5d47b77913040c0ac6",
       "packagetype": "bdist_wheel",
       "python_version": "cp27",
-      "size": 20924505,
-      "upload_time": "2017-06-20T07:59:36",
-      "url": "https://files.pythonhosted.org/packages/43/77/17ad81f9a3b9a35008a73e29b575debe3f136ad0e866b5388600a4ba5dc1/Fiona-1.7.8-cp27-cp27m-macosx_10_6_intel.whl"
+      "size": 20927323,
+      "upload_time": "2017-08-18T03:13:20",
+      "url": "https://files.pythonhosted.org/packages/31/04/65d5e4947e40e48f43aac42045f0be92f7399e3fedb083ca5d3c54cef8ab/Fiona-1.7.9-cp27-cp27m-macosx_10_6_intel.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "e36ecf2d1435a4fa9eb79475913a4e1c",
-        "sha256": "780d3a35a2591d4f30824d72bb13c6e3958b6887d4b94c3ec268b5dbfb991ae7"
+        "md5": "870d75a7359713b1e29957f0d8ec91d8",
+        "sha256": "65d0dbc6d7708e48d69da3c1227bc034deb44130fa573858b83fc93cd26f96fc"
       },
       "downloads": 0,
-      "filename": "Fiona-1.7.8-cp27-cp27m-manylinux1_x86_64.whl",
+      "filename": "Fiona-1.7.9-cp27-cp27m-manylinux1_x86_64.whl",
       "has_sig": false,
-      "md5_digest": "e36ecf2d1435a4fa9eb79475913a4e1c",
+      "md5_digest": "870d75a7359713b1e29957f0d8ec91d8",
       "packagetype": "bdist_wheel",
       "python_version": "cp27",
-      "size": 48416559,
-      "upload_time": "2017-06-20T08:08:34",
-      "url": "https://files.pythonhosted.org/packages/7e/9f/41e2a49bcdc3430fa57fd83f31a6b1a1f5538cd77523982cc84f9c39c9f5/Fiona-1.7.8-cp27-cp27m-manylinux1_x86_64.whl"
+      "size": 48510958,
+      "upload_time": "2017-08-18T03:16:12",
+      "url": "https://files.pythonhosted.org/packages/aa/78/24663b0c7016621ad12c0baac0e0be22e1277db08abbcd94aec083bbc47e/Fiona-1.7.9-cp27-cp27m-manylinux1_x86_64.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "a513371be2582ee4d8963790f3796615",
-        "sha256": "4dd7322a802d17c2b8d282c384b4e25ef48d2311cb27f0fb44e94100ea6753a8"
+        "md5": "72b4f86a96a663b28eaf7362270bba9f",
+        "sha256": "9abe173068e81a79b2104eb98873f500f69387fbe576d0a623f625e8ef2ff8a1"
       },
       "downloads": 0,
-      "filename": "Fiona-1.7.8-cp27-cp27mu-manylinux1_x86_64.whl",
+      "filename": "Fiona-1.7.9-cp27-cp27mu-manylinux1_x86_64.whl",
       "has_sig": false,
-      "md5_digest": "a513371be2582ee4d8963790f3796615",
+      "md5_digest": "72b4f86a96a663b28eaf7362270bba9f",
       "packagetype": "bdist_wheel",
       "python_version": "cp27",
-      "size": 48416603,
-      "upload_time": "2017-06-20T08:17:42",
-      "url": "https://files.pythonhosted.org/packages/74/89/f650d74a6cec844962bb4f3f6a8f732c1be89a1b9f086b41d7da2d569264/Fiona-1.7.8-cp27-cp27mu-manylinux1_x86_64.whl"
+      "size": 48510941,
+      "upload_time": "2017-08-18T03:19:19",
+      "url": "https://files.pythonhosted.org/packages/bf/dd/97498c4f512963479d2dc8470fc37fa2c1dcfabaa42006dcff794c37e722/Fiona-1.7.9-cp27-cp27mu-manylinux1_x86_64.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "cc77c3e8537bb81010f7d44ff82361d5",
-        "sha256": "6cdc67cf6b7e4ccd8eb4fcfaa831f325f9b4773b06d3677842bf2ec5482ca4a4"
+        "md5": "47c74264cfecdd32ce6928a07af4dae9",
+        "sha256": "f1f71d8cb11b4071c8f17d6514114c4bab511596a4fdc189e3fd1e0426d5412e"
       },
       "downloads": 0,
-      "filename": "Fiona-1.7.8-cp34-cp34m-macosx_10_6_intel.whl",
+      "filename": "Fiona-1.7.9-cp34-cp34m-macosx_10_6_intel.whl",
       "has_sig": false,
-      "md5_digest": "cc77c3e8537bb81010f7d44ff82361d5",
+      "md5_digest": "47c74264cfecdd32ce6928a07af4dae9",
       "packagetype": "bdist_wheel",
       "python_version": "cp34",
-      "size": 20915160,
-      "upload_time": "2017-06-20T08:21:53",
-      "url": "https://files.pythonhosted.org/packages/c0/4d/66732a77247fea3dc520db489e3b4fc8284af92e23ffe3f60c81d299e753/Fiona-1.7.8-cp34-cp34m-macosx_10_6_intel.whl"
+      "size": 20925459,
+      "upload_time": "2017-08-18T03:20:43",
+      "url": "https://files.pythonhosted.org/packages/34/b7/768e5c558fc499d365f60967510f4a50caea6fe92e91179b9fb073da8306/Fiona-1.7.9-cp34-cp34m-macosx_10_6_intel.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "d36428383a817cd4c36ff120de1ce63c",
-        "sha256": "b7e38b6f98138924f94b00b85179bedb1f4bb7330c93cc0bf19d58d38d8237ef"
+        "md5": "84380ca0a1904ead0319e09c88e74515",
+        "sha256": "dd4b439f03b8b1cce9c6c7156d6f2a3efa0d4cf22df0f7e9d3981ad98531cc03"
       },
       "downloads": 0,
-      "filename": "Fiona-1.7.8-cp34-cp34m-manylinux1_x86_64.whl",
+      "filename": "Fiona-1.7.9-cp34-cp34m-manylinux1_x86_64.whl",
       "has_sig": false,
-      "md5_digest": "d36428383a817cd4c36ff120de1ce63c",
+      "md5_digest": "84380ca0a1904ead0319e09c88e74515",
       "packagetype": "bdist_wheel",
       "python_version": "cp34",
-      "size": 48580435,
-      "upload_time": "2017-06-20T08:31:10",
-      "url": "https://files.pythonhosted.org/packages/ac/0d/334fd3f1d6af490b407827f091afe5aa89f6e41b5c76a02ec0e4ec884af8/Fiona-1.7.8-cp34-cp34m-manylinux1_x86_64.whl"
+      "size": 48687595,
+      "upload_time": "2017-08-18T03:23:53",
+      "url": "https://files.pythonhosted.org/packages/57/c1/425e9f9ceb1752a58deb3c7c5e616e556dc4e2e1f762ef506d3a5852f798/Fiona-1.7.9-cp34-cp34m-manylinux1_x86_64.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "34e2f37e97b1541083fbeb7c4a801815",
-        "sha256": "99b3e9e0430d5e7d5fc0043f2e26b5655c55f23f19d45fdf9c4bed75a83c741b"
+        "md5": "d8cdc2f14d8c3f033cd0512518daa65f",
+        "sha256": "5bc7266fb630c8f7237c20f6e3b539122c828e21611341c8a9a8ca138166400e"
       },
       "downloads": 0,
-      "filename": "Fiona-1.7.8-cp35-cp35m-macosx_10_6_intel.whl",
+      "filename": "Fiona-1.7.9-cp35-cp35m-macosx_10_6_intel.whl",
       "has_sig": false,
-      "md5_digest": "34e2f37e97b1541083fbeb7c4a801815",
+      "md5_digest": "d8cdc2f14d8c3f033cd0512518daa65f",
       "packagetype": "bdist_wheel",
       "python_version": "cp35",
-      "size": 20878148,
-      "upload_time": "2017-06-20T08:35:34",
-      "url": "https://files.pythonhosted.org/packages/3b/eb/ef028ea7f1209462c2a49d28c16a0b0951fc535c01517ca5f0c4b7722f43/Fiona-1.7.8-cp35-cp35m-macosx_10_6_intel.whl"
+      "size": 20898422,
+      "upload_time": "2017-08-18T03:25:21",
+      "url": "https://files.pythonhosted.org/packages/03/83/87dd1f043149c91c9024341e712d309d850710abbb14136ff2df26e80307/Fiona-1.7.9-cp35-cp35m-macosx_10_6_intel.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "4b519c552acd1f930c6ac70835589b47",
-        "sha256": "d71bf321f621a498564d1e814c7df7e258881a663586da48c543e0e0abc8bdbf"
+        "md5": "505c1ebc634b89e6475b85d6e7e055dc",
+        "sha256": "3183ca8cb00b7b1e49215b61b8c6767ca625f883ac64cf4eda41e6584fa16100"
       },
       "downloads": 0,
-      "filename": "Fiona-1.7.8-cp35-cp35m-manylinux1_x86_64.whl",
+      "filename": "Fiona-1.7.9-cp35-cp35m-manylinux1_x86_64.whl",
       "has_sig": false,
-      "md5_digest": "4b519c552acd1f930c6ac70835589b47",
+      "md5_digest": "505c1ebc634b89e6475b85d6e7e055dc",
       "packagetype": "bdist_wheel",
       "python_version": "cp35",
-      "size": 48541398,
-      "upload_time": "2017-06-20T08:45:13",
-      "url": "https://files.pythonhosted.org/packages/3e/f7/b70439bf7bc82ed9b7106539aee55fea73e15315b8e36568926a23ebf1df/Fiona-1.7.8-cp35-cp35m-manylinux1_x86_64.whl"
+      "size": 48651546,
+      "upload_time": "2017-08-18T03:28:20",
+      "url": "https://files.pythonhosted.org/packages/5b/95/a1638a107a438e6ac926c4ffd6144d37a9353c6c9dd9ab26ec4d21b075a9/Fiona-1.7.9-cp35-cp35m-manylinux1_x86_64.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "b6c8a4aad5d2e8b56e45389db04051c6",
-        "sha256": "33672a216b7d03c9706189f10c6f4f89b7089ff3a285c25b0d4be0796268d437"
+        "md5": "3c2033ef889358d60b0a955a9ac28e01",
+        "sha256": "99752563d9865269b8e0c2452781eb8eaadc97a3605b5acbbd1aee32c1ff8039"
       },
       "downloads": 0,
-      "filename": "Fiona-1.7.8-cp36-cp36m-macosx_10_6_intel.whl",
+      "filename": "Fiona-1.7.9-cp36-cp36m-macosx_10_6_intel.whl",
       "has_sig": false,
-      "md5_digest": "b6c8a4aad5d2e8b56e45389db04051c6",
+      "md5_digest": "3c2033ef889358d60b0a955a9ac28e01",
       "packagetype": "bdist_wheel",
       "python_version": "cp36",
-      "size": 20892768,
-      "upload_time": "2017-06-20T08:49:30",
-      "url": "https://files.pythonhosted.org/packages/e7/8c/497c68a3d0e36d0cbe387beb444db223a47d702c1c5484a292f12737ab08/Fiona-1.7.8-cp36-cp36m-macosx_10_6_intel.whl"
+      "size": 20899261,
+      "upload_time": "2017-08-18T03:29:39",
+      "url": "https://files.pythonhosted.org/packages/16/a5/71eb4b499723d0fec35604decbca9f97ba6ebd9c1342fcf4f396b4538644/Fiona-1.7.9-cp36-cp36m-macosx_10_6_intel.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "3109f46e752ae28dcc560d398770c347",
-        "sha256": "f436831af272891fdf7abe0282d302042813a44c25b447e078931c71d14df710"
+        "md5": "447aac66584fc289da6b779d90b9dbbb",
+        "sha256": "d1fdf134aa4d0eaa22a242949d43fd758a02f3c883a7fad6c89f179b44b9bd7f"
       },
       "downloads": 0,
-      "filename": "Fiona-1.7.8-cp36-cp36m-manylinux1_x86_64.whl",
+      "filename": "Fiona-1.7.9-cp36-cp36m-manylinux1_x86_64.whl",
       "has_sig": false,
-      "md5_digest": "3109f46e752ae28dcc560d398770c347",
+      "md5_digest": "447aac66584fc289da6b779d90b9dbbb",
       "packagetype": "bdist_wheel",
       "python_version": "cp36",
-      "size": 48586145,
-      "upload_time": "2017-06-20T08:59:00",
-      "url": "https://files.pythonhosted.org/packages/e3/c0/e92dad4a8941d96d433ad989a9055cdfae405a145d86be748bbb9146b9f2/Fiona-1.7.8-cp36-cp36m-manylinux1_x86_64.whl"
+      "size": 48700772,
+      "upload_time": "2017-08-18T03:32:42",
+      "url": "https://files.pythonhosted.org/packages/da/df/ec5c7ecd704c5b23e20c6357156fc7d8411f56c40b23bb2035344d4c2c48/Fiona-1.7.9-cp36-cp36m-manylinux1_x86_64.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "ccff408d9deb6a184fd4ae2b6cb408fe",
-        "sha256": "c406f3f60061da1978fa8e4bcc152b125e23a47dcc64f0948dda429f3792e79b"
+        "md5": "e5c6a7859cfb1510cdd1188ca6d657cc",
+        "sha256": "91bb71b744a7444c3d96472158b74af1569ec2bc934737397658b968dd7dadba"
       },
       "downloads": 0,
-      "filename": "Fiona-1.7.8.tar.gz",
+      "filename": "Fiona-1.7.9.tar.gz",
       "has_sig": false,
-      "md5_digest": "ccff408d9deb6a184fd4ae2b6cb408fe",
+      "md5_digest": "e5c6a7859cfb1510cdd1188ca6d657cc",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 641538,
-      "upload_time": "2017-06-20T08:59:17",
-      "url": "https://files.pythonhosted.org/packages/b1/2b/5276dd3b4348b7c43758f3bde48ac331b87746401063d09f0be0cb1825e6/Fiona-1.7.8.tar.gz"
+      "size": 682209,
+      "upload_time": "2017-08-18T03:32:56",
+      "url": "https://files.pythonhosted.org/packages/ff/d4/35b57521ba8772cdd3cc074ffc280bc82ab9194b9864f45311920f1745f9/Fiona-1.7.9.tar.gz"
     }
   ]
 }
