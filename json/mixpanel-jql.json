@@ -10,26 +10,27 @@
       "Programming Language :: Python :: 3.4",
       "Programming Language :: Python :: 3.5"
     ],
-    "description": "mixpanel-jql\n============\n\nA small Python library for running `JQL <https://mixpanel.com/jql/>`__\nqueries against Mixpanel's JQL API. The data returned from the API is\nautomatically decompressed as it arrives, making it available for\nprocessing as soon as the first row arrives. This is to avoid buffering\nlarge result sets in memory.\n\nInstallation\n------------\n\nTo install the ``mixpanel-jql`` library, simply run the following in\nyour terminal:\n\n``pip install mixpanel-jql``\n\nSimple example\n--------------\n\nLet's do a simple count of our number of 'X' events over each day of May 2016. Our key for grouping will be the date the event was sent to Mixpanel in the format ``YYYY-MM-DD``. We can get that from our event's ``time`` property by specifying our key as ``new Date(e.time).toISOString().split('T')[0]``.\n\nThis is simple and fast to do with this library.\n\n.. code:: python\n\n    from mixpanel_jql import JQL, Reducer\n\n    api_secret = '...'\n\n    params = {\n        'event_selectors': [{'event': \"X\"}],\n        'from_date': '2016-05-01',\n        'to_date': '2016-05-31'\n    }\n\n    query = JQL(api_secret, params)\\\n              .group_by(\n                  keys=[\n                      \"new Date(e.time).toISOString().split('T')[0]\",\n                  ],\n                  accumulator=Reducer.count())\n\n    for row in query.send():\n        date = row['key'][0]\n        value = row['value']\n        print(\"[%s] => %d\" % (date, value))\n    # [2016-05-01] => 302\n    # [2016-05-02] => 1102\n    # ...\n    # [2016-05-31] => 120\n\nBut what if we only want to count unique events? That is to say, what if we care about how many users spawned each event per day and not just the overall number of times the event occurred?\n\nWith some minor modification to our previous code, we can achieve this:\n\n.. code:: python\n\n    query = JQL(api_secret, params)\\\n              .group_by_user(\n                  keys=[\n                      \"new Date(e.time).toISOString().split('T')[0]\",\n                  ],\n                  accumulator=\"function(){ return 1;}\")\\\n              .group_by(\n                  keys=[\"e.key.slice(1)\"],\n                  accumulator=Reducer.count())\n\nWe replace our ``accumulator`` keyward argument with a JavaScript function returning ``1``, since each user will only be counted for once. ``group_by_user`` also adds the user ID into the key of our results. We can regroup our results by slicing that detail off with ``e.key.slice(1)`` and recounting.\n\nMore advanced examples\n----------------------\n\nLet's assume we want to count all events 'A' with a property 'B' that is\nequal to 2 and a property F that is equal to \"hello\". Events 'A' also\nhave a property 'C', which is some random string value. We want the\nresults grouped and tallied by values of 'C' to see how many property\n'C' events occurred over each day in the month of April 2016.\n\n.. code:: python\n\n    from mixpanel_jql import JQL, Reducer\n\n    api_secret = '...'\n\n    params = {\n        'event_selectors': [{'event': \"A\"}],\n        'from_date': '2016-04-01',\n        'to_date': '2016-04-30'\n    }\n\n    query = JQL(api_secret, params)\\\n              .filter('e.property.B == 2')\\\n              .filter('e.property.F == \"hello\"')\\\n              .group_by(\n                  keys=[\n                      \"new Date(e.time).toISOString().split('T')[0]\",\n                      \"e.property.C\"\n                  ],\n                  accumulator=Reducer.count())\n\n    for row in query.send():\n        date, c = row['key'][0]\n        value = row['value']\n        print(\"[%s] %s => %d\" % (date, c, value))\n    # [2016-04-01] abc => 3\n    # [2016-04-01] xyz => 1\n    # ...\n\nIf we wanted to count only *unique* events (i.e. count each user causing\nthe event only once), we can change our query to *group by user*, to\nreduce the number of times they caused a particular ``e.properties.C``\nto just 1.\n\n.. code:: python\n\n    query = JQL(api_secret, params)\\\n              .filter('e.property.B == 2')\\\n              .filter('e.property.F == \"hello\"')\\\n              .group_by_user(\n                  keys=[\n                      \"new Date(e.time).toISOString().split('T')[0]\",\n                      \"e.property.C\"\n                  ],\n                  accumulator=\"function(){ return 1;}\")\\\n              .group_by(\n                  keys=[\"e.key.slice(1)\"],\n                  accumulator=Reducer.count())\n\nWhy are your filters not joined with ``&&``?\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nWe could have also combined our ``.filter(...)`` methods into 1 method\nby doing, ``.filter('e.property.B == 2 && e.property.F == \"hello\"')``.\nSuccessive ``.filter(...)`` expressions are automatically ``&&``'ed. The\nmethod of expression you choose is stylistic.\n\nWhat is that ``Reducer`` thing?\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nThe ``Reducer`` class is for convenience and contains shortcuts to all\nthe reducer functions (e.g. ``Reducer.count()`` returns\n``mixpanel.reducer.count()``, and ``Reducer.top(limit)`` returns\n``mixpanel.reducer.top(limit)``). Refer to the code for a list of all\nreducer shortcuts.\n\nTo write your own reducer, make sure to include a full JavaScript\nfunction body (i.e. ``function(){ ... }``).\n\nHow do I see what the final JavaScript sent to Mixpanel will be?\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nUse the ``.query_plan()`` method on your JQL query to view what the\nequivalent JavaScript will be.\n\n.. code:: python\n\n    >>> query.query_plan()\n    'function main() { return Events(params).filter(function(e){return e.property.B == 2}).filter(function(e){return e.property.F == \"hello\"}).groupByUser([function(e){return new Date(e.time)).toISOString().split(\\'T\\')[0]},function(e){return e.property.C}], function(){ return 1;}).groupBy([function(e){return e.key.slice(1)}], mixpanel.reducer.count()); }'\n\nThis can be quite helpful during debugging.\n\nCaveats\n-------\n\n``.filter(...)`` automatically transforms whatever is within the\nparenthesis' into ``function(e){ return ... }``. This library does\n**not** support the ``properties.x`` shortcut syntax and requires\n``e.properties.x``.\n\nThis library cannot easily express everything possible in Mixpanel's JQL\nlanguage, but does try to simplify the general cases. If you have some\nideas for making this library more user friendly to a wider range of\npotential queries, please submit a pull request or create an issue.\n\nContributions are very welcome!\n\nWhere can I learn more about Mixpanel's JQL?\n--------------------------------------------\n\nFor more information on what you can do with JQL, refer to Mixpanel's\ndocumentation `here <https://mixpanel.com/help/reference/jql>`__.\n",
+    "description": "",
     "docs_url": null,
-    "download_url": "UNKNOWN",
+    "download_url": "",
     "downloads": {
       "last_day": 0,
       "last_month": 0,
       "last_week": 0
     },
     "home_page": "https://github.com/ownaginatious/mixpanel-jql",
-    "keywords": "mixpanel,jql,stream",
+    "keywords": "mixpanel",
     "license": "MIT",
-    "maintainer": null,
-    "maintainer_email": null,
+    "maintainer": "",
+    "maintainer_email": "",
     "name": "mixpanel-jql",
-    "platform": "UNKNOWN",
+    "platform": "",
     "project_url": "https://pypi.org/project/mixpanel-jql/",
-    "release_url": "https://pypi.org/project/mixpanel-jql/0.3.post4/",
-    "requires_python": null,
+    "release_url": "https://pypi.org/project/mixpanel-jql/0.3.post16/",
+    "requires_dist": [],
+    "requires_python": "",
     "summary": "A streaming library for making JQL queries to Mixpanel",
-    "version": "0.3.post4"
+    "version": "0.3.post16"
   },
   "releases": {
     "0.1": [
@@ -86,6 +87,24 @@
         "url": "https://files.pythonhosted.org/packages/52/c9/060a841a07db2d3604eed9548f95eab155576486d92af31010cd18a7b9b5/mixpanel-jql-0.3.tar.gz"
       }
     ],
+    "0.3.post16": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e9b800e49efeab1462fb23d4cb373117",
+          "sha256": "ad35af54a931149de5c648db81e5188204cfb7fcc3f71bd520003bcb30b0cf2c"
+        },
+        "downloads": 0,
+        "filename": "mixpanel-jql-0.3.post16.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e9b800e49efeab1462fb23d4cb373117",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 21599,
+        "upload_time": "2017-08-21T07:31:02",
+        "url": "https://files.pythonhosted.org/packages/3b/09/83aebb394e6f0850d4d0135e9b5f3b86e28b057be8fb6782e7cd60cf1537/mixpanel-jql-0.3.post16.tar.gz"
+      }
+    ],
     "0.3.post4": [
       {
         "comment_text": "",
@@ -109,18 +128,18 @@
     {
       "comment_text": "",
       "digests": {
-        "md5": "0e503f1353005221a93115ed5a8d8159",
-        "sha256": "8df4416c9a24f2090b3867c016fb7b0ea71d7a6cc2d9c6c9eb9cde9099bb7f45"
+        "md5": "e9b800e49efeab1462fb23d4cb373117",
+        "sha256": "ad35af54a931149de5c648db81e5188204cfb7fcc3f71bd520003bcb30b0cf2c"
       },
-      "downloads": 279,
-      "filename": "mixpanel-jql-0.3.post4.tar.gz",
+      "downloads": 0,
+      "filename": "mixpanel-jql-0.3.post16.tar.gz",
       "has_sig": false,
-      "md5_digest": "0e503f1353005221a93115ed5a8d8159",
+      "md5_digest": "e9b800e49efeab1462fb23d4cb373117",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 21330,
-      "upload_time": "2016-06-27T14:41:15",
-      "url": "https://files.pythonhosted.org/packages/a4/12/1cced3d963e0103492f890c2f79647f44b2442fed1bcfe9798f3debe4b04/mixpanel-jql-0.3.post4.tar.gz"
+      "size": 21599,
+      "upload_time": "2017-08-21T07:31:02",
+      "url": "https://files.pythonhosted.org/packages/3b/09/83aebb394e6f0850d4d0135e9b5f3b86e28b057be8fb6782e7cd60cf1537/mixpanel-jql-0.3.post16.tar.gz"
     }
   ]
 }
