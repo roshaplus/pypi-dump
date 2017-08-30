@@ -4,12 +4,12 @@
     "author_email": "rohitkumar.a255@gmail.com, kyle@lahnakoski.com",
     "bugtrack_url": null,
     "classifiers": [
-      "Development Status :: 4 - Beta",
+      "Development Status :: 3 - Alpha",
       "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
       "Topic :: Software Development :: Libraries",
       "Topic :: Software Development :: Libraries :: Python Modules"
     ],
-    "description": "jx-sqlite\n=========\n\nJSON query expressions using SQLite\n\nOverview\n--------\n\nAn attempt to store JSON documents in SQLite so that they are accessible\nvia SQL. The hope is this will serve a basis for a general\ndocument-relational map (DRM), and leverage the database's query\noptimizer.\n\nStatus\n------\n\nIt looks like many tests already pass, but those are the easy ones. The\ndifficult tests, testing queries into nested arrays, remain to be\nsolved. Hopefully, there will be a GSOC project to refactor and finish\nthis work.\n\nThe tests fail because what I have written does not handle the most\ninteresting, and most important features: We want to query nested object\narrays as if they were just another table. This is important for two\nreasons;\n\n1. Inner objects ``{\"a\":{\"b\":0}}`` are a shortcut for nested arrays\n   ``{\"a\":[{\"b\":0}]}``, plus\n2. Schemas can be expanded from one-to-one to one-to-many\n   ``{\"a\":[{\"b\":0}, {\"b\":1}]}``.\n\nRunning tests\n-------------\n\n::\n\n    export PYTHONPATH=.\n    python -m unittest discover -v -s tests\n\nDesign\n------\n\nNomenclature\n~~~~~~~~~~~~\n\n-  **Nested Object** - An object in an array\n-  **Inner Object** - A child object, no arrays\n\nThis nomenclature is different than most documentation that talks about\nJSON documents: Other documentation will use the word *nested* to refer\nto either sub-structure ambiguously.\n\nOverloading property types\n~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nA distinction between databases and document stores is the ability to\nstore different primitive types at the same property. To overcome this,\nwe markup the columns of the database with the type. Let's put two\nobjects into the ``example`` table:\n\n::\n\n    {\"a\": 1}\n    {\"a\": \"hello\"}\n\nWe markup the columns with ``$``\\ +typename, with the hope we avoid\nnamespace collisions.\n\n``example``\n~~~~~~~~~~~\n\n\\| \\_id \\| a.\\ :math:`integer | a.`\\ string \\|\n\\|-----\\|------------\\|-----------\\| \\| 0 \\| 1 \\| null \\| \\| 1 \\| null\n\\| \"hello\" \\|\n\nWe add an ``_id`` column as a UID, so we can distinguish documents.\n\nThe good thing about adding the type to the name is we can store\nprimitive values:\n\n::\n\n    \"hello world\"\n\n\\| \\_id \\| a.\\ :math:`integer | a.`\\ string \\| $string \\|\n\\|-----\\|------------\\|-----------\\|---------------\\| \\| 2 \\| null \\|\nnull \\| \"hello world\" \\|\n\nInner objects\n~~~~~~~~~~~~~\n\nLimiting ourselves to inner objects, with no arrays, we can store them\nin the database so that each column represents a *path* to a literal\nvalue\n\n::\n\n    {\"a\": {\"b\": 1, \"c\": \"test\"}}\n\nthere are only two leaves in this tree of documents:\n\n``example``\n~~~~~~~~~~~\n\n\\| \\_id \\| a.b.\\ :math:`integer | a.c.`\\ string \\|\n\\|-----\\|--------------\\|-------------\\| \\| 3 \\| 1 \\| \"test\" \\|\n\nWhen we encounter objects with different structures, we can perform\nschema expansion\n\n::\n\n    {\"a\": {\"b\": {\"d\": 3}}}\n\nwe do this by adding columns to the table so we can store the new leaf\nvalues\n\n``example``\n~~~~~~~~~~~\n\n\\| \\_id \\| a.b.\\ :math:`integer | a.c.`\\ string \\| a.b.d.$integer \\|\n\\|-----\\|--------------\\|-------------\\|----------------\\| \\| 4 \\| null\n\\| null \\| 3 \\|\n\nNested Objects\n~~~~~~~~~~~~~~\n\nWhen it comes to nesting objects, a new table will be required\n\n::\n\n    {\"a\": [{\"b\": 4}, {\"b\":5}]}\n\nOur fact table has no primitive values\n\n``example``\n~~~~~~~~~~~\n\n\\| \\_id \\| a.b.\\ :math:`integer | a.c.`\\ string \\| a.b.d.$integer \\|\n\\|-----\\|--------------\\|-------------\\|----------------\\| \\| 5 \\| null\n\\| null \\| null \\|\n\nOur nested documents are stored in a new table, called ``example.a``\n\n``example.a``\n~~~~~~~~~~~~~\n\n| \\_id \\| \\_order \\| \\_parent \\| b.integer \\|\n| --- \\| ------ \\| ------- \\| --------- \\|\n| \u00a06 \\| 0 \\| 5 \\| 4 \\|\n| \u00a07 \\| 1 \\| 5 \\| 5 \\|\n\nChild tables have a ``_id`` column, plus two others: ``_order`` so we\ncan reconstruct the original JSON and ``_parent`` which is used to refer\nto the immediate parent of the array.\n\nMore Design Docs\n----------------\n\n-  `Snowflake <https://github.com/mozilla/jx-sqlite/blob/master/docs/Perspective.md>`__\n-  `JSON in\n   Database <https://github.com/mozilla/jx-sqlite/blob/master/docs/JSON%20in%20Database.md>`__\n\nOpen problems\n-------------\n\n**Do we copy the ``a.*`` columns from the ``example`` table to our new\nchild table?** As I see it, there are two possible answers:\n\n1. **Do not copy** - If there is just one nested document, or it is an\n   inner object, then it will fit in a single row of the parent, and\n   reduce the number of rows returned when querying. The query\n   complexity increases because we must consider the case of inner\n   objects and the case of nested objects.\n2. **Copy** - Effectively move the columns to the new child table: This\n   will simplify the queries because each path is realized in only one\n   table but may be more expensive because every inner object will\n   demand an SQL-join, it may be expensive to perform the alter table.\n\n**How to handle arrays of arrays?** I have not seen many examples in the\nwild yet. Usually, arrays of arrays represent a multidimensional array,\nwhere the number of elements in every array is the same. Maybe we can\nreject JSON that does not conform to a multidimensional interpretation.",
+    "description": "jx-sqlite\n=========\n\nJSON query expressions using SQLite\n\nMotivation\n----------\n\nJSON is a nice format to store data, and it has become quite prevalent.\nUnfortunately, databases do not handle it well, often a human is\nrequired to declare a schema that can hold the JSON before it can be\nqueried. If we are not overwhelmed by the diversity of JSON now, we soon\nwill be. There will be more JSON, of more different shapes, as the\nnumber of connected devices( and the information they generate)\ncontinues to increase.\n\nSynopsis\n--------\n\nAn attempt to store JSON documents in SQLite so that they are accessible\nvia SQL. The hope is this will serve a basis for a general\ndocument-relational map (DRM), and leverage the database's query\noptimizer. jx-sqlite is also responsible for making the schema, and\nchanging it dynamically as new JSON schema are encountered and to ensure\nthat the old queries against the new schema have the same meaning.\n\nThe most interesting, and most important feature is that we query nested\nobject arrays as if they were just another table. This is important for\ntwo reasons:\n\n1. Inner objects ``{\"a\": {\"b\": 0}}`` are a shortcut for nested arrays\n   ``{\"a\": [{\"b\": 0}]}``, plus\n2. Schemas can be expanded from one-to-one to one-to-many\n   ``{\"a\": [{\"b\": 0}, {\"b\": 1}]}``.\n\nTests\n-----\n\nThere are over 200 tests used to confirm the expected behaviour: They\ntest a variety of JSON forms, and the queries that can be performed on\nthem. Most tests are further split into three different output formats (\nlist, table and cube).\n\nHow to Use: Example\n-------------------\n\nCreate a table object from ``QueryTable`` class. The two useful methods\nof ``QueryTable`` class are ``insert()`` and ``query()``. To insert\ndata, use ``insert(docs)`` method where ``docs`` is a ``list`` of\ndocuments to be inserted in the table and to query, use\n``query(your_query)`` method where ``your_query`` is a ``dict`` object\nfollowing JSON Query Expressions (see docs on JSON Query Expressions\nbelow). A sample example is shown here for better understanding. And\nyes, don't forget to wrap the query.\n\n::\n\n        from jx_sqlite.query_table import QueryTable\n        from mo_dots import wrap\n        from copy import deepcopy\n\n        index = QueryTable(\"dummy_table\")\n\n        sample_data = [\n        {\"a\": \"c\", \"v\": 13},\n        {\"a\": \"b\", \"v\": 2},\n                {\"v\": 3},\n                {\"a\": \"b\"},\n        {\"a\": \"c\", \"v\": 7},\n        {\"a\": \"c\", \"v\": 11}\n        ]\n\n        index.insert(sample_data)\n\n        sample_query = {\n        \"from\": \"dummy_table\"\n        }\n\n        result = index.query(deepcopy(wrap(sample_query)))\n\nInstallation\n------------\n\nPython2.7 required. Package can be installed via pypi see below:\n\n::\n\n    pip install jx-sqlite\n\nGetting Started\n---------------\n\nThese instructions will get you a copy of the project up and running on\nyour local machine for development and testing purposes.\n\n::\n\n        $ git clone https://github.com/mozilla/jx-sqlite\n        $ cd jx-sqlite\n\nRunning tests\n-------------\n\n::\n\n    export PYTHONPATH=.\n    python -m unittest discover -v -s tests\n\nDocs\n----\n\n-  `Json Query\n   Expression <https://github.com/klahnakoski/ActiveData/blob/dev/docs/jx.md>`__\n-  `Nomenclature <https://github.com/mozilla/jx-sqlite/blob/master/docs/Nomenclature.md>`__\n-  `Snowflake <https://github.com/mozilla/jx-sqlite/blob/master/docs/Perspective.md>`__\n-  `JSON in\n   Database <https://github.com/mozilla/jx-sqlite/blob/master/docs/JSON%20in%20Database.md>`__\n-  `The\n   Future <https://github.com/mozilla/jx-sqlite/blob/master/docs/The%20Future.md>`__\n\nContributors\n------------\n\nContributions are always welcome!\n\nLicense\n-------\n\nThis project is licensed under Mozilla Public License, v. 2.0. If a copy\nof the MPL was not distributed with this file, You can obtain one at\nhttp://mozilla.org/MPL/2.0/.\n\nGSOC\n----\n\nWork done upto the deadline of GSoC'17: \\* `Pull\nRequests <https://github.com/mozilla/jx-sqlite/pulls?utf8=%E2%9C%93&q=is%3Apr%20author%3Arohit-rk>`__\n\\*\n`Commits <https://github.com/mozilla/jx-sqlite/commits?author=rohit-rk>`__\n\nFuture Work \\* `Issues <https://github.com/mozilla/jx-sqlite/issues>`__\n\\* `The\nFuture <https://github.com/mozilla/jx-sqlite/blob/master/docs/The%20Future.md>`__",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -25,13 +25,49 @@
     "name": "jx-sqlite",
     "platform": "",
     "project_url": "https://pypi.org/project/jx-sqlite/",
-    "release_url": "https://pypi.org/project/jx-sqlite/0.9.17206/",
+    "release_url": "https://pypi.org/project/jx-sqlite/0.10.17243/",
     "requires_dist": [],
     "requires_python": "",
     "summary": "JSON query expressions using SQLite",
-    "version": "0.9.17206"
+    "version": "0.10.17243"
   },
   "releases": {
+    "0.10.17242": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "79044c9beeeaf81cf29e0f7d03c056cd",
+          "sha256": "81071dea1046b7041d6d099682620c428c45aad17fd475d690c015eb82d4c981"
+        },
+        "downloads": 0,
+        "filename": "jx-sqlite-0.10.17242.zip",
+        "has_sig": false,
+        "md5_digest": "79044c9beeeaf81cf29e0f7d03c056cd",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 212922,
+        "upload_time": "2017-08-30T13:50:51",
+        "url": "https://files.pythonhosted.org/packages/a6/bf/898bdbbb9418b72b0929a4d38d766373ca9e750a34102b52318b96b92eb7/jx-sqlite-0.10.17242.zip"
+      }
+    ],
+    "0.10.17243": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e514b96b3fa502dd738a7ac70fec6bf8",
+          "sha256": "d3735c259e039c311f783477e33af0059728ff70668c7c148b59fb872515d98f"
+        },
+        "downloads": 0,
+        "filename": "jx-sqlite-0.10.17243.zip",
+        "has_sig": false,
+        "md5_digest": "e514b96b3fa502dd738a7ac70fec6bf8",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 218772,
+        "upload_time": "2017-08-30T15:13:57",
+        "url": "https://files.pythonhosted.org/packages/ac/8a/127fd07d088564cdbc7c60a540ea1a2582241611216097fc5ce43acd9339/jx-sqlite-0.10.17243.zip"
+      }
+    ],
     "0.9.17206": [
       {
         "comment_text": "",
@@ -55,18 +91,18 @@
     {
       "comment_text": "",
       "digests": {
-        "md5": "77cf52ae2cc3984500d38fcb2a179adb",
-        "sha256": "3127161a15485dfc4bb2ebde6b24ed700d1c1e3159718db44d254c074df64df0"
+        "md5": "e514b96b3fa502dd738a7ac70fec6bf8",
+        "sha256": "d3735c259e039c311f783477e33af0059728ff70668c7c148b59fb872515d98f"
       },
       "downloads": 0,
-      "filename": "jx-sqlite-0.9.17206.zip",
+      "filename": "jx-sqlite-0.10.17243.zip",
       "has_sig": false,
-      "md5_digest": "77cf52ae2cc3984500d38fcb2a179adb",
+      "md5_digest": "e514b96b3fa502dd738a7ac70fec6bf8",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 215609,
-      "upload_time": "2017-08-01T13:05:52",
-      "url": "https://files.pythonhosted.org/packages/d7/0c/1842bc6b3b2ece5003bf0bddda170a8746e90b84b0172bea25da66328f4f/jx-sqlite-0.9.17206.zip"
+      "size": 218772,
+      "upload_time": "2017-08-30T15:13:57",
+      "url": "https://files.pythonhosted.org/packages/ac/8a/127fd07d088564cdbc7c60a540ea1a2582241611216097fc5ce43acd9339/jx-sqlite-0.10.17243.zip"
     }
   ]
 }
