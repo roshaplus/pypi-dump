@@ -15,9 +15,9 @@
       "Programming Language :: Python :: 3.4",
       "Programming Language :: Python :: 3.5"
     ],
-    "description": "# django-herald\n\n[![Latest PyPI version](https://badge.fury.io/py/django-herald.svg)](https://pypi.python.org/pypi/django-herald)\n[![Build Status](https://travis-ci.org/worthwhile/django-herald.svg?branch=master)](https://travis-ci.org/worthwhile/django-herald)\n[![Coverage Status](https://coveralls.io/repos/github/worthwhile/django-herald/badge.svg?branch=master)](https://coveralls.io/github/worthwhile/django-herald?branch=master)\n\n[![Logo](https://github.com/worthwhile/django-herald/blob/master/logo.png)](https://github.com/worthwhile/django-herald)\n\nDjango library for separating the message content from transmission method\n\n# Installation\n\n1. `pip install django-herald`\n2. Add `herald` and `django.contrib.sites` to `INSTALLED_APPS`.\n3. Add herald's URLS:\n\n        if settings.DEBUG:\n            urlpatterns = [\n                url(r'^herald/', include('herald.urls')),\n            ] + urlpatterns\n\n# Usage\n\n1. Create a `notifications.py` file in any django app. This is where your notification classes will live. Add a class like this:\n\n        from herald import registry\n        from herald.base import EmailNotification\n\n\n        class WelcomeEmail(EmailNotification):  # extend from EmailNotification for emails\n           template_name = 'welcome_email'  # name of template, without extension\n           subject = 'Welcome'  # subject of email\n\n           def __init__(self, user):  # optionally customize the initialization\n               self.context = {'user': user}  # set context for the template rendering\n               self.to_emails = [user.email]  # set list of emails to send to\n\n           @staticmethod\n           def get_demo_args():  # define a static method to return list of args needed to initialize class for testing\n               from users.models import User\n               return [User.objects.order_by('?')[0]]\n\n        registry.register(WelcomeEmail)  # finally, register your notification class\n\n        # Alternatively, a class decorator can be used to register the notification:\n\n        @registry.register_decorator()\n        class WelcomeEmail(EmailNotification):\n            ...\n\n\n2. Create templates for rendering the email using this file structure:\n\n        templates/\n            herald/\n                text/\n                    welcome_email.txt\n                html/\n                    welcome_email.html\n\n3. Test how your email looks by navigating to `/herald/`.\n\n4. Send your email wherever you need in your code:\n\n        WelcomeEmail(user).send()\n\n5. View the sent emails in django admin and even be able to resend it.\n\n\n## Deleting Old Notifications\n\nThe `delnotifs` command is useful for purging the notification history.\n\nThe default usage will delete everything from sent during today:\n\n    python manage.py delnotifs\n\nHowever, you can also pass arguments for `start` or `end` dates. `end` is up to, but not including that date.\n\n    python manage.py delnotifs --start='2016-01-01' --end='2016-01-10'\n\n\n## Asynchronous Email Sending\n\nIf you are sending slightly different emails to a large number of people, it might take quite a while to process. By default, Django will process this all synchronously. For asynchronous support, we recommend django-celery-email. It is very straightfoward to setup and integrate: https://github.com/pmclanahan/django-celery-email\n\n\n## herald.contrib.auth\n\nDjango has built-in support for sending password reset emails. If you would like to send those emails using herald, you can use the notification class in herald.contrib.auth.\n\nFirst, add `herald.contrib.auth` to `INSTALLED_APPS` (in addition to `herald`).\n\nSecond, use the `HeraldPasswordResetForm` in place of django's built in `PasswordResetForm`. This step is entirely dependant on your project structure, but it essentially just involves changing the form class on the password reset view in some way:\n\n    # you may simply just need to override the password reset url like so:\n    url(r'^password_reset/$', password_reset, name='password_reset', {'password_reset_form': HeraldPasswordResetForm}),\n\n    # of if you are using something like django-authtools:\n    url(r'^password_reset/$', PasswordResetView.as_view(form_class=HeraldPasswordResetForm), name='password_reset'),\n\n    # or you may have a customized version of the password reset view:\n    class MyPasswordResetView(FormView):\n        form_class = HeraldPasswordResetForm  # change the form class here\n\n    # or, you may have a custom password reset form already. In that case, you will want to extend from the HeraldPasswordResetForm:\n    class MyPasswordResetForm(HeraldPasswordResetForm):\n        ...\n\n    # alternatively, you could even just send the notification wherever you wish, seperate from the form:\n    PasswordResetEmail(some_user).send()\n\nThird, you may want to customize the templates for the email. By default, herald will use the `registration/password_reset_email.html` that is provided by django for both the html and text versions of the email. But you can simply override `herald/html/password_reset.html` and/or `herald/text/password_reset.txt` to suit your needs.\n\n\n## Email Attachments\n\nTo send attachments, assign a list of attachments to the attachments attribute of your EmailNotification instance, or override the get_attachments() method.\n\nEach attachment in the list can be one of the following:\n\n1. A tuple which consists of the filename, the raw attachment data, and the mimetype. It is up to you to get the attachment data. Like this:\n\n        raw_data = get_pdf_data()\n\n        email.attachments = [\n           ('Report.pdf', raw_data, 'application/pdf'),\n           ('report.txt', 'text version of report', 'text/plain')\n        ]\n        email.send()\n\n2. A MIMEBase object. See the documentation for attachments under EmailMessage Objects/attachments in the Django documentation.\n\n3. A django `File` object.\n\n### Inline Attachments\n\nSometimes you want to embed an image directly into the email content.  Do that by using a MIMEImage assigning a content id header to a MIMEImage, like this:\n\n    email = WelcomeEmail(user)\n    im = get_thumbnail(image_file.name, '600x600', quality=95)\n    my_image = MIMEImage(im.read()) # MIMEImage inherits from MIMEBase\n    my_image.add_header('Content-ID', '<{}>'.format(image_file.name))\n\nYou can refer to these images in your html email templates using the Content ID (cid) like this:\n\n    <img src=\"cid:{{image_file.name}}\" />\n\nYou would of course need to add the \"image_file\" to your template context in the example above.  You can also accomplish this using file operations.  In this example we overrode the get_attachments method of an EmailNotification.\n\n    class MyNotification(EmailNotification):\n        context = {'hello': 'world'}\n        template_name = 'welcome_email'\n        to_emails = ['somebody@example.com']\n        subject = \"My email test\"\n\n        def get_attachments(self):\n            fp = open('python.jpeg', 'rb')\n            img = MIMEImage(fp.read())\n            img.add_header('Content-ID', '<{}>'.format('python.jpeg'))\n            return [\n                img,\n            ]\n\nAnd in your template you would refer to it like this, and you would not need to add anything to the context:\n\n    <img src=\"cid:python.jpeg\" />\n\n### Other MIME attachments\n\nYou can also attach any MIMEBase objects as regular attachments, but you must add a content-disposition header, or they will be inaccessible:  \n\n    my_image.add_header('Content-Disposition', 'attachment; filename=\"python.jpg\"')\n\nAttachments can cause your database to become quite large, so you should be sure to run the management commands to purge the database of old messages.\n\n# Running Tests\n\n    python runtests.py\n\n\n",
+    "description": "# django-herald\n\n[![Latest PyPI version](https://badge.fury.io/py/django-herald.svg)](https://pypi.python.org/pypi/django-herald)\n[![Build Status](https://travis-ci.org/worthwhile/django-herald.svg?branch=master)](https://travis-ci.org/worthwhile/django-herald)\n[![Coverage Status](https://coveralls.io/repos/github/worthwhile/django-herald/badge.svg?branch=master)](https://coveralls.io/github/worthwhile/django-herald?branch=master)\n\n[![Logo](https://github.com/worthwhile/django-herald/blob/master/logo.png)](https://github.com/worthwhile/django-herald)\n\nDjango library for separating the message content from transmission method\n\n# Installation\n\n1. `pip install django-herald`\n2. Add `herald` and `django.contrib.sites` to `INSTALLED_APPS`.\n3. Add herald's URLS:\n\n        if settings.DEBUG:\n            urlpatterns = [\n                url(r'^herald/', include('herald.urls')),\n            ] + urlpatterns\n\n# Usage\n\n1. Create a `notifications.py` file in any django app. This is where your notification classes will live. Add a class like this:\n\n        from herald import registry\n        from herald.base import EmailNotification\n\n\n        class WelcomeEmail(EmailNotification):  # extend from EmailNotification for emails\n           template_name = 'welcome_email'  # name of template, without extension\n           subject = 'Welcome'  # subject of email\n\n           def __init__(self, user):  # optionally customize the initialization\n               self.context = {'user': user}  # set context for the template rendering\n               self.to_emails = [user.email]  # set list of emails to send to\n\n           @staticmethod\n           def get_demo_args():  # define a static method to return list of args needed to initialize class for testing\n               from users.models import User\n               return [User.objects.order_by('?')[0]]\n\n        registry.register(WelcomeEmail)  # finally, register your notification class\n\n        # Alternatively, a class decorator can be used to register the notification:\n\n        @registry.register_decorator()\n        class WelcomeEmail(EmailNotification):\n            ...\n\n\n2. Create templates for rendering the email using this file structure:\n\n        templates/\n            herald/\n                text/\n                    welcome_email.txt\n                html/\n                    welcome_email.html\n\n3. Test how your email looks by navigating to `/herald/`.\n\n4. Send your email wherever you need in your code:\n\n        WelcomeEmail(user).send()\n\n5. View the sent emails in django admin and even be able to resend it.\n\n\n## Deleting Old Notifications\n\nThe `delnotifs` command is useful for purging the notification history.\n\nThe default usage will delete everything from sent during today:\n\n    python manage.py delnotifs\n\nHowever, you can also pass arguments for `start` or `end` dates. `end` is up to, but not including that date.\n\n    python manage.py delnotifs --start='2016-01-01' --end='2016-01-10'\n\n\n## Asynchronous Email Sending\n\nIf you are sending slightly different emails to a large number of people, it might take quite a while to process. By default, Django will process this all synchronously. For asynchronous support, we recommend django-celery-email. It is very straightfoward to setup and integrate: https://github.com/pmclanahan/django-celery-email\n\n\n## herald.contrib.auth\n\nDjango has built-in support for sending password reset emails. If you would like to send those emails using herald, you can use the notification class in herald.contrib.auth.\n\nFirst, add `herald.contrib.auth` to `INSTALLED_APPS` (in addition to `herald`).\n\nSecond, use the `HeraldPasswordResetForm` in place of django's built in `PasswordResetForm`. This step is entirely dependant on your project structure, but it essentially just involves changing the form class on the password reset view in some way:\n\n    # you may simply just need to override the password reset url like so:\n    url(r'^password_reset/$', password_reset, name='password_reset', {'password_reset_form': HeraldPasswordResetForm}),\n\n    # of if you are using something like django-authtools:\n    url(r'^password_reset/$', PasswordResetView.as_view(form_class=HeraldPasswordResetForm), name='password_reset'),\n\n    # or you may have a customized version of the password reset view:\n    class MyPasswordResetView(FormView):\n        form_class = HeraldPasswordResetForm  # change the form class here\n\n    # or, you may have a custom password reset form already. In that case, you will want to extend from the HeraldPasswordResetForm:\n    class MyPasswordResetForm(HeraldPasswordResetForm):\n        ...\n\n    # alternatively, you could even just send the notification wherever you wish, seperate from the form:\n    PasswordResetEmail(some_user).send()\n\nThird, you may want to customize the templates for the email. By default, herald will use the `registration/password_reset_email.html` that is provided by django for both the html and text versions of the email. But you can simply override `herald/html/password_reset.html` and/or `herald/text/password_reset.txt` to suit your needs.\n\n## User Disabled Notifications\n\nIf you want to disable certain notifications per user, add a record to the UserNotification table and\nadd notifications to the disabled_notifications many to many table.\n\nFor example:\n\n        user = User.objects.get(id=user.id)\n\n        notification = Notification.objects.get(notification_class='MyNotification')\n\n        # disable the notification\n        user.usernotification.disabled_notifications.add(notification)\n\nBy default, notifications can be disabled.  You can put can_disable = False in your notification class and the system will\npopulate the database with this default.  Your Notification class can also override the verbose_name by setting it in your\ninherited Notification class.  Like this:\n\n    class MyNotification(EmailNotification):\n        can_disable = False\n        verbose_name = \"My Required Notification\"\n\n## Email Attachments\n\nTo send attachments, assign a list of attachments to the attachments attribute of your EmailNotification instance, or override the get_attachments() method.\n\nEach attachment in the list can be one of the following:\n\n1. A tuple which consists of the filename, the raw attachment data, and the mimetype. It is up to you to get the attachment data. Like this:\n\n        raw_data = get_pdf_data()\n\n        email.attachments = [\n           ('Report.pdf', raw_data, 'application/pdf'),\n           ('report.txt', 'text version of report', 'text/plain')\n        ]\n        email.send()\n\n2. A MIMEBase object. See the documentation for attachments under EmailMessage Objects/attachments in the Django documentation.\n\n3. A django `File` object.\n\n### Inline Attachments\n\nSometimes you want to embed an image directly into the email content.  Do that by using a MIMEImage assigning a content id header to a MIMEImage, like this:\n\n    email = WelcomeEmail(user)\n    im = get_thumbnail(image_file.name, '600x600', quality=95)\n    my_image = MIMEImage(im.read()) # MIMEImage inherits from MIMEBase\n    my_image.add_header('Content-ID', '<{}>'.format(image_file.name))\n\nYou can refer to these images in your html email templates using the Content ID (cid) like this:\n\n    <img src=\"cid:{{image_file.name}}\" />\n\nYou would of course need to add the \"image_file\" to your template context in the example above.  You can also accomplish this using file operations.  In this example we overrode the get_attachments method of an EmailNotification.\n\n    class MyNotification(EmailNotification):\n        context = {'hello': 'world'}\n        template_name = 'welcome_email'\n        to_emails = ['somebody@example.com']\n        subject = \"My email test\"\n\n        def get_attachments(self):\n            fp = open('python.jpeg', 'rb')\n            img = MIMEImage(fp.read())\n            img.add_header('Content-ID', '<{}>'.format('python.jpeg'))\n            return [\n                img,\n            ]\n\nAnd in your template you would refer to it like this, and you would not need to add anything to the context:\n\n    <img src=\"cid:python.jpeg\" />\n\n### Other MIME attachments\n\nYou can also attach any MIMEBase objects as regular attachments, but you must add a content-disposition header, or they will be inaccessible:  \n\n    my_image.add_header('Content-Disposition', 'attachment; filename=\"python.jpg\"')\n\nAttachments can cause your database to become quite large, so you should be sure to run the management commands to purge the database of old messages.\n\n# Running Tests\n\n    python runtests.py\n\n\n",
     "docs_url": null,
-    "download_url": "https://github.com/worthwhile/django-herald/tarball/0.1.6",
+    "download_url": "https://github.com/worthwhile/django-herald/tarball/0.1.7",
     "downloads": {
       "last_day": 0,
       "last_month": 0,
@@ -31,15 +31,15 @@
     "name": "django-herald",
     "platform": "",
     "project_url": "https://pypi.org/project/django-herald/",
-    "release_url": "https://pypi.org/project/django-herald/0.1.6/",
+    "release_url": "https://pypi.org/project/django-herald/0.1.7/",
     "requires_dist": [
-      "six",
       "jsonpickle",
+      "six",
       "django (>=1.8)"
     ],
     "requires_python": "",
     "summary": "Django library for separating the message content from transmission method",
-    "version": "0.1.6"
+    "version": "0.1.7"
   },
   "releases": {
     "0.1.1": [
@@ -245,40 +245,74 @@
         "upload_time": "2017-06-30T14:42:06",
         "url": "https://files.pythonhosted.org/packages/a5/a4/fb080d0fb427ba38daee84aca29ad9d0c6de01b1410c3809742563003d8f/django-herald-0.1.6.tar.gz"
       }
+    ],
+    "0.1.7": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a37d3621cb3c8c4463acb70824b0949c",
+          "sha256": "350e40487df620a5ff1b9fc9f8607b64da9eaeab93d47aace574f765944f4831"
+        },
+        "downloads": 0,
+        "filename": "django_herald-0.1.7-py2.py3-none-any.whl",
+        "has_sig": true,
+        "md5_digest": "a37d3621cb3c8c4463acb70824b0949c",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 30552,
+        "upload_time": "2017-08-31T12:54:45",
+        "url": "https://files.pythonhosted.org/packages/96/d2/58dd8076ff57c47122ec5ecbaa427f78379fa32004ab0e7913aa148cde8e/django_herald-0.1.7-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "36fe464920c76f3239c126bab7fb91a1",
+          "sha256": "cd6be532460fd08efaa1dbfb2229fa6e8bd4d5607d5b4c2048269fef9e228e68"
+        },
+        "downloads": 0,
+        "filename": "django-herald-0.1.7.tar.gz",
+        "has_sig": true,
+        "md5_digest": "36fe464920c76f3239c126bab7fb91a1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 21325,
+        "upload_time": "2017-08-31T12:54:48",
+        "url": "https://files.pythonhosted.org/packages/51/eb/436a195ad48de0e6ce7dfe7c65501b860b638ebec5901e58ac15cb317079/django-herald-0.1.7.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "8f916760c0e17d7caf4f8855afd7c47c",
-        "sha256": "b8cb5cc8516186ff1088210f8b0806a07c97e4faedb838239228bdf63e9d7e81"
+        "md5": "a37d3621cb3c8c4463acb70824b0949c",
+        "sha256": "350e40487df620a5ff1b9fc9f8607b64da9eaeab93d47aace574f765944f4831"
       },
       "downloads": 0,
-      "filename": "django_herald-0.1.6-py2.py3-none-any.whl",
+      "filename": "django_herald-0.1.7-py2.py3-none-any.whl",
       "has_sig": true,
-      "md5_digest": "8f916760c0e17d7caf4f8855afd7c47c",
+      "md5_digest": "a37d3621cb3c8c4463acb70824b0949c",
       "packagetype": "bdist_wheel",
       "python_version": "py2.py3",
-      "size": 28146,
-      "upload_time": "2017-06-30T14:42:03",
-      "url": "https://files.pythonhosted.org/packages/fc/96/b9ce0ab2f1a1979e3c99a221c4ce4a327c91c0d92640f2aea99c52a43552/django_herald-0.1.6-py2.py3-none-any.whl"
+      "size": 30552,
+      "upload_time": "2017-08-31T12:54:45",
+      "url": "https://files.pythonhosted.org/packages/96/d2/58dd8076ff57c47122ec5ecbaa427f78379fa32004ab0e7913aa148cde8e/django_herald-0.1.7-py2.py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "afc832ffb4d2350a71b919f17c0876db",
-        "sha256": "3333c6ecd7ade13a2f4ec47fcaac80e842a9318748cc9af5e4f64bf1cb835be0"
+        "md5": "36fe464920c76f3239c126bab7fb91a1",
+        "sha256": "cd6be532460fd08efaa1dbfb2229fa6e8bd4d5607d5b4c2048269fef9e228e68"
       },
       "downloads": 0,
-      "filename": "django-herald-0.1.6.tar.gz",
+      "filename": "django-herald-0.1.7.tar.gz",
       "has_sig": true,
-      "md5_digest": "afc832ffb4d2350a71b919f17c0876db",
+      "md5_digest": "36fe464920c76f3239c126bab7fb91a1",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 19651,
-      "upload_time": "2017-06-30T14:42:06",
-      "url": "https://files.pythonhosted.org/packages/a5/a4/fb080d0fb427ba38daee84aca29ad9d0c6de01b1410c3809742563003d8f/django-herald-0.1.6.tar.gz"
+      "size": 21325,
+      "upload_time": "2017-08-31T12:54:48",
+      "url": "https://files.pythonhosted.org/packages/51/eb/436a195ad48de0e6ce7dfe7c65501b860b638ebec5901e58ac15cb317079/django-herald-0.1.7.tar.gz"
     }
   ]
 }
