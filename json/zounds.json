@@ -4,26 +4,27 @@
     "author_email": "john.vinyard@gmail.com",
     "bugtrack_url": null,
     "classifiers": [],
-    "description": "|Build Status| |Coverage Status| |PyPI|\n\nUsage\n=====\n\nZounds is a dataflow library for building directed acyclic graphs that\ntransform audio. It uses the\n`featureflow <https://github.com/JohnVinyard/featureflow>`__ library to\ndefine the processing pipelines.\n\nFor example, here's the definition of a pipeline that computes a sliding\nshort-time fourier transform of some audio, and then computes\nspectrograms on the bark and chroma scales.\n\n.. code:: python\n\n    import featureflow as ff\n    import zounds\n\n    windowing = zounds.HalfLapped()\n    samplerate = zounds.SR44100()\n\n\n    class Settings(ff.PersistenceSettings):\n        id_provider = ff.UuidProvider()\n        key_builder = ff.StringDelimitedKeyBuilder()\n        database = ff.FileSystemDatabase(path='data', key_builder=key_builder)\n\n\n    class AudioGraph(ff.BaseModel):\n\n        meta = ff.JSONFeature(\n            zounds.MetaData,\n            encoder=zounds.AudioMetaDataEncoder,\n            store=True)\n\n        raw = ff.ByteStreamFeature(\n            ff.ByteStream,\n            chunksize=2 * 44100 * 30 * 2,\n            needs=meta,\n            store=False)\n\n        ogg = zounds.OggVorbisFeature(\n            zounds.OggVorbis,\n            needs=raw,\n            store=True)\n\n        pcm = zounds.ConstantRateTimeSeriesFeature(\n            zounds.AudioStream,\n            needs=raw,\n            store=False)\n\n        resampled = zounds.ConstantRateTimeSeriesFeature(\n            zounds.Resampler,\n            needs=pcm,\n            samplerate=samplerate,\n            store=False)\n\n        windowed = zounds.ConstantRateTimeSeriesFeature(\n            zounds.SlidingWindow,\n            needs=resampled,\n            wscheme=zounds.HalfLapped(),\n            wfunc=zounds.OggVorbisWindowingFunc(),\n            store=False)\n\n        fft = zounds.ConstantRateTimeSeriesFeature(\n            zounds.FFT,\n            needs=windowed,\n            store=False)\n\n        bark = zounds.ConstantRateTimeSeriesFeature(\n            zounds.BarkBands,\n            needs=fft,\n            store=True)\n\n        chroma = zounds.ConstantRateTimeSeriesFeature(\n            zounds.Chroma,\n            needs=fft,\n            store=True)\n\n        bfcc = zounds.ConstantRateTimeSeriesFeature(\n            zounds.BFCC,\n            needs=fft,\n            store=True)\n\n\n    class Document(AudioGraph, Settings):\n        pass\n\nData can be processed, and later retrieved as follows:\n\n.. code:: python\n\n    >>> _id = doc = Document.process(meta='https://example.com/audio.wav')\n    >>> doc = Document(_id)\n    >>> doc.chroma.shape\n    (321, 12)\n\nInstallation\n============\n\nLibsndfile Issues\n-----------------\n\nInstallation currently requires you to build lbiflac and libsndfile from\nsource, because of `an outstanding\nissue <https://github.com/bastibe/PySoundFile/issues/130>`__ that will\nbe corrected when the apt package is updated to ``libsndfile 1.0.26``.\nDownload and run `this\nscript <https://raw.githubusercontent.com/JohnVinyard/zounds/master/setup.sh>`__\nto handle this step.\n\nNumpy and Scipy\n---------------\n\nThe `Anaconda <https://www.continuum.io/downloads>`__ python\ndistribution is highly recommended.\n\nZounds\n------\n\nFinally, just:\n\n.. code:: bash\n\n    pip install zounds\n\n.. |Build Status| image:: https://travis-ci.org/JohnVinyard/zounds.svg?branch=master\n   :target: https://travis-ci.org/JohnVinyard/zounds\n.. |Coverage Status| image:: https://coveralls.io/repos/github/JohnVinyard/zounds/badge.svg?branch=master\n   :target: https://coveralls.io/github/JohnVinyard/zounds?branch=master\n.. |PyPI| image:: https://img.shields.io/pypi/v/zounds.svg\n   :target: https://pypi.python.org/pypi/zounds",
+    "description": "|Build Status| |Coverage Status| |PyPI| |Docs|\n\nMotivation\n==========\n\nZounds is a python library for working with sound. Its primary goals are\nto:\n\n-  layer semantically meaningful audio manipulations on top of numpy\n   arrays\n-  help to organize the definition and persistence of audio processing\n   pipelines and machine learning experiments with sound\n\nAudio processing graphs and machine learning pipelines are defined using\n`featureflow <https://github.com/JohnVinyard/featureflow>`__.\n\nA Quick Example\n===============\n\n.. code:: python\n\n    import zounds\n\n    Resampled = zounds.resampled(resample_to=zounds.SR11025())\n\n\n    @zounds.simple_in_memory_settings\n    class Sound(Resampled):\n        \"\"\"\n        A simple pipeline that computes a perceptually weighted modified discrete\n        cosine transform, and \"persists\" feature data in an in-memory store.\n        \"\"\"\n\n        windowed = zounds.ArrayWithUnitsFeature(\n            zounds.SlidingWindow,\n            needs=Resampled.resampled,\n            wscheme=zounds.HalfLapped(),\n            wfunc=zounds.OggVorbisWindowingFunc(),\n            store=True)\n\n        mdct = zounds.ArrayWithUnitsFeature(\n            zounds.MDCT,\n            needs=windowed,\n            store=False)\n\n        weighted = zounds.ArrayWithUnitsFeature(\n            zounds.FrequencyWeighting,\n            weighting=zounds.AWeighting(),\n            needs=mdct,\n            store=False)\n\n    if __name__ == '__main__':\n\n        # produce some audio to test our pipeline\n        synth = zounds.SineSynthesizer(zounds.SR44100())\n        samples = synth.synthesize(zounds.Seconds(5), [220., 440., 880.])\n\n        # process the audio, and fetch features from our in-memory store\n        _id = Sound.process(meta=samples.encode())\n        sound = Sound(_id)\n\n        # produce a time slice that starts half a second in, and lasts for two\n        # seconds\n        time_slice = zounds.TimeSlice(\n            start=zounds.Milliseconds(500),\n            duration=zounds.Seconds(2))\n        # grab all the frequency information, for a subset of the duration\n        snippet = sound.weighted[time_slice, :]\n\n        # produce a frequency slice that spans 400hz-500hz\n        freq_band = zounds.FrequencyBand(400, 500)\n        # grab a subset of frequency information for the duration of the sound\n        a440 = sound.mdct[:, freq_band]\n\n        # produce a new set of coefficients where only the 440hz sine wave is\n        # present\n        filtered = sound.mdct.copy()\n        filtered[:] = 0\n        filtered[:, freq_band] = a440\n\n        # apply a geometric scale, which more closely matches human pitch\n        # perception, and apply it to the linear frequency axis\n        scale = zounds.GeometricScale(50, 4000, 0.05, 100)\n        bands = [sound.weighted[:, band] for band in scale]\n        band_sizes = [band.shape[1] for band in bands]\n\n        # reconstruct audio from the MDCT coefficients\n        mdct_synth = zounds.MDCTSynthesizer()\n        reconstructed = mdct_synth.synthesize(sound.mdct)\n        filtered_reconstruction = mdct_synth.synthesize(filtered)\n\n        # start an in-browser REPL that will allow you to listen to and visualize\n        # the variables defined above (and any new ones you create in the session)\n        app = zounds.ZoundsApp(\n            model=Sound,\n            audio_feature=Sound.ogg,\n            visualization_feature=Sound.weighted,\n            globals=globals(),\n            locals=locals())\n        app.start(8888)\n\nFind more inspiration in the `examples\nfolder <https://github.com/JohnVinyard/zounds/tree/master/examples>`__,\nor on the `blog <http://johnvinyard.github.io/>`__.\n\nInstallation\n============\n\nLibsndfile Issues\n-----------------\n\nInstallation currently requires you to build lbiflac and libsndfile from\nsource, because of `an outstanding\nissue <https://github.com/bastibe/PySoundFile/issues/130>`__ that will\nbe corrected when the apt package is updated to ``libsndfile 1.0.26``.\nDownload and run `this\nscript <https://raw.githubusercontent.com/JohnVinyard/zounds/master/setup.sh>`__\nto handle this step.\n\nNumpy and Scipy\n---------------\n\nThe `Anaconda <https://www.continuum.io/downloads>`__ python\ndistribution is highly recommended.\n\nZounds\n------\n\nFinally, just:\n\n.. code:: bash\n\n    pip install zounds\n\n.. |Build Status| image:: https://travis-ci.org/JohnVinyard/zounds.svg?branch=master\n   :target: https://travis-ci.org/JohnVinyard/zounds\n.. |Coverage Status| image:: https://coveralls.io/repos/github/JohnVinyard/zounds/badge.svg?branch=master\n   :target: https://coveralls.io/github/JohnVinyard/zounds?branch=master\n.. |PyPI| image:: https://img.shields.io/pypi/v/zounds.svg\n   :target: https://pypi.python.org/pypi/zounds\n.. |Docs| image:: https://img.shields.io/badge/docs-latest-brightgreen.svg?style=flat&maxAge=86400\n   :target: http://zounds.readthedocs.io/en/latest/?badge=latest",
     "docs_url": null,
-    "download_url": "https://github.com/jvinyard/zounds/tarball/0.20.11",
+    "download_url": "https://github.com/jvinyard/zounds/tarball/0.21.12",
     "downloads": {
       "last_day": 0,
       "last_month": 0,
       "last_week": 0
     },
     "home_page": "https://github.com/JohnVinyard/zounds",
-    "keywords": null,
-    "license": "UNKNOWN",
-    "maintainer": null,
-    "maintainer_email": null,
+    "keywords": "",
+    "license": "",
+    "maintainer": "",
+    "maintainer_email": "",
     "name": "zounds",
-    "platform": "UNKNOWN",
+    "platform": "",
     "project_url": "https://pypi.org/project/zounds/",
-    "release_url": "https://pypi.org/project/zounds/0.20.11/",
-    "requires_python": null,
-    "summary": "UNKNOWN",
-    "version": "0.20.11"
+    "release_url": "https://pypi.org/project/zounds/0.21.12/",
+    "requires_dist": [],
+    "requires_python": "",
+    "summary": "",
+    "version": "0.21.12"
   },
   "releases": {
     "0.1": [
@@ -422,6 +423,24 @@
         "url": "https://files.pythonhosted.org/packages/97/64/97775a5e19365aa0061c15360e07f05dd382cb3d644b8edbf083d9080ffa/zounds-0.20.9.tar.gz"
       }
     ],
+    "0.21.12": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3a8ff6931c21f4c34b89877028da3e3a",
+          "sha256": "aa18d36aae3fc4906a5da5f2551fa91a157e470612d78f0b8111e4c82561bb00"
+        },
+        "downloads": 0,
+        "filename": "zounds-0.21.12.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3a8ff6931c21f4c34b89877028da3e3a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 138044,
+        "upload_time": "2017-09-04T19:06:51",
+        "url": "https://files.pythonhosted.org/packages/c6/54/88b1a715e1fcaeadf5c7cbea5efb3e8b6a852734147529c8d5d39fed6559/zounds-0.21.12.tar.gz"
+      }
+    ],
     "0.3.0": [
       {
         "comment_text": "",
@@ -679,18 +698,18 @@
     {
       "comment_text": "",
       "digests": {
-        "md5": "754022a7986ff649d36c5b22a2003ca5",
-        "sha256": "3b0294d83c6a2cc48a08e5233b73213742b7df5bfa785c08959157d55411e41f"
+        "md5": "3a8ff6931c21f4c34b89877028da3e3a",
+        "sha256": "aa18d36aae3fc4906a5da5f2551fa91a157e470612d78f0b8111e4c82561bb00"
       },
-      "downloads": 16,
-      "filename": "zounds-0.20.11.tar.gz",
+      "downloads": 0,
+      "filename": "zounds-0.21.12.tar.gz",
       "has_sig": false,
-      "md5_digest": "754022a7986ff649d36c5b22a2003ca5",
+      "md5_digest": "3a8ff6931c21f4c34b89877028da3e3a",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 78760,
-      "upload_time": "2017-03-05T23:21:34",
-      "url": "https://files.pythonhosted.org/packages/29/a6/825f747a37d935e984524ce23aac9a2e006d287f29eba4c8f9425f25c293/zounds-0.20.11.tar.gz"
+      "size": 138044,
+      "upload_time": "2017-09-04T19:06:51",
+      "url": "https://files.pythonhosted.org/packages/c6/54/88b1a715e1fcaeadf5c7cbea5efb3e8b6a852734147529c8d5d39fed6559/zounds-0.21.12.tar.gz"
     }
   ]
 }
