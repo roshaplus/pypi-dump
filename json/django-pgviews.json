@@ -12,26 +12,27 @@
       "Programming Language :: Python :: 2.7",
       "Programming Language :: Python :: 3"
     ],
-    "description": "SQL Views for Postgres\n======================\n\n|Gitter| |Circle CI|\n\nAdds first-class support for `PostgreSQL\nViews <http://www.postgresql.org/docs/9.1/static/sql-createview.html>`__\nin the Django ORM\n\nInstallation\n------------\n\nInstall via pip:\n\n::\n\n    pip install django-pgviews\n\nAdd to installed applications in settings.py:\n\n.. code:: python\n\n    INSTALLED_APPS = (\n      # ...\n      'django_pgviews',\n    )\n\nExamples\n--------\n\n.. code:: python\n\n    from django.db import models\n\n    from django_pgviews import view as pg\n\n\n    class Customer(models.Model):\n        name = models.CharField(max_length=100)\n        post_code = models.CharField(max_length=20)\n        is_preferred = models.BooleanField(default=False)\n\n        class Meta:\n            app_label = 'myapp'\n\n    class PreferredCustomer(pg.View):\n        projection = ['myapp.Customer.*',]\n        dependencies = ['myapp.OtherView',]\n        sql = \"\"\"SELECT * FROM myapp_customer WHERE is_preferred = TRUE;\"\"\"\n\n        class Meta:\n          app_label = 'myapp'\n          db_table = 'myapp_preferredcustomer'\n          managed = False\n\n**NOTE** It is important that we include the ``managed = False`` in the\n``Meta`` so Django 1.7 migrations don't attempt to create DB tables for\nthis view.\n\nThe SQL produced by this might look like:\n\n.. code:: postgresql\n\n    CREATE VIEW myapp_preferredcustomer AS\n    SELECT * FROM myapp_customer WHERE is_preferred = TRUE;\n\nTo create all your views, run ``python manage.py sync_pgviews``\n\nYou can also specify field names, which will map onto fields in your\nView:\n\n.. code:: python\n\n    from django_pgviews import view as pg\n\n\n    VIEW_SQL = \"\"\"\n        SELECT name, post_code FROM myapp_customer WHERE is_preferred = TRUE\n    \"\"\"\n\n\n    class PreferredCustomer(pg.View):\n        name = models.CharField(max_length=100)\n        post_code = models.CharField(max_length=20)\n\n        sql = VIEW_SQL\n\nUsage\n-----\n\nTo map onto a View, simply extend ``pg_views.view.View``, assign SQL to\nthe ``sql`` argument and define a ``db_table``. You must *always* set\n``managed = False`` on the ``Meta`` class.\n\nViews can be created in a number of ways:\n\n1. Define fields to map onto the VIEW output\n2. Define a projection that describes the VIEW fields\n\nDefine Fields\n~~~~~~~~~~~~~\n\nDefine the fields as you would with any Django Model:\n\n.. code:: python\n\n    from django_pgviews import view as pg\n\n\n    VIEW_SQL = \"\"\"\n        SELECT name, post_code FROM myapp_customer WHERE is_preferred = TRUE\n    \"\"\"\n\n\n    class PreferredCustomer(pg.View):\n        name = models.CharField(max_length=100)\n        post_code = models.CharField(max_length=20)\n\n        sql = VIEW_SQL\n\n        class Meta:\n          managed = False\n          db_table = 'my_sql_view'\n\nDefine Projection\n~~~~~~~~~~~~~~~~~\n\n``django-pgviews`` can take a projection to figure out what fields it\nneeds to map onto for a view. To use this, set the ``projection``\nattribute:\n\n.. code:: python\n\n    from django_pgviews import view as pg\n\n\n    class PreferredCustomer(pg.View):\n        projection = ['myapp.Customer.*',]\n        sql = \"\"\"SELECT * FROM myapp_customer WHERE is_preferred = TRUE;\"\"\"\n\n        class Meta:\n          db_table = 'my_sql_view'\n          managed = False\n\nThis will take all fields on ``myapp.Customer`` and apply them to\n``PreferredCustomer``\n\nFeatures\n--------\n\nUpdating Views\n~~~~~~~~~~~~~~\n\nSometimes your models change and you need your Database Views to reflect\nthe new data. Updating the View logic is as simple as modifying the\nunderlying SQL and running:\n\n::\n\n    python manage.py sync_pgviews --force\n\nThis will forcibly update any views that conflict with your new SQL.\n\nDependencies\n~~~~~~~~~~~~\n\nYou can specify other views you depend on. This ensures the other views\nare installed beforehand. Using dependencies also ensures that your\nviews get refreshed correctly when using ``sync_pgviews --force``.\n\n**Note:** Views are synced after the Django application has migrated and\nadding models to the dependency list will cause syncing to fail.\n\nExample:\n\n.. code:: python\n\n    from django_pgviews import view as pg\n\n    class PreferredCustomer(pg.View):\n        dependencies = ['myapp.OtherView',]\n        sql = \"\"\"SELECT * FROM myapp_customer WHERE is_preferred = TRUE;\"\"\"\n\n        class Meta:\n          app_label = 'myapp'\n          db_table = 'myapp_preferredcustomer'\n          managed = False\n\nMaterialized Views\n~~~~~~~~~~~~~~~~~~\n\nPostgres 9.3 and up supports `materialized\nviews <http://www.postgresql.org/docs/current/static/sql-creatematerializedview.html>`__\nwhich allow you to cache the results of views, potentially allowing them\nto load faster.\n\nHowever, you do need to manually refresh the view. To do this\nautomatically, you can attach\n`signals <https://docs.djangoproject.com/en/1.8/ref/signals/>`__ and\ncall the refresh function.\n\nExample:\n\n.. code:: python\n\n    from django_pgviews import view as pg\n\n\n    VIEW_SQL = \"\"\"\n        SELECT name, post_code FROM myapp_customer WHERE is_preferred = TRUE\n    \"\"\"\n\n    class Customer(models.Model):\n        name = models.CharField(max_length=100)\n        post_code = models.CharField(max_length=20)\n        is_preferred = models.BooleanField(default=True)\n\n\n    class PreferredCustomer(pg.MaterializedView):\n        name = models.CharField(max_length=100)\n        post_code = models.CharField(max_length=20)\n\n        sql = VIEW_SQL\n\n\n    @receiver(post_save, sender=Customer)\n    def customer_saved(sender, action=None, instance=None, **kwargs):\n        PreferredCustomer.refresh()\n\nPostgres 9.4 and up allow materialized views to be refreshed\nconcurrently, without blocking reads, as long as a unique index exists\non the materialized view. To enable concurrent refresh, specify the name\nof a column that can be used as a unique index on the materialized view.\nOnce enabled, passing ``concurrently=True`` to the model's refresh\nmethod will result in postgres performing the refresh concurrently.\n(Note that the refresh method itself blocks until the refresh is\ncomplete; concurrent refresh is most useful when materialized views are\nupdated in another process or thread.)\n\nExample:\n\n.. code:: python\n\n    from django_pgviews import view as pg\n\n\n    VIEW_SQL = \"\"\"\n        SELECT id, name, post_code FROM myapp_customer WHERE is_preferred = TRUE\n    \"\"\"\n\n    class PreferredCustomer(pg.MaterializedView):\n        concurrent_index = 'id'\n        sql = VIEW_SQL\n\n        name = models.CharField(max_length=100)\n        post_code = models.CharField(max_length=20)\n\n\n    @receiver(post_save, sender=Customer)\n    def customer_saved(sender, action=None, instance=None, **kwargs):\n        PreferredCustomer.refresh(concurrently=True)\n\nCustom Schema\n~~~~~~~~~~~~~\n\nYou can define any table name you wish for your views. They can even\nlive inside your own custom `PostgreSQL\nschema <http://www.postgresql.org/docs/current/static/ddl-schemas.html>`__.\n\n.. code:: python\n\n    from django_pgviews import view as pg\n\n\n    class PreferredCustomer(pg.View):\n        sql = \"\"\"SELECT * FROM myapp_customer WHERE is_preferred = TRUE;\"\"\"\n\n        class Meta:\n          db_table = 'my_custom_schema.preferredcustomer'\n          managed = False\n\nSync Listeners\n~~~~~~~~~~~~~~\n\ndjango-pgviews 0.5.0 adds the ability to listen to when a ``post_sync``\nevent has occurred.\n\n``view_synced``\n^^^^^^^^^^^^^^^\n\nFired every time a VIEW is synchronised with the database.\n\nProvides args: \\* ``sender`` - View Class \\* ``update`` - Whether the\nview to be updated \\* ``force`` - Whether ``force`` was passed \\*\n``status`` - The result of creating the view e.g. ``EXISTS``,\n``FORCE_REQUIRED`` \\* ``has_changed`` - Whether the view had to change\n\n``all_views_synced``\n^^^^^^^^^^^^^^^^^^^^\n\nSent after all Postgres VIEWs are synchronised.\n\nProvides args: \\* ``sender`` - Always ``None``\n\nDjango Compatibility\n--------------------\n\n.. raw:: html\n\n   <table>\n\n.. raw:: html\n\n   <thead>\n\n::\n\n    <tr>\n      <th>Django Version</th>\n      <th>Django-PGView Version</th>\n    </tr>\n\n.. raw:: html\n\n   </thead>\n\n.. raw:: html\n\n   <tbody>\n\n::\n\n    <tr>\n      <td>1.4 and down</td>\n      <td>Unsupported</td>\n    </tr>\n    <tr>\n      <td>1.5</td>\n      <td>0.0.1</td>\n    </tr>\n    <tr>\n      <td>1.6</td>\n      <td>0.0.3</td>\n    </tr>\n    <tr>\n      <td>1.7</td>\n      <td>0.0.4</td>\n    </tr>\n    <tr>\n      <td>1.9</td>\n      <td>0.1.0</td>\n    </tr>\n    <tr>\n      <td>1.10</td>\n      <td>0.2.0</td>\n    </tr>\n\n.. raw:: html\n\n   </tbody>\n\n.. raw:: html\n\n   </table>\n\nDjango 1.7 Note\n~~~~~~~~~~~~~~~\n\nDjango 1.7 changed how models are loaded so that it's no longer possible\nto do ``sql = str(User.objects.all().query)`` because the dependent\nmodels aren't yet loaded by Django.\n\nDjango 1.9 Note\n~~~~~~~~~~~~~~~\n\nYou now have to use the ``.view`` module directly.\n\nPython 3 Support\n----------------\n\nDjango PGViews supports Python 3 in versions 0.0.7 and above.\n\n.. |Gitter| image:: https://badges.gitter.im/Join%20Chat.svg\n   :target: https://gitter.im/mypebble/django-pgviews?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge\n.. |Circle CI| image:: https://circleci.com/gh/mypebble/django-pgviews.png\n   :target: https://circleci.com/gh/mypebble/django-pgviews",
+    "description": "SQL Views for Postgres\n======================\n\n|Gitter| |Circle CI|\n\nAdds first-class support for `PostgreSQL\nViews <http://www.postgresql.org/docs/9.1/static/sql-createview.html>`__\nin the Django ORM\n\nInstallation\n------------\n\nInstall via pip:\n\n::\n\n    pip install django-pgviews\n\nAdd to installed applications in settings.py:\n\n.. code:: python\n\n    INSTALLED_APPS = (\n      # ...\n      'django_pgviews',\n    )\n\nExamples\n--------\n\n.. code:: python\n\n    from django.db import models\n\n    from django_pgviews import view as pg\n\n\n    class Customer(models.Model):\n        name = models.CharField(max_length=100)\n        post_code = models.CharField(max_length=20)\n        is_preferred = models.BooleanField(default=False)\n\n        class Meta:\n            app_label = 'myapp'\n\n    class PreferredCustomer(pg.View):\n        projection = ['myapp.Customer.*',]\n        dependencies = ['myapp.OtherView',]\n        sql = \"\"\"SELECT * FROM myapp_customer WHERE is_preferred = TRUE;\"\"\"\n\n        class Meta:\n          app_label = 'myapp'\n          db_table = 'myapp_preferredcustomer'\n          managed = False\n\n**NOTE** It is important that we include the ``managed = False`` in the\n``Meta`` so Django 1.7 migrations don't attempt to create DB tables for\nthis view.\n\nThe SQL produced by this might look like:\n\n.. code:: postgresql\n\n    CREATE VIEW myapp_preferredcustomer AS\n    SELECT * FROM myapp_customer WHERE is_preferred = TRUE;\n\nTo create all your views, run ``python manage.py sync_pgviews``\n\nYou can also specify field names, which will map onto fields in your\nView:\n\n.. code:: python\n\n    from django_pgviews import view as pg\n\n\n    VIEW_SQL = \"\"\"\n        SELECT name, post_code FROM myapp_customer WHERE is_preferred = TRUE\n    \"\"\"\n\n\n    class PreferredCustomer(pg.View):\n        name = models.CharField(max_length=100)\n        post_code = models.CharField(max_length=20)\n\n        sql = VIEW_SQL\n\nUsage\n-----\n\nTo map onto a View, simply extend ``pg_views.view.View``, assign SQL to\nthe ``sql`` argument and define a ``db_table``. You must *always* set\n``managed = False`` on the ``Meta`` class.\n\nViews can be created in a number of ways:\n\n1. Define fields to map onto the VIEW output\n2. Define a projection that describes the VIEW fields\n\nDefine Fields\n~~~~~~~~~~~~~\n\nDefine the fields as you would with any Django Model:\n\n.. code:: python\n\n    from django_pgviews import view as pg\n\n\n    VIEW_SQL = \"\"\"\n        SELECT name, post_code FROM myapp_customer WHERE is_preferred = TRUE\n    \"\"\"\n\n\n    class PreferredCustomer(pg.View):\n        name = models.CharField(max_length=100)\n        post_code = models.CharField(max_length=20)\n\n        sql = VIEW_SQL\n\n        class Meta:\n          managed = False\n          db_table = 'my_sql_view'\n\nDefine Projection\n~~~~~~~~~~~~~~~~~\n\n``django-pgviews`` can take a projection to figure out what fields it\nneeds to map onto for a view. To use this, set the ``projection``\nattribute:\n\n.. code:: python\n\n    from django_pgviews import view as pg\n\n\n    class PreferredCustomer(pg.View):\n        projection = ['myapp.Customer.*',]\n        sql = \"\"\"SELECT * FROM myapp_customer WHERE is_preferred = TRUE;\"\"\"\n\n        class Meta:\n          db_table = 'my_sql_view'\n          managed = False\n\nThis will take all fields on ``myapp.Customer`` and apply them to\n``PreferredCustomer``\n\nFeatures\n--------\n\nUpdating Views\n~~~~~~~~~~~~~~\n\nSometimes your models change and you need your Database Views to reflect\nthe new data. Updating the View logic is as simple as modifying the\nunderlying SQL and running:\n\n::\n\n    python manage.py sync_pgviews --force\n\nThis will forcibly update any views that conflict with your new SQL.\n\nDependencies\n~~~~~~~~~~~~\n\nYou can specify other views you depend on. This ensures the other views\nare installed beforehand. Using dependencies also ensures that your\nviews get refreshed correctly when using ``sync_pgviews --force``.\n\n**Note:** Views are synced after the Django application has migrated and\nadding models to the dependency list will cause syncing to fail.\n\nExample:\n\n.. code:: python\n\n    from django_pgviews import view as pg\n\n    class PreferredCustomer(pg.View):\n        dependencies = ['myapp.OtherView',]\n        sql = \"\"\"SELECT * FROM myapp_customer WHERE is_preferred = TRUE;\"\"\"\n\n        class Meta:\n          app_label = 'myapp'\n          db_table = 'myapp_preferredcustomer'\n          managed = False\n\nMaterialized Views\n~~~~~~~~~~~~~~~~~~\n\nPostgres 9.3 and up supports `materialized\nviews <http://www.postgresql.org/docs/current/static/sql-creatematerializedview.html>`__\nwhich allow you to cache the results of views, potentially allowing them\nto load faster.\n\nHowever, you do need to manually refresh the view. To do this\nautomatically, you can attach\n`signals <https://docs.djangoproject.com/en/1.8/ref/signals/>`__ and\ncall the refresh function.\n\nExample:\n\n.. code:: python\n\n    from django_pgviews import view as pg\n\n\n    VIEW_SQL = \"\"\"\n        SELECT name, post_code FROM myapp_customer WHERE is_preferred = TRUE\n    \"\"\"\n\n    class Customer(models.Model):\n        name = models.CharField(max_length=100)\n        post_code = models.CharField(max_length=20)\n        is_preferred = models.BooleanField(default=True)\n\n\n    class PreferredCustomer(pg.MaterializedView):\n        name = models.CharField(max_length=100)\n        post_code = models.CharField(max_length=20)\n\n        sql = VIEW_SQL\n\n\n    @receiver(post_save, sender=Customer)\n    def customer_saved(sender, action=None, instance=None, **kwargs):\n        PreferredCustomer.refresh()\n\nPostgres 9.4 and up allow materialized views to be refreshed\nconcurrently, without blocking reads, as long as a unique index exists\non the materialized view. To enable concurrent refresh, specify the name\nof a column that can be used as a unique index on the materialized view.\nOnce enabled, passing ``concurrently=True`` to the model's refresh\nmethod will result in postgres performing the refresh concurrently.\n(Note that the refresh method itself blocks until the refresh is\ncomplete; concurrent refresh is most useful when materialized views are\nupdated in another process or thread.)\n\nExample:\n\n.. code:: python\n\n    from django_pgviews import view as pg\n\n\n    VIEW_SQL = \"\"\"\n        SELECT id, name, post_code FROM myapp_customer WHERE is_preferred = TRUE\n    \"\"\"\n\n    class PreferredCustomer(pg.MaterializedView):\n        concurrent_index = 'id'\n        sql = VIEW_SQL\n\n        name = models.CharField(max_length=100)\n        post_code = models.CharField(max_length=20)\n\n\n    @receiver(post_save, sender=Customer)\n    def customer_saved(sender, action=None, instance=None, **kwargs):\n        PreferredCustomer.refresh(concurrently=True)\n\nCustom Schema\n~~~~~~~~~~~~~\n\nYou can define any table name you wish for your views. They can even\nlive inside your own custom `PostgreSQL\nschema <http://www.postgresql.org/docs/current/static/ddl-schemas.html>`__.\n\n.. code:: python\n\n    from django_pgviews import view as pg\n\n\n    class PreferredCustomer(pg.View):\n        sql = \"\"\"SELECT * FROM myapp_customer WHERE is_preferred = TRUE;\"\"\"\n\n        class Meta:\n          db_table = 'my_custom_schema.preferredcustomer'\n          managed = False\n\nSync Listeners\n~~~~~~~~~~~~~~\n\ndjango-pgviews 0.5.0 adds the ability to listen to when a ``post_sync``\nevent has occurred.\n\n``view_synced``\n^^^^^^^^^^^^^^^\n\nFired every time a VIEW is synchronised with the database.\n\nProvides args: \\* ``sender`` - View Class \\* ``update`` - Whether the\nview to be updated \\* ``force`` - Whether ``force`` was passed \\*\n``status`` - The result of creating the view e.g. ``EXISTS``,\n``FORCE_REQUIRED`` \\* ``has_changed`` - Whether the view had to change\n\n``all_views_synced``\n^^^^^^^^^^^^^^^^^^^^\n\nSent after all Postgres VIEWs are synchronised.\n\nProvides args: \\* ``sender`` - Always ``None``\n\nDjango Compatibility\n--------------------\n\n.. raw:: html\n\n   <table>\n\n.. raw:: html\n\n   <thead>\n\n::\n\n    <tr>\n      <th>Django Version</th>\n      <th>Django-PGView Version</th>\n    </tr>\n\n.. raw:: html\n\n   </thead>\n\n.. raw:: html\n\n   <tbody>\n\n::\n\n    <tr>\n      <td>1.4 and down</td>\n      <td>Unsupported</td>\n    </tr>\n    <tr>\n      <td>1.5</td>\n      <td>0.0.1</td>\n    </tr>\n    <tr>\n      <td>1.6</td>\n      <td>0.0.3</td>\n    </tr>\n    <tr>\n      <td>1.7</td>\n      <td>0.0.4</td>\n    </tr>\n    <tr>\n      <td>1.9</td>\n      <td>0.1.0</td>\n    </tr>\n    <tr>\n      <td>1.10</td>\n      <td>0.2.0</td>\n    </tr>\n\n.. raw:: html\n\n   </tbody>\n\n.. raw:: html\n\n   </table>\n\nDjango 1.7 Note\n~~~~~~~~~~~~~~~\n\nDjango 1.7 changed how models are loaded so that it's no longer possible\nto do ``sql = str(User.objects.all().query)`` because the dependent\nmodels aren't yet loaded by Django.\n\nDjango 1.9 Note\n~~~~~~~~~~~~~~~\n\nYou now have to use the ``.view`` module directly.\n\nDjango 1.10 Note\n~~~~~~~~~~~~~~~~\n\nWhen updating to Django 1.10, if you see\n``AttributeError: can't set attribute`` when you try to migrate or run\ntests, you need to check your migrations for where ``_base_manager`` or\n``_default_manager`` get set on the model and replace it with\n``objects`` inside the migration.\n\nThis also applies to `Django\nMPTT <https://django-mptt.github.io/django-mptt/upgrade.html#id1>`__ who\nhave covered this in a bit more detail.\n\nPython 3 Support\n----------------\n\nDjango PGViews supports Python 3 in versions 0.0.7 and above.\n\n.. |Gitter| image:: https://badges.gitter.im/Join%20Chat.svg\n   :target: https://gitter.im/mypebble/django-pgviews?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge\n.. |Circle CI| image:: https://circleci.com/gh/mypebble/django-pgviews.png\n   :target: https://circleci.com/gh/mypebble/django-pgviews\n\n\n",
     "docs_url": null,
-    "download_url": "UNKNOWN",
+    "download_url": "",
     "downloads": {
       "last_day": 0,
       "last_month": 0,
       "last_week": 0
     },
     "home_page": "https://github.com/mypebble/django-pgviews",
-    "keywords": null,
+    "keywords": "",
     "license": "Public Domain",
-    "maintainer": null,
-    "maintainer_email": null,
+    "maintainer": "",
+    "maintainer_email": "",
     "name": "django-pgviews",
-    "platform": "UNKNOWN",
+    "platform": "",
     "project_url": "https://pypi.org/project/django-pgviews/",
-    "release_url": "https://pypi.org/project/django-pgviews/0.5.0/",
-    "requires_python": null,
+    "release_url": "https://pypi.org/project/django-pgviews/0.5.1/",
+    "requires_dist": [],
+    "requires_python": "",
     "summary": "Create and manage Postgres SQL Views in Django",
-    "version": "0.5.0"
+    "version": "0.5.1"
   },
   "releases": {
     "0.0.1": [
@@ -315,40 +316,74 @@
         "upload_time": "2017-06-15T13:24:07",
         "url": "https://files.pythonhosted.org/packages/5e/82/b532ccaf3156e26ae09497b87e9639b67609e4cc1af471e51d68f494804e/django-pgviews-0.5.0.tar.gz"
       }
+    ],
+    "0.5.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "cf274f6ae75007f1cfcc9e5144fd2362",
+          "sha256": "0a9ef03ac565c65f29cc5bde8327bc4d8c06b139a4854e2e32ef15352e1498c1"
+        },
+        "downloads": 0,
+        "filename": "django_pgviews-0.5.1-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "cf274f6ae75007f1cfcc9e5144fd2362",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "size": 16932,
+        "upload_time": "2017-09-06T10:58:11",
+        "url": "https://files.pythonhosted.org/packages/29/f2/8af0d705773d874b8020eef4a09965df248c0d812559f65d53e3a337f2d5/django_pgviews-0.5.1-py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a73d4b9b4910355319b4f78ccf2d0e9b",
+          "sha256": "e384794bd95fc8d1c3bebc9e19ccc88b50d71d05a1371e7c5d4ee8a9a8c1bc27"
+        },
+        "downloads": 0,
+        "filename": "django-pgviews-0.5.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a73d4b9b4910355319b4f78ccf2d0e9b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10592,
+        "upload_time": "2017-09-06T10:58:12",
+        "url": "https://files.pythonhosted.org/packages/b0/35/7b4526093808702fb3e115d1d4b53998ba3de1f034dc4d4c070143cf86c4/django-pgviews-0.5.1.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "aac6a18417f1f62fd82d0fbe3acc1619",
-        "sha256": "b1d1163a3e1c43295ffcc4aa6828191012adb2750017bb682e2494ea9754895b"
+        "md5": "cf274f6ae75007f1cfcc9e5144fd2362",
+        "sha256": "0a9ef03ac565c65f29cc5bde8327bc4d8c06b139a4854e2e32ef15352e1498c1"
       },
       "downloads": 0,
-      "filename": "django_pgviews-0.5.0-py2.py3-none-any.whl",
+      "filename": "django_pgviews-0.5.1-py3-none-any.whl",
       "has_sig": false,
-      "md5_digest": "aac6a18417f1f62fd82d0fbe3acc1619",
+      "md5_digest": "cf274f6ae75007f1cfcc9e5144fd2362",
       "packagetype": "bdist_wheel",
-      "python_version": "3.5",
-      "size": 16525,
-      "upload_time": "2017-06-15T13:24:08",
-      "url": "https://files.pythonhosted.org/packages/cb/56/fb505c4c94dd1f3274dadc7e1cf0cc01f7513aea5ec090b62c2eec74276f/django_pgviews-0.5.0-py2.py3-none-any.whl"
+      "python_version": "py3",
+      "size": 16932,
+      "upload_time": "2017-09-06T10:58:11",
+      "url": "https://files.pythonhosted.org/packages/29/f2/8af0d705773d874b8020eef4a09965df248c0d812559f65d53e3a337f2d5/django_pgviews-0.5.1-py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "45a86bcdcca56c181bd13e10e05bf1ed",
-        "sha256": "d785ba7efcb4496964fc024738af4c4101ed22f02e2cdd65ccca2c86dc11e8b8"
+        "md5": "a73d4b9b4910355319b4f78ccf2d0e9b",
+        "sha256": "e384794bd95fc8d1c3bebc9e19ccc88b50d71d05a1371e7c5d4ee8a9a8c1bc27"
       },
       "downloads": 0,
-      "filename": "django-pgviews-0.5.0.tar.gz",
+      "filename": "django-pgviews-0.5.1.tar.gz",
       "has_sig": false,
-      "md5_digest": "45a86bcdcca56c181bd13e10e05bf1ed",
+      "md5_digest": "a73d4b9b4910355319b4f78ccf2d0e9b",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 10341,
-      "upload_time": "2017-06-15T13:24:07",
-      "url": "https://files.pythonhosted.org/packages/5e/82/b532ccaf3156e26ae09497b87e9639b67609e4cc1af471e51d68f494804e/django-pgviews-0.5.0.tar.gz"
+      "size": 10592,
+      "upload_time": "2017-09-06T10:58:12",
+      "url": "https://files.pythonhosted.org/packages/b0/35/7b4526093808702fb3e115d1d4b53998ba3de1f034dc4d4c070143cf86c4/django-pgviews-0.5.1.tar.gz"
     }
   ]
 }
