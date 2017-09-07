@@ -9,7 +9,7 @@
       "License :: OSI Approved :: GNU Affero General Public License v3",
       "Programming Language :: Python :: 3"
     ],
-    "description": "ljson -- Line JSON\n******************\n\n.. contents::\n\n\nQuicklinks\n==========\n\n- `The Documentation <https://daknuett.github.io/ljson>`_\n- `The github.com repo <https://github.com/daknuett/ljson>`_\n- `The PyPi repo <https://pypi.python.org/pypi/ljson/>`_\n\nWhat is ljson?\n==============\n\nljson is an attempt to create a database model suiting the\nneeds of modern data procession. It is designed to work\nfaster than usual json, but to keep the simple but yet\nelegant object representation.\n\nljson can be used instead of pure json to increase the\nperformance when accessing a large set of data.\n\n\nWhy ljson?\n==========\n\nThere are a **lot** data storage formats out there: XML,\nJSON, CSV, SQL, NOSQL, binary packed, GNU-DB,...\n\nSome of them are designed to store complete databases (SQL,\nNOSQL, ...) and some are designed to store tables. And of\ncourse there are JSON and XML. They can be used to store\nmore complex objects, are human-readable and data is stored\nin just one file.\n\nBut they suffer from one problem: If one wants to alter the\ndata in the file he has to read the complete file and store\nall the data in his RAM. This is slow, maybe impossible\n(*Big Data*) and insecure. If the process cannot complete\nthe operation properly this might corrupt all data.\n\nljson tries to bypass this by using a mixture of CSV (line\nbased) and JSON (object based): \n\nEvery line is one object. If one wants to add another object\nhe just opens the file in append mode and adds one line. If\none line is corrupted the rest of the file is still valid.\n\nOperating on large sets of objects is also possible by\nreading the file line by line.\n\nEspecially asynchronous operations can be performed easily,\nas the main part of the file stays untouched (unless you\nalter objects. Then the file has to be re-written).\n\nDesign\n======\n\nljson is designed to be stored in files, the definition\nof a ljson file is::\n\n\t<ljson_file> = [<header>\\n]<ljson_content>\n\t<ljson_content> = <json_object>{\\n<json_object>}\n\n``<json_object>`` can be any json object, as described on\n`json.org <http://json.org/>`_.\n\nHeader\n------\n\nThe header is a special json object that describes the data\nin the file. A header must be in the following format::\n\n\t<header> = \"{ \\\"__type__\\\": \\\"header\\\",\" <fieldname>\": {\" \"\\\"type\\\":\" <type>\", \\\"modifiers\\\":\" <modifiers> \"}\"\n\t<type> = \"\\\"int\\\"\" | \"\\\"str\\\"\" | \"\\\"bool\\\"\" | \"\\\"float\\\"\" | \"\\\"null\\\"\" | \"\\\"bytes\\\"\"\n\t<modifiers> = \"[\" [<modifier> {\",\"<modifier>}] \"]\"\n\t<modifier> = \"\\\"unique\\\"\" | \"\\\"not null\\\"\" \n\nThe header is required by the on-disk implementation.\n\nDatatypes\n---------\n\nIf you use ljson you are restricted to the following python\ndata types (and their ljson types):\n\n- ``int``: ``\"int\"``\n- ``str``: ``\"str\"``\n- ``bool``: ``\"bool\"``\n- ``float``: ``\"float\"``\n- ``bytes``: ``\"bytes\"``\n- ``dict``: ``\"json\"``\n- ``list``: ``\"json\"``\n\nBecause it is possible to convert all data types to one of\nthese it is possible to store any kind of data.\n\nUsage\n=====\n\nWithout a Python Module\n-----------------------\n\nljson is designed to work without any third party python\nmodules. One can read ljson data with the python built-in\njson module:\n\n>>> import json\n>>> ljson = '{\"id\": 1, \"name\": \"foo\"}\\n{\"id\": 2, \"name\": \"bar\"}'\n>>> for line in ljson.split(\"\\n\"):\n... \tprint(json.loads(line))\n...\n{'name': 'foo', 'id': 1}\n{'name': 'bar', 'id': 2}\n\nAnd this should always be the preferred way to access ljson\ndata, if all data is required. \n\nIf one wants to access specific fields it is better to use\nthe ljson python module:\n\nWith the ljson Module\n---------------------\n\nUsing the ljson Module is simple and efficient if one wants\nto access just some fields, not the complete file.\n\nThere are two base implementations: ``ljson.base.mem`` that\nloads the file content into the RAM. This is way faster and\nsupports files without a header and one is able to construct\nthe Table without a file.\n\nThe second implementation is ``ljson.base.disk``. This\nimplementation does not load any data into RAM. If you are\naccessing huge sets you should use this implementation.\n\nCreating a table is simple (at least for the memory\ntables):\n\n>>> import ljson\n>>> header = ljson.Header({\"id\": {\"type\": \"int\", \"modifiers\":[\"unique\"]}, \"name\": {\"type\": \"str\", \"modifiers\": []}})\n>>> table = ljson.Table(header, [{\"id\": 1, \"name\": \"foo\"}, {\"id\": 2, \"name\": \"bar\"}, {\"id\": 3, \"name\": \"bar\"}])\n\n\nOne can access items using python's built-in ``__getitem__``\nand ``__setitem__``:\n\n>>> table[{\"id\": 1}][\"name\"]\n['foo']\n>>> list(table[{\"id\": 1}]) \n[{'name': 'foo', 'id': 1}]\n\nThe table \"index\" must be a dict. This allows to access\nnon-unique rows, like this:\n\n>>> list(table[{\"name\":\"bar\"}])\n[{'id': 2, 'name': 'bar'}, {'id': 3, 'name': 'bar'}]\n\n\nUsing ljson to store data\n-------------------------\n\nUsing ljson to store data is pretty simple:\n\n>>> from io import StringIO\n>>> fout = StringIO()\n>>> table.save(fout)\n>>> fout.seek(0)\n0\n>>> fout.read()\n'{\"name\": {\"type\": \"str\", \"modifiers\": []}, \"__type__\": \"header\", \"id\": {\"type\": \"int\", \"modifiers\": [\"unique\"]}}\\n{\"name\": \"foo\", \"id\": 1}\\n{\"name\": \"bar\", \"id\": 2}\\n{\"name\": \"bar\", \"id\": 3}'\n>>> fout.seek(0)\n0\n>>> table2 = ljson.Table.from_file(fout)\n>>> list(table2)\n[{'id': 1, 'name': 'foo'}, {'id': 2, 'name': 'bar'}, {'id': 3, 'name': 'bar'}]\n\n\nReading and writing csv files is pretty simple, too:\n\n>>> from ljson.convert.csv import table2csv, csv2table\n>>> fout = StringIO()\n>>> table2csv(table, fout)\n>>> fout.seek(0)\n0\n>>> fout.read()\n'id,name\\r\\n1,foo\\r\\n2,bar\\r\\n3,bar\\r\\n'\n>>> fout.seek(0)\n0\n>>> table2 = csv2table(fout, types = {\"id\": \"int\", \"name\":\"str\"})\n>>> list(table2)\n[{'id': 1, 'name': 'foo'}, {'id': 2, 'name': 'bar'}, {'id': 3, 'name': 'bar'}]\n\n\nTodos\n=====\n\n- store bytes as b64\n- fix the sql bytes representation\n",
+    "description": "ljson -- Line JSON\n******************\n\n.. contents::\n\n\nQuicklinks\n==========\n\n- `The Documentation <https://daknuett.github.io/ljson>`_\n- `The github.com repo <https://github.com/daknuett/ljson>`_\n- `The PyPi repo <https://pypi.python.org/pypi/ljson/>`_\n\n\nBuild and Test Status\n=====================\n\nThis package is tested using ``pytest`` on `travis-ci <https://travis-ci.org>`_. The\ncurrent build-status is:\n\n.. image:: https://travis-ci.org/daknuett/ljson.svg?branch=master\n    :target: https://travis-ci.org/daknuett/ljson\n\nWhat is ljson?\n==============\n\nljson is an attempt to create a database model suiting the\nneeds of modern data processing. It is designed to work\nfaster than usual json, but to keep the simple but yet\nelegant object representation.\n\nljson can be used instead of pure json to increase the\nperformance when accessing a large set of data.\n\n\nWhy ljson?\n==========\n\nThere are a **lot** data storage formats out there: XML,\nJSON, CSV, SQL, NOSQL, binary packed, GNU-DB,...\n\nSome of them are designed to store complete databases (SQL,\nNOSQL, ...) and some are designed to store tables. And of\ncourse there are JSON and XML. They can be used to store\nmore complex objects, are human-readable and data is stored\nin just one file.\n\nBut they suffer from one problem: If one wants to alter the\ndata in the file he has to read the complete file and store\nall the data in his RAM. This is slow, maybe impossible\n(*Big Data*) and insecure. If the process cannot complete\nthe operation properly this might corrupt all data.\n\nljson tries to bypass this by using a mixture of CSV (line\nbased) and JSON (object based): \n\nEvery line is one object. If one wants to add another object\nhe just opens the file in append mode and adds one line. If\none line is corrupted the rest of the file is still valid.\n\nOperating on large sets of objects is also possible by\nreading the file line by line.\n\nEspecially asynchronous operations can be performed easily,\nas the main part of the file stays untouched (unless you\nalter objects. Then the file has to be re-written).\n\nDesign\n======\n\nljson is designed to be stored in files, the definition\nof a ljson file is::\n\n\t<ljson_file> = [<header>\\n]<ljson_content>\n\t<ljson_content> = <json_object>{\\n<json_object>}\n\n``<json_object>`` can be any json object, as described on\n`json.org <http://json.org/>`_.\n\nHeader\n------\n\nThe header is a special json object that describes the data\nin the file. A header must be in the following format::\n\n\t<header> = \"{ \\\"__type__\\\": \\\"header\\\",\" <fieldname>\": {\" \"\\\"type\\\":\" <type>\", \\\"modifiers\\\":\" <modifiers> \"}\"\n\t<type> = \"\\\"int\\\"\" | \"\\\"str\\\"\" | \"\\\"bool\\\"\" | \"\\\"float\\\"\" | \"\\\"null\\\"\" | \"\\\"bytes\\\"\"\n\t<modifiers> = \"[\" [<modifier> {\",\"<modifier>}] \"]\"\n\t<modifier> = \"\\\"unique\\\"\" | \"\\\"not null\\\"\" \n\nThe header is required by the on-disk implementation.\n\nDatatypes\n---------\n\nIf you use ljson you are restricted to the following python\ndata types (and their ljson types):\n\n- ``int``: ``\"int\"``\n- ``str``: ``\"str\"``\n- ``bool``: ``\"bool\"``\n- ``float``: ``\"float\"``\n- ``bytes``: ``\"bytes\"``\n- ``dict``: ``\"json\"``\n- ``list``: ``\"json\"``\n\nBecause it is possible to convert all data types to one of\nthese it is possible to store any kind of data.\n\nUsage\n=====\n\nWithout a Python Module\n-----------------------\n\nljson is designed to work without any third party python\nmodules. One can read ljson data with the python built-in\njson module:\n\n>>> import json\n>>> ljson = '{\"id\": 1, \"name\": \"foo\"}\\n{\"id\": 2, \"name\": \"bar\"}'\n>>> for line in ljson.split(\"\\n\"):\n... \tprint(json.loads(line))\n...\n{'name': 'foo', 'id': 1}\n{'name': 'bar', 'id': 2}\n\nAnd this should always be the preferred way to access ljson\ndata, if all data is required. \n\nIf one wants to access specific fields it is better to use\nthe ljson python module:\n\nWith the ljson Module\n---------------------\n\nUsing the ljson Module is simple and efficient if one wants\nto access just some fields, not the complete file.\n\nThere are two base implementations: ``ljson.base.mem`` that\nloads the file content into the RAM. This is way faster and\nsupports files without a header and one is able to construct\nthe Table without a file.\n\nThe second implementation is ``ljson.base.disk``. This\nimplementation does not load any data into RAM. If you are\naccessing huge sets you should use this implementation.\n\nCreating a table is simple (at least for the memory\ntables):\n\n>>> import ljson\n>>> header = ljson.Header({\"id\": {\"type\": \"int\", \"modifiers\":[\"unique\"]}, \"name\": {\"type\": \"str\", \"modifiers\": []}})\n>>> table = ljson.Table(header, [{\"id\": 1, \"name\": \"foo\"}, {\"id\": 2, \"name\": \"bar\"}, {\"id\": 3, \"name\": \"bar\"}])\n\n\nOne can access items using python's built-in ``__getitem__``\nand ``__setitem__``:\n\n>>> table[{\"id\": 1}][\"name\"]\n['foo']\n>>> list(table[{\"id\": 1}]) \n[{'name': 'foo', 'id': 1}]\n\nThe table \"index\" must be a dict. This allows to access\nnon-unique rows, like this:\n\n>>> list(table[{\"name\":\"bar\"}])\n[{'id': 2, 'name': 'bar'}, {'id': 3, 'name': 'bar'}]\n\n\nUsing ljson to store data\n-------------------------\n\nUsing ljson to store data is pretty simple:\n\n>>> from io import StringIO\n>>> fout = StringIO()\n>>> table.save(fout)\n>>> fout.seek(0)\n0\n>>> fout.read()\n'{\"name\": {\"type\": \"str\", \"modifiers\": []}, \"__type__\": \"header\", \"id\": {\"type\": \"int\", \"modifiers\": [\"unique\"]}}\\n{\"name\": \"foo\", \"id\": 1}\\n{\"name\": \"bar\", \"id\": 2}\\n{\"name\": \"bar\", \"id\": 3}'\n>>> fout.seek(0)\n0\n>>> table2 = ljson.Table.from_file(fout)\n>>> list(table2)\n[{'id': 1, 'name': 'foo'}, {'id': 2, 'name': 'bar'}, {'id': 3, 'name': 'bar'}]\n\n\nReading and writing csv files is pretty simple, too:\n\n>>> from ljson.convert.csv import table2csv, csv2table\n>>> fout = StringIO()\n>>> table2csv(table, fout)\n>>> fout.seek(0)\n0\n>>> fout.read()\n'id,name\\r\\n1,foo\\r\\n2,bar\\r\\n3,bar\\r\\n'\n>>> fout.seek(0)\n0\n>>> table2 = csv2table(fout, types = {\"id\": \"int\", \"name\":\"str\"})\n>>> list(table2)\n[{'id': 1, 'name': 'foo'}, {'id': 2, 'name': 'bar'}, {'id': 3, 'name': 'bar'}]\n\n\nTodos\n=====\n\n- store bytes as b64\n- fix the sql bytes representation\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -25,10 +25,11 @@
     "name": "ljson",
     "platform": "",
     "project_url": "https://pypi.org/project/ljson/",
-    "release_url": "https://pypi.org/project/ljson/0.1.0/",
+    "release_url": "https://pypi.org/project/ljson/0.2.0/",
+    "requires_dist": [],
     "requires_python": "",
     "summary": "A table dataformat based on json",
-    "version": "0.1.0"
+    "version": "0.2.0"
   },
   "releases": {
     "0.0.1": [
@@ -200,40 +201,74 @@
         "upload_time": "2017-06-05T10:01:48",
         "url": "https://files.pythonhosted.org/packages/71/8b/0dd4ff239b0edf4751b381c49345645df6ebf8268669d4e82221a0f4ac8d/ljson-0.1.0.tar.gz"
       }
+    ],
+    "0.2.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0a42b8527d873e8686caee1efe7dad11",
+          "sha256": "0317a9798c73e7d2447902caf686aa69cf06c7e2a67f349669036fe3488451c0"
+        },
+        "downloads": 0,
+        "filename": "ljson-0.2.0-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "0a42b8527d873e8686caee1efe7dad11",
+        "packagetype": "bdist_wheel",
+        "python_version": "3.5",
+        "size": 26162,
+        "upload_time": "2017-09-07T08:25:30",
+        "url": "https://files.pythonhosted.org/packages/1c/e3/9b475309c02e3a03345c6e605548b68c1388a2856e067f8d4de3ff6f50f2/ljson-0.2.0-py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e4abcd11f566dbb427aa639ee8117700",
+          "sha256": "3163e7a59fee9565721ad1e67ed3fc2344c966b70bceb0610592c94db2d0fb52"
+        },
+        "downloads": 0,
+        "filename": "ljson-0.2.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e4abcd11f566dbb427aa639ee8117700",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 15948,
+        "upload_time": "2017-09-07T08:25:20",
+        "url": "https://files.pythonhosted.org/packages/5b/23/e15f5dceeb93bd8f3a1c390ce1063d347d8133f27404b46071220762f006/ljson-0.2.0.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "312305028727aea6c660b7ec3373d992",
-        "sha256": "80dd9cf4c56a65dc6f564829657b727358011b18b5b2581c945f174028e647af"
+        "md5": "0a42b8527d873e8686caee1efe7dad11",
+        "sha256": "0317a9798c73e7d2447902caf686aa69cf06c7e2a67f349669036fe3488451c0"
       },
       "downloads": 0,
-      "filename": "ljson-0.1.0-py3-none-any.whl",
+      "filename": "ljson-0.2.0-py3-none-any.whl",
       "has_sig": false,
-      "md5_digest": "312305028727aea6c660b7ec3373d992",
+      "md5_digest": "0a42b8527d873e8686caee1efe7dad11",
       "packagetype": "bdist_wheel",
       "python_version": "3.5",
-      "size": 16366,
-      "upload_time": "2017-06-05T10:01:57",
-      "url": "https://files.pythonhosted.org/packages/ed/a5/780e3f56481becebe7f76191b83e557bf51df6d4b971998feb6a35db7e7c/ljson-0.1.0-py3-none-any.whl"
+      "size": 26162,
+      "upload_time": "2017-09-07T08:25:30",
+      "url": "https://files.pythonhosted.org/packages/1c/e3/9b475309c02e3a03345c6e605548b68c1388a2856e067f8d4de3ff6f50f2/ljson-0.2.0-py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "d59105eed08bda1b8797cb3a89794aac",
-        "sha256": "3854dc5e4cc68f4ee55aa2585fe1c50b543be0a57ba617d564d4bc0619a9dc17"
+        "md5": "e4abcd11f566dbb427aa639ee8117700",
+        "sha256": "3163e7a59fee9565721ad1e67ed3fc2344c966b70bceb0610592c94db2d0fb52"
       },
       "downloads": 0,
-      "filename": "ljson-0.1.0.tar.gz",
+      "filename": "ljson-0.2.0.tar.gz",
       "has_sig": false,
-      "md5_digest": "d59105eed08bda1b8797cb3a89794aac",
+      "md5_digest": "e4abcd11f566dbb427aa639ee8117700",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 9962,
-      "upload_time": "2017-06-05T10:01:48",
-      "url": "https://files.pythonhosted.org/packages/71/8b/0dd4ff239b0edf4751b381c49345645df6ebf8268669d4e82221a0f4ac8d/ljson-0.1.0.tar.gz"
+      "size": 15948,
+      "upload_time": "2017-09-07T08:25:20",
+      "url": "https://files.pythonhosted.org/packages/5b/23/e15f5dceeb93bd8f3a1c390ce1063d347d8133f27404b46071220762f006/ljson-0.2.0.tar.gz"
     }
   ]
 }

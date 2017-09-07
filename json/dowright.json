@@ -1,0 +1,147 @@
+{
+  "info": {
+    "author": "David O'Gwynn",
+    "author_email": "dogywnn@acm.org",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 3 - Alpha",
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: BSD License",
+      "Programming Language :: Python :: 3"
+    ],
+    "description": ".. image:: https://bytebucket.org/dogwynn/dowright/raw/master/dowright.png\n   :align: right\n\n\nDOwright\n========\n\nSimple YAML-based specification for creation and configuration of\nDigitalOcean droplets\n\nWhat is this for?\n-----------------\n\nThis tool/library exists to:\n\n* provide a straightforward way to specify a particular set of\n  DigitalOcean droplets and, given that specification,\n\n* create/destroy them in an idempotent manner and\n\n* provide an Ansible inventory for those droplets.\n\nThe work was motivated by the \"chicken/egg\" problem of using a\nconfiguration management tool like Ansible on a yet-uncreated\nDigitalOcean droplet/service cluster. Ansible is certainly useful for\ndeploying a configuration to an existing set of resources, and it even\nhas an API for creating those resources on DigitalOcean.\n\nHowever, there wasn't a straightforward way of using Ansible to both\ncreate and configure the resources without having an inventory file\nhand-written prior to creation. If you changed the number of created\ndroplets, you would have to hand-edit the inventory. With this\ntool, an existing set of Ansible roles can be used on a dynamic set of\nDigitalOcean droplets.\n\n``dowright`` is for Python 3.4+ only with no plans for backwards\ncompatibility.\n\n\nInstallation\n------------\n\n* Install using ``pip3``::\n\n    pip3 install dowright\n\n* Initialize the ``.tokenmanager.yml`` file in your home directory::\n\n    python3 -m tokenmanager -i\n\n* Provide a ``digitalocean`` token namespace in your\n  ``.tokenmanager.yml`` file. Then provide as many sub-namespaces as\n  you need for your YAML specifications. These will then be specified\n  in your YAML using the ``token`` key. E.g. ::\n\n    digitalocean:\n      app1: a1e1c084540b51b33af3c6b63d48ede2937c8df92f7e6e3beb1f630ac750b851\n      app2: 03593464105708646cc04d847ffc81c5b7775c462f68b573f2aff5d933635e17\n\nUsage\n-----\n\nTo use ``dowright``, you will need to create a YAML specification for\nyour DigitalOcean resources. Here's an example spec (named\n``my_web_app.yml``)::\n\n  # token: this specifies which token reference under the\n  #   \"digitalocean\" token group should be used for creating\n  #   the droplets specified \n  token: app1 # using the above example of a .tokenmanager.yml file\n\n  # prefix: is used to namespace your resources and is also\n  #   provided as a tag for these resources at creation time\n  prefix: my_web_app \n\n  # droplets: is a dictionary of named groups of resources. Each group\n  #   corresponds to an Ansible inventory group and can be referenced\n  #   as a group in various ways in this specification. \n  droplets:\n    # Groups are lists of dictionaries that correspond to the creation\n    #   parameters of the droplets to be created. Group names are also\n    #   added as tags at creation time.\n    data:\n      - name: data[01:10]  # can use Ansible-style name expansions\n                           # to create multiple droplets with the same\n                           # name prefix and parameters\n        size_slug: 2gb  # each key in the dictionary corresponds 1-to-1\n                        # with the parameters given in the DigitalOcean\n                        # droplet creation REST API \n        volumes:\n          - aaaaaaaa-bbbb-ffff-3333-000000000000\n\n        # cloud_config_commands: is a special key that will be\n        #   transformed into the \"#cloud-config\" YAML-formatted string\n        #   under the \"user_data\" parameter. It is a list of bash shell\n        #   commands that will be placed in the \"runcmd\" list of the\n        #   \"#cloud-config\" string. In order to track completion of\n        #   these commands, a final command (that creates a sentinel\n        #   file \"/.cloud-config-done\") is appended by dowright.\n        cloud_config_commands:\n          - mkdir /data\n          - mount -o defaults,nofail /dev/disk/by-id/scsi-0DO_Volume_volume-nyc1-01-part1 /data\n          - >-\n            echo \"/dev/disk/by-id/scsi-0DO_Volume_volume-nyc1-01-part1 /data xfs defaults,nofail 0 2\" >> /etc/fstab\n          - apt update\n          - apt install -y python3 python3-pip\n          - pip3 install --upgrade pip\n    nameserver:\n      - name: ns\n        image: ubuntu-16-04-x64\n\n  # defaults: these are default creation parameters for all resources\n  defaults:\n      image: ubuntu-17-04-x64\n      size_slug: 1gb\n      region: nyc1\n      ssh_keys:\n        - 999999\n        - 999998\n      private_networking: yes\n\n  # floating_ips: these are mappings of previously-created floating IPs \n  #   to be mapped to particular droplets. *Notice*: the name given here\n  #   corresponds to that given under the above \"droplets:\" section.\n  #   It does /not/ have the \"prefix:\" string (e.g. \"my_web_app\"\n  #   given above). \n  floating_ips:\n    192.16.1.1: data01\n    192.16.1.2: ns\n\n  # domains: mappings of DigitalOcean-managed domains to a list of \n  #   creation parameters for subdomains\n  domains:\n    mydomin.com:\n      - type: 'A'\n        name: 'ds_master'\n        data: data01\n      - type: 'A'\n        name: 'ns_master'\n        data: ns\n\n  # inventory: this defines the Ansible inventory for the\n  #   DigitalOcean droplets.   \n  inventory:\n    # name: filename of inventory\n    name: hosts.conf\n    # groups: group definitions in inventory\n    groups:\n      # each group is a list of references to DigitalOcean droplets\n      \"datanodes:children\":\n        - name: data   # references can be to droplet groups\n      namenodes:\n        - name: nameserver \n      hadoop_startup:\n        - name: ns     # references can be to individual droplet names\n      \"nodemanagers:children\":\n        - name: datanodes  # if the inventory group name has a colon\n                           #   in it (i.e. it's a group of inventory\n                           #   groups), then the reference must be to\n                           #   another inventory group\n      \"hadoop:children\":\n        - name: namenodes\n        - name: datanodes\n      analysis:\n        - name: data01\n\n\nTo create/build the droplets specified::\n\n  python3 -m dowright my_web_app.yml -b\n\nTo wait for completion of droplet creation::\n\n  python3 -m dowright my_web_app.yml -w\n\nTo link floating IPs to DigitalOcean droplets::\n\n  python3 -m dowright my_web_app.yml -i\n\nTo link DigitalOcean-managed domains to droplets::\n\n  python3 -m dowright my_web_app.yml -d\n\nTo create the Ansible inventory for your droplets::\n\n  python3 -m dowright my_web_app.yml -c\n\nTo do all the above::\n\n  python3 -m dowright my_web_app.yml -bwidc\n\nTo destroy the DigitalOcean droplets specified in your YAML::\n\n  python3 -m dowright my_web_app.yml --destroy\n\n\n",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://bitbucket.org/dogwynn/dowright",
+    "keywords": "digitalocean yaml specification ansible development helper utility",
+    "license": "MIT",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "dowright",
+    "platform": "",
+    "project_url": "https://pypi.org/project/dowright/",
+    "release_url": "https://pypi.org/project/dowright/0.0.2/",
+    "requires_dist": [
+      "tokenmanager",
+      "ruamel.yaml",
+      "python-digitalocean",
+      "paramiko",
+      "memoized-property",
+      "jinja2",
+      "gems",
+      "ansible"
+    ],
+    "requires_python": "",
+    "summary": "Simple YAML-based specification for creation and configuration of DigitalOcean droplets",
+    "version": "0.0.2"
+  },
+  "releases": {
+    "0.0.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ff81611d660389519ca30f204e72abde",
+          "sha256": "c05e3ee3869f09a8a2d149edf903637cf7e607d9ac1bd8216242db619ba323cb"
+        },
+        "downloads": 0,
+        "filename": "dowright-0.0.1-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "ff81611d660389519ca30f204e72abde",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "size": 13540,
+        "upload_time": "2017-09-07T04:14:39",
+        "url": "https://files.pythonhosted.org/packages/cc/dc/6810855927b8a79ea8aa64d8edc45c10ac34201dff517663afdbab03b5ec/dowright-0.0.1-py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5f168bba6673471fe134e8428b6e3e06",
+          "sha256": "a1bd5a101651ac9b20623b81af3570972398096540cbc0aa62915b946c92f9d7"
+        },
+        "downloads": 0,
+        "filename": "dowright-0.0.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5f168bba6673471fe134e8428b6e3e06",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9107,
+        "upload_time": "2017-09-07T04:14:41",
+        "url": "https://files.pythonhosted.org/packages/3f/87/29fb64de9cce4abddb124cf4cef96abf80932892c32d9d0eaca3dd211e03/dowright-0.0.1.tar.gz"
+      }
+    ],
+    "0.0.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b50f1b3aa3ec6ea6dcfdc5a4640e3bbf",
+          "sha256": "5d8dfb6b0882405198b134381976e5ae41f55fa30e8ba6fc087ccce4e6bb16c5"
+        },
+        "downloads": 0,
+        "filename": "dowright-0.0.2-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "b50f1b3aa3ec6ea6dcfdc5a4640e3bbf",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "size": 13543,
+        "upload_time": "2017-09-07T13:50:32",
+        "url": "https://files.pythonhosted.org/packages/39/de/1ce7fe7a2b2fbdd5688590db8994eca92b527bee3d7bfe8ed316343eb6e0/dowright-0.0.2-py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8cf0a0d3a1e0cefd85cd63b2639ed76d",
+          "sha256": "a19f691eaf61e915053b4378fa40a5015c547c9a6bbb97336696786cc3301add"
+        },
+        "downloads": 0,
+        "filename": "dowright-0.0.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8cf0a0d3a1e0cefd85cd63b2639ed76d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9894,
+        "upload_time": "2017-09-07T13:50:33",
+        "url": "https://files.pythonhosted.org/packages/99/21/210958762ab6208f613b46c9a8080a3cfa7a8f56134f17e0f83ff37a3782/dowright-0.0.2.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "b50f1b3aa3ec6ea6dcfdc5a4640e3bbf",
+        "sha256": "5d8dfb6b0882405198b134381976e5ae41f55fa30e8ba6fc087ccce4e6bb16c5"
+      },
+      "downloads": 0,
+      "filename": "dowright-0.0.2-py3-none-any.whl",
+      "has_sig": false,
+      "md5_digest": "b50f1b3aa3ec6ea6dcfdc5a4640e3bbf",
+      "packagetype": "bdist_wheel",
+      "python_version": "py3",
+      "size": 13543,
+      "upload_time": "2017-09-07T13:50:32",
+      "url": "https://files.pythonhosted.org/packages/39/de/1ce7fe7a2b2fbdd5688590db8994eca92b527bee3d7bfe8ed316343eb6e0/dowright-0.0.2-py3-none-any.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "8cf0a0d3a1e0cefd85cd63b2639ed76d",
+        "sha256": "a19f691eaf61e915053b4378fa40a5015c547c9a6bbb97336696786cc3301add"
+      },
+      "downloads": 0,
+      "filename": "dowright-0.0.2.tar.gz",
+      "has_sig": false,
+      "md5_digest": "8cf0a0d3a1e0cefd85cd63b2639ed76d",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 9894,
+      "upload_time": "2017-09-07T13:50:33",
+      "url": "https://files.pythonhosted.org/packages/99/21/210958762ab6208f613b46c9a8080a3cfa7a8f56134f17e0f83ff37a3782/dowright-0.0.2.tar.gz"
+    }
+  ]
+}
