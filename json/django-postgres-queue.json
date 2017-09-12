@@ -4,7 +4,7 @@
     "author_email": "gavinwahl@gmail.com",
     "bugtrack_url": null,
     "classifiers": [],
-    "description": "django-postgres-queue\n=====================\n\ndjango-postgres-queue is a task queue system for Django backed by postgres.\n\n\nWhy postgres?\n-------------\n\nI thought you were never supposed to use an RDBMS as a queue? Well, postgres\nhas some features that make it not as bad as you might think, it has some\ncompelling advantages.\n\n- Transactional behavior and reliability.\n\n  Adding tasks is atomic with respect to other database work. There is no need\n  to use `transaction.on_commit` hooks and there is no risk of a transaction\n  being committed but the tasks it queued being lost.\n\n  Processing tasks is atomic with respect to other database work. Database work\n  done by a task will either be committed, or the task will not be marked as\n  processed, no exceptions. If the task only does database work, you achieve\n  true exactly-once message processing.\n\n- Operational simplicity\n\n  By reusing the durable, transactional storage that we're already using\n  anyway, there's no need to configure, monitor, and backup another stateful\n  service. For small teams and light workloads, this is the right trade-off.\n\n- Easy introspection\n\n  Since tasks are stored in a database table, it's easy to query and monitor\n  the state of the queue.\n\n- Safety\n\n  By using postgres transactions, there is no possibility of jobs being left in\n  a locked or ambiguous state if a worker dies. Tasks immediately become\n  available for another worker to pick up.\n\n- Priority queues\n\n  Since ordering is specified explicitly when selecting the next task to work\n  on, it's easy to ensure high-priority tasks are processed first.\n\n\nDisadvantages\n-------------\n\n- Lower throughput than a dedicated queue server.\n- Harder to scale a relational database than a dedicated queue server.\n- Thundering herd. Postgres has no way to notify a single worker to wake up, so\n  we can either wake every single worker up when a task is queued with\n  LISTEN/NOTIFY, or workers have to short-poll.\n- With at-least-once delivery, a postgres transaction has to be held open for\n  the duration of the task. For long running tasks, this can cause table bloat\n  and performance problems.\n- When a task crashes or raises an exception under at-least-once delivery, it\n  immediately becomes eligible to be retried. If you want to implement a retry\n  delay, you must catch exceptions and requeue the task with a delay. If your\n  task crashes without throwing an exception (eg SIGKILL), you could end up in\n  an endless retry loop that prevents other tasks from being processed.\n\n\nHow it works\n------------\n\ndjango-postgres-queue is able to claim, process, and remove a task in a single\nquery.\n\n.. code:: sql\n\n    DELETE FROM dpq_job\n    WHERE id = (\n        SELECT id\n        FROM dpq_job\n        WHERE execute_at <= now()\n        ORDER BY priority DESC, created_at\n        FOR UPDATE SKIP LOCKED\n        LIMIT 1\n    )\n    RETURNING *;\n\nAs soon as this query runs, the task is unable to be claimed by other workers.\nWhen the transaction commits, the task will be deleted. If the transaction\nrolls back or the worker crashes, the task will immediately become available\nfor another worker.\n\nTo achieve at-least-once delivery, we begin a transaction, process the task,\nthen commit the transaction. For at-most-once, we claim the task and\nimmediately commit the transaction, then process the task. For tasks that don't\nhave any external effects and only do database work, the at-least-once behavior\nis actually exactly-once (because both the claiming of the job and the database\nwork will commit or rollback together).\n\n\nUsage\n=====\n\nRequirements\n------------\n\ndjango-postgres-queue requires python 3, at least postgres 9.6 and at least\nDjango 1.11.\n\n\nInstallation\n------------\n\nInstall with pip::\n\n  pip install django-postgres-queue\n\nThen add `'dpq'` to your `INSTALLED_APPS`. Run `manage.py migrate` to create\nthe jobs table.\n\nDefine a Queue subclass. This can go wherever you like and be named whatever\nyou like. For example, `someapp/queue.py`:\n\n.. code:: python\n\n    from dpq.queue import AtLeastOnceQueue\n\n    class MyQueue(AtLeastOnceQueue):\n        notify_channel = 'my-queue'\n        tasks = {\n            # ...\n        }\n\n    queue = MyQueue()\n\nYou will need to import this queue instance to queue or process tasks.\n\ndjango-postgres-queue comes with a management command base class that you can\nuse to consume your tasks. It can be called whatever you like, for example in a\n`someapp/managment/commands/worker.py`:\n\n.. code:: python\n\n    from dpq.management import Worker\n\n    from someapp.queue import queue\n\n    class Command(Worker):\n        queue = queue\n\nThen you can run `manage.py worker` to start your worker.\n\nA task function takes two arguments -- the queue instance in use, and the Job\ninstance for this task. The function can be defined anywhere and called\nwhatever you like. Here's an example:\n\n.. code:: python\n\n    def debug_task(queue, job):\n        print(job.args)\n\nTo register it as a task, add it to your `Queue` subclass:\n\n.. code:: python\n\n    tasks = {\n      'debug_task': debug_task\n    }\n\nThe key is the task name, used to queue the task. It doesn't have to match the\nfunction name.\n\nTo queue the task, use `enqueue` method on your queue instance:\n\n.. code:: python\n\n    queue.enqueue('debug_task', {'some_args': 0})\n\nAssuming you have a worker running for this queue, the task will be run\nimmediately.",
+    "description": "django-postgres-queue\n=====================\n\ndjango-postgres-queue is a task queue system for Django backed by postgres.\n\n\nWhy postgres?\n-------------\n\nI thought you were never supposed to use an RDBMS as a queue? Well, postgres\nhas some features that make it not as bad as you might think, it has some\ncompelling advantages.\n\n- Transactional behavior and reliability.\n\n  Adding tasks is atomic with respect to other database work. There is no need\n  to use ``transaction.on_commit`` hooks and there is no risk of a transaction\n  being committed but the tasks it queued being lost.\n\n  Processing tasks is atomic with respect to other database work. Database work\n  done by a task will either be committed, or the task will not be marked as\n  processed, no exceptions. If the task only does database work, you achieve\n  true exactly-once message processing.\n\n- Operational simplicity\n\n  By reusing the durable, transactional storage that we're already using\n  anyway, there's no need to configure, monitor, and backup another stateful\n  service. For small teams and light workloads, this is the right trade-off.\n\n- Easy introspection\n\n  Since tasks are stored in a database table, it's easy to query and monitor\n  the state of the queue.\n\n- Safety\n\n  By using postgres transactions, there is no possibility of jobs being left in\n  a locked or ambiguous state if a worker dies. Tasks immediately become\n  available for another worker to pick up. You can even ``kill -9`` a worker\n  and be sure your database and queue will be left in a consistent state.\n\n- Priority queues\n\n  Since ordering is specified explicitly when selecting the next task to work\n  on, it's easy to ensure high-priority tasks are processed first.\n\n\nDisadvantages\n-------------\n\n- Lower throughput than a dedicated queue server.\n- Harder to scale a relational database than a dedicated queue server.\n- Thundering herd. Postgres has no way to notify a single worker to wake up, so\n  we can either wake every single worker up when a task is queued with\n  LISTEN/NOTIFY, or workers have to short-poll.\n- With at-least-once delivery, a postgres transaction has to be held open for\n  the duration of the task. For long running tasks, this can cause table bloat\n  and performance problems.\n- When a task crashes or raises an exception under at-least-once delivery, it\n  immediately becomes eligible to be retried. If you want to implement a retry\n  delay, you must catch exceptions and requeue the task with a delay. If your\n  task crashes without throwing an exception (eg SIGKILL), you could end up in\n  an endless retry loop that prevents other tasks from being processed.\n\n\nHow it works\n------------\n\ndjango-postgres-queue is able to claim, process, and remove a task in a single\nquery.\n\n.. code:: sql\n\n    DELETE FROM dpq_job\n    WHERE id = (\n        SELECT id\n        FROM dpq_job\n        WHERE execute_at <= now()\n        ORDER BY priority DESC, created_at\n        FOR UPDATE SKIP LOCKED\n        LIMIT 1\n    )\n    RETURNING *;\n\nAs soon as this query runs, the task is unable to be claimed by other workers.\nWhen the transaction commits, the task will be deleted. If the transaction\nrolls back or the worker crashes, the task will immediately become available\nfor another worker.\n\nTo achieve at-least-once delivery, we begin a transaction, process the task,\nthen commit the transaction. For at-most-once, we claim the task and\nimmediately commit the transaction, then process the task. For tasks that don't\nhave any external effects and only do database work, the at-least-once behavior\nis actually exactly-once (because both the claiming of the job and the database\nwork will commit or rollback together).\n\n\nComparison to Celery\n--------------------\n\ndjango-postgres-queue fills the same role as Celery. In addition to to using\npostgres as its backend, its intended to be simpler, without any of the funny\nbusiness Celery does (metaprogramming, messing with logging, automatically\nimporting modules). There is boilerplate to make up for the lack of\nmetaprogramming, but I find that better than importing things by strings.\n\nUsage\n=====\n\nRequirements\n------------\n\ndjango-postgres-queue requires Python 3, at least postgres 9.5 and at least\nDjango 1.11.\n\n\nInstallation\n------------\n\nInstall with pip::\n\n  pip install django-postgres-queue\n\nThen add ``'dpq'`` to your ``INSTALLED_APPS``. Run ``manage.py migrate`` to\ncreate the jobs table.\n\nInstantiate a queue object. This can go wherever you like and be named whatever\nyou like. For example, ``someapp/queue.py``:\n\n.. code:: python\n\n    from dpq.queue import AtLeastOnceQueue\n\n    queue = AtLeastOnceQueue(\n        tasks={\n            # ...\n        },\n        notify_channel='my-queue',\n    )\n\n\nYou will need to import this queue instance to queue or process tasks. Use\n``AtLeastOnceQueue`` for at-least-once delivery, or ``AtMostOnceQueue`` for\nat-most-once delivery.\n\ndjango-postgres-queue comes with a management command base class that you can\nuse to consume your tasks. It can be called whatever you like, for example in a\n``someapp/managment/commands/worker.py``:\n\n.. code:: python\n\n    from dpq.management import Worker\n\n    from someapp.queue import queue\n\n    class Command(Worker):\n        queue = queue\n\nThen you can run ``manage.py worker`` to start your worker.\n\nA task function takes two arguments -- the queue instance in use, and the Job\ninstance for this task. The function can be defined anywhere and called\nwhatever you like. Here's an example:\n\n.. code:: python\n\n    def debug_task(queue, job):\n        print(job.args)\n\nTo register it as a task, add it to your queue instance:\n\n.. code:: python\n\n    queue = AtLeastOnceQueue(tasks={\n        'debug_task': debug_task,\n    })\n\nThe key is the task name, used to queue the task. It doesn't have to match the\nfunction name.\n\nTo queue the task, use ``enqueue`` method on your queue instance:\n\n.. code:: python\n\n    queue.enqueue('debug_task', {'some_args': 0})\n\nAssuming you have a worker running for this queue, the task will be run\nimmediately. The second argument must be a single json-serializeable value and\nwill be available to the task as ``job.args``.\n\n\nMonitoring\n----------\n\nTasks are just database rows stored in the ``dpq_job`` table, so you can\nmonitor the system with SQL.\n\nTo get a count of current tasks:\n\n.. code:: sql\n\n    SELECT count(*) FROM dpq_job WHERE execute_at <= now()\n\n\nThis will include both tasks ready to process and tasks currently being\nprocessed. To see tasks currently being processed, we need visibility into\npostgres row locks. This can be provided by the `pgrowlocks extension\n<https://www.postgresql.org/docs/9.6/static/pgrowlocks.html>`_.  Once\ninstalled, this query will count currently-running tasks:\n\n.. code:: sql\n\n    SELECT count(*)\n    FROM pgrowlocks('dpq_job')\n    WHERE 'For Update' = ANY(modes);\n\nYou could join the results of ``pgrowlocks`` with ``dpq_job`` to get the full\nlist of tasks in progress if you want.",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -20,11 +20,11 @@
     "name": "django-postgres-queue",
     "platform": "",
     "project_url": "https://pypi.org/project/django-postgres-queue/",
-    "release_url": "https://pypi.org/project/django-postgres-queue/0.1.0/",
+    "release_url": "https://pypi.org/project/django-postgres-queue/0.2.1/",
     "requires_dist": [],
     "requires_python": "",
     "summary": "",
-    "version": "0.1.0"
+    "version": "0.2.1"
   },
   "releases": {
     "0.1.0": [
@@ -44,24 +44,60 @@
         "upload_time": "2017-09-11T04:36:38",
         "url": "https://files.pythonhosted.org/packages/68/7e/8f0926d9bfa08107df3d4c90b77f51f5797f0f943732cb4aa0a477e9e0dd/django-postgres-queue-0.1.0.tar.gz"
       }
+    ],
+    "0.2.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4dcb0947811feb99b342c0b30976c055",
+          "sha256": "2b6ffce4632296320de432e3505a44a9b0e608c7661ec26e76f12e9e72b53261"
+        },
+        "downloads": 0,
+        "filename": "django-postgres-queue-0.2.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4dcb0947811feb99b342c0b30976c055",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 7736,
+        "upload_time": "2017-09-11T22:30:03",
+        "url": "https://files.pythonhosted.org/packages/21/b8/675e73d1f18acc201e786795bd9834a5e1d7b7d82334102ae34511b3fb68/django-postgres-queue-0.2.0.tar.gz"
+      }
+    ],
+    "0.2.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "41d696d0c07de9f00914c6ab60751785",
+          "sha256": "42c214bf9764500204ce4e266f279ff3fc69b18fcab8991707ea67d5755b55c9"
+        },
+        "downloads": 0,
+        "filename": "django-postgres-queue-0.2.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "41d696d0c07de9f00914c6ab60751785",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 8169,
+        "upload_time": "2017-09-11T22:47:24",
+        "url": "https://files.pythonhosted.org/packages/12/6a/503f3371fc2c4fcb5bf421cea25763850e5297fdc44672177fd8f0e2365f/django-postgres-queue-0.2.1.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "28be1d00968945d8f850be61e77b3109",
-        "sha256": "0385c28636273d37d6859698b0316025e2c2d0a2391ef7043657dca23ffdad0a"
+        "md5": "41d696d0c07de9f00914c6ab60751785",
+        "sha256": "42c214bf9764500204ce4e266f279ff3fc69b18fcab8991707ea67d5755b55c9"
       },
       "downloads": 0,
-      "filename": "django-postgres-queue-0.1.0.tar.gz",
+      "filename": "django-postgres-queue-0.2.1.tar.gz",
       "has_sig": false,
-      "md5_digest": "28be1d00968945d8f850be61e77b3109",
+      "md5_digest": "41d696d0c07de9f00914c6ab60751785",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 6774,
-      "upload_time": "2017-09-11T04:36:38",
-      "url": "https://files.pythonhosted.org/packages/68/7e/8f0926d9bfa08107df3d4c90b77f51f5797f0f943732cb4aa0a477e9e0dd/django-postgres-queue-0.1.0.tar.gz"
+      "size": 8169,
+      "upload_time": "2017-09-11T22:47:24",
+      "url": "https://files.pythonhosted.org/packages/12/6a/503f3371fc2c4fcb5bf421cea25763850e5297fdc44672177fd8f0e2365f/django-postgres-queue-0.2.1.tar.gz"
     }
   ]
 }
