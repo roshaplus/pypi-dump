@@ -4,26 +4,27 @@
     "author_email": "foundation@djangoproject.com",
     "bugtrack_url": null,
     "classifiers": [],
-    "description": "asgi_redis\n==========\n\n.. image:: https://api.travis-ci.org/django/asgi_redis.svg\n    :target: https://travis-ci.org/django/asgi_redis\n\n.. image:: https://img.shields.io/pypi/v/asgi_redis.svg\n    :target: https://pypi.python.org/pypi/asgi_redis\n\nAn ASGI channel layer that uses Redis as its backing store, and supports\nboth a single-server and sharded configurations, as well as group support.\n\n\nUsage\n-----\n\nYou'll need to instantiate the channel layer with at least ``hosts``,\nand other options if you need them.\n\nExample:\n\n.. code-block:: python\n\n    channel_layer = RedisChannelLayer(\n        host=\"redis\",\n        db=4,\n        channel_capacity={\n            \"http.request\": 200,\n            \"http.response*\": 10,\n        }\n    )\n\n``hosts``\n~~~~~~~~~\n\nThe server(s) to connect to, as either URIs or ``(host, port)`` tuples. Defaults to ``['localhost', 6379]``. Pass multiple hosts to enable sharding, but note that changing the host list will lose some sharded data.\n\n``prefix``\n~~~~~~~~~~\n\nPrefix to add to all Redis keys. Defaults to ``asgi:``. If you're running\ntwo or more entirely separate channel layers through the same Redis instance,\nmake sure they have different prefixes. All servers talking to the same layer\nshould have the same prefix, though.\n\n``expiry``\n~~~~~~~~~~\n\nMessage expiry in seconds. Defaults to ``60``. You generally shouldn't need\nto change this, but you may want to turn it down if you have peaky traffic you\nwish to drop, or up if you have peaky traffic you want to backlog until you\nget to it.\n\n``group_expiry``\n~~~~~~~~~~~~~~~~\n\nGroup expiry in seconds. Defaults to ``86400``. Interface servers will drop\nconnections after this amount of time; it's recommended you reduce it for a\nhealthier system that encourages disconnections.\n\n``capacity``\n~~~~~~~~~~~~\n\nDefault channel capacity. Defaults to ``100``. Once a channel is at capacity,\nit will refuse more messages. How this affects different parts of the system\nvaries; a HTTP server will refuse connections, for example, while Django\nsending a response will just wait until there's space.\n\n``channel_capacity``\n~~~~~~~~~~~~~~~~~~~~\n\nPer-channel capacity configuration. This lets you tweak the channel capacity\nbased on the channel name, and supports both globbing and regular expressions.\n\nIt should be a dict mapping channel name pattern to desired capacity; if the\ndict key is a string, it's intepreted as a glob, while if it's a compiled\n``re`` object, it's treated as a regular expression.\n\nThis example sets ``http.request`` to 200, all ``http.response!`` channels\nto 10, and all ``websocket.send!`` channels to 20:\n\n.. code-block:: python\n\n    channel_capacity={\n        \"http.request\": 200,\n        \"http.response!*\": 10,\n        re.compile(r\"^websocket.send\\!.+\"): 20,\n    }\n\nIf you want to enforce a matching order, use an ``OrderedDict`` as the\nargument; channels will then be matched in the order the dict provides them.\n\n``symmetric_encryption_keys``\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nPass this to enable the optional symmetric encryption mode of the backend. To\nuse it, make sure you have the ``cryptography`` package installed, or specify\nthe ``cryptography`` extra when you install ``asgi_redis``::\n\n    pip install asgi_redis[cryptography]\n\n``symmetric_encryption_keys`` should be a list of strings, with each string\nbeing an encryption key. The first key is always used for encryption; all are\nconsidered for decryption, so you can rotate keys without downtime - just add\na new key at the start and move the old one down, then remove the old one\nafter the message expiry time has passed.\n\nData is encrypted both on the wire and at rest in Redis, though we advise\nyou also route your Redis connections over TLS for higher security; the Redis\nprotocol is still unencrypted, and the channel and group key names could\npotentially contain metadata patterns of use to attackers.\n\nKeys **should have at least 32 bytes of entropy** - they are passed through\nthe SHA256 hash function before being used as an encryption key. Any string\nwill work, but the shorter the string, the easier the encryption is to break.\n\nIf you're using Django, you may also wish to set this to your site's\n``SECRET_KEY`` setting via the ``CHANNEL_LAYERS`` setting:\n\n.. code-block:: python\n\n    CHANNEL_LAYERS = {\n        \"default\": {\n            \"BACKEND\": \"asgi_redis.RedisChannelLayer\",\n            \"ROUTING\": \"my_project.routing.channel_routing\",\n            \"CONFIG\": {\n                \"hosts\": [\"redis://:password@127.0.0.1:6379/0\"],\n                \"symmetric_encryption_keys\": [SECRET_KEY],\n            },\n        },\n    }\n\n``connection_kwargs``\n---------------------\n\nOptional extra arguments to pass to the ``redis-py`` connection class. Options\ninclude ``socket_connect_timeout``, ``socket_timeout``, ``socket_keepalive``,\nand ``socket_keepalive_options``. See the\n`redis-py documentation <https://redis-py.readthedocs.io/en/latest/>`_ for more.\n\n\nLocal-and-Remote Mode\n---------------------\n\nA \"local and remote\" mode is also supported, where the Redis channel layer\nworks in conjunction with a machine-local channel layer (``asgi_ipc``) in order\nto route all normal channels over the local layer, while routing all\nsingle-reader and process-specific channels over the Redis layer.\n\nThis allows traffic on things like ``http.request`` and ``websocket.receive``\nto stay in the local layer and not go through Redis, while still allowing Group\nsend and sends to arbitrary channels terminated on other machines to work\ncorrectly. It will improve performance and decrease the load on your\nRedis cluster, but **it requires all normal channels are consumed on the\nsame machine**.\n\nIn practice, this means you MUST run workers that consume every channel your\napplication has code to handle on the same machine as your HTTP or WebSocket\nterminator. If you fail to do this, requests to that machine will get routed\ninto only the local queue and hang as nothing is reading them.\n\nTo use it, just use the ``asgi_redis.RedisLocalChannelLayer`` class in your\nconfiguration instead of ``RedisChannelLayer`` and make sure you have the\n``asgi_ipc`` package installed; no other change is needed.\n\n\nSentinel Mode\n-------------\n\n\"Sentinel\" mode is also supported, where the Redis channel layer will connect to\na redis sentinel cluster to find the present Redis master before writing or reading\ndata.\n\nSentinel mode supports sharding, but does not support multiple Sentinel clusters. To\nrun sharding of keys across multiple Redis clusters, use a single sentinel cluster,\nbut have that sentinel cluster monitor multiple \"services\". Then in the configuration\nfor the RedisSentinelChannelLayer, add a list of the service names. You can also\nleave the list of services blank, and the layer will pull all services that are\nconfigured on the sentinel master.\n\nRedis Sentinel mode does not support URL-style connection strings, just tuple-based ones.\n\nConfiguration for Sentinel mode looks like this:\n\n.. code-block:: python\n\n    CHANNEL_LAYERS = {\n        \"default\": {\n            \"BACKEND\": \"asgi_redis.RedisSentinelChannelLayer\",\n            \"CONFIG\": {\n                \"hosts\": [(\"10.0.0.1\", 26739), (\"10.0.0.2\", 26379), (\"10.0.0.3\", 26379)],\n                \"services\": [\"shard1\", \"shard2\", \"shard3\"],\n            },\n        },\n    }\n\nThe \"shard1\", \"shard2\", etc entries correspond to the name of the service configured in  your\nredis `sentinel.conf` file. For example, if your `sentinel.conf` says ``sentinel monitor local 127.0.0.1 6379 1``\nthen you would want to include \"local\" as a service in the `RedisSentinelChannelLayer` configuration.\n\nYou may also pass a ``sentinel_refresh_interval`` value in the ``CONFIG``, which\nwill enable caching of the Sentinel results for the specified number of seconds.\nThis is recommended to reduce the need to query Sentinel every time; even a\nlow value of 5 seconds will significantly reduce overhead.\n\nDependencies\n------------\n\nRedis >= 2.6 is required for `asgi_redis`. It supports Python 2.7, 3.4,\n3.5 and 3.6.\n\nContributing\n------------\n\nPlease refer to the\n`main Channels contributing docs <https://github.com/django/channels/blob/master/CONTRIBUTING.rst>`_.\nThat also contains advice on how to set up the development environment and run the tests.\n\nMaintenance and Security\n------------------------\n\nTo report security issues, please contact security@djangoproject.com. For GPG\nsignatures and more security process information, see\nhttps://docs.djangoproject.com/en/dev/internals/security/.\n\nTo report bugs or request new features, please open a new GitHub issue.\n\nThis repository is part of the Channels project. For the shepherd and maintenance team, please see the\n`main Channels readme <https://github.com/django/channels/blob/master/README.rst>`_.",
+    "description": "asgi_redis\n==========\n\n.. image:: https://api.travis-ci.org/django/asgi_redis.svg\n    :target: https://travis-ci.org/django/asgi_redis\n\n.. image:: https://img.shields.io/pypi/v/asgi_redis.svg\n    :target: https://pypi.python.org/pypi/asgi_redis\n\nAn ASGI channel layer that uses Redis as its backing store, and supports\nboth a single-server and sharded configurations, as well as group support.\n\n\nUsage\n-----\n\nYou'll need to instantiate the channel layer with at least ``hosts``,\nand other options if you need them.\n\nExample:\n\n.. code-block:: python\n\n    channel_layer = RedisChannelLayer(\n        host=\"redis\",\n        db=4,\n        channel_capacity={\n            \"http.request\": 200,\n            \"http.response*\": 10,\n        }\n    )\n\n``hosts``\n~~~~~~~~~\n\nThe server(s) to connect to, as either URIs or ``(host, port)`` tuples. Defaults to ``['localhost', 6379]``. Pass multiple hosts to enable sharding, but note that changing the host list will lose some sharded data.\n\n``prefix``\n~~~~~~~~~~\n\nPrefix to add to all Redis keys. Defaults to ``asgi:``. If you're running\ntwo or more entirely separate channel layers through the same Redis instance,\nmake sure they have different prefixes. All servers talking to the same layer\nshould have the same prefix, though.\n\n``expiry``\n~~~~~~~~~~\n\nMessage expiry in seconds. Defaults to ``60``. You generally shouldn't need\nto change this, but you may want to turn it down if you have peaky traffic you\nwish to drop, or up if you have peaky traffic you want to backlog until you\nget to it.\n\n``group_expiry``\n~~~~~~~~~~~~~~~~\n\nGroup expiry in seconds. Defaults to ``86400``. Interface servers will drop\nconnections after this amount of time; it's recommended you reduce it for a\nhealthier system that encourages disconnections.\n\n``capacity``\n~~~~~~~~~~~~\n\nDefault channel capacity. Defaults to ``100``. Once a channel is at capacity,\nit will refuse more messages. How this affects different parts of the system\nvaries; a HTTP server will refuse connections, for example, while Django\nsending a response will just wait until there's space.\n\n``channel_capacity``\n~~~~~~~~~~~~~~~~~~~~\n\nPer-channel capacity configuration. This lets you tweak the channel capacity\nbased on the channel name, and supports both globbing and regular expressions.\n\nIt should be a dict mapping channel name pattern to desired capacity; if the\ndict key is a string, it's intepreted as a glob, while if it's a compiled\n``re`` object, it's treated as a regular expression.\n\nThis example sets ``http.request`` to 200, all ``http.response!`` channels\nto 10, and all ``websocket.send!`` channels to 20:\n\n.. code-block:: python\n\n    channel_capacity={\n        \"http.request\": 200,\n        \"http.response!*\": 10,\n        re.compile(r\"^websocket.send\\!.+\"): 20,\n    }\n\nIf you want to enforce a matching order, use an ``OrderedDict`` as the\nargument; channels will then be matched in the order the dict provides them.\n\n``symmetric_encryption_keys``\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nPass this to enable the optional symmetric encryption mode of the backend. To\nuse it, make sure you have the ``cryptography`` package installed, or specify\nthe ``cryptography`` extra when you install ``asgi_redis``::\n\n    pip install asgi_redis[cryptography]\n\n``symmetric_encryption_keys`` should be a list of strings, with each string\nbeing an encryption key. The first key is always used for encryption; all are\nconsidered for decryption, so you can rotate keys without downtime - just add\na new key at the start and move the old one down, then remove the old one\nafter the message expiry time has passed.\n\nData is encrypted both on the wire and at rest in Redis, though we advise\nyou also route your Redis connections over TLS for higher security; the Redis\nprotocol is still unencrypted, and the channel and group key names could\npotentially contain metadata patterns of use to attackers.\n\nKeys **should have at least 32 bytes of entropy** - they are passed through\nthe SHA256 hash function before being used as an encryption key. Any string\nwill work, but the shorter the string, the easier the encryption is to break.\n\nIf you're using Django, you may also wish to set this to your site's\n``SECRET_KEY`` setting via the ``CHANNEL_LAYERS`` setting:\n\n.. code-block:: python\n\n    CHANNEL_LAYERS = {\n        \"default\": {\n            \"BACKEND\": \"asgi_redis.RedisChannelLayer\",\n            \"ROUTING\": \"my_project.routing.channel_routing\",\n            \"CONFIG\": {\n                \"hosts\": [\"redis://:password@127.0.0.1:6379/0\"],\n                \"symmetric_encryption_keys\": [SECRET_KEY],\n            },\n        },\n    }\n\n``connection_kwargs``\n---------------------\n\nOptional extra arguments to pass to the ``redis-py`` connection class. Options\ninclude ``socket_connect_timeout``, ``socket_timeout``, ``socket_keepalive``,\nand ``socket_keepalive_options``. See the\n`redis-py documentation <https://redis-py.readthedocs.io/en/latest/>`_ for more.\n\n\nLocal-and-Remote Mode\n---------------------\n\nA \"local and remote\" mode is also supported, where the Redis channel layer\nworks in conjunction with a machine-local channel layer (``asgi_ipc``) in order\nto route all normal channels over the local layer, while routing all\nsingle-reader and process-specific channels over the Redis layer.\n\nThis allows traffic on things like ``http.request`` and ``websocket.receive``\nto stay in the local layer and not go through Redis, while still allowing Group\nsend and sends to arbitrary channels terminated on other machines to work\ncorrectly. It will improve performance and decrease the load on your\nRedis cluster, but **it requires all normal channels are consumed on the\nsame machine**.\n\nIn practice, this means you MUST run workers that consume every channel your\napplication has code to handle on the same machine as your HTTP or WebSocket\nterminator. If you fail to do this, requests to that machine will get routed\ninto only the local queue and hang as nothing is reading them.\n\nTo use it, just use the ``asgi_redis.RedisLocalChannelLayer`` class in your\nconfiguration instead of ``RedisChannelLayer`` and make sure you have the\n``asgi_ipc`` package installed; no other change is needed.\n\n\nSentinel Mode\n-------------\n\n\"Sentinel\" mode is also supported, where the Redis channel layer will connect to\na redis sentinel cluster to find the present Redis master before writing or reading\ndata.\n\nSentinel mode supports sharding, but does not support multiple Sentinel clusters. To\nrun sharding of keys across multiple Redis clusters, use a single sentinel cluster,\nbut have that sentinel cluster monitor multiple \"services\". Then in the configuration\nfor the RedisSentinelChannelLayer, add a list of the service names. You can also\nleave the list of services blank, and the layer will pull all services that are\nconfigured on the sentinel master.\n\nRedis Sentinel mode does not support URL-style connection strings, just tuple-based ones.\n\nConfiguration for Sentinel mode looks like this:\n\n.. code-block:: python\n\n    CHANNEL_LAYERS = {\n        \"default\": {\n            \"BACKEND\": \"asgi_redis.RedisSentinelChannelLayer\",\n            \"CONFIG\": {\n                \"hosts\": [(\"10.0.0.1\", 26739), (\"10.0.0.2\", 26379), (\"10.0.0.3\", 26379)],\n                \"services\": [\"shard1\", \"shard2\", \"shard3\"],\n            },\n        },\n    }\n\nThe \"shard1\", \"shard2\", etc entries correspond to the name of the service configured in  your\nredis `sentinel.conf` file. For example, if your `sentinel.conf` says ``sentinel monitor local 127.0.0.1 6379 1``\nthen you would want to include \"local\" as a service in the `RedisSentinelChannelLayer` configuration.\n\nYou may also pass a ``sentinel_refresh_interval`` value in the ``CONFIG``, which\nwill enable caching of the Sentinel results for the specified number of seconds.\nThis is recommended to reduce the need to query Sentinel every time; even a\nlow value of 5 seconds will significantly reduce overhead.\n\nDependencies\n------------\n\nRedis >= 2.6 is required for `asgi_redis`. It supports Python 2.7, 3.4,\n3.5 and 3.6.\n\nContributing\n------------\n\nPlease refer to the\n`main Channels contributing docs <https://github.com/django/channels/blob/master/CONTRIBUTING.rst>`_.\nThat also contains advice on how to set up the development environment and run the tests.\n\nMaintenance and Security\n------------------------\n\nTo report security issues, please contact security@djangoproject.com. For GPG\nsignatures and more security process information, see\nhttps://docs.djangoproject.com/en/dev/internals/security/.\n\nTo report bugs or request new features, please open a new GitHub issue.\n\nThis repository is part of the Channels project. For the shepherd and maintenance team, please see the\n`main Channels readme <https://github.com/django/channels/blob/master/README.rst>`_.\n",
     "docs_url": null,
-    "download_url": "UNKNOWN",
+    "download_url": "",
     "downloads": {
       "last_day": 0,
       "last_month": 0,
       "last_week": 0
     },
     "home_page": "http://github.com/django/asgi_redis/",
-    "keywords": null,
+    "keywords": "",
     "license": "BSD",
-    "maintainer": null,
-    "maintainer_email": null,
+    "maintainer": "",
+    "maintainer_email": "",
     "name": "asgi_redis",
-    "platform": "UNKNOWN",
+    "platform": "",
     "project_url": "https://pypi.org/project/asgi_redis/",
-    "release_url": "https://pypi.org/project/asgi_redis/1.4.2/",
-    "requires_python": null,
+    "release_url": "https://pypi.org/project/asgi_redis/1.4.3/",
+    "requires_dist": [],
+    "requires_python": "",
     "summary": "Redis-backed ASGI channel layer implementation",
-    "version": "1.4.2"
+    "version": "1.4.3"
   },
   "releases": {
     "0.10.0": [
@@ -611,40 +612,74 @@
         "upload_time": "2017-06-20T17:43:22",
         "url": "https://files.pythonhosted.org/packages/57/9d/7e770956981f648058d8d486ece0c157984242f2534a50700686425e3ed7/asgi_redis-1.4.2.tar.gz"
       }
+    ],
+    "1.4.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0a207e2a6a4256a7b3873b7e02ca15c4",
+          "sha256": "ad724d382617b34c2cae08a8c43eb9999f7e695c11e9c534d28b7db0042b898e"
+        },
+        "downloads": 0,
+        "filename": "asgi_redis-1.4.3-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "0a207e2a6a4256a7b3873b7e02ca15c4",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 20034,
+        "upload_time": "2017-09-14T21:34:06",
+        "url": "https://files.pythonhosted.org/packages/63/c0/4a2d24cbc0d163ae02bb21eaa1d95311e3948a4fd532e2d6416a02e16471/asgi_redis-1.4.3-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "19f251b8c656d61109be579ea1f0724a",
+          "sha256": "f1f7a86439d764a6cd6c11d165a500d7287d5447ac8eb4c7b2483456cf3cb383"
+        },
+        "downloads": 0,
+        "filename": "asgi_redis-1.4.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "19f251b8c656d61109be579ea1f0724a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 17358,
+        "upload_time": "2017-09-14T21:34:04",
+        "url": "https://files.pythonhosted.org/packages/6b/4c/43d48dbf54dc64cf0a2866b892dc0215d5cef8a63f2f4d7c55960d654340/asgi_redis-1.4.3.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "f4f3568ec36da528de00fb8caeecdea5",
-        "sha256": "fa76fa8484d4b0b9073cb963b01d8f92ca8bed03619e1b5ffdf3c4b35dd476ac"
+        "md5": "0a207e2a6a4256a7b3873b7e02ca15c4",
+        "sha256": "ad724d382617b34c2cae08a8c43eb9999f7e695c11e9c534d28b7db0042b898e"
       },
       "downloads": 0,
-      "filename": "asgi_redis-1.4.2-py2.py3-none-any.whl",
+      "filename": "asgi_redis-1.4.3-py2.py3-none-any.whl",
       "has_sig": false,
-      "md5_digest": "f4f3568ec36da528de00fb8caeecdea5",
+      "md5_digest": "0a207e2a6a4256a7b3873b7e02ca15c4",
       "packagetype": "bdist_wheel",
       "python_version": "2.7",
-      "size": 24629,
-      "upload_time": "2017-06-20T17:43:25",
-      "url": "https://files.pythonhosted.org/packages/3f/6f/069bf03347266363059983090a59cdce7014225a557573636e4d269cc5e6/asgi_redis-1.4.2-py2.py3-none-any.whl"
+      "size": 20034,
+      "upload_time": "2017-09-14T21:34:06",
+      "url": "https://files.pythonhosted.org/packages/63/c0/4a2d24cbc0d163ae02bb21eaa1d95311e3948a4fd532e2d6416a02e16471/asgi_redis-1.4.3-py2.py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "aaeec40048404e57c1f8422c6cb02556",
-        "sha256": "aa8e9342a3e66c4e7f9035b074f6f66b92e5f1cf8022f1446106ed6dd004a274"
+        "md5": "19f251b8c656d61109be579ea1f0724a",
+        "sha256": "f1f7a86439d764a6cd6c11d165a500d7287d5447ac8eb4c7b2483456cf3cb383"
       },
       "downloads": 0,
-      "filename": "asgi_redis-1.4.2.tar.gz",
+      "filename": "asgi_redis-1.4.3.tar.gz",
       "has_sig": false,
-      "md5_digest": "aaeec40048404e57c1f8422c6cb02556",
+      "md5_digest": "19f251b8c656d61109be579ea1f0724a",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 14156,
-      "upload_time": "2017-06-20T17:43:22",
-      "url": "https://files.pythonhosted.org/packages/57/9d/7e770956981f648058d8d486ece0c157984242f2534a50700686425e3ed7/asgi_redis-1.4.2.tar.gz"
+      "size": 17358,
+      "upload_time": "2017-09-14T21:34:04",
+      "url": "https://files.pythonhosted.org/packages/6b/4c/43d48dbf54dc64cf0a2866b892dc0215d5cef8a63f2f4d7c55960d654340/asgi_redis-1.4.3.tar.gz"
     }
   ]
 }
