@@ -5,7 +5,8 @@
     "bugtrack_url": null,
     "classifiers": [
       "Framework :: Django",
-      "Framework :: Django :: 1.8",
+      "Framework :: Django :: 1.10",
+      "Framework :: Django :: 1.11",
       "Framework :: Django :: 1.9",
       "Intended Audience :: Developers",
       "License :: OSI Approved :: MIT License",
@@ -15,7 +16,7 @@
       "Programming Language :: Python :: 3.4",
       "Programming Language :: Python :: 3.5"
     ],
-    "description": "[![Build Status](https://travis-ci.org/ambitioninc/django-entity.png)](https://travis-ci.org/ambitioninc/django-smart-manager)\nDjango Smart Manager\n==================\nDjango Smart Manager provides a simple framework for representing and managing Django models from serializable templates.\n\n\n# Problem Overview\n\nOftentimes what we model in Django spans multiple objects and tables. Managing a single object that is represented by multiple models can be quite cumbersome through the shell or through basic Django administration. This app provides a framework such that a user can write templates that represent many models and complex relationships.\n\nFor example, assume that you model a person. The ``Person`` model contains a unique identifier for that person, multiple ``PhoneNumber`` models that point to it, and multiple ``Address`` models. With Django Smart Manager, one can construct a template in the following manner:\n\n```python\n{\n    'unique_id': 'person_unique_id':\n    'phone_numbers': ['865-123-4985', '956-345-5678'],\n    'addresses': [{\n        'street': 'my street address1',\n        'city': 'my city',\n    }],\n}\n```\n\nUsing the framework (as shown soon), we can construct a parser for this template that maintains the appropriate model representation underneath while also providing a much simpler way to manage all of those underlying models. This management includes updates to the data in the template and deletions to objects in the template.\n\n# Building the Person Example\nBefore we show how to build the example just illustrated in the problem overview, the models in the example are laid out below:\n\n```python\nclass Person(models.Model):\n    unique_id = models.CharField(max_length=64, unique=True)\n\n\nclass PhoneNumber(models.Model):\n    person = models.ForeignKey(Person)\n    number = models.CharField(max_length=32)\n\n\nclass Address(models.Model):\n    person = models.ForeignKey(Person)\n    street = models.CharField(max_length=128)\n    city = models.CharField(max_length=128)\n```\n\nIn order to achieve the ability of specifying the ``Person`` model (and its related models) via a template as shown above, the user must create a model template class that inherits ``BaseSmartManager``. This class will be responsible for taking in the template and managing the object(s) represented by the template.\n\nFor the sake of example, let's assume we're going to build three model template classes: one to manage addresses, one to manage phone numbers, and one to manage a person and its associated addresses and phone numbers. We'll begin from the bottom up by building the ``Address`` model template. The code for this is shown below:\n\n```python\nfrom smart_manager import BaseSmartManager\n\n\nclass AddressSmartManager(BaseSmartManager):\n    def build(self):\n        self.build_obj(\n            person_id=self._template['person'],\n            street=self._template['street'],\n            city=self._template['city'],\n        )\n```\n\nNow that we have this class, it can be called in the following way to build its associated object:\n\n```python\nAddressSmartManager({\n    'person': 1,  # The pk of a Person object\n    'street': 'my street',\n    'city': 'my city',\n}).build()\n```\n\nUnderneath the hood, it is passing the parameters of build_obj to the ``upsert`` function [Django Manager Utils](https://github.com/ambitioninc/django-manager-utils) and also internally maintaining all of the objects that have been built.\n\nNow that the model template class has been created, a ``SmartManager`` model can be constructed as follows:\n\n```python\nfrom smart_manager import SmartManager\n\n\nmt = SmartManager.objects.create(smart_manager_class='path.to.AddressSmartManager', template={\n    'person': 1,\n    'street': 'my street',\n    'city': 'my city',\n})\n```\n\nOnce this model is created, it manages all of the objects associated with the template. If the user was to change the template and save the ``mt`` variable from the example, the underlying ``Address`` model would be updated. Similarly, the underlying ``Address`` model will also be deleted when ``mt`` is deleted. The deletion behavior can be turned off by specifying ``manages_deletions=False`` in the creation of the model template.\n\nWhile this example is trivial, the power of Django Smart Manager is unleashed when you start to build more and more complex objects that need ot be managed. Let's assume that the user can now build the associated ``PhoneNumberSmartManager`` class for creating ``PhoneNumber`` objects and move on to creating the ``PersonSmartManager`` model template class:\n\n```python\nclass PersonSmartManager(BaseSmartManager):\n    def build(self):\n        # Build the parent person object\n        person = self.build_obj(unique_id=self._template['unique_id'])\n\n        # Build its child phone number objects using the PhoneNumberSmartManager\n        for phone_number in self._template['phone_numbers']:\n            self.build_obj_using(PhoneSmartManager, {\n                'person': person.id,\n                'phone_number': phone_number\n            })\n\n        # Build its child address objects using the AddressSmartManager\n        for address in self._template['addresses']:\n            self.build_obj_using(AddressSmartManager, {\n                'person': person.id,\n                'street': address['street'],\n                'city': address['city'],\n            })\n```\n\nNote that the ``PersonSmartManager`` uses the ``build_obj_using`` function to build an object using another model template. This ensures that the objects managed by that model template are also managed by the calling model template.\n\nSimilarly, one can now make a ``SmartManager`` object using this model template class to manage a complete ``Person`` object.\n\n# Using Smart Managers Directly with Django Models and Managers\nSmart mangers can be directly used by models and managers in Django. All they need to do is inherit the ``SmartModelMixin`` or ``SmartManagerMixin``. If a model inherits ``SmartModelMixin``, it is provided a ``smart_upsert`` and ``smart_delete`` function. These function both take a smart manager class and template. The ``smart_upsert`` function upserts the template using the smart manager that linked to it (or creating a smart manager if it doesn't exist). The ``smart_delete`` function will delete the smart manager that is associated with the model, which in turn deletes all other objects managed by that smart manager.\n\nIf a Django model manager inherits ``SmartManagerMixin``, it is provided a ``smart_create`` function that takes a smart manager class and template. The objects are created using the template and a smart manager is returned.\n\nThese methods are meant as convenience methods so that a user can still interact with their models and not have to directly query smart managers.\n\nNote that all functions return a smart manager, and the mixins can be imported directly from ``smart_manager`` as so:\n\n```python\nfrom smart_manager import SmartModelMixin, SmartManagerMixin\n```\n\n# Caveats with Smart Managers\nIt is up to the programmer to ultimately define how a template manages its underlying objects. By default, Django Smart Manager will manage deletions of every object built using the ``build_obj`` function. This, however, can cause undesired side effects for some objects that simply should not be deleted if the template is deleted. If this is the case, a ``is_deletable`` kwarg can be passed to the ``build_obj`` function to override the default behavior of managing its deletion.\n",
+    "description": "[![Build Status](https://travis-ci.org/ambitioninc/django-entity.png)](https://travis-ci.org/ambitioninc/django-smart-manager)\nDjango Smart Manager\n==================\nDjango Smart Manager provides a simple framework for representing and managing Django models from serializable templates.\n\n\n# Problem Overview\n\nOftentimes what we model in Django spans multiple objects and tables. Managing a single object that is represented by multiple models can be quite cumbersome through the shell or through basic Django administration. This app provides a framework such that a user can write templates that represent many models and complex relationships.\n\nFor example, assume that you model a person. The ``Person`` model contains a unique identifier for that person, multiple ``PhoneNumber`` models that point to it, and multiple ``Address`` models. With Django Smart Manager, one can construct a template in the following manner:\n\n```python\n{\n    'unique_id': 'person_unique_id':\n    'phone_numbers': ['865-123-4985', '956-345-5678'],\n    'addresses': [{\n        'street': 'my street address1',\n        'city': 'my city',\n    }],\n}\n```\n\nUsing the framework (as shown soon), we can construct a parser for this template that maintains the appropriate model representation underneath while also providing a much simpler way to manage all of those underlying models. This management includes updates to the data in the template and deletions to objects in the template.\n\n# Building the Person Example\nBefore we show how to build the example just illustrated in the problem overview, the models in the example are laid out below:\n\n```python\nclass Person(models.Model):\n    unique_id = models.CharField(max_length=64, unique=True)\n\n\nclass PhoneNumber(models.Model):\n    person = models.ForeignKey(Person)\n    number = models.CharField(max_length=32)\n\n\nclass Address(models.Model):\n    person = models.ForeignKey(Person)\n    street = models.CharField(max_length=128)\n    city = models.CharField(max_length=128)\n```\n\nIn order to achieve the ability of specifying the ``Person`` model (and its related models) via a template as shown above, the user must create a model template class that inherits ``BaseSmartManager``. This class will be responsible for taking in the template and managing the object(s) represented by the template.\n\nFor the sake of example, let's assume we're going to build three model template classes: one to manage addresses, one to manage phone numbers, and one to manage a person and its associated addresses and phone numbers. We'll begin from the bottom up by building the ``Address`` model template. The code for this is shown below:\n\n```python\nfrom smart_manager import BaseSmartManager\n\n\nclass AddressSmartManager(BaseSmartManager):\n    def build(self):\n        self.build_obj(\n            person_id=self._template['person'],\n            street=self._template['street'],\n            city=self._template['city'],\n        )\n```\n\nNow that we have this class, it can be called in the following way to build its associated object:\n\n```python\nAddressSmartManager({\n    'person': 1,  # The pk of a Person object\n    'street': 'my street',\n    'city': 'my city',\n}).build()\n```\n\nUnderneath the hood, it is passing the parameters of build_obj to the ``upsert`` function [Django Manager Utils](https://github.com/ambitioninc/django-manager-utils) and also internally maintaining all of the objects that have been built.\n\nNow that the model template class has been created, a ``SmartManager`` model can be constructed as follows:\n\n```python\nfrom smart_manager import SmartManager\n\n\nmt = SmartManager.objects.create(smart_manager_class='path.to.AddressSmartManager', template={\n    'person': 1,\n    'street': 'my street',\n    'city': 'my city',\n})\n```\n\nOnce this model is created, it manages all of the objects associated with the template. If the user was to change the template and save the ``mt`` variable from the example, the underlying ``Address`` model would be updated. Similarly, the underlying ``Address`` model will also be deleted when ``mt`` is deleted. The deletion behavior can be turned off by specifying ``manages_deletions=False`` in the creation of the model template.\n\nWhile this example is trivial, the power of Django Smart Manager is unleashed when you start to build more and more complex objects that need ot be managed. Let's assume that the user can now build the associated ``PhoneNumberSmartManager`` class for creating ``PhoneNumber`` objects and move on to creating the ``PersonSmartManager`` model template class:\n\n```python\nclass PersonSmartManager(BaseSmartManager):\n    def build(self):\n        # Build the parent person object\n        person = self.build_obj(unique_id=self._template['unique_id'])\n\n        # Build its child phone number objects using the PhoneNumberSmartManager\n        for phone_number in self._template['phone_numbers']:\n            self.build_obj_using(PhoneSmartManager, {\n                'person': person.id,\n                'phone_number': phone_number\n            })\n\n        # Build its child address objects using the AddressSmartManager\n        for address in self._template['addresses']:\n            self.build_obj_using(AddressSmartManager, {\n                'person': person.id,\n                'street': address['street'],\n                'city': address['city'],\n            })\n```\n\nNote that the ``PersonSmartManager`` uses the ``build_obj_using`` function to build an object using another model template. This ensures that the objects managed by that model template are also managed by the calling model template.\n\nSimilarly, one can now make a ``SmartManager`` object using this model template class to manage a complete ``Person`` object.\n\n# Using Smart Managers Directly with Django Models and Managers\nSmart mangers can be directly used by models and managers in Django. All they need to do is inherit the ``SmartModelMixin`` or ``SmartManagerMixin``. If a model inherits ``SmartModelMixin``, it is provided a ``smart_upsert`` and ``smart_delete`` function. These function both take a smart manager class and template. The ``smart_upsert`` function upserts the template using the smart manager that linked to it (or creating a smart manager if it doesn't exist). The ``smart_delete`` function will delete the smart manager that is associated with the model, which in turn deletes all other objects managed by that smart manager.\n\nIf a Django model manager inherits ``SmartManagerMixin``, it is provided a ``smart_create`` function that takes a smart manager class and template. The objects are created using the template and a smart manager is returned.\n\nThese methods are meant as convenience methods so that a user can still interact with their models and not have to directly query smart managers.\n\nNote that all functions return a smart manager, and the mixins can be imported directly from ``smart_manager`` as so:\n\n```python\nfrom smart_manager import SmartModelMixin, SmartManagerMixin\n```\n\n# Caveats with Smart Managers\nIt is up to the programmer to ultimately define how a template manages its underlying objects. By default, Django Smart Manager will manage deletions of every object built using the ``build_obj`` function. This, however, can cause undesired side effects for some objects that simply should not be deleted if the template is deleted. If this is the case, a ``is_deletable`` kwarg can be passed to the ``build_obj`` function to override the default behavior of managing its deletion.\n\n\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -24,17 +25,22 @@
       "last_week": 0
     },
     "home_page": "https://github.com/ambitioninc/django-smart-manager",
-    "keywords": "Django",
+    "keywords": "Django,Models,ORM,Manager,Templates",
     "license": "MIT",
     "maintainer": "",
     "maintainer_email": "",
     "name": "django-smart-manager",
     "platform": "",
     "project_url": "https://pypi.org/project/django-smart-manager/",
-    "release_url": "https://pypi.org/project/django-smart-manager/0.6.0/",
+    "release_url": "https://pypi.org/project/django-smart-manager/0.7.0/",
+    "requires_dist": [
+      "jsonfield (>=0.9.20)",
+      "django-manager-utils (>=0.13.0)",
+      "Django (>=1.9)"
+    ],
     "requires_python": "",
     "summary": "Make templates that manage models",
-    "version": "0.6.0"
+    "version": "0.7.0"
   },
   "releases": {
     "0.1.1": [
@@ -404,40 +410,74 @@
         "upload_time": "2016-11-29T15:22:12",
         "url": "https://files.pythonhosted.org/packages/e3/c9/6f16cdaafb2cb0d25b9ec50975202df07b71733dbed7f5fc82126003d4a1/django-smart-manager-0.6.0.tar.gz"
       }
+    ],
+    "0.7.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4e5eeba096e5f7aabcbb833f2959a4f5",
+          "sha256": "f3a878c3310dc56ab1c4b4e3278d1f22ee930aec819f42252a4226f4b79aacce"
+        },
+        "downloads": 0,
+        "filename": "django_smart_manager-0.7.0-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "4e5eeba096e5f7aabcbb833f2959a4f5",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 17888,
+        "upload_time": "2017-09-19T21:43:58",
+        "url": "https://files.pythonhosted.org/packages/d2/a6/20d2d4c3c9cb9f861a6cae8ff2cb19d46d5a0420af9e25eea36fb9771483/django_smart_manager-0.7.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "fc7d4833a0102304d707d427c65311ba",
+          "sha256": "04cd192662d1ec25fdc2ebb5d710a678001d5d4f82c4d563f14863a7b1b4c4a4"
+        },
+        "downloads": 0,
+        "filename": "django-smart-manager-0.7.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "fc7d4833a0102304d707d427c65311ba",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 11178,
+        "upload_time": "2017-09-19T21:44:01",
+        "url": "https://files.pythonhosted.org/packages/ec/fd/54f2bee6bdf626be83a6f282d6e06a1992e51e0142dfd8cf6863d944f68e/django-smart-manager-0.7.0.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "20e8be9525e17fd617dc5fba867ffaad",
-        "sha256": "7ac6920f31afe817c6d7b8465ce49b93245a931db72c1143c115ce319b550b70"
+        "md5": "4e5eeba096e5f7aabcbb833f2959a4f5",
+        "sha256": "f3a878c3310dc56ab1c4b4e3278d1f22ee930aec819f42252a4226f4b79aacce"
       },
-      "downloads": 48,
-      "filename": "django_smart_manager-0.6.0-py2.py3-none-any.whl",
+      "downloads": 0,
+      "filename": "django_smart_manager-0.7.0-py2.py3-none-any.whl",
       "has_sig": false,
-      "md5_digest": "20e8be9525e17fd617dc5fba867ffaad",
+      "md5_digest": "4e5eeba096e5f7aabcbb833f2959a4f5",
       "packagetype": "bdist_wheel",
-      "python_version": "2.7",
-      "size": 17883,
-      "upload_time": "2016-11-29T15:22:14",
-      "url": "https://files.pythonhosted.org/packages/21/d1/f830971c61a1f026ad97814b4d1f2d1e9ac414ed2c8280cb3c9b4e78fe15/django_smart_manager-0.6.0-py2.py3-none-any.whl"
+      "python_version": "py2.py3",
+      "size": 17888,
+      "upload_time": "2017-09-19T21:43:58",
+      "url": "https://files.pythonhosted.org/packages/d2/a6/20d2d4c3c9cb9f861a6cae8ff2cb19d46d5a0420af9e25eea36fb9771483/django_smart_manager-0.7.0-py2.py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "d565716f3cd70d7aad222d51b1348a2c",
-        "sha256": "848903ce85bae176d374a61879ad977eecad8e90cdf7e3c168818f07274f1634"
+        "md5": "fc7d4833a0102304d707d427c65311ba",
+        "sha256": "04cd192662d1ec25fdc2ebb5d710a678001d5d4f82c4d563f14863a7b1b4c4a4"
       },
-      "downloads": 44,
-      "filename": "django-smart-manager-0.6.0.tar.gz",
+      "downloads": 0,
+      "filename": "django-smart-manager-0.7.0.tar.gz",
       "has_sig": false,
-      "md5_digest": "d565716f3cd70d7aad222d51b1348a2c",
+      "md5_digest": "fc7d4833a0102304d707d427c65311ba",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 11112,
-      "upload_time": "2016-11-29T15:22:12",
-      "url": "https://files.pythonhosted.org/packages/e3/c9/6f16cdaafb2cb0d25b9ec50975202df07b71733dbed7f5fc82126003d4a1/django-smart-manager-0.6.0.tar.gz"
+      "size": 11178,
+      "upload_time": "2017-09-19T21:44:01",
+      "url": "https://files.pythonhosted.org/packages/ec/fd/54f2bee6bdf626be83a6f282d6e06a1992e51e0142dfd8cf6863d944f68e/django-smart-manager-0.7.0.tar.gz"
     }
   ]
 }
