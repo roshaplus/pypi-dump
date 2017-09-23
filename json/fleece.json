@@ -14,7 +14,7 @@
       "Programming Language :: Python :: 3.6",
       "Topic :: Software Development"
     ],
-    "description": "",
+    "description": "Fleece\n======\n\nLogging\n-------\n\nTo start using fleece with a lambda project you will need to make 2\nsmall updates to your project.\n\n-  Where you would normally import ``logging.get_logger`` or\n   ``logging.getLogger`` use\\ ``fleece.log.get_logger`` or\n   ``fleece.log.getLogger``\n\n-  In the file with your primary lambda handler include\n   ``fleece.log.setup_root_logger()``\\ prior to setting up any\n   additional logging.\n\nThis should ensure that all handlers on the root logger are cleaned up\nand one with appropriate stream handlers is in place.\n\nRetry logging calls\n~~~~~~~~~~~~~~~~~~~\n\nA retry wrapper for logging handlers that occasionally fail is also\nprovided. This wrapper can be useful in preventing crashes when logging\ncalls to external services such as CloudWatch fail.\n\nFor example, consider the following handler for CloudWatch using\nwatchtower:\n\n.. code:: python\n\n    logger.addHandler(\n        watchtower.CloudWatchLogHandler(log_group='WORKER-POLL',\n                                        stream_name=str(uuid.uuid4()),\n                                        use_queues=False))\n\nIf the CloudWatch service is down, or rate limits the client, that will\ncause logging calls to raise an exception, which may interrupt the\nscript. To avoid that, the watchtower handler can be wrapped in a\n``RetryHandler`` as follows:\n\n.. code:: python\n\n    logger.addHandler(\n        fleece.log.RetryHandler(\n            watchtower.CloudWatchLogHandler(log_group='WORKER-POLL',\n                                            stream_name=str(uuid.uuid4()),\n                                            use_queues=False)))\n\nIn the above example, logging calls that fail will be retried up to 5\ntimes, using an exponential backoff algorithm to increasingly space out\nretries. If all retries fail, then the logging call will, by default,\ngive up silently and return, allowing the program to continue. See the\ndocumentation for the ``RetryHandler`` class for information on how to\ncustomize the retry strategy.\n\nboto3 wrappers\n--------------\n\nThis project includes ``fleece.boto3.client()`` and\n``fleece.boto3.resource()`` wrappers that support a friendly format for\nsetting less conservative timeouts than the default 60 seconds used by\nboto. The following additional arguments are accepted to set these\ntimeouts:\n\n-  ``connect_timeout``: timeout for socket connections in seconds.\n-  ``read_timeout``: timeout for socket read operations in seconds.\n-  ``timeout``: convenience timeout that sets both of the above to the\n   same value.\n\nAlso for convenience, timeouts can be set globally by calling\n``fleece.boto3.set_default_timeout()`` at startup. Globally set timeouts\nare then applied to all clients, unless explicitly overriden. Default\ntimeouts set via the ``set_default_timeout()`` function apply to all\nthreads, and for that reason it is a good idea to only call this\nfunction during start up, before any additional threads are spawn.\n\nAs an example, the following code written against the original boto3\npackage uses the default 60 second socket timeouts:\n\n.. code:: python\n\n    import boto3\n    # ...\n    lambda = boto3.client('lambda')\n\nIf you wanted to use 15 second timeouts instead, you can simply switch\nto the fleece wrappers as follows:\n\n.. code:: python\n\n    from fleece import boto3\n    boto3.set_default_timeout(15)\n    # ...\n    lambda = boto3.client('lambda')\n\nrequests wrappers\n-----------------\n\nThis project also includes a wrapper for the requests package. When\nusing ``fleece.requests``, convenient access to set timeouts and retries\nis provided.\n\nThe high-level request functions such as ``requests.get()`` and\n``requests.post()`` accept the following arguments:\n\n-  ``timeout``: a network timeout, or a tuple containing the connection\n   and\n   read timeouts, in seconds. Note that this is functionality that\n   exists in the requests package.\n-  ``retries``: a retry mechanism to use with this request. This\n   argument can be\n   of several types: if it is ``None``, then the default retry\n   mechanism installed by the ``set_default_retries`` function is used;\n   if it is an integer, it is the number of retries to use; if it is\n   a dictionary, it must have the arguments to a urllib3 ``Retry``\n   instance. Alternatively, this argument can be a Retry instance as\n   well.\n\nThe ``Session`` class is also wrapped. A session instance from this\nmodule also accepts the two arguments above, and passes them on to any\nrequests it issues.\n\nFinally, it is also possible to install global timeout and retry\ndefaults that are used for any requests that don't specify them\nexplicitly. This enables existing code to take advantage of retries and\ntimeouts after changing the imports to point to this wrapped version of\nrequests. Below is an example that sets global timeouts and retries:\n\n.. code:: python\n\n    from fleece import requests\n\n    # 15 second timeout\n    requests.set_default_timeout(15)\n\n    # 5 retries with exponential backoff, also retry 429 and 503 responses\n    requests.set_default_retries(total=5, backoff_factor=1,\n                                 status_forcelist=[429, 503])\n\n    # the defaults above apply to any regular requests, no need to make\n    # changes to existing code.\n    r = requests.get('https://...')\n\n    # a request can override the defaults if desired\n    r = requests.put('https://...', timeout=25, retries=2)\n\n    # sessions are also supported\n    with requests.Session() as session:\n        session.get('https://...')\n\nX-Ray integration\n-----------------\n\nThis project also bridges the gap of missing Python support in the `AWS\nX-Ray <https://aws.amazon.com/xray/>`__ `Lambda\nintegration <http://docs.aws.amazon.com/xray/latest/devguide/xray-services-lambda.html>`__.\n\nPrerequisites\n~~~~~~~~~~~~~\n\n#. Make sure you add the following permissions to the Lambda execution\n   role of your function: ``xray:PutTraceSegments`` and\n   ``xray:PutTelemetryRecords``.\n#. Enable active tracing under Advanced settings on the Configuration\n   tab of your Lambda function in the AWS Console (or using the\n   ```update_function_configuration`` API\n   call <http://boto3.readthedocs.io/en/latest/reference/services/lambda.html#Lambda.Client.update_function_configuration>`__).\n\nFeatures\n~~~~~~~~\n\nYou can mark any function or method for tracing by using the\n``@trace_xray_subsegment`` decorator. You can apply the decorator to any\nnumber of functions and methods, the resulting trace will be properly\nnested. You have to decorate all the methods you want traced (e.g. if\nyou decorate your handler function only, no other functions will be\ntraced that it calls).\n\nThis module also provides wrappers for ``boto`` and ``requests`` so that\nany AWS API call, or HTTP request will be automatically traced by X-Ray,\nbut you have to explicitly allow this behavior by calling\n``monkey_patch_botocore_for_xray`` and/or\n``monkey_patch_requests_for_xray``. The best place to do this would be\nthe main handler module where the Lambda entry point is defined.\n\nA quick example (``handler.py``)\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n.. code:: python\n\n    from fleece import boto3\n    from fleece.xray import (monkey_patch_botocore_for_xray,\n                             trace_xray_subsegment)\n\n    monkey_patch_botocore_for_xray()\n\n\n    @trace_xray_subsegment()\n    def lambda_handler(event, context):\n        return get_user()\n\n\n    def get_user():\n        # This function doesn't have to be decorated, because the API call to IAM\n        # will be traced thanks to the monkey-patching.\n        iam = boto3.client('iam')\n        return iam.get_user()\n\n**Note:** the monkey-patched tracing will also work with the wrappers\ndescribed above.\n\nConnexion integration\n---------------------\n\nSummary about what `Connexion <https://github.com/zalando/connexion>`__\nexactly is (from their project page):\n\n    Connexion is a framework on top of\n    `Flask <http://flask.pocoo.org/>`__ that automagically handles HTTP\n    requests based on `OpenAPI 2.0\n    Specification <https://github.com/OAI/OpenAPI-Specification/blob/master/versions/2.0.md>`__\n    (formerly known as Swagger Spec) of your API described in `YAML\n    format <https://github.com/OAI/OpenAPI-Specification/blob/master/versions/2.0.md#format>`__.\n    Connexion allows you to write a Swagger specification, then maps the\n    endpoints to your Python functions; this makes it unique, as many\n    tools generate the specification based on your Python code. You can\n    describe your REST API in as much detail as you want; then Connexion\n    guarantees that it will work as you specified.\n\nIt's the perfect glue between your API Gateway API specification and\nyour Lambda function. Fleece makes it very easy to use Connexion:\n\n.. code:: python\n\n    from fleece.connexion import call_api\n    from fleece.log import get_logger\n\n    logger = get_logger(__name__)\n\n\n    def lambda_handler(event, context):\n        return call_api(event, 'myapi', 'swagger.yml', logger)\n\nYou just have to make sure that the ``swagger.yml`` file is included in\nthe Lambda bundle. For the API Gateway integration, we assume the\n`request template defined by\nyoke <https://github.com/rackerlabs/yoke/blob/master/yoke/templates.py#L60-L132>`__\nfor now.\n\nUsing this integration has the added benefit of being able to run your\nAPI locally, by adding something like this to your Lambda handler:\n\n.. code:: python\n\n    from fleece.connexion import get_connexion_app\n\n    [...]\n\n    if __name__ == '__main__':\n        app = get_connexion_app('myapi', 'swagger.yml')\n        app.run(8080)\n\n\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -23,18 +23,26 @@
       "last_week": 0
     },
     "home_page": "https://github.com/racker/fleece",
-    "keywords": "fleece,lambda,32982f00",
+    "keywords": "fleece,lambda,34dd90cf",
     "license": "Apache License, Version 2.0",
     "maintainer": "",
     "maintainer_email": "",
     "name": "fleece",
     "platform": "",
     "project_url": "https://pypi.org/project/fleece/",
-    "release_url": "https://pypi.org/project/fleece/0.13.0/",
-    "requires_dist": [],
+    "release_url": "https://pypi.org/project/fleece/0.14.0/",
+    "requires_dist": [
+      "Werkzeug (==0.12.2); extra == 'connexion'",
+      "Flask (==0.12.2); extra == 'connexion'",
+      "connexion (==1.1.9); extra == 'connexion'",
+      "wrapt (>=1.10.10)",
+      "boto3 (>=1.0.0)",
+      "requests (>=2.9.1)",
+      "structlog (>=15.3.0)"
+    ],
     "requires_python": "",
     "summary": "Wrap the lamb...da",
-    "version": "0.13.0"
+    "version": "0.14.0"
   },
   "releases": {
     "0.0.1": [
@@ -487,6 +495,40 @@
         "url": "https://files.pythonhosted.org/packages/52/63/9e3b8471c6ccb5b49766ac76e97cf96aa49601a9dbbb382347fc3217e6a8/fleece-0.13.0.tar.gz"
       }
     ],
+    "0.14.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2921e2ca40dde7441dc2239a4c8f3f2b",
+          "sha256": "9bc3662a2dd76e1d4f684ddf6fa89cb8d06214d76225f985186ff9c5eb9a4608"
+        },
+        "downloads": 0,
+        "filename": "fleece-0.14.0-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "2921e2ca40dde7441dc2239a4c8f3f2b",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 29772,
+        "upload_time": "2017-09-22T16:51:29",
+        "url": "https://files.pythonhosted.org/packages/73/95/cfa7335647764a9019b9038faaf1e1d11b12c28dacf92a9757f16aa63588/fleece-0.14.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f0c1ed231cf1262482717ac949255d04",
+          "sha256": "c45875cf4a9ef32e6bc17b386a93015992cba509dbec9a85515af97288425d9d"
+        },
+        "downloads": 0,
+        "filename": "fleece-0.14.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f0c1ed231cf1262482717ac949255d04",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 22414,
+        "upload_time": "2017-09-22T16:51:36",
+        "url": "https://files.pythonhosted.org/packages/8f/6e/716d94879a17499a42062ec61e7e0cdad92de34d562a1a23e902a0a3ce4c/fleece-0.14.0.tar.gz"
+      }
+    ],
     "0.2.0": [
       {
         "comment_text": "",
@@ -922,18 +964,34 @@
     {
       "comment_text": "",
       "digests": {
-        "md5": "18e44d228c6909cda8ebf8e309a6e6ea",
-        "sha256": "47c65221d7da3f1e943aa20eeaaa4153063012e2e5366070b8bb61d1a2669fe9"
+        "md5": "2921e2ca40dde7441dc2239a4c8f3f2b",
+        "sha256": "9bc3662a2dd76e1d4f684ddf6fa89cb8d06214d76225f985186ff9c5eb9a4608"
       },
       "downloads": 0,
-      "filename": "fleece-0.13.0.tar.gz",
+      "filename": "fleece-0.14.0-py2.py3-none-any.whl",
       "has_sig": false,
-      "md5_digest": "18e44d228c6909cda8ebf8e309a6e6ea",
+      "md5_digest": "2921e2ca40dde7441dc2239a4c8f3f2b",
+      "packagetype": "bdist_wheel",
+      "python_version": "py2.py3",
+      "size": 29772,
+      "upload_time": "2017-09-22T16:51:29",
+      "url": "https://files.pythonhosted.org/packages/73/95/cfa7335647764a9019b9038faaf1e1d11b12c28dacf92a9757f16aa63588/fleece-0.14.0-py2.py3-none-any.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "f0c1ed231cf1262482717ac949255d04",
+        "sha256": "c45875cf4a9ef32e6bc17b386a93015992cba509dbec9a85515af97288425d9d"
+      },
+      "downloads": 0,
+      "filename": "fleece-0.14.0.tar.gz",
+      "has_sig": false,
+      "md5_digest": "f0c1ed231cf1262482717ac949255d04",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 18411,
-      "upload_time": "2017-06-30T18:30:08",
-      "url": "https://files.pythonhosted.org/packages/52/63/9e3b8471c6ccb5b49766ac76e97cf96aa49601a9dbbb382347fc3217e6a8/fleece-0.13.0.tar.gz"
+      "size": 22414,
+      "upload_time": "2017-09-22T16:51:36",
+      "url": "https://files.pythonhosted.org/packages/8f/6e/716d94879a17499a42062ec61e7e0cdad92de34d562a1a23e902a0a3ce4c/fleece-0.14.0.tar.gz"
     }
   ]
 }
