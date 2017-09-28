@@ -16,7 +16,7 @@
       "Topic :: Software Development :: Libraries :: Python Modules",
       "Topic :: Utilities"
     ],
-    "description": "wsgiprox\n========\n\n.. image:: https://travis-ci.org/webrecorder/wsgiprox.svg?branch=master\n    :target: https://travis-ci.org/webrecorder/wsgiprox\n\n``wsgiprox`` is a Python WSGI middleware for adding HTTP and HTTPS proxy support to a WSGI application.\n\nThe library accepts HTTP and HTTPS proxy connections, and routes them to a designated prefix.\n\nUsage\n~~~~~\n\nFor example, given a `WSGI <http://wsgi.readthedocs.io/en/latest/>`_ callable ``application``, the middleware could be defined as follows:\n\n.. code:: python\n\n    from wsgiprox.wsgiprox import WSGIProxMiddleware\n\n    application = WSGIProxMiddleware(application, '/prefix/', 'wsgiprox')\n\n\nWith the above configuration, the middleware is configured to add a prefix of ``/prefix/`` to any url, unless it is to the proxy host ``wsgiprox``.  Assuming a WSGI server running on port 8080, the middleware would translate HTTP/S proxy connections to a non-proxy WSGI request, and pass to the wrapped application:\n\n*  Proxy Request: ``curl -x \"localhost:8080\" \"http://example.com/path/file.html?A=B\"``\n\n   Becomes equivalent to: ``curl \"http://localhost:8080/prefix/http://example.com/path/file.html?A=B\"``\n\n\n*  Proxy Request: ``curl -k -x \"localhost:8080\" \"https://example.com/path/file.html?A=B\"``\n\n   Becomes equivalent to: ``curl \"http://localhost:8080/prefix/https://example.com/path/file.html?A=B\"``\n\n*  Proxy Request to proxy host: ``curl -k -x \"localhost:8080\" \"https://wsgiprox/path/file.html?A=B\"``\n\n   Not adding prefix for ``wsgiprox``, becomes equivalent to: ``curl -H \"Host: wsgiprox\" \"http://localhost:8080/path/file.html?A=B\"``\n\n\nAll standard WSGI ``environ`` fields are set to the expected values for the translated url.\n\nWhen a request passes through wsgiprox middleware, ``environ['wsgiprox.proxy_host']`` is set to the proxy host.\nIn this example, the WSGI app could check that ``environ.get('wsgiprox.proxy_host') == 'wsgiprox'`` to ensure that it was a proxy request. If the request is to the proxy host itself, then it is passed to the WSGI app without prefixing, and ``environ['wsgiprox.proxy_host'] == environ['HTTP_HOST']``\n\n\nCustom Resolvers\n================\n\nThe provided ``FixedResolver`` simply prepends a fixed prefix to each url. A custom resolver could compute the final url in a different way. The resolver instance is called with the full url, and the original WSGI ``environ``. The result is the translated ``REQUEST_URI`` that is passed to the WSGI applictaion.\n\nSee `resolvers.py <wsgiprox/resolvers.py>`_ for all available resolvers.\n\nFor example, the following Resolver translates the url to a custom prefix based on the remote IP of the original request.\n\n.. code:: python\n\n    class IPResolver(object):\n        def __call__(self, url, environ):\n            return '/' + environ['REMOTE_ADDR'] + '/' + url\n\n    application = WSGIProxMiddleware(application, IPResolver())\n\n\nHTTPS CA\n========\n\nTo support HTTPS proxy, ``wsgiprox`` creates a custom CA (Certificate Authority), which must be accepted by the client (or it must ignore cert verification as with the ``-k`` option in CURL)\n\nBy default, ``wsgiprox`` looks for CA .pem at: ``<working dir>/ca/wsgiprox-ca.pem`` and auto-creates this bundle using the `certauth <https://github.com/ikreymer/certauth>`_ library.\n\nThe CA name and CA root cert filename can also be specified explicitly via ``proxy_options`` dict.\n\nBy default, the following options are used:\n\n.. code:: python\n\n    WSGIProxMiddleware(..., proxy_options={ca_name='wsgiprox https proxy CA',\n                                           ca_file='./ca/wsgiprox-ca.pem'})\n\nThe generated ``wsgiprox-ca.pem`` can be imported directly into most browsers directly as a trusted certificate authority, allowing the browser to accept HTTPS content proxied through ``wsgiprox``\n\nDownloading Certs\n=================\n\nThe CA cert can be downloaded directly from the proxy directly. This allows for quick installation into a client/browser.\n\n* ``curl -x \"localhost:8080\" http://wsgiprox/download/pem`` will download in PEM format (for most platforms)\n* ``curl -x \"localhost:8080\" http://wsgiprox/download/p12`` will download in PKCS12 format (for Windows)\n\nThe download host is the same as proxy main host, though can be changed via ``download_host`` param to WSGIProxMiddleware constructor.\n\nCustom Proxy Host Apps\n======================\n\nIt's is also possible to configure a custom WSGI app per proxy host, eg:\n\n* ``curl -x \"localhost:8080\" https://proxy-app-1/path/`` is passed to ``proxy-app-1``\n* ``curl -x \"localhost:8080\" https://proxy-app-2/foo`` is passed to ``proxy-app-2``\n\nThis can be done via:\n\n.. code:: python\n\n    from wsgiprox.wsgiprox import WSGIProxMiddleware\n\n    proxy_apps = {\"proxy-app-1\": ProxyApp1WSGI(),\n                  \"proxy-app-2\": ProxyApp2WSGI(),\n                  \"proxy-alias\": None,\n                 }\n\n    application = WSGIProxMiddleware(application, proxy_apps=apps)\n\nAll other requests, or any requests not handled by the proxy app, are passed to the main ``application``.\n\nIn the last case, since there is no proxy app, the request is passed directly to wrapped application.\nThe ``wsgiprox.proxy_host`` would be set to ``'proxy-alias'`` instead of the default ``'wsgiprox'``, allowing the application to differentiate handling based on the value of ``wsgiprox.proxy_host``.\n\nInternally, the ``proxy_apps`` dict is used to configure the cert downloader app and default proxy host:\n\n.. code:: python\n\n    proxy_apps['proxy_host'] = None\n    proxy_apps['download_host'] = CertDownloader(self.ca)\n\n\nWebsockets\n==========\n\n``wsgiprox`` optionally also supports proxying websockets, both unencryped ``ws://`` and via TLS ``wss://``. The websockets proxy functionality has primarily been tested with and requires the `gevent-websocket <https://github.com/jgelens/gevent-websocket>`_ library, and assumes that the wrapped WSGI application is also using this library for websocket support. Other implementations are not yet supported.\n\nTo enable websocket proxying, install with ``pip install wsgiprox[gevent-websocket]`` which will install ``gevent-websocket``.\nTo disable websocket proxying even with ``gevent-websocket`` installed, add ``proxy_options={'enable_websockets': False}``\n\nSee the `test suite <test/test_wsgiprox.py>`_ for additional details.\n\n\nHow it Works / A note about WSGI\n=================================\n\n``wsgiprox`` supports several different proxying methods:\n\n* HTTP direct proxy, no tunnel\n* HTTP CONNECT tunnel for websockets, no SSL\n* HTTP CONNECT tunnel with SSL (also supports websockets)\n\nFor regular HTTP proxy, wsgiprox simply rewrites a host-qualifed request such as ``GET http://example.com/``, and passes it along to underlying WSGI app.\n\nThe other proxy methods involve the HTTP ``CONNECT`` verb and explicitly establishing a tunnel using the underlying socket. For HTTPS/SSL proxying, an SSL socket is established over the tunnel, while HTTP websocket proxy uses the underlying socket directly.\n\nThe system thus relies on being able to access the underyling socket for the connection. As WSGI spec does not provide a way to do this, ``wsgiprox`` is not guaranteed to work under any WSGI server. The CONNECT verb creates a tunnel, and the tunneled connection is what is passed to the wrapped WSGI application. This is non-standard behavior and may not work on all WSGI servers.\n\nThis middleware has been tested primarily with gevent WSGI server and uWSGI.\n\nThere is also support for gunicorn and wsgiref, as they provide a way to access the underlying success. If the underlying socket can not be accessed, the ``CONNECT`` verb will fail with a 405.\n\nIt may be possible to extend support to additional WSGI servers by extending ``WSGIProxMiddleware.get_raw_socket()`` to be able to find the underlying socket.\n\nInspiration\n~~~~~~~~~~~\n\nThis project draws inspiration from a lot of previous efforts.\n\nMuch of the functionality is a refactoring and spin-off of the proxy functionality in `pywb <https://github.com/ikreymer/pywb>`_, which is built on top of standalone CA handling library `certauth <https://github.com/ikreymer/certauth>`_.\n\ncertauth was refactored from an earlier implementation in `warcprox <https://github.com/internetarchive/warcprox>`_ (which also inspired this name!).\n\nThe certificate download feature was inspired by a similar feature available in `mitmprox <https://github.com/mitmproxy/mitmproxy>`_\n\nLicense\n~~~~~~~\n\n``wsgiprox`` is licensed under the Apache 2.0 License and is part of the\nWebrecorder project.\n\nSee `NOTICE <NOTICE>`__ and `LICENSE <LICENSE>`__ for details.",
+    "description": "wsgiprox\n========\n\n.. image:: https://travis-ci.org/webrecorder/wsgiprox.svg?branch=master\n    :target: https://travis-ci.org/webrecorder/wsgiprox\n\n``wsgiprox`` is a Python WSGI middleware for adding HTTP and HTTPS proxy support to a WSGI application.\n\nThe library accepts HTTP and HTTPS proxy connections, and routes them to a designated prefix.\n\nUsage\n~~~~~\n\nFor example, given a `WSGI <http://wsgi.readthedocs.io/en/latest/>`_ callable ``application``, the middleware could be defined as follows:\n\n.. code:: python\n\n    from wsgiprox.wsgiprox import WSGIProxMiddleware\n\n    application = WSGIProxMiddleware(application, '/prefix/', 'wsgiprox')\n\n\nWith the above configuration, the middleware is configured to add a prefix of ``/prefix/`` to any url, unless it is to the proxy host ``wsgiprox``.  Assuming a WSGI server running on port 8080, the middleware would translate HTTP/S proxy connections to a non-proxy WSGI request, and pass to the wrapped application:\n\n*  Proxy Request: ``curl -x \"localhost:8080\" \"http://example.com/path/file.html?A=B\"``\n\n   Becomes equivalent to: ``curl \"http://localhost:8080/prefix/http://example.com/path/file.html?A=B\"``\n\n\n*  Proxy Request: ``curl -k -x \"localhost:8080\" \"https://example.com/path/file.html?A=B\"``\n\n   Becomes equivalent to: ``curl \"http://localhost:8080/prefix/https://example.com/path/file.html?A=B\"``\n\n*  Proxy Request to proxy host: ``curl -k -x \"localhost:8080\" \"https://wsgiprox/path/file.html?A=B\"``\n\n   Not adding prefix for ``wsgiprox``, becomes equivalent to: ``curl -H \"Host: wsgiprox\" \"http://localhost:8080/path/file.html?A=B\"``\n\n\nAll standard WSGI ``environ`` fields are set to the expected values for the translated url.\n\nWhen a request passes through wsgiprox middleware, ``environ['wsgiprox.proxy_host']`` is set to the proxy host.\nIn this example, the WSGI app could check that ``environ.get('wsgiprox.proxy_host') == 'wsgiprox'`` to ensure that it was a proxy request. If the request is to the proxy host itself, then it is passed to the WSGI app without prefixing, and ``environ['wsgiprox.proxy_host'] == environ['HTTP_HOST']``\n\n\nCustom Resolvers\n================\n\nThe provided ``FixedResolver`` simply prepends a fixed prefix to each url. A custom resolver could compute the final url in a different way. The resolver instance is called with the full url, and the original WSGI ``environ``. The result is the translated ``REQUEST_URI`` that is passed to the WSGI applictaion.\n\nSee `resolvers.py <wsgiprox/resolvers.py>`_ for all available resolvers.\n\nFor example, the following Resolver translates the url to a custom prefix based on the remote IP of the original request.\n\n.. code:: python\n\n    class IPResolver(object):\n        def __call__(self, url, environ):\n            return '/' + environ['REMOTE_ADDR'] + '/' + url\n\n    application = WSGIProxMiddleware(application, IPResolver())\n\n\nHTTPS CA\n========\n\nTo support HTTPS proxy, ``wsgiprox`` creates a custom CA (Certificate Authority), which must be accepted by the client (or it must ignore cert verification as with the ``-k`` option in CURL)\n\nBy default, ``wsgiprox`` looks for CA .pem at: ``<working dir>/ca/wsgiprox-ca.pem`` and auto-creates this bundle using the `certauth <https://github.com/ikreymer/certauth>`_ library.\n\nThe CA name and CA root cert filename can also be specified explicitly via ``proxy_options`` dict.\n\nBy default, the following options are used:\n\n.. code:: python\n\n    WSGIProxMiddleware(..., proxy_options={ca_name='wsgiprox https proxy CA',\n                                           ca_file='./ca/wsgiprox-ca.pem'})\n\nThe generated ``wsgiprox-ca.pem`` can be imported directly into most browsers directly as a trusted certificate authority, allowing the browser to accept HTTPS content proxied through ``wsgiprox``\n\nDownloading Certs\n=================\n\nThe CA cert can be downloaded directly from the proxy directly. This allows for quick installation into a client/browser.\n\n* ``curl -x \"localhost:8080\" http://wsgiprox/download/pem`` will download in PEM format (for most platforms)\n* ``curl -x \"localhost:8080\" http://wsgiprox/download/p12`` will download in PKCS12 format (for Windows)\n\nThe download host is the same as proxy main host, though can be changed via ``download_host`` param to WSGIProxMiddleware constructor.\n\nCustom Proxy Host Apps\n======================\n\nIt's is also possible to configure a custom WSGI app per proxy host, eg:\n\n* ``curl -x \"localhost:8080\" https://proxy-app-1/path/`` is passed to ``proxy-app-1``\n* ``curl -x \"localhost:8080\" https://proxy-app-2/foo`` is passed to ``proxy-app-2``\n\nThis can be done via:\n\n.. code:: python\n\n    from wsgiprox.wsgiprox import WSGIProxMiddleware\n\n    proxy_apps = {\"proxy-app-1\": ProxyApp1WSGI(),\n                  \"proxy-app-2\": ProxyApp2WSGI(),\n                  \"proxy-alias\": None,\n                 }\n\n    application = WSGIProxMiddleware(application, proxy_apps=apps)\n\nAll other requests, or any requests not handled by the proxy app, are passed to the main ``application``.\n\nIn the last case, since there is no proxy app, the request is passed directly to wrapped application.\nThe ``wsgiprox.proxy_host`` would be set to ``'proxy-alias'`` instead of the default ``'wsgiprox'``, allowing the application to differentiate handling based on the value of ``wsgiprox.proxy_host``.\n\nInternally, the ``proxy_apps`` dict is used to configure the cert downloader app and default proxy host:\n\n.. code:: python\n\n    proxy_apps['proxy_host'] = None\n    proxy_apps['download_host'] = CertDownloader(self.ca)\n\n\nWebsockets\n==========\n\n``wsgiprox`` optionally also supports proxying websockets, both unencryped ``ws://`` and via TLS ``wss://``. The websockets proxy functionality has primarily been tested with and requires the `gevent-websocket <https://github.com/jgelens/gevent-websocket>`_ library, and assumes that the wrapped WSGI application is also using this library for websocket support. Other implementations are not yet supported.\n\nTo enable websocket proxying, install with ``pip install wsgiprox[gevent-websocket]`` which will install ``gevent-websocket``.\nTo disable websocket proxying even with ``gevent-websocket`` installed, add ``proxy_options={'enable_websockets': False}``\n\nSee the `test suite <test/test_wsgiprox.py>`_ for additional details.\n\n\nHow it Works / A note about WSGI\n=================================\n\n``wsgiprox`` supports several different proxying methods:\n\n* HTTP direct proxy, no tunnel\n* HTTP CONNECT tunnel for websockets, no SSL\n* HTTP CONNECT tunnel with SSL (also supports websockets)\n\nFor regular HTTP proxy, wsgiprox simply rewrites a host-qualifed request such as ``GET http://example.com/``, and passes it along to underlying WSGI app.\n\nThe other proxy methods involve the HTTP ``CONNECT`` verb and explicitly establishing a tunnel using the underlying socket. For HTTPS/SSL proxying, an SSL socket is established over the tunnel, while HTTP websocket proxy uses the underlying socket directly.\n\nThe system thus relies on being able to access the underyling socket for the connection. As WSGI spec does not provide a way to do this, ``wsgiprox`` is not guaranteed to work under any WSGI server. The CONNECT verb creates a tunnel, and the tunneled connection is what is passed to the wrapped WSGI application. This is non-standard behavior and may not work on all WSGI servers.\n\nThis middleware has been tested primarily with gevent WSGI server and uWSGI.\n\nThere is also support for gunicorn and wsgiref, as they provide a way to access the underlying success. If the underlying socket can not be accessed, the ``CONNECT`` verb will fail with a 405.\n\nIt may be possible to extend support to additional WSGI servers by extending ``WSGIProxMiddleware.get_raw_socket()`` to be able to find the underlying socket.\n\nInspiration\n~~~~~~~~~~~\n\nThis project draws inspiration from a lot of previous efforts.\n\nMuch of the functionality is a refactoring and spin-off of the proxy functionality in `pywb <https://github.com/ikreymer/pywb>`_, which is built on top of standalone CA handling library `certauth <https://github.com/ikreymer/certauth>`_.\n\ncertauth was refactored from an earlier implementation in `warcprox <https://github.com/internetarchive/warcprox>`_ (which also inspired this name!).\n\nThe certificate download feature was inspired by a similar feature available in `mitmprox <https://github.com/mitmproxy/mitmproxy>`_\n\nLicense\n~~~~~~~\n\n``wsgiprox`` is licensed under the Apache 2.0 License and is part of the\nWebrecorder project.\n\nSee `NOTICE <NOTICE>`__ and `LICENSE <LICENSE>`__ for details.\n\n\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -30,12 +30,17 @@
     "maintainer": "",
     "maintainer_email": "",
     "name": "wsgiprox",
-    "platform": "UNKNOWN",
+    "platform": "",
     "project_url": "https://pypi.org/project/wsgiprox/",
-    "release_url": "https://pypi.org/project/wsgiprox/1.4/",
+    "release_url": "https://pypi.org/project/wsgiprox/1.4.1/",
+    "requires_dist": [
+      "gevent-websocket; extra == 'gevent-websocket'",
+      "six",
+      "certauth (>=1.2)"
+    ],
     "requires_python": "",
     "summary": "HTTP/S proxy with WebSockets over WSGI",
-    "version": "1.4"
+    "version": "1.4.1"
   },
   "releases": {
     "1.0": [
@@ -275,40 +280,74 @@
         "upload_time": "2017-05-17T17:39:28",
         "url": "https://files.pythonhosted.org/packages/d7/47/33a9621ea1d31ff8852e2e87b822ec6dbae41691744983ac08a809e8c552/wsgiprox-1.4.tar.gz"
       }
+    ],
+    "1.4.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6f9b2ab26657b309672b2c20a4c2ab23",
+          "sha256": "1e3176786abcdb4379754174d5e710d55fc1e60549c91af18db76667fadecaaa"
+        },
+        "downloads": 0,
+        "filename": "wsgiprox-1.4.1-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "6f9b2ab26657b309672b2c20a4c2ab23",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 19932,
+        "upload_time": "2017-09-27T20:26:22",
+        "url": "https://files.pythonhosted.org/packages/f6/5d/9878277c59a901276d06171bebeaebc4ba28a802143fdd0b96557fbba892/wsgiprox-1.4.1-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e153e1b05021d7795e64af14d45a58bf",
+          "sha256": "61f3e8c14a149d8f1f5a98e2a3bb90a23ff1435884bd2483a7f7cf523da3fcf4"
+        },
+        "downloads": 0,
+        "filename": "wsgiprox-1.4.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e153e1b05021d7795e64af14d45a58bf",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 17135,
+        "upload_time": "2017-09-27T20:26:25",
+        "url": "https://files.pythonhosted.org/packages/a9/70/dda3c1946f0f651867051acbbac4b735a32827216e910571db2b91c6edd5/wsgiprox-1.4.1.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "e1e0c79302cc7e278c3459d7538474a6",
-        "sha256": "55855295ec422d4cd384ec0d6549e4cc8146cb96b92a722725036012cd8d6f03"
+        "md5": "6f9b2ab26657b309672b2c20a4c2ab23",
+        "sha256": "1e3176786abcdb4379754174d5e710d55fc1e60549c91af18db76667fadecaaa"
       },
       "downloads": 0,
-      "filename": "wsgiprox-1.4-py2.py3-none-any.whl",
+      "filename": "wsgiprox-1.4.1-py2.py3-none-any.whl",
       "has_sig": false,
-      "md5_digest": "e1e0c79302cc7e278c3459d7538474a6",
+      "md5_digest": "6f9b2ab26657b309672b2c20a4c2ab23",
       "packagetype": "bdist_wheel",
       "python_version": "py2.py3",
-      "size": 25383,
-      "upload_time": "2017-05-17T17:39:11",
-      "url": "https://files.pythonhosted.org/packages/2a/46/1c0a5474f41b52054f28b92ba92c83204d80e87dd5b502dbb06e43279ca7/wsgiprox-1.4-py2.py3-none-any.whl"
+      "size": 19932,
+      "upload_time": "2017-09-27T20:26:22",
+      "url": "https://files.pythonhosted.org/packages/f6/5d/9878277c59a901276d06171bebeaebc4ba28a802143fdd0b96557fbba892/wsgiprox-1.4.1-py2.py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "703d2fcd081f67e310660260a5bbbc75",
-        "sha256": "e770f7e7ae795b07077b32e4ad2d6950f11fa2d1ed89ce278f45a8de77df4f9c"
+        "md5": "e153e1b05021d7795e64af14d45a58bf",
+        "sha256": "61f3e8c14a149d8f1f5a98e2a3bb90a23ff1435884bd2483a7f7cf523da3fcf4"
       },
       "downloads": 0,
-      "filename": "wsgiprox-1.4.tar.gz",
+      "filename": "wsgiprox-1.4.1.tar.gz",
       "has_sig": false,
-      "md5_digest": "703d2fcd081f67e310660260a5bbbc75",
+      "md5_digest": "e153e1b05021d7795e64af14d45a58bf",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 17190,
-      "upload_time": "2017-05-17T17:39:28",
-      "url": "https://files.pythonhosted.org/packages/d7/47/33a9621ea1d31ff8852e2e87b822ec6dbae41691744983ac08a809e8c552/wsgiprox-1.4.tar.gz"
+      "size": 17135,
+      "upload_time": "2017-09-27T20:26:25",
+      "url": "https://files.pythonhosted.org/packages/a9/70/dda3c1946f0f651867051acbbac4b735a32827216e910571db2b91c6edd5/wsgiprox-1.4.1.tar.gz"
     }
   ]
 }
