@@ -21,7 +21,7 @@
       "Topic :: Software Development :: Libraries",
       "Topic :: Software Development :: Libraries :: Python Modules"
     ],
-    "description": "sprockets.http\n==============\nThe goal of this library is to make it a little easier to develop great\nHTTP API services using the Tornado web framework.  It concentrates on\nrunning applications in a reliable & resilient manner and handling errors\nin a clean manner.\n\n* ``SIGTERM`` is gracefully handled with respect to outstanding timeouts\n  and callbacks\n* Listening port is configured by the ``PORT`` environment variable\n* *\"Debug mode\"* is enabled by the ``DEBUG`` environment variable\n\n  - catches ``SIGINT`` (e.g., ``Ctrl+C``)\n  - application run in a single process\n\nRunning Your Application\n------------------------\nRunning a Tornado application intelligently should be very easy.  Ideally\nyour application wrapping code should look something like the following.\n\n.. code-block:: python\n\n   from tornado import web\n   import sprockets.http\n\n\n   def make_app(**settings):\n       return web.Application([\n          # insert your handlers\n       ], **settings)\n\n\n   if __name__ == '__main__':\n       sprockets.http.run(make_app)\n\nThat's it.  The ``sprockets.http.run`` function will set up signal\nhandlers and make sure that your application terminates gracefully\nwhen it is sent either an interrupt or terminate signal.\n\nIt also takes care of configuring the standard `logging`_ module albeit\nin a opinionated way.  The goal is to let you write your application\nwithout worrying about figuring out how to run and monitor it reliably.\n\nFrom setup.py\n~~~~~~~~~~~~~\nIf you want, you can even run your application directly from ``setup.py``::\n\n   $ ./setup.py httprun -a mymodule:make_app\n\nThe ``httprun`` command is installed as a ``distutils.command`` when you\ninstall the ``sprockets.http`` package.  This command accepts the following\ncommand line parameters:\n\n:application:\n   The \"callable\" that returns your application.  You want to specify\n   whatever you are passing to ``sprockets.http.run()`` using a syntax\n   similar to a `setuptools console script`_.  Basically, this is a string\n   that contains the module name to import and the callable to invoke\n   separated by a colon (e.g., ``mypackage.module.submodule:function``).\n   **This is the only required parameter.**\n\n:env-file:\n   Optional name of a file containing environment variable definitions\n   to parse and load into the environment before running the application.\n   The file is a list of environment variables formatted as ``name=value``\n   with one setting on each line.  If the line starts with ``export``, then\n   the export portion is removed (for the sake of convenience).  If the\n   ``value`` portion is omitted, then the environment variable named will\n   be removed from the environment if it is present.\n\n:port:\n   Optional port number to bind the application to.  This will set the\n   ``PORT`` environment variable *before* running the application and\n   *after* the environment file is read.\n\n.. _logging: https://docs.python.org/3/library/logging.html#module-logging\n.. _setuptools console script: http://python-packaging.readthedocs.io/en/\n   latest/command-line-scripts.html#the-console-scripts-entry-point\n\nError Logging\n-------------\nHandling errors should be simple as well.  Tornado already does a great\njob of isolating the error handling into two methods on the request\nhandler:\n\n- `send_error`_ is called by a request handler to send a HTTP error code\n  to the caller.  This is what you should be calling in your code.  It\n  handles setting the status, reporting the error, and finishing the\n  request out.\n\n- `write_error`_ is called by ``send_error`` when it needs to send an\n  error document to the caller.  This should be overridden when you need\n  to provide customized error pages.  The important thing to realize is\n  that ``send_error`` calls ``write_error``.\n\n.. _send_error: http://www.tornadoweb.org/en/branch4.0/web.html#tornado.web.RequestHandler.send_error\n.. _write_error: http://www.tornadoweb.org/en/branch4.0/web.html#tornado.web.RequestHandler.write_error\n\nSo your request handlers are already doing something like the following:\n\n.. code-block:: python\n\n   class MyHandler(web.RequestHandler):\n       def get(self):\n          try:\n             do_something()\n          except:\n             self.send_error(500, reason='Uh oh!')\n             return\n\nIn order for this to be really useful to you (the one that gets pinged\nwhen a failure happens), you need to have some information in your\napplication logs that points to the problem.  Cool... so do something\nlike this then:\n\n.. code-block:: python\n\n   class MyHandler(web.RequestHandler):\n       def get(self):\n          try:\n             do_something()\n          except:\n             LOGGER.exception('do_something exploded for %s - returning %s',\n                              self.request.uri, '500 Uh oh!')\n             self.send_error(500, reason='Uh oh!')\n             return\n\nSimple enough.  This works in the small, but think about how this approach\nscales.  After a while your error handling might end up looking like:\n\n.. code-block:: python\n\n   class MyHandler(web.RequestHandler):\n       def get(self):\n          try:\n             do_something()\n\n          except SomethingSerious:\n             LOGGER.exception('do_something exploded for %s - returning %s',\n                              self.request.uri, '500 Uh oh!')\n             self.send_error(500, reason='Uh oh!')\n             return\n\n          except SomethingYouDid:\n             LOGGER.exception('do_something exploded for %s - returning %s',\n                              self.request.uri, '400 Stop That')\n             self.send_error(400, reason='Stop That')\n             return\n\nOr maybe you are raising `tornado.web.HTTPError`_ instead of calling\n``send_error`` -- *send_error will be called for you in this case*.\nThe ``sprockets.http.mixins.ErrorLogger`` mix-in extends ``write_error``\nto log the failure to the ``self.logger`` **BEFORE** calling the ``super``\nimplementation.  This very simple piece of functionality ensures that when\nyour application is calling ``send_error`` to signal errors you are writing\nthe failure out somewhere so you will have it later.\n\n.. _tornado.web.HTTPError: http://www.tornadoweb.org/en/branch4.0/web.html#tornado.web.HTTPError\n\nIt is also nice enough to log 4xx status codes as warnings, 5xx codes as\nerrors, and include exception tracebacks if an exception is being handled.\nYou can go back to writing ``self.send_error`` and let someone else keep\ntrack of what happened.\n\nError Response Documents\n------------------------\nNow that we have useful information in our log files, we should be returning\nsomething useful as well.  By default, the Tornado provided ``send_error``\nimplementation writes a simple HTML file as the response body.  The\n``sprockets.http.mixins.ErrorWriter`` mix-in provides an implementation of\n``write_error`` that is more amenable to programmatic usage.  By default\nit uses a JSON body since that is the *defacto* format these days. Let's look\nat our example again:\n\n.. code-block:: python\n\n   class MyHandler(web.RequestHandler):\n       def get(self):\n          try:\n             do_something()\n          except:\n             self.send_error(500, reason='Uh oh!')\n             return\n\nThe implementation of ``tornado.web.RequestHandler.write_error`` will produce\na response that looks something like:\n\n.. code-block:: http\n\n   HTTP/1.1 500 Uh oh!\n   Server: TornadoServer/4.2.1\n   Content-Type: text/html; charset=UTF-8\n   Date: Fri, 20 Nov 2015 08:10:25 GMT\n\n   <html><title>500: Uh oh!</title><body>500: Uh oh!</body></html>\n\nThat is a lot better than nothing but not very useful when your user is\nsomeone else's code.  By adding ``sprockets.http.mixins.ErrorWriter`` to\nthe handler's inheritance chain, we would get the following response\ninstead:\n\n.. code-block:: http\n\n   HTTP/1.1 500 Uh oh!\n   Server: TornadoServer/4.2.1\n   Content-Type: application/json\n   Date: Fri, 20 Nov 2015 08:10:25 GMT\n\n   {\"message\": \"Uh oh!\", \"type\": null, \"traceback\": null}\n\nThe ``traceback`` and ``type`` properties hint at the fact that exceptions\nare handled in a manner similar to what Tornado would do -- if the call to\n``send_error`` includes exception information, then the exception's type\nwill be included in the response.  The ``traceback`` is only included when\nthe standard ``serve_traceback`` Tornado option is enabled.\n\nIf the ``sprockets.mixins.mediatype.ContentMixin`` is also extended by your\nbase class, ``write-error`` will use the ``ContentMixin.send_response`` method\nfor choosing the appropriate response format and sending the error response.\n",
+    "description": "UNKNOWN\n\n\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -35,12 +35,15 @@
     "maintainer": "",
     "maintainer_email": "",
     "name": "sprockets.http",
-    "platform": "UNKNOWN",
+    "platform": "",
     "project_url": "https://pypi.org/project/sprockets.http/",
-    "release_url": "https://pypi.org/project/sprockets.http/1.3.3/",
+    "release_url": "https://pypi.org/project/sprockets.http/1.4.0/",
+    "requires_dist": [
+      "tornado (>=3.1,<5)"
+    ],
     "requires_python": "",
     "summary": "Tornado HTTP application runner",
-    "version": "1.3.3"
+    "version": "1.4.0"
   },
   "releases": {
     "0.2.2": [
@@ -502,40 +505,74 @@
         "upload_time": "2016-09-20T20:47:40",
         "url": "https://files.pythonhosted.org/packages/6b/dc/2d2c73c439bb4fc86ceb5cb868b65b0a89b184bac7a370441bae52641167/sprockets.http-1.3.3.tar.gz"
       }
+    ],
+    "1.4.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "dad6745690b5ef0145aa9a926ca5ea00",
+          "sha256": "2886daaa3df97921292b420e52476e8495fa93eb58b805c5516c33c51eef3135"
+        },
+        "downloads": 0,
+        "filename": "sprockets.http-1.4.0-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "dad6745690b5ef0145aa9a926ca5ea00",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 12305,
+        "upload_time": "2017-09-29T15:08:15",
+        "url": "https://files.pythonhosted.org/packages/14/b6/560b1286dbc0e06a63b8d8c938b79e9c64e782ca0213a1b3a3897470c93e/sprockets.http-1.4.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d69516f433b8261d45246b1997380039",
+          "sha256": "f24959e341ec90206c1472cd5c3a98a18ed68800db6909f232ea1b1a15539ac5"
+        },
+        "downloads": 0,
+        "filename": "sprockets.http-1.4.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d69516f433b8261d45246b1997380039",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 18456,
+        "upload_time": "2017-09-29T15:08:16",
+        "url": "https://files.pythonhosted.org/packages/82/aa/6737a6995eb9009211e18975271bbdd1ffb6b7990dde16a8274ca0e67ffd/sprockets.http-1.4.0.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "c750c0363849984f16155e706265e6ef",
-        "sha256": "774264750b7abe37167157eeb5b27c69bfcef16d27b9138ab84acc2def83cd26"
+        "md5": "dad6745690b5ef0145aa9a926ca5ea00",
+        "sha256": "2886daaa3df97921292b420e52476e8495fa93eb58b805c5516c33c51eef3135"
       },
-      "downloads": 163,
-      "filename": "sprockets.http-1.3.3-py2.py3-none-any.whl",
+      "downloads": 0,
+      "filename": "sprockets.http-1.4.0-py2.py3-none-any.whl",
       "has_sig": false,
-      "md5_digest": "c750c0363849984f16155e706265e6ef",
+      "md5_digest": "dad6745690b5ef0145aa9a926ca5ea00",
       "packagetype": "bdist_wheel",
       "python_version": "py2.py3",
-      "size": 10543,
-      "upload_time": "2016-09-20T20:47:38",
-      "url": "https://files.pythonhosted.org/packages/18/57/707c1b7ebd06a706116ac86ca95d93a49e17e5395e3dca7d077c7955d5b9/sprockets.http-1.3.3-py2.py3-none-any.whl"
+      "size": 12305,
+      "upload_time": "2017-09-29T15:08:15",
+      "url": "https://files.pythonhosted.org/packages/14/b6/560b1286dbc0e06a63b8d8c938b79e9c64e782ca0213a1b3a3897470c93e/sprockets.http-1.4.0-py2.py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "54a27d76de44e8beed5055437085e886",
-        "sha256": "302ea81f3099edbd667de90c99762162a4a39b1b4facab30a2c8707a18beaa98"
+        "md5": "d69516f433b8261d45246b1997380039",
+        "sha256": "f24959e341ec90206c1472cd5c3a98a18ed68800db6909f232ea1b1a15539ac5"
       },
-      "downloads": 101,
-      "filename": "sprockets.http-1.3.3.tar.gz",
+      "downloads": 0,
+      "filename": "sprockets.http-1.4.0.tar.gz",
       "has_sig": false,
-      "md5_digest": "54a27d76de44e8beed5055437085e886",
+      "md5_digest": "d69516f433b8261d45246b1997380039",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 16037,
-      "upload_time": "2016-09-20T20:47:40",
-      "url": "https://files.pythonhosted.org/packages/6b/dc/2d2c73c439bb4fc86ceb5cb868b65b0a89b184bac7a370441bae52641167/sprockets.http-1.3.3.tar.gz"
+      "size": 18456,
+      "upload_time": "2017-09-29T15:08:16",
+      "url": "https://files.pythonhosted.org/packages/82/aa/6737a6995eb9009211e18975271bbdd1ffb6b7990dde16a8274ca0e67ffd/sprockets.http-1.4.0.tar.gz"
     }
   ]
 }
