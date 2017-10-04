@@ -11,26 +11,27 @@
       "Programming Language :: Python :: 2.7",
       "Topic :: Database :: Front-Ends"
     ],
-    "description": "Currently requires:\n- Python 2.7\n- CouchDB 1.0.1+ (untested on lower, 0.11 will probably work)\n- http://pypi.python.org/pypi/CouchDB 0.8+ (untested on lower, 0.7 will probably work)\n\n\nSource:   http://github.com/wickedgrey/couchable\nPackage:  http://pypi.python.org/pypi/couchable\nAPI docs: http://packages.python.org/couchable\nBlog:     http://blog.nopinch.net/tag/couchable/\n\n\nExample of Use\n===============\n\nimport numpy\nimport couchdb\nimport couchable\n\ncouchable.registerAttachmentType(numpy.ndarray,\n        lambda obj: obj.dumps(),\n        lambda data: numpy.loads(data),\n        'application/octet-stream', gzip=True)\n\nclass BaseClass(object):\n    def __init__(self, shape, type_=numpy.uint16):\n        self.vol = numpy.zeros(shape, type_)\n    # ...\n\n\nclass ClassA(object):\n    def __init__(self, name):\n        self.name = name\n    # ...\ncouchable.registerDocType(ClassA,\n        lambda obj, cdb: couchable.newid(obj, lambda x: x.name),\n        lambda obj, cdb: None)\n\n\nclass SubClassB(BaseClass):\n    def __init__(self, container):\n        BaseClass.__init__(self, container.vol.shape, numpy.float32, container.pixelLength_mm)\n        self.container = container\n    # ...\ncouchable.registerDocType(SubClassB)\n\n\nclass Container(BaseClass):\n    def __init__(self):\n        BaseClass.__init__(self, (300, 400, 200), numpy.bool_)\n    # ...\ncouchable.registerDocType(Container)\n\n\ndef main(options, arguments):\n    cdb = couchable.CouchableDb(options.cdb_name)\n\n    view = couchdb.design.ViewDefinition('generic', 'byclass',\n        '''\n        function(doc) {\n            if ('couchable:' in doc) {\n                info = doc['couchable:'];\n                emit([info.module, info.class, doc._id], doc);\n            }\n        }''')\n    view.sync(cdb.db)\n\n    # ...\n\n    viewResult = view(cdb.db, include_docs=True, startkey=['example', 'Container'], endkey=['example', 'Container', {}])\n    container_list = cdb.load(viewResult.rows)\n\n    # ...\n\n\nExamples of the JSON Structure of Stored Objects\n================================================\n\nAll of the object dumps are taken from Futon.\n\n>>> import couchable\n>>> cdb=couchable.CouchableDb('example')\n>>> class SimpleDoc(couchable.CouchableDoc):\n...     def __init__(self, **kwargs):\n...         for name, value in kwargs.items():\n...             setattr(self, name, value)\n...\n>>> a = SimpleDoc(name='AAA')\n>>> cdb.store(a)\n'main__.SimpleDoc:2a208810-467f-4feb-a5bb-98d0beb1e5e7'\n\n{\n   \"_id\": \"main__.SimpleDoc:2a208810-467f-4feb-a5bb-98d0beb1e5e7\",\n   \"_rev\": \"1-315ed02172dddb449a4ab38e54b8bb85\",\n   \"couchable:\": {\n       \"class\": \"SimpleDoc\",\n       \"module\": \"__main__\"\n   },\n   \"name\": \"AAA\"\n}\n\nThe key things to note are:\n- The automatically generated id includes some hints about the type of the\n    object.  It is only made if the object doesn't have an ID already.\n- The object metadata is stored in \"couchable:\".\n- Normal field names are stored at the top level of the object.\n\n\n>>> a.int_ = 1234\n>>> a.long_ = 1234567890L\n>>> a.str_ = 'some str'\n>>> cdb.store(a)\n'main__.SimpleDoc:2a208810-467f-4feb-a5bb-98d0beb1e5e7'\n\n{\n   \"_id\": \"main__.SimpleDoc:2a208810-467f-4feb-a5bb-98d0beb1e5e7\",\n   \"_rev\": \"2-618b01362f076539f1abb481585b2f64\",\n   \"couchable:\": {\n       \"class\": \"SimpleDoc\",\n       \"module\": \"__main__\"\n   },\n   \"long_\": 1234567890,\n   \"name\": \"AAA\",\n   \"str_\": \"some str\",\n   \"int_\": 1234\n}\n\nNumbers, strings and lists are stored in native JSON.  Dicts with string keys\nare as well, though non-string keys are disallowed by JSON, and so require\nspecial handling (see below).\n\n\n>>> del a.int_\n>>> del a.long_\n>>> del a.str_\n>>> a.tuple_ = (1, 'two', 3.3)\n>>> cdb.store(a)\n'main__.SimpleDoc:2a208810-467f-4feb-a5bb-98d0beb1e5e7'\n\n{\n   \"_id\": \"main__.SimpleDoc:2a208810-467f-4feb-a5bb-98d0beb1e5e7\",\n   \"_rev\": \"3-a24d5422be27e8dca0f4b4375718bceb\",\n   \"name\": \"AAA\",\n   \"couchable:\": {\n       \"class\": \"SimpleDoc\",\n       \"module\": \"__main__\"\n   },\n   \"tuple_\": {\n       \"couchable:\": {\n           \"args\": [\n               [\n                   1,\n                   \"two\",\n                   3.3\n               ]\n           ],\n           \"class\": \"tuple\",\n           \"module\": \"__builtin__\",\n           \"kwargs\": {\n           }\n       }\n   }\n}\n\nTuples do not have a native JSON representation, so they get treated much like\narbitrary objects do (note: since tuples don't have a __dict__, they need\nspecial case support).  Here, the \"args\" and \"kwargs\" will be passed into the\nconstructor of the type when it's time to load this object.\n\n\n>>> del a.tuple_\n>>> a._implementationDetail = 'this is private'\n>>> cdb.store(a)\n'main__.SimpleDoc:2a208810-467f-4feb-a5bb-98d0beb1e5e7'\n\n{\n   \"_id\": \"main__.SimpleDoc:2a208810-467f-4feb-a5bb-98d0beb1e5e7\",\n   \"_rev\": \"5-5ac8698c7b9567642484e728e60b95b1\",\n   \"couchable:\": {\n       \"private\": {\n           \"_implementationDetail\": \"this is private\"\n       },\n       \"class\": \"SimpleDoc\",\n       \"module\": \"__main__\"\n   },\n   \"name\": \"AAA\"\n}\n\nCouchDB reserves all top-level fields that start with an underscore.  Since\npython makes liberal use of underscores to denote \"private\" or implementation\ndetail fields, those end up inside of a second-level dictionary inside of the\n\"couchable:\" dict.  During loading, these will end up back inside the object\n__dict__.\n\n\n>>> del a._implementationDetail\n>>> a.reserved = 'couchable: reserving the string \"couchable:\" since 2010'\n>>> cdb.store(a)\n'main__.SimpleDoc:2a208810-467f-4feb-a5bb-98d0beb1e5e7'\n\n{\n   \"_id\": \"main__.SimpleDoc:2a208810-467f-4feb-a5bb-98d0beb1e5e7\",\n   \"_rev\": \"6-a7ef4d2ba59a68128b076cf5d5d0aaee\",\n   \"couchable:\": {\n       \"class\": \"SimpleDoc\",\n       \"module\": \"__main__\"\n   },\n   \"reserved\": \"couchable:append:str:couchable: reserving the string \\\"couchable:\\\" since 2010\",\n   \"name\": \"AAA\"\n}\n\nAny string that starts with \"couchable:\" is escaped, since couchable makes\nheavy use of that prefix.  See below.\n\n\n>>> del a.reserved\n>>> a.dict_ = {'foo':'FOO', 123:'bar', (45, 67):'baz'}\n>>> cdb.store(a)\n'main__.SimpleDoc:2a208810-467f-4feb-a5bb-98d0beb1e5e7'\n\n{\n   \"_id\": \"main__.SimpleDoc:2a208810-467f-4feb-a5bb-98d0beb1e5e7\",\n   \"_rev\": \"7-4706c617a5f8900956c76ecb6f2e2daa\",\n   \"couchable:\": {\n       \"keys\": {\n           \"couchable:key:tuple:(45, 67)\": {\n               \"couchable:\": {\n                   \"args\": [[45, 67]],\n                   \"class\": \"tuple\",\n                   \"module\": \"__builtin__\",\n                   \"kwargs\": {\n                   }\n               }\n           }\n       },\n       \"class\": \"SimpleDoc\",\n       \"module\": \"__main__\"\n   },\n   \"dict_\": {\n       \"couchable:key:tuple:(45, 67)\": \"baz\",\n       \"foo\": \"FOO\",\n       \"couchable:repr:int:123\": \"bar\"\n   },\n   \"name\": \"AAA\"\n}\n\nAs we saw above, tuples are supported using similar structures to those used\nby arbitrary objects.  However, JSON only supports strings as dictionary keys.\nWe solve this by replacing the object-as-key with a string that acts as a\npointer to the actual object, which is stored inside doc['couchable:']['keys']\nas the full object.\n\nSimilarly, ints cannot be JSON dictonary keys, but we can use the int repr to\nfully represent the object, and so we do so in-place (note that this wouldn't\nwork for tuples because tuples can contain arbitrarily complex objects, not\njust the ints that we have in the example).\n\n\n>>> del a.dict_\n>>> a.nested = {(1,1):{(2,2):{(3,3):'four'}}}\n>>> cdb.store(a)\n'main__.SimpleDoc:2a208810-467f-4feb-a5bb-98d0beb1e5e7'\n\n{\n   \"_id\": \"main__.SimpleDoc:2a208810-467f-4feb-a5bb-98d0beb1e5e7\",\n   \"_rev\": \"10-1fe944276e27bef87259857be9d2abd3\",\n   \"nested\": {\n       \"couchable:key:tuple:(1, 1)\": {\n           \"couchable:key:tuple:(2, 2)\": {\n               \"couchable:key:tuple:(3, 3)\": \"four\"\n           }\n       }\n   },\n   \"couchable:\": {\n       \"keys\": {\n           \"couchable:key:tuple:(1, 1)\": {\n               \"couchable:\": {\n                   \"args\": [[1, 1]],\n                   \"class\": \"tuple\",\n                   \"module\": \"__builtin__\",\n                   \"kwargs\": {\n                   }\n               }\n           },\n           \"couchable:key:tuple:(2, 2)\": {\n               \"couchable:\": {\n                   \"args\": [[2, 2]],\n                   \"class\": \"tuple\",\n                   \"module\": \"__builtin__\",\n                   \"kwargs\": {\n                   }\n               }\n           },\n           \"couchable:key:tuple:(3, 3)\": {\n               \"couchable:\": {\n                   \"args\": [[3, 3]],\n                   \"class\": \"tuple\",\n                   \"module\": \"__builtin__\",\n                   \"kwargs\": {\n                   }\n               }\n           }\n       },\n       \"class\": \"SimpleDoc\",\n       \"module\": \"__main__\"\n   },\n   \"name\": \"AAA\"\n}\n\nHere we have nested dictionaries with tuple keys, and dict values.  All of the\ntuples are replaced with string pointers, and fully saved in 'keys'.  Note\nthat 'keys' is a *document* level construct, not an object level one.  'keys'\nwill never appear outside of doc['couchable:'] (at least not outside of naming\ncoincidences).\n\n\n>>> del a.nested\n>>> b=SimpleDoc(name='BBB')\n>>> a.bbb = b\n>>> cdb.store(a)\n'main__.SimpleDoc:2a208810-467f-4feb-a5bb-98d0beb1e5e7'\n\n{\n   \"_id\": \"main__.SimpleDoc:2a208810-467f-4feb-a5bb-98d0beb1e5e7\",\n   \"_rev\": \"11-5eccb48b99431431c9f91b5e84a4ed7b\",\n   \"bbb\": \"couchable:id:main__.SimpleDoc:544a1408-d3f3-41c4-a428-9f0d2d8e2372\",\n   \"couchable:\": {\n       \"class\": \"SimpleDoc\",\n       \"module\": \"__main__\"\n   },\n   \"name\": \"AAA\"\n}\n\n{\n   \"_id\": \"main__.SimpleDoc:544a1408-d3f3-41c4-a428-9f0d2d8e2372\",\n   \"_rev\": \"1-577fefe455995539e11c992b7b46e10a\",\n   \"couchable:\": {\n       \"class\": \"SimpleDoc\",\n       \"module\": \"__main__\"\n   },\n   \"name\": \"BBB\"\n}\n\nHere, we show the behavior when storing multiple objects, each of which is\nflagged as needing to be a full document.  Similar to the other string\npointers encountered already, couchable:id points to an object stored in an\nentirely different document.\n\nKnown Limitations\n=================\n\nIn general, couchable doesn't play well with classes that override __new__ in\nodd ways.\n\nCouchable cannot (and will probably never) store instances of the following\ntypes:\n\n- Tuple subclasses that override __new__ that *don't* do so in a way that is\ncompatible with collections.namedtuple.\n- Programmatically defined classes that are not importable (they're basically\nimpossible to reconstruct during loading).\n\nThis list may not be exhaustive; unknown limitations may exist.\n",
+    "description": "",
     "docs_url": "https://pythonhosted.org/couchable/",
-    "download_url": "UNKNOWN",
+    "download_url": "",
     "downloads": {
       "last_day": 0,
       "last_month": 0,
       "last_week": 0
     },
     "home_page": "http://github.com/wickedgrey/couchable",
-    "keywords": null,
-    "license": "UNKNOWN",
-    "maintainer": null,
-    "maintainer_email": null,
+    "keywords": "",
+    "license": "",
+    "maintainer": "",
+    "maintainer_email": "",
     "name": "couchable",
-    "platform": "UNKNOWN",
+    "platform": "",
     "project_url": "https://pypi.org/project/couchable/",
-    "release_url": "https://pypi.org/project/couchable/0.4.2/",
-    "requires_python": null,
+    "release_url": "https://pypi.org/project/couchable/0.4.3/",
+    "requires_dist": [],
+    "requires_python": "",
     "summary": "Allows arbitrary python objects to be stored in CouchDB, while keeping the resulting CouchDB document as \"natural\" as possible.",
-    "version": "0.4.2"
+    "version": "0.4.3"
   },
   "releases": {
     "0.0.1a1": [
@@ -754,40 +755,74 @@
         "upload_time": "2016-05-20T03:28:21",
         "url": "https://files.pythonhosted.org/packages/30/16/ffc31920a0b4a0d45789c4f7406edf898f78e357e76b377c1b59c0ad3a42/couchable-0.4.2.tar.gz"
       }
+    ],
+    "0.4.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "bd2816769c0738d4224c4d09351c5ce8",
+          "sha256": "62a7cb8f629d3955ea6cabd274e420b1c6f05ac6a0421fe0e5860346f801da97"
+        },
+        "downloads": 0,
+        "filename": "couchable-0.4.3-py2.7.egg",
+        "has_sig": false,
+        "md5_digest": "bd2816769c0738d4224c4d09351c5ce8",
+        "packagetype": "bdist_egg",
+        "python_version": "2.7",
+        "size": 36002,
+        "upload_time": "2017-10-03T21:31:30",
+        "url": "https://files.pythonhosted.org/packages/5b/71/c9c268ae3eea3ed1e20181501ebf12481f3739232b2c827a00ad86baac30/couchable-0.4.3-py2.7.egg"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0937915dbba0faf034959d957ee91e0b",
+          "sha256": "279b77bec08c4fb6a5a5ea92c4860883db2c0d2dadd37ad4e1a66307e350b483"
+        },
+        "downloads": 0,
+        "filename": "couchable-0.4.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0937915dbba0faf034959d957ee91e0b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 19826,
+        "upload_time": "2017-10-03T21:31:34",
+        "url": "https://files.pythonhosted.org/packages/5b/a3/88c452d9f421bd9a48c70c7d8f1330033a08329a3fbf5039d41007ea01bd/couchable-0.4.3.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "56e2f970852ceb9a1428c450f15aeb2f",
-        "sha256": "6d668677c0c0073e59bd5cf4d912c19a17dc9d07e53aa7039dd8a90a230a41f1"
+        "md5": "bd2816769c0738d4224c4d09351c5ce8",
+        "sha256": "62a7cb8f629d3955ea6cabd274e420b1c6f05ac6a0421fe0e5860346f801da97"
       },
-      "downloads": 171,
-      "filename": "couchable-0.4.2-py2.7.egg",
+      "downloads": 0,
+      "filename": "couchable-0.4.3-py2.7.egg",
       "has_sig": false,
-      "md5_digest": "56e2f970852ceb9a1428c450f15aeb2f",
+      "md5_digest": "bd2816769c0738d4224c4d09351c5ce8",
       "packagetype": "bdist_egg",
       "python_version": "2.7",
-      "size": 35460,
-      "upload_time": "2016-05-20T03:28:14",
-      "url": "https://files.pythonhosted.org/packages/7d/09/1068add833d2c98542d1dd7a7d656c1aa778a1c6c1bc38bc1047aa68958a/couchable-0.4.2-py2.7.egg"
+      "size": 36002,
+      "upload_time": "2017-10-03T21:31:30",
+      "url": "https://files.pythonhosted.org/packages/5b/71/c9c268ae3eea3ed1e20181501ebf12481f3739232b2c827a00ad86baac30/couchable-0.4.3-py2.7.egg"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "af2089edf8c6ec532a678530577d9d50",
-        "sha256": "07134638705cbbf276dfe5d38dc7a92f0f6eaa0337115402c865ed8e5db85cfc"
+        "md5": "0937915dbba0faf034959d957ee91e0b",
+        "sha256": "279b77bec08c4fb6a5a5ea92c4860883db2c0d2dadd37ad4e1a66307e350b483"
       },
-      "downloads": 170,
-      "filename": "couchable-0.4.2.tar.gz",
+      "downloads": 0,
+      "filename": "couchable-0.4.3.tar.gz",
       "has_sig": false,
-      "md5_digest": "af2089edf8c6ec532a678530577d9d50",
+      "md5_digest": "0937915dbba0faf034959d957ee91e0b",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 19601,
-      "upload_time": "2016-05-20T03:28:21",
-      "url": "https://files.pythonhosted.org/packages/30/16/ffc31920a0b4a0d45789c4f7406edf898f78e357e76b377c1b59c0ad3a42/couchable-0.4.2.tar.gz"
+      "size": 19826,
+      "upload_time": "2017-10-03T21:31:34",
+      "url": "https://files.pythonhosted.org/packages/5b/a3/88c452d9f421bd9a48c70c7d8f1330033a08329a3fbf5039d41007ea01bd/couchable-0.4.3.tar.gz"
     }
   ]
 }
