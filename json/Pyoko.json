@@ -4,9 +4,9 @@
     "author_email": "info@zetaops.io",
     "bugtrack_url": "",
     "classifiers": [],
-    "description": ".. image:: https://readthedocs.org/projects/pyoko/badge/?version=latest\n    :target: http://pyoko.readthedocs.org/en/latest/?badge=latest\n    :alt: Documentation Status\n\n.. image:: http://img.youtube.com/vi/2-dB-rY9_8s/0.jpg\n    :width: 380px\n    :align: center\n    :height: 260px\n    :alt: Thx for this lovely song, pyoko pyoko ultra to Japanese friends.\n    :target: http://www.youtube.com/watch?feature=player_embedded&v=2-dB-rY9_8s\n\n\nPyoko: A Django-esque NoSQL ORM for Riak KV 2.1.4\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nFeatures\n^^^^^^^^\n\n-  Nested class based data models (schemas).\n-  One-To-One, ManyToMany and ManyToOne relations.\n-  AND queries by using filter() and exclude() methods.\n-  Or, in, greater than, lower than queries.\n-  Query chaining and caching.\n-  Automatic Solr schema creation / update (one way migration).\n-  Row level access control, permission based cell filtering.\n-  Self referencing model relations.\n-  Automatic versioning on write-once buckets.\n-  Customizable activity logging to write-once buckets.\n-  Works with Riak 2.1 and up.\n\n\nPlanned\n^^^^^^^\n\n-  Configurable auto-denormalization (aka reactive joins / write-time\n   joins) for relations.\n-  Custom migrations with migration history.\n-  CRDT based models.\n\n\nAPI Documentation\n^^^^^^^^^^^^^^^^^\nRead the API documentation at pyoko.readthedocs.org_.\n\n.. _pyoko.readthedocs.org: http://pyoko.readthedocs.org/en/latest/api-documentation.html\n\n\nQuick Start\n^^^^^^^^^^^\n\nYour project should within Python path, so you could be able to import\nit.\n\nBase file structure of a Pyoko based project;\n\n-  manage.py:\n\n.. code:: python\n\n        from pyoko.manage import *\n        environ.setdefault('PYOKO_SETTINGS', '``<PYTHON.PATH.TO.PROJECT>``.settings')\n        ManagementCommands(argv[1:])\n\n-  settings.py\n\n.. code:: python\n\n        RIAK_SERVER = 'localhost'\n        RIAK_PROTOCOL = 'http'\n        RIAK_PORT = '8098'\n\n        # if not defined, will be searched within same directory as settings.py\n        # MODELS_MODULE = '<PYTHON.PATH.OF.MODELS.MODULE>'\n\n-  models.py (or models package)\n\n.. code:: python\n\n        from pyoko import Model, Node, ListNode, field\n\n        class Permission(Model):\n            name = field.String(\"Name\")\n            code = field.String(\"Code Name\")\n\n            class Meta:\n                verbose_name = \"Permission\"\n                verbose_name_plural = \"Permissions\"\n\n            def __unicode__(self):\n                return \"%s %s\" % (self.name, self.code)\n\n\n        class Unit(Model):\n            name = field.String(\"Name\")\n            address = field.String(\"Address\", null=True, blank=True)\n\n            class Meta:\n                verbose_name = \"Unit\"\n                verbose_name_plural = \"Units\"\n\n            def __unicode__(self):\n                return self.name\n\n\n        class Person(Model):\n            first_name = field.String(\"Name\")\n            last_name = field.String(\"Surname\")\n            work = Unit(verbose_name=\"Work\", reverse_name=\"workers\")\n            home = Unit(verbose_name=\"Home\", reverse_name=\"residents\")\n\n\n            class ContactInfo(Node):\n                address = field.String(\"Address\", null=True, blank=True)\n                city = field.String(\"City\")\n                phone = field.String(\"Phone\")\n                email = field.String(\"Email\")\n\n            class Permissions(ListNode):\n                perm = Permission()\n\n                def __unicode__(self):\n                    return self.perm\n\n            def __unicode__(self):\n                return \"%s %s\" % (self.first_name, self.last_name)\n\n            def get_permission_codes(self):\n                return [p.perm.code for p in self.Permissions]\n\n            def add_permission(self, perm):\n                self.Permissions(permission=perm)\n                self.save()\n\n            def has_permission(self, perm):\n                return perm in self.Permissions\n\n            def has_permission_code(self, perm_code):\n                perm = Permission.object.get(code=perm_code)\n                return self.has_permission(perm)\n\n\nCreating objects, Making Queries\n--------------------------------\n\n.. code:: python\n\n        from .models import Person, Unit, Permission\n\n        user = Person(first_name='Bugs')\n        user.last_name = 'Bunny'\n        contact_info = user.ContactInfo(email=\"foo@foo.com\", city=\"Izmir\")\n        contact_info.phone = \"55555555\"\n        user.work = Unit(name=\"Acme\").save()\n        user.home = Unit(name=  \"Emac\").save()\n        user.save()\n\n\nNotes\n-----\n- Do not use Protocol Buffers in development, it doesn't give proper descriptions for server side errors.\n\n- Use CamelCase for model, node and listnodes\n\n- Use underscored names for fields\n\n- ``_id`` and ``_set`` are reserved suffixes for internal use. Do not suffix your fields with ``_id`` or ``_set``.\n\n- ``deleted`` and ``timestamp`` are implicitly added fields. Do not use these words as field names.\n\n- Set DEBUG to 1 or greater integer to enable query debugging which collects query stats under sys.\\_debug\\_db\\_queries:\n\n.. code:: python\n\n    In [1]: import sys\n    In [2]: sys._debug_db_queries\n    Out[2]:\n    [\n     {'BUCKET': 'models_personel',\n      'QUERY': '-deleted:True',\n      'QUERY_PARAMS': {'rows': 1, 'sort': b'timestamp desc', 'start': 0},\n      'TIME': 0.0056,\n      'TIMESTAMP': 1452245987.258094},\n      {'BUCKET': 'models_personel',\n        'KEY': 'Aqq2O50XGqerJsfOPquqDmINbyM',\n        'TIME': 0.00229,\n        'TIMESTAMP': 1452245980.413088},\n      ]\n\n- Set value of DEBUG to 5 or a greater integer to get instant print out of each executed query.\n\n.. code:: python\n\n    In [1]: Personel.objects.filter(ad__startswith='Al')\n    Out[1]: QRY => ad:Al* AND -deleted:True\n    [<Personel: ali g.>]\n\n- If you want to enable logging and versioning, create and activate a bucket type with leveldb backend\n\n.. code:: bash\n\n    riak-admin bucket-type create log_version '{\"props\": {\"backend\": \"leveldb_mult\"}}'\n    riak-admin bucket-type activate log_version\n\nTests\n^^^^^\n\nCreate a bucket type named \"pyoko\\_models\" and activate it with following commands:\n\n.. code:: bash\n\n\n    #!/bin/sh\n\n    # 1 node development:\n    ./bin/riak-admin bucket-type create pyoko_models '{\"props\":{\"last_write_wins\":true, \"dvv_enabled\":false, \"allow_mult\":false, \"n_val\":1}}'\n\n    # >= 3 node production:\n    #./bin/riak-admin bucket-type create pyoko_models '{\"props\":{\"consistent\":true}}'\n\n    ./bin/riak-admin bucket-type activate pyoko_models\n\nYou need to define the following environmental variable to run tests.\n\n``PYOKO_SETTINGS='tests.settings'``\n\nto create or update schemas run the following command:\n\n``python manage.py migrate --model User,Permission``\n\nor\n\n``python manage.py migrate --model all``\n\n**py.test** command runs all the tests from tests directory.\n\n\nSupport\n-------\n\nFeel free to fork this and send back Pull Requests for any\ndefects or features that you want to contribute back.\nOpening issues here is also recommended.\n\nIf you need to get the attention of the ZetaOps team send an email\nto info ~at~ zetaops.io.\nCommercial support from ZetaOps_ requires a valid support contract.\n\n.. _ZetaOps: http://zetaops.io\n\n\n\nLicense\n^^^^^^^\n\nPyoko is licensed under the `GPL v3.0`_\n\n.. _GPL v3.0: http://www.gnu.org/licenses/gpl-3.0.html\n",
+    "description": "",
     "docs_url": null,
-    "download_url": "UNKNOWN",
+    "download_url": "",
     "downloads": {
       "last_day": 0,
       "last_month": 0,
@@ -15,15 +15,16 @@
     "home_page": "https://github.com/zetaops/pyoko",
     "keywords": "riak,orm,database,nosql",
     "license": "GPL v3",
-    "maintainer": null,
-    "maintainer_email": null,
+    "maintainer": "",
+    "maintainer_email": "",
     "name": "Pyoko",
-    "platform": "UNKNOWN",
+    "platform": "",
     "project_url": "https://pypi.org/project/Pyoko/",
-    "release_url": "https://pypi.org/project/Pyoko/0.9.2/",
-    "requires_python": null,
+    "release_url": "https://pypi.org/project/Pyoko/0.9.3/",
+    "requires_dist": [],
+    "requires_python": "",
     "summary": "Pyoko is a Django-esque ORM for Riak KV",
-    "version": "0.9.2"
+    "version": "0.9.3"
   },
   "releases": {
     "0.6.2": [
@@ -133,24 +134,42 @@
         "upload_time": "2016-12-23T07:34:51",
         "url": "https://files.pythonhosted.org/packages/c8/4f/d9ff827fc56789ec676f6702195396004a65dd99f988f018718bb97506bd/Pyoko-0.9.2.tar.gz"
       }
+    ],
+    "0.9.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "52b22be81fc8abb5e015dbc4435c689a",
+          "sha256": "248a8dac372503765abf639ba3f35245d7e7a3dc1233ed173494da4a1b45dd06"
+        },
+        "downloads": 0,
+        "filename": "Pyoko-0.9.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "52b22be81fc8abb5e015dbc4435c689a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 56319,
+        "upload_time": "2017-10-06T06:22:39",
+        "url": "https://files.pythonhosted.org/packages/3a/ac/bef075c7f95f8eb379dc2505cb21e2369714cb411abe167efe7c059cd979/Pyoko-0.9.3.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "4cd4304564a011e40c40a9059fd604ea",
-        "sha256": "d8eeffc2cff88225a85fc8e46fc8080f000a9441e9592c40dec7485deba8e44a"
+        "md5": "52b22be81fc8abb5e015dbc4435c689a",
+        "sha256": "248a8dac372503765abf639ba3f35245d7e7a3dc1233ed173494da4a1b45dd06"
       },
-      "downloads": 332,
-      "filename": "Pyoko-0.9.2.tar.gz",
+      "downloads": 0,
+      "filename": "Pyoko-0.9.3.tar.gz",
       "has_sig": false,
-      "md5_digest": "4cd4304564a011e40c40a9059fd604ea",
+      "md5_digest": "52b22be81fc8abb5e015dbc4435c689a",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 51923,
-      "upload_time": "2016-12-23T07:34:51",
-      "url": "https://files.pythonhosted.org/packages/c8/4f/d9ff827fc56789ec676f6702195396004a65dd99f988f018718bb97506bd/Pyoko-0.9.2.tar.gz"
+      "size": 56319,
+      "upload_time": "2017-10-06T06:22:39",
+      "url": "https://files.pythonhosted.org/packages/3a/ac/bef075c7f95f8eb379dc2505cb21e2369714cb411abe167efe7c059cd979/Pyoko-0.9.3.tar.gz"
     }
   ]
 }

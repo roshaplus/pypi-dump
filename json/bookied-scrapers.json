@@ -1,0 +1,105 @@
+{
+  "info": {
+    "author": "Fabian Schuh",
+    "author_email": "Fabian@chainsquad.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 3 - Alpha",
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: MIT License",
+      "Operating System :: OS Independent",
+      "Programming Language :: Python :: 3"
+    ],
+    "description": "This file contains instructions on how to install and use the feed_fetcher as well as describing its structure\n\nUSAGE\n=====\n\nInstall python, pip, virtualenv and virtualenvwrapper (see example below for\nUbuntu)\n\nRun:\n  $ apt-get install python3-dev python-pip \\\n        virtualenv virtualenvwrapper \\\n        libxml2-dev libxslt1-dev python-mysqldb \\\n        mysql-client mysql-server \\\n        aufs-tools\n\nThen run the following to complete the set-up:\n\n  $ mkvirtualenv feed_fetcher -p $(which python3)\n  $ workon feed_fetcher\n  $ pip install -r environments/base.txt\n\nThe feed_fetcher will output to stdout and also into a database. To set up the\ndatabase do the following (I configured db_peerplays with user peerplays and\npassword \"I<3storage\"):\n - access mysql as root and perform the following (mysql -u root -p):\n   > CREATE USER 'peerplays'@'localhost' IDENTIFIED BY 'I<3storage';\n   > CREATE DATABASE db_peerplays;\n   > GRANT ALL PRIVILEGES ON db_peerplays.* TO 'peerplays'@'localhost';\n   > FLUSH PRIVILEGES;\n\nInstall docker:\nInstructions for Ubuntu: https://docs.docker.com/engine/installation/linux/docker-ce/ubuntu/#recommended-extra-packages-for-trusty-1404\nOr better (from https://www.liquidweb.com/kb/how-to-install-docker-on-ubuntu-14-04-lts/):\n  $ sudo apt-get install docker.io\n\nNOTE: Docker will not work correctly on a 32bit machine. Make sure you run this on 64bit Linux.\n\nRun docker:\n  $ sudo /etc/init.d/docker start # If not configured to start automatically\n  $ sudo docker run -p 8050:8050 scrapinghub/splash --max-timeout 3600\n\nTo change configuration, including database details, edit data_monitor/config.py\n\nThen every time you want to use the feed_fetcher just re-run the workon command\nfollowed by:\n  $ python ./sample_apps/live_app.py\n\nAfter running some tests you can inspect the SQLite database by running some commands on linux, like the following:\n $ sqlite3 db_peerplays '.tables'\n $ sqlite3 db_peerplays 'SELECT * FROM resolvedgameevent'\n $ sqlite3 db_peerplays 'SELECT * FROM rawgameinfo'\n $ sqlite3 db_peerplays 'SELECT * FROM rawevent'\n\nSTRUCTURE\n=========\n\nThe data scraping mechanism is revolves around the Engine. It's what the\napplication communicates with and what manages all the plug-ins. \n\nNormally the application will create an Engine instance, will provide some\nScraper plug-ins, some Processing plug-ins and some Data Sink plug-ins. Also\nthe Engine will be configured to run as desired. Once the set-up is done, the\napp will just start the engine which will run until called to stop (this\nusually happens on interrupt).\n\nThe way the Engine runs is the following:\n - asks all Data Sinks if there are stored games. Usually a database Sink\n   would have some games stored from a previous run\n - sets up the Scrapers with the callbacks and all the intervals that are\n   configured\n - at the right intervals asks the Scrapers to check for scheduled games, or\n   live games\n - when the Scrapers provide some game details, they are passed through all\n   the Processors\n - each Processor may correct things, like team names, or even reject a\n   game/event\n - once processed, the Engine will check if this is a new event (like score\n   changed, game status changed etc). If not new, does nothing more.\n - the Engine passes the event to all the Data Sinks\n - each Data Sink may choose to trigger a conflict resolution request.\n   Typically database Data Sinks will be doing this, as they can check stored\n   info from all Scrapers.\n - the Engine resolves any conflicts and then send the resolution to all the\n   Data Sinks\n\nTo aid all this, data defined in the data module is used to store the\ninformation.\n\nCONTENTS\n========\n\n- data_monitor - the main component of the data monitor. Contains the API to\n                the engine, to the plug-ins and the data models\n- sample_apps - example of applications using the data_monitor API. There are\n                a couple of test apps which do not download data, and a live\n                application making use of all scrapers\n- data_sinks - data sink plug-ins. contain a sample console one and a database\n                plug-in\n- processors - example processors. Has a processor which makes use of the info\n                stored in the yaml files of the witness lookup script\n- scrapers - example scraper plug-ins. Apart from the test one there are some\n                scrapers which can be used to get data from some websites\n\nOthers:\n- environments - the pip environments which need to be installed. The base.txt\n                is enough\n- lab - some old experimentation stuff\n- AUTHORS, COPYING, README - informational files, copyright info etc.\n\nDETAILS\n=======\n\n* The handicaps list can have 2 or 3 items. The third one is needed when\n  a draw handicap is presented. If that value is the same as the away\n  handicap, this can look as duplicated.\n\n* rawmarketsinfo has a foreign key to rawgameinfo which contains the\n  scraper information. Each raw market event must have a raw game\n  associated.\n\n* An event has a created_at timestamp. Each time something changes (game\n  status, or score) a new event row is added. So all the event\n  timestamps are preserved. A game is created when the first event is\n  created (games are always reported with an event containing status and\n  score).  For the market we don't store timestamps, but they would have\n  the timestamp of the latest event because when markets are reported the\n  event status is also given. \n\n* The conflict_resolver.py file which is in the same module as the\n  engine implementation deals with sources disagreement. The raw tables\n  have the detailed information for each scraper. When some update happens\n  this information is passed through the resolver. The resolver will\n  output what it considers to be most accurate state together with how\n  many sources agree on that result. This is stored in resolvedgameevent\n  and it has some special columns, like reported_count (how many sources\n  reported the resolved score & status) and total_count (how many sources\n  reported on the game). If you would want to see what each scraper\n  reported, you would need a query to the rawgameinfo and rawevent.\n\n* Please note that while rawevent stores all the events, the\n  resolvedgameevent only stores the latest state as from what we\n  understood this is what was necessary. \n\nPROJECT PLAN\n============\n1. Project Plan & Milestones\n\n## New scope\nAs of 11th of July 2017 the scope of the project has changed. For now we will deliver a\nPython module which will retrieve data from feeds, normalize, and store them in a database.\nThis will be used as part of the larger Witness Scripts middle layer.\n\n## Milestones\nThe milestones for the development of these module are:\n1. 1st of August: Functional prototype\n2. 1st of September: Release version of the module\n\n## Requirements\nFor the prototype:\n\u2022 The application shall run as a stand-alone application.\n\u2022 The application can be configured to access a certain feed from a list of supported feeds.\n\u2022 The application will initially only work with baseball result feeds\n\u2022 The feeds will be monitored based on polling. If a feed offers some sort of push mechanism, or auto-refresh, this will not be used.\n\u2022 The polling time will be configurable.\n\u2022 Not all the feeds which will be needed for the end product will be covered by the application. Only a subset of the feeds will be available (e.g., one of each type).\n\u2022 The application will be monitoring the feeds periodically and when a new result is reported, this result will be inserted in a database. Note that only final results are going to be handled, no in-game events, like points scored, sending off, etc.\n\u2022 The match results will be normalized based on a set of rules which guarantee that the team names and match times are consistent with Peerplays\u2019 specs.  Specifically:\n  1. Event de-duplication\n  2. Date Transformation into a uniform representation that maps 1-to-1 onto the predefined object structure (defined in bitbucket wiki)\n  3. Event start times given in UTC\n  4. Unified spellings created according to Witness Lookup\n\u2022 To aid normalization, user configuration is to be expected, for example, providing knowledge-base of team aliases.\n\u2022 It will be straight-forward to insert items to the knowledgebase.\n\nFor the release version of the module:\n\u2022 The prototype will be extended to cover all the baseball feeds needed.\n\u2022 The normalization algorithm will be improved to detect teams, and other elements, without needing an extensive knowledgebase. Ideally, this phase should require zero input from the user.\n\u2022 The normalization phase will check for completeness of data\n\u2022 The normalization algorithm will record aliases it deduced, while also allowing the user to manually intervene and correct mislabeled teams/results.\n\u2022 A Python API for the module can be provided allowing integration of the module directly within a larger application.\n\u2022 The API will allow the handling of multiple data sinks so normalized results can be directed as needed (not necessarily a database).\n\u2022 In-game events will be supported as well as game results.\n\n## Architecture\nAn architecture has been defined and is available on request.\n\n2. Deliverables and Costs\nNew scope: feed fetcher deliverables\nFor the first phase of the project, i.e., the functional prototype, the following will be delivered:\n\u2022 Binaries comprising an application which will be continuously running and retrieving information from a configured feed and storing normalized values within the designated database\n\u2022 Documentation on how to use and configure the application\n\u2022 Optional for prototype (due to time constraints): the module can be provided as a library with an API, rather than as a stand-alone application. This is probably not needed, but if there is a need to include the module in a larger application it can be achieved as part of the release version.\n\nThe delivery of the above prototype components will be charged at \u20ac12,000. Once the\nprototype is delivered we will discuss about the way we will proceed with the project.\n",
+    "docs_url": null,
+    "download_url": "https://github.com/pbsa/bookie-scrapers/tarball/0.0.1",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "http://pbsa.info",
+    "keywords": "peerplays",
+    "license": "",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "bookied-scrapers",
+    "platform": "",
+    "project_url": "https://pypi.org/project/bookied-scrapers/",
+    "release_url": "https://pypi.org/project/bookied-scrapers/0.0.1/",
+    "requires_dist": [],
+    "requires_python": "",
+    "summary": "A library that allows to scrape APIs for bookie-related data",
+    "version": "0.0.1"
+  },
+  "releases": {
+    "0.0.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "18efa06d66f29e9f5dfbb0b38b6b7101",
+          "sha256": "57ae237a454a79ce994137d43938822d0b1a5e002bab558d9918e070a083f982"
+        },
+        "downloads": 0,
+        "filename": "bookied_scrapers-0.0.1-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "18efa06d66f29e9f5dfbb0b38b6b7101",
+        "packagetype": "bdist_wheel",
+        "python_version": "3.6",
+        "size": 52419,
+        "upload_time": "2017-10-06T09:01:04",
+        "url": "https://files.pythonhosted.org/packages/e2/0a/93da4ebcf6b883ecfa99c81baa22f04dd871a0f7f550675e50f9bdc65e8b/bookied_scrapers-0.0.1-py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "77974240505798c25195073dbcbc3d3a",
+          "sha256": "416cd522f512a8ed4c7c42e64ba36e95588e18dafefbffa4690332d425ccd58e"
+        },
+        "downloads": 0,
+        "filename": "bookied-scrapers-0.0.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "77974240505798c25195073dbcbc3d3a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 34344,
+        "upload_time": "2017-10-06T09:01:01",
+        "url": "https://files.pythonhosted.org/packages/5b/c1/5c0834fda917099c19d028bda103ea054c6b1e4b3bb49fca9fd16927b3bd/bookied-scrapers-0.0.1.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "18efa06d66f29e9f5dfbb0b38b6b7101",
+        "sha256": "57ae237a454a79ce994137d43938822d0b1a5e002bab558d9918e070a083f982"
+      },
+      "downloads": 0,
+      "filename": "bookied_scrapers-0.0.1-py3-none-any.whl",
+      "has_sig": false,
+      "md5_digest": "18efa06d66f29e9f5dfbb0b38b6b7101",
+      "packagetype": "bdist_wheel",
+      "python_version": "3.6",
+      "size": 52419,
+      "upload_time": "2017-10-06T09:01:04",
+      "url": "https://files.pythonhosted.org/packages/e2/0a/93da4ebcf6b883ecfa99c81baa22f04dd871a0f7f550675e50f9bdc65e8b/bookied_scrapers-0.0.1-py3-none-any.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "77974240505798c25195073dbcbc3d3a",
+        "sha256": "416cd522f512a8ed4c7c42e64ba36e95588e18dafefbffa4690332d425ccd58e"
+      },
+      "downloads": 0,
+      "filename": "bookied-scrapers-0.0.1.tar.gz",
+      "has_sig": false,
+      "md5_digest": "77974240505798c25195073dbcbc3d3a",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 34344,
+      "upload_time": "2017-10-06T09:01:01",
+      "url": "https://files.pythonhosted.org/packages/5b/c1/5c0834fda917099c19d028bda103ea054c6b1e4b3bb49fca9fd16927b3bd/bookied-scrapers-0.0.1.tar.gz"
+    }
+  ]
+}
