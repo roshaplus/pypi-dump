@@ -17,7 +17,7 @@
       "Topic :: Database",
       "Topic :: Utilities"
     ],
-    "description": ".. -*- coding: utf-8 -*-\n.. :Project:   pg_query -- Pythonic wrapper around libpg_query\n.. :Created:   mer 02 ago 2017 14:49:24 CEST\n.. :Author:    Lele Gaifax <lele@metapensiero.it>\n.. :License:   GNU General Public License version 3 or later\n.. :Copyright: \u00a9 2017 Lele Gaifax\n..\n\n==========\n pg_query\n==========\n\nPythonic wrapper around libpg_query and SQL prettifier\n======================================================\n\n :author: Lele Gaifax\n :contact: lele@metapensiero.it\n :license: GNU General Public License version 3 or later\n\nThis is a Python 3 implementation of a wrapper to `libpg_query`__, a C library that repackages\nthe PostgreSQL__ languages parser as a standalone static library.\n\n__ https://github.com/lfittl/libpg_query\n__ https://www.postgresql.org/\n\nI needed a better SQL reformatter than the one implemented by `sqlparse`__, and was annoyed by\na few glitches (subselects__ in particular) that ruins the otherwise excellent job it does,\nconsidering that it is a generic library that tries to swallow many different SQL dialects.\n\n__ https://pypi.org/project/sqlparse/\n__ https://github.com/andialbrecht/sqlparse/issues/334\n\nWhen I found `psqlparse`__ I decided to try implementing a PostgreSQL `focused tool`__: at the\nbeginning it's been easier than I feared, but I quickly hit some shortcomings in that\nimplementation, so I opted for writing my own solution restarting from scratch, with the\nfollowing goals:\n\n__ https://github.com/alculquicondor/psqlparse\n__ https://github.com/alculquicondor/psqlparse/pull/22\n\n- target only Python 3.4+\n\n- target PostgreSQL 10 (in `beta 2`__ as I'm writing this), taking advantage of a\n  work-in-progress `branch`__ of the libpg_query library\n\n__ https://www.postgresql.org/about/news/1763/\n__ https://github.com/lfittl/libpg_query/tree/10-latest\n\n- use a more dynamic approach to represent the *parse tree*, with a twofold advantage:\n\n  1. it is much less boring to code, because there's no need to write one Python class for each\n     PostgreSQL node tag\n\n  2. the representation is version agnostic, it can be adapted to newer/older Elephants in a\n     snap\n\n- allow exploration of parse tree in both directions, because I realized that some kinds of\n  nodes require that knowledge to determine their textual representation\n\n- avoid introducing arbitrary renames of tags and attributes, so what you read in PostgreSQL\n  documentation/sources\\ [*]_ is available without the hassle of guessing how a symbol has been\n  mapped\n\n- use a `zero copy`__ approach, keeping the original parse tree returned from the underlying\n  libpg_query functions and have each node just borrow a reference to its own subtree\n\n__ https://en.wikipedia.org/wiki/Zero-copy\n\n.. [*] Currently what you can find in the following headers:\n\n       - `nodes.h`__\n       - `primnodes.h`__\n       - `parsenodes.h`__\n       - `lockoptions.h`__\n\n__ https://git.postgresql.org/gitweb/?p=postgresql.git;a=blob;f=src/include/nodes/nodes.h;hb=HEAD\n__ https://git.postgresql.org/gitweb/?p=postgresql.git;a=blob;f=src/include/nodes/primnodes.h;hb=HEAD\n__ https://git.postgresql.org/gitweb/?p=postgresql.git;a=blob;f=src/include/nodes/parsenodes.h;hb=HEAD\n__ https://git.postgresql.org/gitweb/?p=postgresql.git;a=blob;f=src/include/nodes/lockoptions.h;hb=HEAD\n\nIntroduction\n------------\n\nAt the lower level the module exposes two libpg_query functions, ``parse_sql()`` and\n``parse_plpgsql()``, that take respectively an ``SQL`` statement and a ``PLpgSQL`` statement\nand return a *parse tree* as a hierarchy of Python dictionaries, lists and scalar values. In\nsome cases these scalars correspond to some C ``typedef enums``, that are automatically\nextracted from the PostgreSQL headers and are available as ``pg_query.enums``.\n\nAt a higher level that tree is represented by three Python classes, a ``Node`` that represents\na single node, a ``List`` that wraps a sequence of nodes and a ``Scalar`` for plain values such\na *strings*, *integers*, *booleans* or *none*.\n\nEvery node is identified by a *tag*, a string label that characterize its content that is\nexposed as a set of *attributes* as well as with a dictionary-like interface (technically they\nimplements both a ``__getattr__`` method and a ``__getitem__`` method). When asked for an\nattribute, the node returns an instance of the base classes, i.e. another ``Node``, or a\n``List`` or a ``Scalar``, depending on the data type of that item. When the node does not\ncontain the requested attribute it returns a singleton ``Missing`` marker instance.\n\nA ``List`` wraps a plain Python ``list`` and may contains a sequence of ``Node`` instances, or\nin some cases other sub-lists, that can be accessed with the usual syntax, or iterated.\n\nFinally, a ``Scalar`` carries a single value of some type, accessible through its ``value``\nattribute.\n\nOn top of that, the module implements two serializations, one that transforms a ``Node`` into a\n*raw* textual representation and another that returns a *prettified* representation. The latter\nis exposed by the ``__main__`` entry point of the package, see below for an example.\n\nInstallation\n------------\n\nAs usual, the easiest way is with pip::\n\n  $ pip install pg_query\n\nAlternatively you can clone the repository::\n\n  $ git clone https://github.com/lelit/pg_query.git --recursive\n\nand install from there::\n\n  $ pip install ./pg_query\n\nDevelopment\n-----------\n\nThere is a set of *makefiles* implementing the most common operations, a ``make help`` will\nshow a brief table of contents. A comprehensive test suite, based on pytest__, covers 98% of\nthe source lines.\n\n__ https://docs.pytest.org/en/latest/\n\nExamples of usage\n-----------------\n\n* Parse an ``SQL`` statement and get its *AST* root node::\n\n   >>> from pg_query import Node, parse_sql\n   >>> root = Node(parse_sql('SELECT foo FROM bar'))\n   >>> print(root)\n   None=[1*{RawStmt}]\n\n* Recursively traverse the parse tree::\n\n   >>> for node in root.traverse():\n   ...   print(node)\n   ...\n   None[0]={RawStmt}\n   stmt={SelectStmt}\n   fromClause[0]={RangeVar}\n   inh=<True>\n   location=<16>\n   relname=<'bar'>\n   relpersistence=<'p'>\n   op=<0>\n   targetList[0]={ResTarget}\n   location=<7>\n   val={ColumnRef}\n   fields[0]={String}\n   str=<'foo'>\n   location=<7>\n\n  As you can see, the ``repr``\\ esentation of each value is mnemonic: ``{some_tag}`` means a\n  ``Node`` with tag ``some_tag``, ``[X*{some_tag}]`` is a ``List`` containing `X` nodes of that\n  particular kind\\ [*]_ and ``<value>`` is a ``Scalar``.\n\n* Get a particular node::\n\n   >>> from_clause = root[0].stmt.fromClause\n   >>> print(from_clause)\n   fromClause=[1*{RangeVar}]\n\n* Obtain some information about a node::\n\n   >>> range_var = from_clause[0]\n   >>> print(range_var.node_tag)\n   RangeVar\n   >>> print(range_var.attribute_names)\n   dict_keys(['relname', 'inh', 'relpersistence', 'location'])\n   >>> print(range_var.parent_node)\n   stmt={SelectStmt}\n\n* Iterate over nodes::\n\n   >>> for a in from_clause:\n   ...     print(a)\n   ...     for b in a:\n   ...         print(b)\n   ...\n   fromClause[0]={RangeVar}\n   inh=<True>\n   location=<16>\n   relname=<'bar'>\n   relpersistence=<'p'>\n\n* Reformat a SQL statement\\ [*]_ from the command line::\n\n   $ echo \"select a,b,c from sometable\" | python -m pg_query\n   SELECT a\n        , b\n        , c\n   FROM sometable\n\n   $ echo 'update \"table\" set value=123 where value is null' | python -m pg_query\n   UPDATE \"table\"\n   SET value = 123\n   WHERE value IS NULL\n\n* Programmatically reformat a SQL statement::\n\n   >>> from pg_query import prettify\n   >>> print(prettify('delete from sometable where value is null'))\n   DELETE FROM sometable\n   WHERE value IS NULL\n\nDocumentation\n-------------\n\nLatest documentation is hosted by `Read the Docs`__ at http://pg-query.readthedocs.io/en/latest/\n\n__ https://readthedocs.org/\n\n\n.. [*] This is an approximation, because in principle a list could contain different kinds of\n       nodes, or even sub-lists in some cases: the ``List`` representation arbitrarily shows\n       the tag of the first object.\n\n.. [*] Currently this covers most `DML` statements such as ``SELECT``\\ s, ``INSERT``\\ s,\n       ``DELETE``\\ s and ``UPDATE``\\ s, fulfilling my needs, but I'd like to extend it to\n       handle also `DDL` statements and, why not, `PLpgSQL` instructions too.\n\n\n.. -*- coding: utf-8 -*-\n\nChanges\n-------\n\n0.13 (2017-09-17)\n~~~~~~~~~~~~~~~~~\n\n- Fix representation of subselects requiring surrounding parens\n\n\n0.12 (2017-08-22)\n~~~~~~~~~~~~~~~~~\n\n- New option ``--version`` on the command line tool\n\n- Better enums documentation\n\n- Release the GIL while calling libpg_query functions\n\n\n0.11 (2017-08-11)\n~~~~~~~~~~~~~~~~~\n\n- Nicer indentation for JOINs, making OUTER JOINs stand out\n\n- Minor tweaks to lists rendering, with less spurious whitespaces\n\n- New option ``--no-location`` on the command line tool\n\n\n0.10 (2017-08-11)\n~~~~~~~~~~~~~~~~~\n\n- Support Python 3.4 and Python 3.5 as well as Python 3.6\n\n\n0.9 (2017-08-10)\n~~~~~~~~~~~~~~~~\n\n- Fix spacing before the $ character\n\n- Handle type modifiers\n\n- New option ``--plpgsql`` on the command line tool, just for fun\n\n\n0.8 (2017-08-10)\n~~~~~~~~~~~~~~~~\n\n- Add enums subpackages to the documentation with references to their related headers\n\n- New ``compact_lists_margin`` option to produce a more compact representation when possible\n  (see `issue #1`__)\n\n__ https://github.com/lelit/pg_query/issues/1\n\n\n0.7 (2017-08-10)\n~~~~~~~~~~~~~~~~\n\n- Fix sdist including the Sphinx documentation\n\n\n0.6 (2017-08-10)\n~~~~~~~~~~~~~~~~\n\n- New option ``--parse-tree`` on the command line tool to show just the parse tree\n\n- Sphinx documentation, available online\n\n\n0.5 (2017-08-09)\n~~~~~~~~~~~~~~~~\n\n- Handle some more cases when a name must be double-quoted\n\n- Complete the serialization of the WindowDef node, handling its frame options\n\n\n0.4 (2017-08-09)\n~~~~~~~~~~~~~~~~\n\n- Expose the actual PostgreSQL version the underlying libpg_query libray is built on thru a new\n  ``get_postgresql_version()`` function\n\n- New option `safety_belt` for the ``prettify()`` function, to protect the innocents\n\n- Handle serialization of ``CoalesceExpr`` and ``MinMaxExpr``\n\n\n0.3 (2017-08-07)\n~~~~~~~~~~~~~~~~\n\n- Handle serialization of ``ParamRef`` nodes\n\n- Expose a ``prettify()`` helper function\n\n\n0.2 (2017-08-07)\n~~~~~~~~~~~~~~~~\n\n- Test coverage at 99%\n\n- First attempt at automatic wheel upload to PyPI, let's see...\n\n\n0.1 (2017-08-07)\n~~~~~~~~~~~~~~~~\n\n- First release (\"Hi daddy!\", as my soul would tag it)\n",
+    "description": ".. -*- coding: utf-8 -*-\n.. :Project:   pg_query -- Pythonic wrapper around libpg_query\n.. :Created:   mer 02 ago 2017 14:49:24 CEST\n.. :Author:    Lele Gaifax <lele@metapensiero.it>\n.. :License:   GNU General Public License version 3 or later\n.. :Copyright: \u00a9 2017 Lele Gaifax\n..\n\n==========\n pg_query\n==========\n\nPythonic wrapper around libpg_query and SQL prettifier\n======================================================\n\n :author: Lele Gaifax\n :contact: lele@metapensiero.it\n :license: GNU General Public License version 3 or later\n\nThis is a Python 3 implementation of a wrapper to `libpg_query`__, a C library that repackages\nthe PostgreSQL__ languages parser as a standalone static library.\n\n__ https://github.com/lfittl/libpg_query\n__ https://www.postgresql.org/\n\nI needed a better SQL reformatter than the one implemented by `sqlparse`__, and was annoyed by\na few glitches (subselects__ in particular) that ruins the otherwise excellent job it does,\nconsidering that it is a generic library that tries to swallow many different SQL dialects.\n\n__ https://pypi.org/project/sqlparse/\n__ https://github.com/andialbrecht/sqlparse/issues/334\n\nWhen I found `psqlparse`__ I decided to try implementing a PostgreSQL `focused tool`__: at the\nbeginning it's been easier than I feared, but I quickly hit some shortcomings in that\nimplementation, so I opted for writing my own solution restarting from scratch, with the\nfollowing goals:\n\n__ https://github.com/alculquicondor/psqlparse\n__ https://github.com/alculquicondor/psqlparse/pull/22\n\n- target only Python 3.4+\n\n- target PostgreSQL 10 (in `beta 2`__ as I'm writing this), taking advantage of a\n  work-in-progress `branch`__ of the libpg_query library\n\n__ https://www.postgresql.org/about/news/1763/\n__ https://github.com/lfittl/libpg_query/tree/10-latest\n\n- use a more dynamic approach to represent the *parse tree*, with a twofold advantage:\n\n  1. it is much less boring to code, because there's no need to write one Python class for each\n     PostgreSQL node tag\n\n  2. the representation is version agnostic, it can be adapted to newer/older Elephants in a\n     snap\n\n- allow exploration of parse tree in both directions, because I realized that some kinds of\n  nodes require that knowledge to determine their textual representation\n\n- avoid introducing arbitrary renames of tags and attributes, so what you read in PostgreSQL\n  documentation/sources\\ [*]_ is available without the hassle of guessing how a symbol has been\n  mapped\n\n- use a `zero copy`__ approach, keeping the original parse tree returned from the underlying\n  libpg_query functions and have each node just borrow a reference to its own subtree\n\n__ https://en.wikipedia.org/wiki/Zero-copy\n\n.. [*] Currently what you can find in the following headers:\n\n       - `nodes.h`__\n       - `primnodes.h`__\n       - `parsenodes.h`__\n       - `lockoptions.h`__\n\n__ https://git.postgresql.org/gitweb/?p=postgresql.git;a=blob;f=src/include/nodes/nodes.h;hb=HEAD\n__ https://git.postgresql.org/gitweb/?p=postgresql.git;a=blob;f=src/include/nodes/primnodes.h;hb=HEAD\n__ https://git.postgresql.org/gitweb/?p=postgresql.git;a=blob;f=src/include/nodes/parsenodes.h;hb=HEAD\n__ https://git.postgresql.org/gitweb/?p=postgresql.git;a=blob;f=src/include/nodes/lockoptions.h;hb=HEAD\n\nIntroduction\n------------\n\nAt the lower level the module exposes two libpg_query functions, ``parse_sql()`` and\n``parse_plpgsql()``, that take respectively an ``SQL`` statement and a ``PLpgSQL`` statement\nand return a *parse tree* as a hierarchy of Python dictionaries, lists and scalar values. In\nsome cases these scalars correspond to some C ``typedef enums``, that are automatically\nextracted from the PostgreSQL headers and are available as ``pg_query.enums``.\n\nAt a higher level that tree is represented by three Python classes, a ``Node`` that represents\na single node, a ``List`` that wraps a sequence of nodes and a ``Scalar`` for plain values such\na *strings*, *integers*, *booleans* or *none*.\n\nEvery node is identified by a *tag*, a string label that characterize its content that is\nexposed as a set of *attributes* as well as with a dictionary-like interface (technically they\nimplements both a ``__getattr__`` method and a ``__getitem__`` method). When asked for an\nattribute, the node returns an instance of the base classes, i.e. another ``Node``, or a\n``List`` or a ``Scalar``, depending on the data type of that item. When the node does not\ncontain the requested attribute it returns a singleton ``Missing`` marker instance.\n\nA ``List`` wraps a plain Python ``list`` and may contains a sequence of ``Node`` instances, or\nin some cases other sub-lists, that can be accessed with the usual syntax, or iterated.\n\nFinally, a ``Scalar`` carries a single value of some type, accessible through its ``value``\nattribute.\n\nOn top of that, the module implements two serializations, one that transforms a ``Node`` into a\n*raw* textual representation and another that returns a *prettified* representation. The latter\nis exposed by the ``__main__`` entry point of the package, see below for an example.\n\nInstallation\n------------\n\nAs usual, the easiest way is with pip::\n\n  $ pip install pg_query\n\nAlternatively you can clone the repository::\n\n  $ git clone https://github.com/lelit/pg_query.git --recursive\n\nand install from there::\n\n  $ pip install ./pg_query\n\nDevelopment\n-----------\n\nThere is a set of *makefiles* implementing the most common operations, a ``make help`` will\nshow a brief table of contents. A comprehensive test suite, based on pytest__, covers 98% of\nthe source lines.\n\n__ https://docs.pytest.org/en/latest/\n\nExamples of usage\n-----------------\n\n* Parse an ``SQL`` statement and get its *AST* root node::\n\n   >>> from pg_query import Node, parse_sql\n   >>> root = Node(parse_sql('SELECT foo FROM bar'))\n   >>> print(root)\n   None=[1*{RawStmt}]\n\n* Recursively traverse the parse tree::\n\n   >>> for node in root.traverse():\n   ...   print(node)\n   ...\n   None[0]={RawStmt}\n   stmt={SelectStmt}\n   fromClause[0]={RangeVar}\n   inh=<True>\n   location=<16>\n   relname=<'bar'>\n   relpersistence=<'p'>\n   op=<0>\n   targetList[0]={ResTarget}\n   location=<7>\n   val={ColumnRef}\n   fields[0]={String}\n   str=<'foo'>\n   location=<7>\n\n  As you can see, the ``repr``\\ esentation of each value is mnemonic: ``{some_tag}`` means a\n  ``Node`` with tag ``some_tag``, ``[X*{some_tag}]`` is a ``List`` containing `X` nodes of that\n  particular kind\\ [*]_ and ``<value>`` is a ``Scalar``.\n\n* Get a particular node::\n\n   >>> from_clause = root[0].stmt.fromClause\n   >>> print(from_clause)\n   fromClause=[1*{RangeVar}]\n\n* Obtain some information about a node::\n\n   >>> range_var = from_clause[0]\n   >>> print(range_var.node_tag)\n   RangeVar\n   >>> print(range_var.attribute_names)\n   dict_keys(['relname', 'inh', 'relpersistence', 'location'])\n   >>> print(range_var.parent_node)\n   stmt={SelectStmt}\n\n* Iterate over nodes::\n\n   >>> for a in from_clause:\n   ...     print(a)\n   ...     for b in a:\n   ...         print(b)\n   ...\n   fromClause[0]={RangeVar}\n   inh=<True>\n   location=<16>\n   relname=<'bar'>\n   relpersistence=<'p'>\n\n* Reformat a SQL statement\\ [*]_ from the command line::\n\n   $ echo \"select a,b,c from sometable\" | python -m pg_query\n   SELECT a\n        , b\n        , c\n   FROM sometable\n\n   $ echo 'update \"table\" set value=123 where value is null' | python -m pg_query\n   UPDATE \"table\"\n   SET value = 123\n   WHERE value IS NULL\n\n* Programmatically reformat a SQL statement::\n\n   >>> from pg_query import prettify\n   >>> print(prettify('delete from sometable where value is null'))\n   DELETE FROM sometable\n   WHERE value IS NULL\n\nDocumentation\n-------------\n\nLatest documentation is hosted by `Read the Docs`__ at http://pg-query.readthedocs.io/en/latest/\n\n__ https://readthedocs.org/\n\n\n.. [*] This is an approximation, because in principle a list could contain different kinds of\n       nodes, or even sub-lists in some cases: the ``List`` representation arbitrarily shows\n       the tag of the first object.\n\n.. [*] Currently this covers most `DML` statements such as ``SELECT``\\ s, ``INSERT``\\ s,\n       ``DELETE``\\ s and ``UPDATE``\\ s, fulfilling my needs, but I'd like to extend it to\n       handle also `DDL` statements and, why not, `PLpgSQL` instructions too.\n\n\n.. -*- coding: utf-8 -*-\n\nChanges\n-------\n\n0.14 (2017-10-09)\n~~~~~~~~~~~~~~~~~\n\n- Update to latest libpg_query's 10-latest branch, targeting PostgreSQL 10.0 final\n\n\n0.13 (2017-09-17)\n~~~~~~~~~~~~~~~~~\n\n- Fix representation of subselects requiring surrounding parens\n\n\n0.12 (2017-08-22)\n~~~~~~~~~~~~~~~~~\n\n- New option ``--version`` on the command line tool\n\n- Better enums documentation\n\n- Release the GIL while calling libpg_query functions\n\n\n0.11 (2017-08-11)\n~~~~~~~~~~~~~~~~~\n\n- Nicer indentation for JOINs, making OUTER JOINs stand out\n\n- Minor tweaks to lists rendering, with less spurious whitespaces\n\n- New option ``--no-location`` on the command line tool\n\n\n0.10 (2017-08-11)\n~~~~~~~~~~~~~~~~~\n\n- Support Python 3.4 and Python 3.5 as well as Python 3.6\n\n\n0.9 (2017-08-10)\n~~~~~~~~~~~~~~~~\n\n- Fix spacing before the $ character\n\n- Handle type modifiers\n\n- New option ``--plpgsql`` on the command line tool, just for fun\n\n\n0.8 (2017-08-10)\n~~~~~~~~~~~~~~~~\n\n- Add enums subpackages to the documentation with references to their related headers\n\n- New ``compact_lists_margin`` option to produce a more compact representation when possible\n  (see `issue #1`__)\n\n__ https://github.com/lelit/pg_query/issues/1\n\n\n0.7 (2017-08-10)\n~~~~~~~~~~~~~~~~\n\n- Fix sdist including the Sphinx documentation\n\n\n0.6 (2017-08-10)\n~~~~~~~~~~~~~~~~\n\n- New option ``--parse-tree`` on the command line tool to show just the parse tree\n\n- Sphinx documentation, available online\n\n\n0.5 (2017-08-09)\n~~~~~~~~~~~~~~~~\n\n- Handle some more cases when a name must be double-quoted\n\n- Complete the serialization of the WindowDef node, handling its frame options\n\n\n0.4 (2017-08-09)\n~~~~~~~~~~~~~~~~\n\n- Expose the actual PostgreSQL version the underlying libpg_query libray is built on thru a new\n  ``get_postgresql_version()`` function\n\n- New option `safety_belt` for the ``prettify()`` function, to protect the innocents\n\n- Handle serialization of ``CoalesceExpr`` and ``MinMaxExpr``\n\n\n0.3 (2017-08-07)\n~~~~~~~~~~~~~~~~\n\n- Handle serialization of ``ParamRef`` nodes\n\n- Expose a ``prettify()`` helper function\n\n\n0.2 (2017-08-07)\n~~~~~~~~~~~~~~~~\n\n- Test coverage at 99%\n\n- First attempt at automatic wheel upload to PyPI, let's see...\n\n\n0.1 (2017-08-07)\n~~~~~~~~~~~~~~~~\n\n- First release (\"Hi daddy!\", as my soul would tag it)\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -33,11 +33,11 @@
     "name": "pg_query",
     "platform": "",
     "project_url": "https://pypi.org/project/pg_query/",
-    "release_url": "https://pypi.org/project/pg_query/0.13/",
+    "release_url": "https://pypi.org/project/pg_query/0.14/",
     "requires_dist": [],
     "requires_python": "",
     "summary": "Pythonic wrapper around libpg_query and SQL prettifier",
-    "version": "0.13"
+    "version": "0.14"
   },
   "releases": {
     "0.1": [
@@ -47,7 +47,7 @@
           "md5": "b5aaf572e2880e05ba414d4006d52b88",
           "sha256": "d36ddecf251591756fddc32f39831e5c7de77ba374ca84efe9c117c2a27684e2"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.1.tar.gz",
         "has_sig": false,
         "md5_digest": "b5aaf572e2880e05ba414d4006d52b88",
@@ -65,7 +65,7 @@
           "md5": "14589110bb13729b04f4f043839d91ae",
           "sha256": "57c2cfb5193c9ace9609edcdcbacaf2b9e4d1822f35e75fa299cf72ea03571cb"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.10-cp34-cp34m-manylinux1_i686.whl",
         "has_sig": false,
         "md5_digest": "14589110bb13729b04f4f043839d91ae",
@@ -81,7 +81,7 @@
           "md5": "67884a34026523dc71a16da9d5719e64",
           "sha256": "d7592a29f45b27e1eb1ff62bac95b1300d217f369a28c33cf8917eec4a026664"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.10-cp34-cp34m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "67884a34026523dc71a16da9d5719e64",
@@ -97,7 +97,7 @@
           "md5": "8c1ef95a72c6dddf3b793b85df3e9208",
           "sha256": "fe9c7956fc21dc18310dc615af52b9a59da056da404330c6e19766409ad869d5"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.10-cp35-cp35m-manylinux1_i686.whl",
         "has_sig": false,
         "md5_digest": "8c1ef95a72c6dddf3b793b85df3e9208",
@@ -113,7 +113,7 @@
           "md5": "602d6051d7231fcbf1ddcf4490173d88",
           "sha256": "dbf3627ee5b94340dd2ec61efb1af5a5468d2bafcbeec432ae356963cccaa5fb"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.10-cp35-cp35m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "602d6051d7231fcbf1ddcf4490173d88",
@@ -129,7 +129,7 @@
           "md5": "cce07945d85df043251352e8c9e562c8",
           "sha256": "707973df98616c1bedb68fe36ae77ad29fc44612c941768454a789d8d5f13732"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.10-cp36-cp36m-manylinux1_i686.whl",
         "has_sig": false,
         "md5_digest": "cce07945d85df043251352e8c9e562c8",
@@ -145,7 +145,7 @@
           "md5": "89cc7dba225de99ed27fdc7a35bc08e6",
           "sha256": "6a64198447b85c4086e8cf64bd2d7dea3333cb05283068a4b86e0033c6f23544"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.10-cp36-cp36m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "89cc7dba225de99ed27fdc7a35bc08e6",
@@ -161,7 +161,7 @@
           "md5": "cd8c8363f415e79c460ad6888b1f5645",
           "sha256": "c2c061cef461186218b682d219a8cc245c1d199c4351c743e887d400db2dca90"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.10.tar.gz",
         "has_sig": false,
         "md5_digest": "cd8c8363f415e79c460ad6888b1f5645",
@@ -179,7 +179,7 @@
           "md5": "7ad66255fb6ee8a23ddd8fb15dbc9aa3",
           "sha256": "ffe22c629b079baa0f9b8f8a374abf147a0eb94b92088191ef64089f2d433f13"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.11-cp34-cp34m-manylinux1_i686.whl",
         "has_sig": false,
         "md5_digest": "7ad66255fb6ee8a23ddd8fb15dbc9aa3",
@@ -195,7 +195,7 @@
           "md5": "c911febc023e3a4436d8a40185f8b2b0",
           "sha256": "514c10c9569dcaf4e90a429ba5bb7bb9e91848c69826e709a05c19a19d94f3d5"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.11-cp34-cp34m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "c911febc023e3a4436d8a40185f8b2b0",
@@ -211,7 +211,7 @@
           "md5": "fb6f5f1002a4ce6f2a0c53e96053da14",
           "sha256": "1bc34a444ced09e1a68f885bdf18735663ff745ecd9070f69ca8068283ebce29"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.11-cp35-cp35m-manylinux1_i686.whl",
         "has_sig": false,
         "md5_digest": "fb6f5f1002a4ce6f2a0c53e96053da14",
@@ -227,7 +227,7 @@
           "md5": "29328ffe1c8c8ba71763affbf737a6f5",
           "sha256": "4fc3ee3f9b0175934eecb8ca28e67c51d8490aa701d9899bce8329f61f30bcaf"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.11-cp35-cp35m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "29328ffe1c8c8ba71763affbf737a6f5",
@@ -243,7 +243,7 @@
           "md5": "d6108813c95d1ab3cd6e11924ab42773",
           "sha256": "0ed8766dc6219421679351169df94d84f9511c0a44c9cc893c1f2a7b6e5cdf59"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.11-cp36-cp36m-manylinux1_i686.whl",
         "has_sig": false,
         "md5_digest": "d6108813c95d1ab3cd6e11924ab42773",
@@ -259,7 +259,7 @@
           "md5": "a14951a630bb071ea37d61facd9ac91e",
           "sha256": "43fd80976370ccfb4de487af5add3dff3f808502127721da3caa47bd8afb1f94"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.11-cp36-cp36m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "a14951a630bb071ea37d61facd9ac91e",
@@ -275,7 +275,7 @@
           "md5": "8d060d74e3e5b8f8a396d08a9ac148a0",
           "sha256": "c2a8da616888929c3dfdf490747b9865ae0bd092ffd89655ed31e10344e46432"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.11.tar.gz",
         "has_sig": false,
         "md5_digest": "8d060d74e3e5b8f8a396d08a9ac148a0",
@@ -293,7 +293,7 @@
           "md5": "a4ca0315c2f0a7ba9a50db6b80a4c9e7",
           "sha256": "b9d7c3e242ccf565fb63280cf81b7c371c5c6d78aa6335746a6a978ce2a9ebcf"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.12-cp34-cp34m-manylinux1_i686.whl",
         "has_sig": false,
         "md5_digest": "a4ca0315c2f0a7ba9a50db6b80a4c9e7",
@@ -309,7 +309,7 @@
           "md5": "5e4ac625cfc3e9ede9bf3cf4f7625208",
           "sha256": "cf91f62e8a75798c7b5acba01909eb7d6fd42febcd733b3a2847d822aa6ca000"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.12-cp34-cp34m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "5e4ac625cfc3e9ede9bf3cf4f7625208",
@@ -325,7 +325,7 @@
           "md5": "73f45ee5d9eb5cab38aa3fbe5d3a9a34",
           "sha256": "3ffc13a6d74ea2d0f03d357c00dc6856d04afaf26c286f121e58d3eab9c966ca"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.12-cp35-cp35m-manylinux1_i686.whl",
         "has_sig": false,
         "md5_digest": "73f45ee5d9eb5cab38aa3fbe5d3a9a34",
@@ -341,7 +341,7 @@
           "md5": "c60d438fbad83b027e626268a8feb238",
           "sha256": "e909607b32c1b19a8f4ec3527918565aa71fe2c6664c3e7e88d29afe13b4dd3d"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.12-cp35-cp35m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "c60d438fbad83b027e626268a8feb238",
@@ -357,7 +357,7 @@
           "md5": "0de8caf638fdd7e3cc519b4821e99b79",
           "sha256": "465389b576648ff260897627dd6971f7a07617edf8fe5b8972eebb38579f2156"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.12-cp36-cp36m-manylinux1_i686.whl",
         "has_sig": false,
         "md5_digest": "0de8caf638fdd7e3cc519b4821e99b79",
@@ -373,7 +373,7 @@
           "md5": "78503aad6770a61307fefd585944287e",
           "sha256": "7c94ed0779bfac5926ab7d748c43edb3a75b147086fa99fac78325bd9cf03366"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.12-cp36-cp36m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "78503aad6770a61307fefd585944287e",
@@ -389,7 +389,7 @@
           "md5": "9b038fbf7c83fbe758cc060e5dc9f18f",
           "sha256": "3dd7af03dce6143fddcf14aa0ff2db43aaaf512941bbe8a1c112ab3a4a93ba59"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.12.tar.gz",
         "has_sig": false,
         "md5_digest": "9b038fbf7c83fbe758cc060e5dc9f18f",
@@ -407,7 +407,7 @@
           "md5": "9d8ab9f82f34fee757546754d184c9e4",
           "sha256": "fddd2d57738dd7d8293cb5fdd73790ff2501b6d756f6ecc41593c52e7e86ff9d"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.13-cp34-cp34m-manylinux1_i686.whl",
         "has_sig": false,
         "md5_digest": "9d8ab9f82f34fee757546754d184c9e4",
@@ -423,7 +423,7 @@
           "md5": "fc674589e26852ea4a38ae3e30adba72",
           "sha256": "a8dc9fede43733d1fb06b936953cc06880b2946cd3e66b170792311ddbd96849"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.13-cp34-cp34m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "fc674589e26852ea4a38ae3e30adba72",
@@ -439,7 +439,7 @@
           "md5": "4cfcf928e4137394f3dae4b7fa43cfeb",
           "sha256": "894ce0b6240b2de4fc2a72de117213246cb047e2ee5c029d2a11b4e233e6d540"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.13-cp35-cp35m-manylinux1_i686.whl",
         "has_sig": false,
         "md5_digest": "4cfcf928e4137394f3dae4b7fa43cfeb",
@@ -455,7 +455,7 @@
           "md5": "0f8e694fc62964549962cceb98046c9c",
           "sha256": "4c7b21703d12c492f021ca823b2be33a52f54c7ad9e73baf2dcdee4caff18a2f"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.13-cp35-cp35m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "0f8e694fc62964549962cceb98046c9c",
@@ -471,7 +471,7 @@
           "md5": "a8cc7592c9f15552d0e4acde67fb4c7a",
           "sha256": "827c2577fdbf72bea763c1dd0d1b7872afe4076bc25141709dedb2ee4a028a4a"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.13-cp36-cp36m-manylinux1_i686.whl",
         "has_sig": false,
         "md5_digest": "a8cc7592c9f15552d0e4acde67fb4c7a",
@@ -487,7 +487,7 @@
           "md5": "bf388f384825fd148e8c2860e10a7395",
           "sha256": "81f9e865a16b6a9bdb200afa15e372143eb33fee2c46b290e4391c03337edfba"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.13-cp36-cp36m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "bf388f384825fd148e8c2860e10a7395",
@@ -503,7 +503,7 @@
           "md5": "1f12ea0e14e9469a7ebfc7c9ce0cac2b",
           "sha256": "fbafdeed605bba84818346ebc807a4e4c781c81d845ac6801bba2a028cc3fc8f"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.13.tar.gz",
         "has_sig": false,
         "md5_digest": "1f12ea0e14e9469a7ebfc7c9ce0cac2b",
@@ -514,6 +514,120 @@
         "url": "https://files.pythonhosted.org/packages/d6/aa/0728ce5fc0ac088328e2cdc32abd2748334343fc59af35ccc5ce304daf72/pg_query-0.13.tar.gz"
       }
     ],
+    "0.14": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c704c2290954283bd355da9bdae8c941",
+          "sha256": "f6a092eff0c1de9c4d4e9363a95664fc8ab75504116b7358a1c6f35c1cb0884f"
+        },
+        "downloads": -1,
+        "filename": "pg_query-0.14-cp34-cp34m-manylinux1_i686.whl",
+        "has_sig": false,
+        "md5_digest": "c704c2290954283bd355da9bdae8c941",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 1012767,
+        "upload_time": "2017-10-09T20:36:01",
+        "url": "https://files.pythonhosted.org/packages/16/dc/0c26bf6496279ba211123fec79b315396208bab942c8ab07b6498e4ddec5/pg_query-0.14-cp34-cp34m-manylinux1_i686.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "261526d0f80fcf35f5403e7bbcd851f1",
+          "sha256": "aef7a754fd4732a42988bda6a508922d55138f7cd9006bcaba6b9cfef4d3d7ba"
+        },
+        "downloads": -1,
+        "filename": "pg_query-0.14-cp34-cp34m-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "261526d0f80fcf35f5403e7bbcd851f1",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 1047607,
+        "upload_time": "2017-10-09T20:36:04",
+        "url": "https://files.pythonhosted.org/packages/40/f4/0546bf72a5de470e7acca15838c7466fb648febde938ef8aaa76f030025f/pg_query-0.14-cp34-cp34m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a95414d32ce79f4860ce0e5a0ea84372",
+          "sha256": "8f0b9b2958ae65ad54355914e940dba44bae76a3a50d11c3b5bb2e8107708a6e"
+        },
+        "downloads": -1,
+        "filename": "pg_query-0.14-cp35-cp35m-manylinux1_i686.whl",
+        "has_sig": false,
+        "md5_digest": "a95414d32ce79f4860ce0e5a0ea84372",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 1011557,
+        "upload_time": "2017-10-09T20:36:07",
+        "url": "https://files.pythonhosted.org/packages/ac/9a/bce6f5b72355f4275675437516a95f90ac3d322ca3df182b43ceba677b55/pg_query-0.14-cp35-cp35m-manylinux1_i686.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "42b51b355f5b7acc85b2350e8ab57a83",
+          "sha256": "115d07a9a1bbd799cb365197432cbfc73f5077bb0255b9955aa0ee8f6b75ef6f"
+        },
+        "downloads": -1,
+        "filename": "pg_query-0.14-cp35-cp35m-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "42b51b355f5b7acc85b2350e8ab57a83",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 1045210,
+        "upload_time": "2017-10-09T20:36:09",
+        "url": "https://files.pythonhosted.org/packages/dc/ea/946a53b92bcd9d3e6456fa4c97e2fe02b09a6fdecb8c1003ea993116db32/pg_query-0.14-cp35-cp35m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a45ebf4da10d34127061206d4f6d77e6",
+          "sha256": "816d0fec6c85c38261f38ddd876d6fab19779956390acb198f3aef5d9dfda116"
+        },
+        "downloads": -1,
+        "filename": "pg_query-0.14-cp36-cp36m-manylinux1_i686.whl",
+        "has_sig": false,
+        "md5_digest": "a45ebf4da10d34127061206d4f6d77e6",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "size": 1013859,
+        "upload_time": "2017-10-09T20:36:12",
+        "url": "https://files.pythonhosted.org/packages/62/c4/85bef5e966af3158dc65a4001f57ef2534a785f7f4e563c5ee3e7393e0aa/pg_query-0.14-cp36-cp36m-manylinux1_i686.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b9ef1cbf406cca8d5b17cb8146f34852",
+          "sha256": "9004bb4f144c864eb2d311795f7b62629c30d7dc7ef2333f8fba93c9469a09f4"
+        },
+        "downloads": -1,
+        "filename": "pg_query-0.14-cp36-cp36m-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "b9ef1cbf406cca8d5b17cb8146f34852",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "size": 1047967,
+        "upload_time": "2017-10-09T20:36:14",
+        "url": "https://files.pythonhosted.org/packages/53/10/a7b41bfd750b0e4be8e076d19bfe225963baba96b6b96846909ad3315fa7/pg_query-0.14-cp36-cp36m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9137ce03b89b502537320149520ca4a7",
+          "sha256": "f94e7246548fce0627ce3a122197ea679c1b39761f457946d2afa5c08dc9f1b7"
+        },
+        "downloads": -1,
+        "filename": "pg_query-0.14.tar.gz",
+        "has_sig": false,
+        "md5_digest": "9137ce03b89b502537320149520ca4a7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1468380,
+        "upload_time": "2017-10-09T20:29:32",
+        "url": "https://files.pythonhosted.org/packages/3c/fd/c76cf13bdbb94bd68e9c4af51b30ac235553bd50a9dafc767398dc09d8a0/pg_query-0.14.tar.gz"
+      }
+    ],
     "0.2": [
       {
         "comment_text": "",
@@ -521,7 +635,7 @@
           "md5": "479f3ca2de84112e44504898b86a1ca5",
           "sha256": "080ca8ecbfef1e9256dc3abd7d2c27f98824925c23eaae5eec7bcb710ddce9c0"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.2.tar.gz",
         "has_sig": false,
         "md5_digest": "479f3ca2de84112e44504898b86a1ca5",
@@ -539,7 +653,7 @@
           "md5": "7da526b10285a2019ea5fcff23774529",
           "sha256": "e4c9233b4991f08427e0ec96255cf77b1eeeaae96c3da38fb811965272357a7b"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.3-cp36-cp36m-manylinux1_i686.whl",
         "has_sig": false,
         "md5_digest": "7da526b10285a2019ea5fcff23774529",
@@ -555,7 +669,7 @@
           "md5": "f986324839b4015aa23c493aae0f6224",
           "sha256": "bb0b968794c9602f449b6dcf9a5fc073b6842ae92da1f0bda607177bc919379a"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.3-cp36-cp36m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "f986324839b4015aa23c493aae0f6224",
@@ -571,7 +685,7 @@
           "md5": "b62808a16a4544052596a00da24c8544",
           "sha256": "a4e288fa5f8daac74228c2b9d2d7dd12f905bbc4b145d903b496efcf45157f43"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.3.tar.gz",
         "has_sig": false,
         "md5_digest": "b62808a16a4544052596a00da24c8544",
@@ -589,7 +703,7 @@
           "md5": "90c08cd36bd52fd44f9ad8aa45ca9bb0",
           "sha256": "88678d2d432d8dc97784f9a7abe310b966784bf40a8c2a0a30166ea34c7fbcee"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.4-cp36-cp36m-manylinux1_i686.whl",
         "has_sig": false,
         "md5_digest": "90c08cd36bd52fd44f9ad8aa45ca9bb0",
@@ -605,7 +719,7 @@
           "md5": "8eb8bfc5a68c29bf11467276cd05fb45",
           "sha256": "07e8299358d2cead4eac59fd23e86118bcce490e3d6231723e247ad3344b3b0e"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.4-cp36-cp36m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "8eb8bfc5a68c29bf11467276cd05fb45",
@@ -621,7 +735,7 @@
           "md5": "e71d5a9b465dd55fc08c8fea23b0340f",
           "sha256": "83836045510b65fee2d506f0d24ef1b0333e652c7973e43048977cf4e57b3fbb"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.4.tar.gz",
         "has_sig": false,
         "md5_digest": "e71d5a9b465dd55fc08c8fea23b0340f",
@@ -639,7 +753,7 @@
           "md5": "c53a1257678201b3fb636ca91e518e02",
           "sha256": "df033ae08f715a2f2d44a4f4c6d438c13ed0d92a99d1ac14a1de0cd94071f1c7"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.5-cp36-cp36m-manylinux1_i686.whl",
         "has_sig": false,
         "md5_digest": "c53a1257678201b3fb636ca91e518e02",
@@ -655,7 +769,7 @@
           "md5": "ec79bf606ac26b0f1dc3263e08330b9e",
           "sha256": "37bb1db0caad7f674b980fb08a5c22d3cc92c7e17e59ad33a5ce80e5506e4dac"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.5-cp36-cp36m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "ec79bf606ac26b0f1dc3263e08330b9e",
@@ -671,7 +785,7 @@
           "md5": "7cf347c36db22a1ecf8cd2f93876eab8",
           "sha256": "d7e6d63cd889df4737f701436f21d8531a471fdc5f8b22e3e07cefdfdc71c75e"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.5.tar.gz",
         "has_sig": false,
         "md5_digest": "7cf347c36db22a1ecf8cd2f93876eab8",
@@ -689,7 +803,7 @@
           "md5": "e48bb62361f7cb6f50f783eb1c71a9ee",
           "sha256": "c2a4cd306d1f34f6a25ff3f84a2699a6023509a63a17a3328400bf6f66fb00a4"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.6-cp36-cp36m-manylinux1_i686.whl",
         "has_sig": false,
         "md5_digest": "e48bb62361f7cb6f50f783eb1c71a9ee",
@@ -705,7 +819,7 @@
           "md5": "1337bd3bd228d230efe3e3937e5bc0f9",
           "sha256": "f8340729d36f49cad7673f7750bb5354176ae2c4014f6405f9a5aa5cebdda785"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.6-cp36-cp36m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "1337bd3bd228d230efe3e3937e5bc0f9",
@@ -721,7 +835,7 @@
           "md5": "c48930616da1aa2eb1ac14f3f95353a2",
           "sha256": "30dcf43b9face5c971b16b1c93d8d00db9c7e17b68f6c2331535728a74b5565b"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.6.tar.gz",
         "has_sig": false,
         "md5_digest": "c48930616da1aa2eb1ac14f3f95353a2",
@@ -739,7 +853,7 @@
           "md5": "9a85077b4c27228baec8cfe67dcf3ddc",
           "sha256": "895c7501e756831924942f71f6fa30b8bfb4c38cf4b1751c137dca18e7809474"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.7-cp36-cp36m-manylinux1_i686.whl",
         "has_sig": false,
         "md5_digest": "9a85077b4c27228baec8cfe67dcf3ddc",
@@ -755,7 +869,7 @@
           "md5": "a50d957675ee350763c11bb2d111ec61",
           "sha256": "6b570d3513618b3ec724a6f0b28d26f327eb3364ee78cf1d5930f453380683e8"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.7-cp36-cp36m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "a50d957675ee350763c11bb2d111ec61",
@@ -771,7 +885,7 @@
           "md5": "c90fbbc206fb4c7626e7623ac48420bc",
           "sha256": "e86f06125c8ff619725f3bd3f13e82a50e45bba4ba6f08f46dee6401f08a6382"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.7.tar.gz",
         "has_sig": false,
         "md5_digest": "c90fbbc206fb4c7626e7623ac48420bc",
@@ -789,7 +903,7 @@
           "md5": "03c3baf22c7947839a92602082df1b4c",
           "sha256": "2545a6ee3b09cc10457f19aad20e4f939a4e39c8f244ba028f1fac34582edc05"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.8-cp36-cp36m-manylinux1_i686.whl",
         "has_sig": false,
         "md5_digest": "03c3baf22c7947839a92602082df1b4c",
@@ -805,7 +919,7 @@
           "md5": "cee86490bd3730341ceae331b951ca56",
           "sha256": "27b2c1d3b18b5f21ba540807c2b16c1b9217ee575a226b04419eb7b1f21d7350"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.8-cp36-cp36m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "cee86490bd3730341ceae331b951ca56",
@@ -821,7 +935,7 @@
           "md5": "6878d8817477d2aeff435cb55979cda8",
           "sha256": "45aec64716ff153b9b45a90652c741554b415ed8b7a24c088ae0fb70271cb75d"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.8.tar.gz",
         "has_sig": false,
         "md5_digest": "6878d8817477d2aeff435cb55979cda8",
@@ -839,7 +953,7 @@
           "md5": "c054959631c3cc6d6d3c0fcd585920cd",
           "sha256": "b734eff15a7e4fda13b03c0972139693280c76a388ceab4ec00bfb51854e0535"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.9-cp36-cp36m-manylinux1_i686.whl",
         "has_sig": false,
         "md5_digest": "c054959631c3cc6d6d3c0fcd585920cd",
@@ -855,7 +969,7 @@
           "md5": "5f490b28c008c3e16dbb971a618d72bb",
           "sha256": "06b77e5497c443a78ef0c3d314b7ebcc68ac9910f6b36bf1c780a20e7fd83537"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.9-cp36-cp36m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "5f490b28c008c3e16dbb971a618d72bb",
@@ -871,7 +985,7 @@
           "md5": "b096c157af922722a0261f03bd242807",
           "sha256": "e60f2eb8f63b1cc99e4a3ecdfab475d9b468f671a31be3c0f35185ccb253a791"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pg_query-0.9.tar.gz",
         "has_sig": false,
         "md5_digest": "b096c157af922722a0261f03bd242807",
@@ -887,114 +1001,114 @@
     {
       "comment_text": "",
       "digests": {
-        "md5": "9d8ab9f82f34fee757546754d184c9e4",
-        "sha256": "fddd2d57738dd7d8293cb5fdd73790ff2501b6d756f6ecc41593c52e7e86ff9d"
+        "md5": "c704c2290954283bd355da9bdae8c941",
+        "sha256": "f6a092eff0c1de9c4d4e9363a95664fc8ab75504116b7358a1c6f35c1cb0884f"
       },
-      "downloads": 0,
-      "filename": "pg_query-0.13-cp34-cp34m-manylinux1_i686.whl",
+      "downloads": -1,
+      "filename": "pg_query-0.14-cp34-cp34m-manylinux1_i686.whl",
       "has_sig": false,
-      "md5_digest": "9d8ab9f82f34fee757546754d184c9e4",
+      "md5_digest": "c704c2290954283bd355da9bdae8c941",
       "packagetype": "bdist_wheel",
       "python_version": "cp34",
-      "size": 1012192,
-      "upload_time": "2017-09-17T11:19:55",
-      "url": "https://files.pythonhosted.org/packages/b2/93/7c164e7dac1e44ff3e2ebcf088c2b2d8d89342b2745f4fffa324d598a379/pg_query-0.13-cp34-cp34m-manylinux1_i686.whl"
+      "size": 1012767,
+      "upload_time": "2017-10-09T20:36:01",
+      "url": "https://files.pythonhosted.org/packages/16/dc/0c26bf6496279ba211123fec79b315396208bab942c8ab07b6498e4ddec5/pg_query-0.14-cp34-cp34m-manylinux1_i686.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "fc674589e26852ea4a38ae3e30adba72",
-        "sha256": "a8dc9fede43733d1fb06b936953cc06880b2946cd3e66b170792311ddbd96849"
+        "md5": "261526d0f80fcf35f5403e7bbcd851f1",
+        "sha256": "aef7a754fd4732a42988bda6a508922d55138f7cd9006bcaba6b9cfef4d3d7ba"
       },
-      "downloads": 0,
-      "filename": "pg_query-0.13-cp34-cp34m-manylinux1_x86_64.whl",
+      "downloads": -1,
+      "filename": "pg_query-0.14-cp34-cp34m-manylinux1_x86_64.whl",
       "has_sig": false,
-      "md5_digest": "fc674589e26852ea4a38ae3e30adba72",
+      "md5_digest": "261526d0f80fcf35f5403e7bbcd851f1",
       "packagetype": "bdist_wheel",
       "python_version": "cp34",
-      "size": 1046307,
-      "upload_time": "2017-09-17T11:19:57",
-      "url": "https://files.pythonhosted.org/packages/c4/32/ef077c9972b62d24bd6892c00649df10ed13d70e5d77b355e5a7c0121572/pg_query-0.13-cp34-cp34m-manylinux1_x86_64.whl"
+      "size": 1047607,
+      "upload_time": "2017-10-09T20:36:04",
+      "url": "https://files.pythonhosted.org/packages/40/f4/0546bf72a5de470e7acca15838c7466fb648febde938ef8aaa76f030025f/pg_query-0.14-cp34-cp34m-manylinux1_x86_64.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "4cfcf928e4137394f3dae4b7fa43cfeb",
-        "sha256": "894ce0b6240b2de4fc2a72de117213246cb047e2ee5c029d2a11b4e233e6d540"
+        "md5": "a95414d32ce79f4860ce0e5a0ea84372",
+        "sha256": "8f0b9b2958ae65ad54355914e940dba44bae76a3a50d11c3b5bb2e8107708a6e"
       },
-      "downloads": 0,
-      "filename": "pg_query-0.13-cp35-cp35m-manylinux1_i686.whl",
+      "downloads": -1,
+      "filename": "pg_query-0.14-cp35-cp35m-manylinux1_i686.whl",
       "has_sig": false,
-      "md5_digest": "4cfcf928e4137394f3dae4b7fa43cfeb",
+      "md5_digest": "a95414d32ce79f4860ce0e5a0ea84372",
       "packagetype": "bdist_wheel",
       "python_version": "cp35",
-      "size": 1011103,
-      "upload_time": "2017-09-17T11:20:00",
-      "url": "https://files.pythonhosted.org/packages/4a/c5/d7991a87ab86a7e6bda921aa6ee1369bd0da26b23c6e2da4a076a9ff5e2a/pg_query-0.13-cp35-cp35m-manylinux1_i686.whl"
+      "size": 1011557,
+      "upload_time": "2017-10-09T20:36:07",
+      "url": "https://files.pythonhosted.org/packages/ac/9a/bce6f5b72355f4275675437516a95f90ac3d322ca3df182b43ceba677b55/pg_query-0.14-cp35-cp35m-manylinux1_i686.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "0f8e694fc62964549962cceb98046c9c",
-        "sha256": "4c7b21703d12c492f021ca823b2be33a52f54c7ad9e73baf2dcdee4caff18a2f"
+        "md5": "42b51b355f5b7acc85b2350e8ab57a83",
+        "sha256": "115d07a9a1bbd799cb365197432cbfc73f5077bb0255b9955aa0ee8f6b75ef6f"
       },
-      "downloads": 0,
-      "filename": "pg_query-0.13-cp35-cp35m-manylinux1_x86_64.whl",
+      "downloads": -1,
+      "filename": "pg_query-0.14-cp35-cp35m-manylinux1_x86_64.whl",
       "has_sig": false,
-      "md5_digest": "0f8e694fc62964549962cceb98046c9c",
+      "md5_digest": "42b51b355f5b7acc85b2350e8ab57a83",
       "packagetype": "bdist_wheel",
       "python_version": "cp35",
-      "size": 1044309,
-      "upload_time": "2017-09-17T11:20:02",
-      "url": "https://files.pythonhosted.org/packages/dd/c2/8599f62c7002378fc529c9c929976e6fa4fdfce7031747daad219cc08fab/pg_query-0.13-cp35-cp35m-manylinux1_x86_64.whl"
+      "size": 1045210,
+      "upload_time": "2017-10-09T20:36:09",
+      "url": "https://files.pythonhosted.org/packages/dc/ea/946a53b92bcd9d3e6456fa4c97e2fe02b09a6fdecb8c1003ea993116db32/pg_query-0.14-cp35-cp35m-manylinux1_x86_64.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "a8cc7592c9f15552d0e4acde67fb4c7a",
-        "sha256": "827c2577fdbf72bea763c1dd0d1b7872afe4076bc25141709dedb2ee4a028a4a"
+        "md5": "a45ebf4da10d34127061206d4f6d77e6",
+        "sha256": "816d0fec6c85c38261f38ddd876d6fab19779956390acb198f3aef5d9dfda116"
       },
-      "downloads": 0,
-      "filename": "pg_query-0.13-cp36-cp36m-manylinux1_i686.whl",
+      "downloads": -1,
+      "filename": "pg_query-0.14-cp36-cp36m-manylinux1_i686.whl",
       "has_sig": false,
-      "md5_digest": "a8cc7592c9f15552d0e4acde67fb4c7a",
+      "md5_digest": "a45ebf4da10d34127061206d4f6d77e6",
       "packagetype": "bdist_wheel",
       "python_version": "cp36",
-      "size": 1013451,
-      "upload_time": "2017-09-17T11:20:06",
-      "url": "https://files.pythonhosted.org/packages/7f/10/a8b197c0868dea991dcabfc0c5545e122b781c9a11372d2c1056899ff27c/pg_query-0.13-cp36-cp36m-manylinux1_i686.whl"
+      "size": 1013859,
+      "upload_time": "2017-10-09T20:36:12",
+      "url": "https://files.pythonhosted.org/packages/62/c4/85bef5e966af3158dc65a4001f57ef2534a785f7f4e563c5ee3e7393e0aa/pg_query-0.14-cp36-cp36m-manylinux1_i686.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "bf388f384825fd148e8c2860e10a7395",
-        "sha256": "81f9e865a16b6a9bdb200afa15e372143eb33fee2c46b290e4391c03337edfba"
+        "md5": "b9ef1cbf406cca8d5b17cb8146f34852",
+        "sha256": "9004bb4f144c864eb2d311795f7b62629c30d7dc7ef2333f8fba93c9469a09f4"
       },
-      "downloads": 0,
-      "filename": "pg_query-0.13-cp36-cp36m-manylinux1_x86_64.whl",
+      "downloads": -1,
+      "filename": "pg_query-0.14-cp36-cp36m-manylinux1_x86_64.whl",
       "has_sig": false,
-      "md5_digest": "bf388f384825fd148e8c2860e10a7395",
+      "md5_digest": "b9ef1cbf406cca8d5b17cb8146f34852",
       "packagetype": "bdist_wheel",
       "python_version": "cp36",
-      "size": 1047138,
-      "upload_time": "2017-09-17T11:20:08",
-      "url": "https://files.pythonhosted.org/packages/77/9d/73749923544d77df150df8c870609bfb6c7f089b2e04c7446d02fda340d7/pg_query-0.13-cp36-cp36m-manylinux1_x86_64.whl"
+      "size": 1047967,
+      "upload_time": "2017-10-09T20:36:14",
+      "url": "https://files.pythonhosted.org/packages/53/10/a7b41bfd750b0e4be8e076d19bfe225963baba96b6b96846909ad3315fa7/pg_query-0.14-cp36-cp36m-manylinux1_x86_64.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "1f12ea0e14e9469a7ebfc7c9ce0cac2b",
-        "sha256": "fbafdeed605bba84818346ebc807a4e4c781c81d845ac6801bba2a028cc3fc8f"
+        "md5": "9137ce03b89b502537320149520ca4a7",
+        "sha256": "f94e7246548fce0627ce3a122197ea679c1b39761f457946d2afa5c08dc9f1b7"
       },
-      "downloads": 0,
-      "filename": "pg_query-0.13.tar.gz",
+      "downloads": -1,
+      "filename": "pg_query-0.14.tar.gz",
       "has_sig": false,
-      "md5_digest": "1f12ea0e14e9469a7ebfc7c9ce0cac2b",
+      "md5_digest": "9137ce03b89b502537320149520ca4a7",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 1463213,
-      "upload_time": "2017-09-17T11:14:21",
-      "url": "https://files.pythonhosted.org/packages/d6/aa/0728ce5fc0ac088328e2cdc32abd2748334343fc59af35ccc5ce304daf72/pg_query-0.13.tar.gz"
+      "size": 1468380,
+      "upload_time": "2017-10-09T20:29:32",
+      "url": "https://files.pythonhosted.org/packages/3c/fd/c76cf13bdbb94bd68e9c4af51b30ac235553bd50a9dafc767398dc09d8a0/pg_query-0.14.tar.gz"
     }
   ]
 }
