@@ -18,7 +18,7 @@
       "Programming Language :: Python :: 3.6",
       "Topic :: Software Development :: Libraries :: Python Modules"
     ],
-    "description": "============\nparallel-ssh\n============\n\nAsynchronous parallel SSH client library.\n\nRun SSH commands over many - hundreds/hundreds of thousands - number of servers asynchronously and with minimal system load on the client host.\n\n.. image:: https://img.shields.io/badge/License-LGPL%20v2-blue.svg\n  :target: https://pypi.python.org/pypi/parallel-ssh\n  :alt: License\n.. image:: https://img.shields.io/pypi/v/parallel-ssh.svg\n  :target: https://pypi.python.org/pypi/parallel-ssh\n  :alt: Latest Version\n.. image:: https://travis-ci.org/ParallelSSH/parallel-ssh.svg?branch=master\n  :target: https://travis-ci.org/ParallelSSH/parallel-ssh\n.. image:: https://coveralls.io/repos/ParallelSSH/parallel-ssh/badge.png?branch=master\n  :target: https://coveralls.io/r/ParallelSSH/parallel-ssh?branch=master\n.. image:: https://readthedocs.org/projects/parallel-ssh/badge/?version=latest\n  :target: http://parallel-ssh.readthedocs.org/en/latest/\n  :alt: Latest documentation\n\n.. _`read the docs`: http://parallel-ssh.readthedocs.org/en/latest/\n\n.. contents::\n\n************\nInstallation\n************\n\n.. code-block:: shell\n\n   pip install parallel-ssh\n\n*************\nUsage Example\n*************\n\nSee documentation on `read the docs`_ for more complete examples.\n\n\nRun ``ls`` on two remote hosts in parallel with ``sudo``.\n\n.. code-block:: python\n\n  from pprint import pprint\n  from pssh.pssh_client import ParallelSSHClient\n\n  hosts = ['myhost1', 'myhost2']\n  client = ParallelSSHClient(hosts)\n\n  output = client.run_command('ls -ltrh /tmp/', sudo=True)\n  pprint(output)\n\n:Output:\n\n   .. code-block:: python\n\n      {'myhost1':\n            host=myhost1\n\t    cmd=<Greenlet>\n\t    channel=<channel>\n\t    stdout=<generator>\n\t    stderr=<generator>\n\t    stdin=<channel>\n\t    exception=None\n       'myhost2':\n            <..>\n      }\n\nStandard output buffers are available in output object. Iterating on them can be used to get output as it becomes available. Iteration ends *only when command has finished*, though it may be interrupted and resumed at any point.\n\n`Host output <http://parallel-ssh.readthedocs.io/en/latest/output.html>`_ attributes are available in host output object, for example ``output['myhost1'].stdout``.\n\n.. code-block:: python\n\n  for host in output:\n     for line in output[host].stdout:\n         pprint(\"Host %s - output: %s\" % (host, line))\n\n:Output:\n\n   .. code-block:: shell\n\n      Host myhost1 - output: drwxr-xr-x  6 xxx xxx 4.0K Jan  1 00:00 xxx\n      Host myhost1 - output: <..>\n      Host myhost2 - output: drwxr-xr-x  6 xxx xxx 4.0K Jan  1 00:00 xxx\n      Host myhost2 - output: <..>\n\nExit codes become available once output is iterated on to completion *or* ``client.join(output)`` is called.\n\n.. code-block:: python\n\n  for host in output:\n      print(output[host].exit_code)\n\n:Output:\n   .. code-block:: python\n\n      0\n      0\n\nThe client's ``join`` function can be used to block and wait for all parallel commands to finish:\n\n.. code-block:: python\n\n  client.join(output)\n\nSimilarly, output and exit codes are available after ``client.join`` is called:\n\n.. code-block:: python\n\n  output = client.run_command('exit 0')\n\n  # Block and gather exit codes. Output is updated in-place\n  client.join(output)\n  pprint(output.values()[0].exit_code)\n\n  # Output is available\n  for line in output.values()[0].stdout:\n      pprint(line)\n\n:Output:\n   .. code-block:: python\n\n      0\n      <..stdout..>\n\n.. note::\n\n  In versions prior to ``1.0.0`` only, ``client.join`` would consume standard output.\n\nThere is also a built in host logger that can be enabled to log output from remote hosts. The helper function ``pssh.utils.enable_host_logger`` will enable host logging to stdout, for example:\n\n.. code-block:: python\n\n  import pssh.utils\n  pssh.utils.enable_host_logger()\n  client.join(client.run_command('uname'), consume_output=True)\n\n:Output:\n   .. code-block:: shell\n\n      [localhost]\tLinux\n\n*****************\nDesign And Goals\n*****************\n\n``ParallelSSH``'s design goals and motivation are to provide a *library* for running *asynchronous* SSH commands in parallel with little to no load induced on the system by doing so with the intended usage being completely programmatic and non-interactive.\n\nTo meet these goals, API driven solutions are preferred first and foremost. This frees up the developer to drive the library via any method desired, be that environment variables, CI driven tasks, command line tools, existing OpenSSH or new configuration files, from within an application et al.\n\n********\nScaling\n********\n\nSome guide lines on scaling ``ParallelSSH`` client and pool size numbers.\n\nIn general, long lived commands with little or no output *gathering* will scale better. Pool sizes in the multiple thousands have been used successfully with little CPU overhead in the single process running them in these use cases.\n\nConversely, many short lived commands with output gathering will not scale as well. In this use case, smaller pool sizes in the hundreds are likely to perform better with regards to CPU overhead in the event loop. Multiple python processes, each with its own event loop, may be used to scale this use case further as CPU overhead allows.\n\nGathering is highlighted here as output generation does not affect scaling. Only when output is gathered either over multiple still running commands, or while more commands are being triggered, is overhead increased.\n\nTechnical Details\n******************\n\nTo understand why this is, consider that in co-operative multi tasking, which is being used in this project via the ``gevent`` library, a co-routine (greenlet) needs to ``yield`` the event loop to allow others to execute - *co-operation*. When one co-routine is constantly grabbing the event loop in order to gather output, or when co-routines are constantly trying to start new short-lived commands, it causes overhead with other co-routines that also want to use the event loop.\n\nThis manifests itself as increased CPU usage in the process running the event loop and reduced performance with regards to scaling improvements from increasing pool size.\n\nOn the other end of the spectrum, long lived remote commands that generate *no* output only need the event loop at the start, when they are establishing connections, and at the end, when they are finished and need to gather exit codes, which results in practically zero CPU overhead at any time other than start or end of command execution.\n\nOutput *generation* is done remotely and has no effect on the event loop until output is gathered - output buffers are iterated on. Only at that point does the event loop need to be held.\n\n********\nSFTP/SCP\n********\n\nSFTP is supported (SCP version 2) natively, no ``scp`` binary required.\n\nFor example to copy a local file to remote hosts in parallel:\n\n.. code-block:: python\n\n  from pssh import ParallelSSHClient, utils\n  from gevent import joinall\n\n  utils.enable_logger(utils.logger)\n  hosts = ['myhost1', 'myhost2']\n  client = ParallelSSHClient(hosts)\n  greenlets = client.copy_file('../test', 'test_dir/test')\n  joinall(greenlets, raise_error=True)\n\n:Output:\n   .. code-block:: python\n\n      Copied local file ../test to remote destination myhost1:test_dir/test\n      Copied local file ../test to remote destination myhost2:test_dir/test\n\nThere is similar capability to copy remote files to local ones suffixed with the host's name with the ``copy_remote_file`` function.\n\nDirectory recursion is supported in both cases via the ``recurse`` parameter - defaults to off.\n\nSee `SFTP documentation <http://parallel-ssh.readthedocs.io/en/latest/advanced.html#sftp>`_ for more examples.\n\n**************************\nFrequently asked questions\n**************************\n\n:Q:\n   Why should I use this library and not, for example, `fabric <https://github.com/fabric/fabric>`_?\n\n:A:\n   In short, the tools are intended for different use cases.\n\n   ``ParallelSSH`` is a parallel SSH client library that scales well over hundreds to hundreds of thousands of hosts - per `Design And Goals`_ - a use case that is very common on cloud platforms and virtual machine automation. It would be best used where it is a good fit for the use case at hand.\n\n   Fabric and tools like it on the other hand are not well suited to such use cases, for many reasons, performance and differing design goals in particular. The similarity is only that these tools also make use of SSH to run commands.\n\n   ``ParallelSSH`` is in other words well suited to be the SSH client tools like Fabric and Ansible and others use to run their commands rather than a direct replacement for.\n\n   By focusing on providing a well defined, lightweight - actual code is a few hundred lines - library, ``ParallelSSH`` is far better suited for *run this command on X number of hosts* tasks for which frameworks like Fabric, Capistrano and others are overkill and unsuprisignly, as it is not what they are for, ill-suited to and do not perform particularly well with.\n\n   Fabric and tools like it are high level deployment frameworks - as opposed to general purpose libraries - for building deployment tasks to perform on hosts matching a role with task chaining, a DSL like syntax and are primarily intended for command line use for which the framework is a good fit for - very far removed from an SSH client *library*.\n\n   Fabric in particular is a port of `Capistrano <https://github.com/capistrano/capistrano>`_ from Ruby to Python. Its design goals are to provide a faithful port of Capistrano with its `tasks` and `roles` framework to python with interactive command line being the intended usage.\n\n   Furthermore, Fabric's use as a library is non-standard and in `many <https://github.com/fabric/fabric/issues/521>`_ `cases <https://github.com/fabric/fabric/pull/674>`_ `just <https://github.com/fabric/fabric/pull/1215>`_ `plain <https://github.com/fabric/fabric/issues/762>`_ `broken <https://github.com/fabric/fabric/issues/1068>`_ and currently stands at over 7,000 lines of code most of which is lacking code testing.\n\n   In addition, Fabric's parallel command implementation uses a combination of both threads and processes with extremely high CPU usage and system load while running with as little as hosts in the single digits.\n\n:Q:\n   Is Windows supported?\n\n:A:\n   The library installs and works on Windows though not formally supported as unit tests are currently Posix system based.\n\n   Pip versions >= 8.0 are required for binary package installation of ``gevent`` on Windows, a dependency of ``ParallelSSH``. \n\n   Though ``ParallelSSH`` is pure python code and will run on any platform that has a working Python interpreter, its ``gevent`` dependency and certain dependencies of ``paramiko`` contain native code which either needs a binary package to be provided for the platform or to be built from source. Binary packages for ``gevent`` are provided for OSX, Linux and Windows platforms as of this time of writing.\n\n:Q:\n   Is there a user's group for feedback and discussion about ParallelSSH?\n\n:A:\n   There is a public `ParallelSSH Google group <https://groups.google.com/forum/#!forum/parallelssh>`_ setup for this purpose - both posting and viewing are open to the public.\n\n\n",
+    "description": "============\nparallel-ssh\n============\n\nNon-blocking, asynchronous parallel SSH client library.\n\nRun SSH commands over many - hundreds/hundreds of thousands - number of servers asynchronously and with minimal system load on the client host.\n\nNative code based client with extremely high performance - based on ``libssh2`` C library.\n\n.. image:: https://img.shields.io/badge/License-LGPL%20v2-blue.svg\n  :target: https://pypi.python.org/pypi/parallel-ssh\n  :alt: License\n.. image:: https://img.shields.io/pypi/v/parallel-ssh.svg\n  :target: https://pypi.python.org/pypi/parallel-ssh\n  :alt: Latest Version\n.. image:: https://travis-ci.org/ParallelSSH/parallel-ssh.svg?branch=master\n  :target: https://travis-ci.org/ParallelSSH/parallel-ssh\n.. image:: https://codecov.io/gh/ParallelSSH/parallel-ssh/branch/master/graph/badge.svg\n  :target: https://codecov.io/gh/ParallelSSH/parallel-ssh\n.. image:: https://img.shields.io/pypi/wheel/parallel-ssh.svg\n   :target: https://pypi.python.org/pypi/parallel-ssh\n.. image:: https://readthedocs.org/projects/parallel-ssh/badge/?version=latest\n  :target: http://parallel-ssh.readthedocs.org/en/latest/\n  :alt: Latest documentation\n\n.. _`read the docs`: http://parallel-ssh.readthedocs.org/en/latest/\n\n.. contents::\n\n************\nInstallation\n************\n\n.. code-block:: shell\n\n   pip install parallel-ssh\n\n*************\nUsage Example\n*************\n\nSee documentation on `read the docs`_ for more complete examples.\n\nRun ``uname`` on two remote hosts in parallel with ``sudo``.\n\n.. code-block:: python\n\n  from pssh.pssh_client import ParallelSSHClient\n\n  hosts = ['myhost1', 'myhost2']\n  client = ParallelSSHClient(hosts)\n\n  output = client.run_command('uname')\n  for host, host_output in output.items():\n      for line in host_output.stdout:\n          print(line)\n\n:Output:\n\n   .. code-block:: shell\n\n      Linux\n      Linux\n\n**************\nNative client\n**************\n\nStarting from version ``1.2.0``, a new client is supported in ``parallel-ssh`` which offers much greater performance and reduced overhead than the current default client.\n\nThe new client is based on ``libssh2`` via the ``ssh2-python`` extension library and supports non-blocking mode natively. Binary wheel packages with ``libssh2`` included are provided for Linux, OSX and Windows platforms and all supported Python versions.\n\nSee `this post <https://parallel-ssh.org/post/parallel-ssh-libssh2>`_ for a performance comparison of the available clients.\n\nTo make use of this new client, ``ParallelSSHClient`` can be imported from ``pssh.pssh2_client`` instead. Their respective APIs are almost identical.\n\nThe new client will become the default and will replace the current ``pssh.pssh_client`` in a new major version of the library - ``2.0.0`` - once remaining features have been implemented. The native client should be considered as *beta* status until the ``2.0.0`` release when it is made the default.\n\nThe current default client will remain available as an option under a new name.\n\nFor example:\n\n.. code-block:: python\n\n  from pprint import pprint\n  from pssh.pssh2_client import ParallelSSHClient\n\n  hosts = ['myhost1', 'myhost2']\n  client = ParallelSSHClient(hosts)\n\n  output = client.run_command('uname')\n  for host, host_output in output.items():\n      for line in host_output.stdout:\n          print(line)\n\n\nSee `documentation <http://parallel-ssh.readthedocs.io/en/latest/ssh2.html>`_ for a feature comparison of the two clients.\n\n\n****************************\nNative Code Client Features\n****************************\n\n* Highest performance and least overhead of any Python SSH libraries\n* Thread safe - makes use of native threads for blocking calls like authentication\n* Natively non-blocking utilising ``libssh2`` via ``ssh2-python`` - **no monkey patching of the Python standard library**\n* Significantly reduced overhead in CPU and memory usage\n\n\n***********\nExit codes\n***********\n\nOnce either standard output is iterated on *to completion*, or ``client.join(output)`` is called, exit codes become available in host output. Iteration ends *only when remote command has completed*, though it may be interrupted and resumed at any point.\n\n.. code-block:: python\n\n  for host in output:\n      print(output[host].exit_code)\n\n:Output:\n   .. code-block:: python\n\n      0\n      0\n\n\nThe client's ``join`` function can be used to block and wait for all parallel commands to finish:\n\n.. code-block:: python\n\n  client.join(output)\n\nSimilarly, output and exit codes are available after ``client.join`` is called:\n\n.. code-block:: python\n\n  output = client.run_command('exit 0')\n\n  # Wait for commands to complete and gather exit codes. \n  # Output is updated in-place.\n  client.join(output)\n  pprint(output.values()[0].exit_code)\n\n  # Output remains available in output generators\n  for host, host_output in output.items():\n      for line in host_output.stdout:\n          pprint(line)\n\n:Output:\n   .. code-block:: python\n\n      0\n      <..stdout..>\n\n\nThere is also a built in host logger that can be enabled to log output from remote hosts. The helper function ``pssh.utils.enable_host_logger`` will enable host logging to stdout.\n\nTo log output without having to iterate over output generators, the ``consume_output`` flag can be enabled - for example:\n\n.. code-block:: python\n\n  from pssh.utils import enable_host_logger\n  enable_host_logger()\n  client.join(client.run_command('uname'), consume_output=True)\n\n:Output:\n   .. code-block:: shell\n\n      [localhost]\tLinux\n\n\nSFTP/SCP\n********\n\nSFTP is supported natively, no ``scp`` binary required.\n\nFor example to copy a local file to remote hosts in parallel:\n\n.. code-block:: python\n\n  from pssh.pssh_client import ParallelSSHClient\n  from pssh import utils\n  from gevent import joinall\n\n  utils.enable_logger(utils.logger)\n  hosts = ['myhost1', 'myhost2']\n  client = ParallelSSHClient(hosts)\n  cmds = client.copy_file('../test', 'test_dir/test')\n  joinall(cmds, raise_error=True)\n\n:Output:\n   .. code-block:: python\n\n      Copied local file ../test to remote destination myhost1:test_dir/test\n      Copied local file ../test to remote destination myhost2:test_dir/test\n\nThere is similar capability to copy remote files to local ones suffixed with the host's name with the ``copy_remote_file`` function.\n\nDirectory recursion is supported in both cases via the ``recurse`` parameter - defaults to off.\n\nSee `SFTP documentation <http://parallel-ssh.readthedocs.io/en/latest/advanced.html#sftp>`_ for more examples.\n\n\n*****************\nDesign And Goals\n*****************\n\n``ParallelSSH``'s design goals and motivation are to provide a *library* for running *non-blocking* asynchronous SSH commands in parallel with little to no load induced on the system by doing so with the intended usage being completely programmatic and non-interactive.\n\nTo meet these goals, API driven solutions are preferred first and foremost. This frees up developers to drive the library via any method desired, be that environment variables, CI driven tasks, command line tools, existing OpenSSH or new configuration files, from within an application et al.\n\n********\nScaling\n********\n\nSome guide lines on scaling ``ParallelSSH`` client and pool size numbers.\n\nIn general, long lived commands with little or no output *gathering* will scale better. Pool sizes in the multiple thousands have been used successfully with little CPU overhead in the single process running them in these use cases.\n\nConversely, many short lived commands with output gathering will not scale as well. In this use case, smaller pool sizes in the hundreds are likely to perform better with regards to CPU overhead in the event loop. Multiple python processes, each with its own event loop, may be used to scale this use case further as CPU overhead allows.\n\nGathering is highlighted here as output generation does not affect scaling. Only when output is gathered either over multiple still running commands, or while more commands are being triggered, is overhead increased.\n\nTechnical Details\n******************\n\nTo understand why this is, consider that in co-operative multi tasking, which is being used in this project via the ``gevent`` library, a co-routine (greenlet) needs to ``yield`` the event loop to allow others to execute - *co-operation*. When one co-routine is constantly grabbing the event loop in order to gather output, or when co-routines are constantly trying to start new short-lived commands, it causes overhead with other co-routines that also want to use the event loop.\n\nThis manifests itself as increased CPU usage in the process running the event loop and reduced performance with regards to scaling improvements from increasing pool size.\n\nOn the other end of the spectrum, long lived remote commands that generate *no* output only need the event loop at the start, when they are establishing connections, and at the end, when they are finished and need to gather exit codes, which results in practically zero CPU overhead at any time other than start or end of command execution.\n\nOutput *generation* is done remotely and has no effect on the event loop until output is gathered - output buffers are iterated on. Only at that point does the event loop need to be held.\n\n*************\nUser's group\n*************\n\nhere is a public `ParallelSSH Google group <https://groups.google.com/forum/#!forum/parallelssh>`_ setup for this purpose - both posting and viewing are open to the public.\n\n.. image:: https://ga-beacon.appspot.com/UA-9132694-7/parallel-ssh/README.rst?pixel\n  :target: https://github.com/igrigorik/ga-beacon\n\n\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -34,14 +34,15 @@
     "name": "parallel-ssh",
     "platform": "",
     "project_url": "https://pypi.org/project/parallel-ssh/",
-    "release_url": "https://pypi.org/project/parallel-ssh/1.1.1/",
+    "release_url": "https://pypi.org/project/parallel-ssh/1.2.0/",
     "requires_dist": [
+      "ssh2-python (>=0.6.0)",
       "gevent (>=1.1)",
       "paramiko (<2.2)"
     ],
     "requires_python": "",
     "summary": "Asynchronous parallel SSH library",
-    "version": "1.1.1"
+    "version": "1.2.0"
   },
   "releases": {
     "0.1": [
@@ -1078,6 +1079,296 @@
         "url": "https://files.pythonhosted.org/packages/8d/76/28e1e3978cbc8083a5aeacb8470d726ea631d2d2a9d57eafa0c43c3504e4/parallel-ssh-1.1.1.tar.gz"
       }
     ],
+    "1.2.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "041771614eabf341efaea7b9062c9503",
+          "sha256": "2937a2fce7f0e478eb1dbb9b2f5d234f8c1471ec83ec60543aa8da27210df7af"
+        },
+        "downloads": -1,
+        "filename": "parallel_ssh-1.2.0-cp26-cp26m-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "041771614eabf341efaea7b9062c9503",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp26",
+        "size": 1600668,
+        "upload_time": "2017-10-14T15:11:40",
+        "url": "https://files.pythonhosted.org/packages/58/49/d6986d03f354ef7a55b296870be7a7a1b950d23d716fcc51dd07d648f848/parallel_ssh-1.2.0-cp26-cp26m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "dad4bd1d79fcf02309d42ead813814a9",
+          "sha256": "0b95b11e8d0a367c68e0723576e4dca9df6cea7fb7806867a2d308960c6ac6b4"
+        },
+        "downloads": -1,
+        "filename": "parallel_ssh-1.2.0-cp26-cp26mu-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "dad4bd1d79fcf02309d42ead813814a9",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp26",
+        "size": 1600668,
+        "upload_time": "2017-10-14T15:11:43",
+        "url": "https://files.pythonhosted.org/packages/e2/64/96dece068df3ccc48b849be602c2e8f81a688ea7d3a82dbff03ef017b5c6/parallel_ssh-1.2.0-cp26-cp26mu-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c3a49c313c14c6e7696cf14c1ecb0702",
+          "sha256": "2ac0c894e398f2dfd778f49d2755090ed4e7bc76da85c8a2f6252d92b86c395f"
+        },
+        "downloads": -1,
+        "filename": "parallel_ssh-1.2.0-cp27-cp27m-macosx_10_11_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "c3a49c313c14c6e7696cf14c1ecb0702",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 1234457,
+        "upload_time": "2017-10-14T14:56:56",
+        "url": "https://files.pythonhosted.org/packages/a7/8c/321dc9cac8d9a929bff2000cbba16c3bd74cec4a02f5abd0ac16fca04906/parallel_ssh-1.2.0-cp27-cp27m-macosx_10_11_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5ec918ccabe84ca969b6ff61a9e065fc",
+          "sha256": "ebf3a0386a7d2dbec5feae54c3aa56b1f6d82d7047833686d50aaccd26dca5d4"
+        },
+        "downloads": -1,
+        "filename": "parallel_ssh-1.2.0-cp27-cp27m-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "5ec918ccabe84ca969b6ff61a9e065fc",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 1602447,
+        "upload_time": "2017-10-14T15:11:46",
+        "url": "https://files.pythonhosted.org/packages/17/e1/5cb098722d7ca5a910c0559139feaa0631252516f6f486ec96fedff158c4/parallel_ssh-1.2.0-cp27-cp27m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "70ee21b7131cab2b9390ecbca022c989",
+          "sha256": "e83ce35c70a117f500c52591b6963d75e0299ce79390d135ef6e82a9d5e78761"
+        },
+        "downloads": -1,
+        "filename": "parallel_ssh-1.2.0-cp27-cp27mu-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "70ee21b7131cab2b9390ecbca022c989",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 1602460,
+        "upload_time": "2017-10-14T15:11:48",
+        "url": "https://files.pythonhosted.org/packages/c8/56/a68f02aad817a0be984754ac44bef8b0bc0eca47d929834682fff7823711/parallel_ssh-1.2.0-cp27-cp27mu-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "844a4e6a526e395e9acf52bdfb81b3d4",
+          "sha256": "c470b782be92d68b3c87bfa529097aa107860c7c7ab0b55cb0fe381f208c1fad"
+        },
+        "downloads": -1,
+        "filename": "parallel_ssh-1.2.0-cp27-cp27m-win32.whl",
+        "has_sig": false,
+        "md5_digest": "844a4e6a526e395e9acf52bdfb81b3d4",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 94990,
+        "upload_time": "2017-10-14T15:11:06",
+        "url": "https://files.pythonhosted.org/packages/09/d8/baa0ca5e086341b74b79ff19510e79d9df5ec1837f2af7b407a23eeade18/parallel_ssh-1.2.0-cp27-cp27m-win32.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1edf7409088c4ce64811b480281c6ab0",
+          "sha256": "f173a95d595547e1c4f2b0b63f2af6abfd526792f5e5b5edeaa8085d8eb31f80"
+        },
+        "downloads": -1,
+        "filename": "parallel_ssh-1.2.0-cp27-cp27m-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "1edf7409088c4ce64811b480281c6ab0",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 102857,
+        "upload_time": "2017-10-14T15:12:02",
+        "url": "https://files.pythonhosted.org/packages/4d/58/6b75d34209114334422e525d184d38806dc98a4c65274c9935b8542e5bf7/parallel_ssh-1.2.0-cp27-cp27m-win_amd64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2f9f05ecc94457fba1b699322054e9ee",
+          "sha256": "a2b92e44bc8fe294d0cb2c7323784e6fbb1c9e1d0016a948183010a1b2d62317"
+        },
+        "downloads": -1,
+        "filename": "parallel_ssh-1.2.0-cp33-cp33m-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "2f9f05ecc94457fba1b699322054e9ee",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp33",
+        "size": 1608792,
+        "upload_time": "2017-10-14T15:11:52",
+        "url": "https://files.pythonhosted.org/packages/96/86/2d6b3e0f49bd0cadd51b5613062ba8d4906504b4e301351adbeb471f8580/parallel_ssh-1.2.0-cp33-cp33m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b825e31a3c2ed91d6e3c5c4b70a71d2b",
+          "sha256": "ef4a5b5e2d3e612a05f7726c7b271f316740296a9a3002f130fd2c86122cf818"
+        },
+        "downloads": -1,
+        "filename": "parallel_ssh-1.2.0-cp34-cp34m-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "b825e31a3c2ed91d6e3c5c4b70a71d2b",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 1617827,
+        "upload_time": "2017-10-14T15:11:55",
+        "url": "https://files.pythonhosted.org/packages/2b/e9/c68570c56b7527b55095d2e2b63e76a60cab834246780181af8dea06d92e/parallel_ssh-1.2.0-cp34-cp34m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "cd7c0bc7174f318e0e1cea92a90aaf59",
+          "sha256": "6d51519476d6f3a46952053e45f9802a31bf104cd92d3c5045a3471ef079d742"
+        },
+        "downloads": -1,
+        "filename": "parallel_ssh-1.2.0-cp34-cp34m-win32.whl",
+        "has_sig": false,
+        "md5_digest": "cd7c0bc7174f318e0e1cea92a90aaf59",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 95200,
+        "upload_time": "2017-10-14T15:14:22",
+        "url": "https://files.pythonhosted.org/packages/f2/ce/acdca1763ced0986d941fd570d5bfd227e80876ed9b5fde3fa73c8dd6865/parallel_ssh-1.2.0-cp34-cp34m-win32.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b5a6d41796205684286e56e3746115e0",
+          "sha256": "18ceff865fb17473b9be7b26135783a6bed7a1ccec450667496a58675540ebef"
+        },
+        "downloads": -1,
+        "filename": "parallel_ssh-1.2.0-cp34-cp34m-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "b5a6d41796205684286e56e3746115e0",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 101838,
+        "upload_time": "2017-10-14T15:16:56",
+        "url": "https://files.pythonhosted.org/packages/8a/21/7d01137a18a73ec18a84a4c4050c707dd5c79d93972d645efa1fe503f7c2/parallel_ssh-1.2.0-cp34-cp34m-win_amd64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "bfec61f6e70b8319d4b124ceeeb43786",
+          "sha256": "cf9fedb21dc0e4f440c0ccc557669bc3c0aee897a52cb0283bf1b01e13402bb1"
+        },
+        "downloads": -1,
+        "filename": "parallel_ssh-1.2.0-cp35-cp35m-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "bfec61f6e70b8319d4b124ceeeb43786",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 1614829,
+        "upload_time": "2017-10-14T15:11:58",
+        "url": "https://files.pythonhosted.org/packages/30/17/ba727f7cba9177a552e26b8378c7e3b654a959d79d42bab5df3ad89504a2/parallel_ssh-1.2.0-cp35-cp35m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "baccaf8898f19b7e71ab43ee782a9aa5",
+          "sha256": "67b9913a8a300725ee0a989e73699e33d7d9b7c94b90697bcf35f9e3b891521c"
+        },
+        "downloads": -1,
+        "filename": "parallel_ssh-1.2.0-cp35-cp35m-win32.whl",
+        "has_sig": false,
+        "md5_digest": "baccaf8898f19b7e71ab43ee782a9aa5",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 94605,
+        "upload_time": "2017-10-14T15:22:29",
+        "url": "https://files.pythonhosted.org/packages/da/b2/ced14785f94dc2418166f8415fe0f00bb2204434783616dc126b697054e1/parallel_ssh-1.2.0-cp35-cp35m-win32.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "737d40d4586c813142b12c6d1791d124",
+          "sha256": "338a4bda3fc644aca9fb4a0192f08105f5d65c9485485dc26d276329871c7241"
+        },
+        "downloads": -1,
+        "filename": "parallel_ssh-1.2.0-cp35-cp35m-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "737d40d4586c813142b12c6d1791d124",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 103754,
+        "upload_time": "2017-10-14T15:29:00",
+        "url": "https://files.pythonhosted.org/packages/9b/7a/285ee8368d6a01e6bdee8a542def7e7d64d013c29bf47875e73cb325ae2a/parallel_ssh-1.2.0-cp35-cp35m-win_amd64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e9e9346400ba5160f83514c291f856c4",
+          "sha256": "3250410b323f2db7e6d974daa868c61a95ef624f1a3421bcd4a38164d6927d28"
+        },
+        "downloads": -1,
+        "filename": "parallel_ssh-1.2.0-cp36-cp36m-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "e9e9346400ba5160f83514c291f856c4",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "size": 1616916,
+        "upload_time": "2017-10-14T15:12:00",
+        "url": "https://files.pythonhosted.org/packages/b4/76/7702ad9e0b1562f41510113e728e1765e8a0cd5a0cbf488c2dae3f322395/parallel_ssh-1.2.0-cp36-cp36m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8e555ced866058c1daa0a9a635e570a1",
+          "sha256": "f4a7cb9e5a2f9ec9165a06366d276b78b980be232359c0c64f969c404ef0f446"
+        },
+        "downloads": -1,
+        "filename": "parallel_ssh-1.2.0-cp36-cp36m-win32.whl",
+        "has_sig": false,
+        "md5_digest": "8e555ced866058c1daa0a9a635e570a1",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "size": 94821,
+        "upload_time": "2017-10-14T15:34:59",
+        "url": "https://files.pythonhosted.org/packages/c4/d9/0ce846e2710e5f181645700e4ca3b51abbc55057e47c8e1b250ef53195c1/parallel_ssh-1.2.0-cp36-cp36m-win32.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "226c9b0d87129b9363dea6173a280026",
+          "sha256": "d6f4070cab98c5a06e7378c7be45242b2fa212707963f163fe6028503d44be4f"
+        },
+        "downloads": -1,
+        "filename": "parallel_ssh-1.2.0-cp36-cp36m-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "226c9b0d87129b9363dea6173a280026",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "size": 104106,
+        "upload_time": "2017-10-14T15:40:59",
+        "url": "https://files.pythonhosted.org/packages/05/4d/a1cf97d40d8b4e9cc9f4a710c9c21dd86ca65a0828914700b5255740017f/parallel_ssh-1.2.0-cp36-cp36m-win_amd64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a1fc6d9cc2843769879fd609b2439f57",
+          "sha256": "2c7b57d2332a65f46bf575d3d8cde5271fc37b4feaf31dbb295710fb92af122e"
+        },
+        "downloads": -1,
+        "filename": "parallel-ssh-1.2.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a1fc6d9cc2843769879fd609b2439f57",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 119174,
+        "upload_time": "2017-10-14T15:46:30",
+        "url": "https://files.pythonhosted.org/packages/cd/22/c4e9f5d977ef3ae7a39efe6baea708cb748dd46f3bbeaee1586ca133f563/parallel-ssh-1.2.0.tar.gz"
+      }
+    ],
     "1.2.0b1": [
       {
         "comment_text": "",
@@ -1357,34 +1648,290 @@
     {
       "comment_text": "",
       "digests": {
-        "md5": "08642ba5f526ed39f5fe877a407f62f6",
-        "sha256": "9f2e2ceb7f4652d74b327e494638359613d6fe94c0c443bec342d9b7ae0d3883"
+        "md5": "041771614eabf341efaea7b9062c9503",
+        "sha256": "2937a2fce7f0e478eb1dbb9b2f5d234f8c1471ec83ec60543aa8da27210df7af"
       },
       "downloads": -1,
-      "filename": "parallel_ssh-1.1.1-py2.py3-none-any.whl",
+      "filename": "parallel_ssh-1.2.0-cp26-cp26m-manylinux1_x86_64.whl",
       "has_sig": false,
-      "md5_digest": "08642ba5f526ed39f5fe877a407f62f6",
+      "md5_digest": "041771614eabf341efaea7b9062c9503",
       "packagetype": "bdist_wheel",
-      "python_version": "py2.py3",
-      "size": 37836,
-      "upload_time": "2017-08-31T00:20:10",
-      "url": "https://files.pythonhosted.org/packages/b6/ea/028fd9b4aa893ab8b49f0160006224d99f1f7dbdbcc86909f66b15acda49/parallel_ssh-1.1.1-py2.py3-none-any.whl"
+      "python_version": "cp26",
+      "size": 1600668,
+      "upload_time": "2017-10-14T15:11:40",
+      "url": "https://files.pythonhosted.org/packages/58/49/d6986d03f354ef7a55b296870be7a7a1b950d23d716fcc51dd07d648f848/parallel_ssh-1.2.0-cp26-cp26m-manylinux1_x86_64.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "c77285a903a14b7e16a6a2dc9d072f52",
-        "sha256": "f09c3015d76adba08ddcddf7a27a62c803a5670e2f0891e849740155229d81fa"
+        "md5": "dad4bd1d79fcf02309d42ead813814a9",
+        "sha256": "0b95b11e8d0a367c68e0723576e4dca9df6cea7fb7806867a2d308960c6ac6b4"
       },
       "downloads": -1,
-      "filename": "parallel-ssh-1.1.1.tar.gz",
+      "filename": "parallel_ssh-1.2.0-cp26-cp26mu-manylinux1_x86_64.whl",
       "has_sig": false,
-      "md5_digest": "c77285a903a14b7e16a6a2dc9d072f52",
+      "md5_digest": "dad4bd1d79fcf02309d42ead813814a9",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp26",
+      "size": 1600668,
+      "upload_time": "2017-10-14T15:11:43",
+      "url": "https://files.pythonhosted.org/packages/e2/64/96dece068df3ccc48b849be602c2e8f81a688ea7d3a82dbff03ef017b5c6/parallel_ssh-1.2.0-cp26-cp26mu-manylinux1_x86_64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "c3a49c313c14c6e7696cf14c1ecb0702",
+        "sha256": "2ac0c894e398f2dfd778f49d2755090ed4e7bc76da85c8a2f6252d92b86c395f"
+      },
+      "downloads": -1,
+      "filename": "parallel_ssh-1.2.0-cp27-cp27m-macosx_10_11_x86_64.whl",
+      "has_sig": false,
+      "md5_digest": "c3a49c313c14c6e7696cf14c1ecb0702",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp27",
+      "size": 1234457,
+      "upload_time": "2017-10-14T14:56:56",
+      "url": "https://files.pythonhosted.org/packages/a7/8c/321dc9cac8d9a929bff2000cbba16c3bd74cec4a02f5abd0ac16fca04906/parallel_ssh-1.2.0-cp27-cp27m-macosx_10_11_x86_64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "5ec918ccabe84ca969b6ff61a9e065fc",
+        "sha256": "ebf3a0386a7d2dbec5feae54c3aa56b1f6d82d7047833686d50aaccd26dca5d4"
+      },
+      "downloads": -1,
+      "filename": "parallel_ssh-1.2.0-cp27-cp27m-manylinux1_x86_64.whl",
+      "has_sig": false,
+      "md5_digest": "5ec918ccabe84ca969b6ff61a9e065fc",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp27",
+      "size": 1602447,
+      "upload_time": "2017-10-14T15:11:46",
+      "url": "https://files.pythonhosted.org/packages/17/e1/5cb098722d7ca5a910c0559139feaa0631252516f6f486ec96fedff158c4/parallel_ssh-1.2.0-cp27-cp27m-manylinux1_x86_64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "70ee21b7131cab2b9390ecbca022c989",
+        "sha256": "e83ce35c70a117f500c52591b6963d75e0299ce79390d135ef6e82a9d5e78761"
+      },
+      "downloads": -1,
+      "filename": "parallel_ssh-1.2.0-cp27-cp27mu-manylinux1_x86_64.whl",
+      "has_sig": false,
+      "md5_digest": "70ee21b7131cab2b9390ecbca022c989",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp27",
+      "size": 1602460,
+      "upload_time": "2017-10-14T15:11:48",
+      "url": "https://files.pythonhosted.org/packages/c8/56/a68f02aad817a0be984754ac44bef8b0bc0eca47d929834682fff7823711/parallel_ssh-1.2.0-cp27-cp27mu-manylinux1_x86_64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "844a4e6a526e395e9acf52bdfb81b3d4",
+        "sha256": "c470b782be92d68b3c87bfa529097aa107860c7c7ab0b55cb0fe381f208c1fad"
+      },
+      "downloads": -1,
+      "filename": "parallel_ssh-1.2.0-cp27-cp27m-win32.whl",
+      "has_sig": false,
+      "md5_digest": "844a4e6a526e395e9acf52bdfb81b3d4",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp27",
+      "size": 94990,
+      "upload_time": "2017-10-14T15:11:06",
+      "url": "https://files.pythonhosted.org/packages/09/d8/baa0ca5e086341b74b79ff19510e79d9df5ec1837f2af7b407a23eeade18/parallel_ssh-1.2.0-cp27-cp27m-win32.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "1edf7409088c4ce64811b480281c6ab0",
+        "sha256": "f173a95d595547e1c4f2b0b63f2af6abfd526792f5e5b5edeaa8085d8eb31f80"
+      },
+      "downloads": -1,
+      "filename": "parallel_ssh-1.2.0-cp27-cp27m-win_amd64.whl",
+      "has_sig": false,
+      "md5_digest": "1edf7409088c4ce64811b480281c6ab0",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp27",
+      "size": 102857,
+      "upload_time": "2017-10-14T15:12:02",
+      "url": "https://files.pythonhosted.org/packages/4d/58/6b75d34209114334422e525d184d38806dc98a4c65274c9935b8542e5bf7/parallel_ssh-1.2.0-cp27-cp27m-win_amd64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "2f9f05ecc94457fba1b699322054e9ee",
+        "sha256": "a2b92e44bc8fe294d0cb2c7323784e6fbb1c9e1d0016a948183010a1b2d62317"
+      },
+      "downloads": -1,
+      "filename": "parallel_ssh-1.2.0-cp33-cp33m-manylinux1_x86_64.whl",
+      "has_sig": false,
+      "md5_digest": "2f9f05ecc94457fba1b699322054e9ee",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp33",
+      "size": 1608792,
+      "upload_time": "2017-10-14T15:11:52",
+      "url": "https://files.pythonhosted.org/packages/96/86/2d6b3e0f49bd0cadd51b5613062ba8d4906504b4e301351adbeb471f8580/parallel_ssh-1.2.0-cp33-cp33m-manylinux1_x86_64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "b825e31a3c2ed91d6e3c5c4b70a71d2b",
+        "sha256": "ef4a5b5e2d3e612a05f7726c7b271f316740296a9a3002f130fd2c86122cf818"
+      },
+      "downloads": -1,
+      "filename": "parallel_ssh-1.2.0-cp34-cp34m-manylinux1_x86_64.whl",
+      "has_sig": false,
+      "md5_digest": "b825e31a3c2ed91d6e3c5c4b70a71d2b",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp34",
+      "size": 1617827,
+      "upload_time": "2017-10-14T15:11:55",
+      "url": "https://files.pythonhosted.org/packages/2b/e9/c68570c56b7527b55095d2e2b63e76a60cab834246780181af8dea06d92e/parallel_ssh-1.2.0-cp34-cp34m-manylinux1_x86_64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "cd7c0bc7174f318e0e1cea92a90aaf59",
+        "sha256": "6d51519476d6f3a46952053e45f9802a31bf104cd92d3c5045a3471ef079d742"
+      },
+      "downloads": -1,
+      "filename": "parallel_ssh-1.2.0-cp34-cp34m-win32.whl",
+      "has_sig": false,
+      "md5_digest": "cd7c0bc7174f318e0e1cea92a90aaf59",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp34",
+      "size": 95200,
+      "upload_time": "2017-10-14T15:14:22",
+      "url": "https://files.pythonhosted.org/packages/f2/ce/acdca1763ced0986d941fd570d5bfd227e80876ed9b5fde3fa73c8dd6865/parallel_ssh-1.2.0-cp34-cp34m-win32.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "b5a6d41796205684286e56e3746115e0",
+        "sha256": "18ceff865fb17473b9be7b26135783a6bed7a1ccec450667496a58675540ebef"
+      },
+      "downloads": -1,
+      "filename": "parallel_ssh-1.2.0-cp34-cp34m-win_amd64.whl",
+      "has_sig": false,
+      "md5_digest": "b5a6d41796205684286e56e3746115e0",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp34",
+      "size": 101838,
+      "upload_time": "2017-10-14T15:16:56",
+      "url": "https://files.pythonhosted.org/packages/8a/21/7d01137a18a73ec18a84a4c4050c707dd5c79d93972d645efa1fe503f7c2/parallel_ssh-1.2.0-cp34-cp34m-win_amd64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "bfec61f6e70b8319d4b124ceeeb43786",
+        "sha256": "cf9fedb21dc0e4f440c0ccc557669bc3c0aee897a52cb0283bf1b01e13402bb1"
+      },
+      "downloads": -1,
+      "filename": "parallel_ssh-1.2.0-cp35-cp35m-manylinux1_x86_64.whl",
+      "has_sig": false,
+      "md5_digest": "bfec61f6e70b8319d4b124ceeeb43786",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp35",
+      "size": 1614829,
+      "upload_time": "2017-10-14T15:11:58",
+      "url": "https://files.pythonhosted.org/packages/30/17/ba727f7cba9177a552e26b8378c7e3b654a959d79d42bab5df3ad89504a2/parallel_ssh-1.2.0-cp35-cp35m-manylinux1_x86_64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "baccaf8898f19b7e71ab43ee782a9aa5",
+        "sha256": "67b9913a8a300725ee0a989e73699e33d7d9b7c94b90697bcf35f9e3b891521c"
+      },
+      "downloads": -1,
+      "filename": "parallel_ssh-1.2.0-cp35-cp35m-win32.whl",
+      "has_sig": false,
+      "md5_digest": "baccaf8898f19b7e71ab43ee782a9aa5",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp35",
+      "size": 94605,
+      "upload_time": "2017-10-14T15:22:29",
+      "url": "https://files.pythonhosted.org/packages/da/b2/ced14785f94dc2418166f8415fe0f00bb2204434783616dc126b697054e1/parallel_ssh-1.2.0-cp35-cp35m-win32.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "737d40d4586c813142b12c6d1791d124",
+        "sha256": "338a4bda3fc644aca9fb4a0192f08105f5d65c9485485dc26d276329871c7241"
+      },
+      "downloads": -1,
+      "filename": "parallel_ssh-1.2.0-cp35-cp35m-win_amd64.whl",
+      "has_sig": false,
+      "md5_digest": "737d40d4586c813142b12c6d1791d124",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp35",
+      "size": 103754,
+      "upload_time": "2017-10-14T15:29:00",
+      "url": "https://files.pythonhosted.org/packages/9b/7a/285ee8368d6a01e6bdee8a542def7e7d64d013c29bf47875e73cb325ae2a/parallel_ssh-1.2.0-cp35-cp35m-win_amd64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "e9e9346400ba5160f83514c291f856c4",
+        "sha256": "3250410b323f2db7e6d974daa868c61a95ef624f1a3421bcd4a38164d6927d28"
+      },
+      "downloads": -1,
+      "filename": "parallel_ssh-1.2.0-cp36-cp36m-manylinux1_x86_64.whl",
+      "has_sig": false,
+      "md5_digest": "e9e9346400ba5160f83514c291f856c4",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp36",
+      "size": 1616916,
+      "upload_time": "2017-10-14T15:12:00",
+      "url": "https://files.pythonhosted.org/packages/b4/76/7702ad9e0b1562f41510113e728e1765e8a0cd5a0cbf488c2dae3f322395/parallel_ssh-1.2.0-cp36-cp36m-manylinux1_x86_64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "8e555ced866058c1daa0a9a635e570a1",
+        "sha256": "f4a7cb9e5a2f9ec9165a06366d276b78b980be232359c0c64f969c404ef0f446"
+      },
+      "downloads": -1,
+      "filename": "parallel_ssh-1.2.0-cp36-cp36m-win32.whl",
+      "has_sig": false,
+      "md5_digest": "8e555ced866058c1daa0a9a635e570a1",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp36",
+      "size": 94821,
+      "upload_time": "2017-10-14T15:34:59",
+      "url": "https://files.pythonhosted.org/packages/c4/d9/0ce846e2710e5f181645700e4ca3b51abbc55057e47c8e1b250ef53195c1/parallel_ssh-1.2.0-cp36-cp36m-win32.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "226c9b0d87129b9363dea6173a280026",
+        "sha256": "d6f4070cab98c5a06e7378c7be45242b2fa212707963f163fe6028503d44be4f"
+      },
+      "downloads": -1,
+      "filename": "parallel_ssh-1.2.0-cp36-cp36m-win_amd64.whl",
+      "has_sig": false,
+      "md5_digest": "226c9b0d87129b9363dea6173a280026",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp36",
+      "size": 104106,
+      "upload_time": "2017-10-14T15:40:59",
+      "url": "https://files.pythonhosted.org/packages/05/4d/a1cf97d40d8b4e9cc9f4a710c9c21dd86ca65a0828914700b5255740017f/parallel_ssh-1.2.0-cp36-cp36m-win_amd64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "a1fc6d9cc2843769879fd609b2439f57",
+        "sha256": "2c7b57d2332a65f46bf575d3d8cde5271fc37b4feaf31dbb295710fb92af122e"
+      },
+      "downloads": -1,
+      "filename": "parallel-ssh-1.2.0.tar.gz",
+      "has_sig": false,
+      "md5_digest": "a1fc6d9cc2843769879fd609b2439f57",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 45869,
-      "upload_time": "2017-08-31T00:20:12",
-      "url": "https://files.pythonhosted.org/packages/8d/76/28e1e3978cbc8083a5aeacb8470d726ea631d2d2a9d57eafa0c43c3504e4/parallel-ssh-1.1.1.tar.gz"
+      "size": 119174,
+      "upload_time": "2017-10-14T15:46:30",
+      "url": "https://files.pythonhosted.org/packages/cd/22/c4e9f5d977ef3ae7a39efe6baea708cb748dd46f3bbeaee1586ca133f563/parallel-ssh-1.2.0.tar.gz"
     }
   ]
 }
