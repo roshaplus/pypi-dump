@@ -4,26 +4,27 @@
     "author_email": "stphivos@gmail.com",
     "bugtrack_url": null,
     "classifiers": [],
-    "description": "[![Latest Version](https://img.shields.io/pypi/v/django_mock_queries.svg)](https://pypi.python.org/pypi/django_mock_queries)\n[![Build Status](https://travis-ci.org/stphivos/django-mock-queries.svg?branch=master)](https://travis-ci.org/stphivos/django-mock-queries)\n[![Code Coverage](https://codecov.io/github/stphivos/django-mock-queries/coverage.svg?branch=master)](https://codecov.io/github/stphivos/django-mock-queries?branch=master)\n[![Code Climate](https://codeclimate.com/github/stphivos/django-mock-queries/badges/gpa.svg)](https://codeclimate.com/github/stphivos/django-mock-queries)\n\n# Django Mock Queries\n\nA library for mocking Django queryset functions in memory for testing\n\n## Features\n\n* QuerySet style support for method chaining\n* Filtering with Q objects\n* Aggregates generation\n* CRUD functions\n* Field lookups\n* django-rest-framework serializer asserts\n\n## Examples\n\n```python\nfrom django.db.models import Avg, Q\nfrom django_mock_queries.query import MockSet, MockModel\n\nqs = MockSet(\n    MockModel(mock_name='john', email='john@gmail.com'),\n    MockModel(mock_name='jeff', email='jeff@hotmail.com'),\n    MockModel(mock_name='bill', email='bill@gmail.com'),\n)\n\nprint [x for x in qs.all().filter(email__icontains='gmail.com').select_related('address')]\n# Outputs: [john, bill]\n\nqs = MockSet(\n    MockModel(mock_name='model s', msrp=70000),\n    MockModel(mock_name='model x', msrp=80000),\n    MockModel(mock_name='model 3', msrp=35000),\n)\n\nprint qs.all().aggregate(Avg('msrp'))\n# Outputs: {'msrp__avg': 61666}\n\nqs = MockSet(\n    MockModel(mock_name='model x', make='tesla', country='usa'),\n    MockModel(mock_name='s-class', make='mercedes', country='germany'),\n    MockModel(mock_name='s90', make='volvo', country='sweden'),\n)\n\nprint [x for x in qs.all().filter(Q(make__iexact='tesla') | Q(country__iexact='germany'))]\n# Outputs: [model x, s-class]\n\nqs = MockSet(cls=MockModel)\nprint qs.create(mock_name='my_object', foo='1', bar='a')\n# Outputs: my_object\n\nprint [x for x in qs]\n# Outputs: [my_object]\n```\n\n### Test function that uses Django QuerySet:\n\n```python\n\"\"\"\nFunction that queries active users\n\"\"\"\ndef active_users(self):\n    return User.objects.filter(is_active=True).all()\n\n\"\"\"\nTest function applies expected filters by patching Django's user model Manager or Queryset with a MockSet\n\"\"\"\nfrom django_mock_queries.query import MockSet, MockModel\n\n\nclass TestApi(TestCase):\n    users = MockSet()\n    user_objects = patch('django.contrib.auth.models.User.objects', users)\n\n    @user_objects\n    def test_api_active_users_filters_by_is_active_true(self):\n        self.users.add(\n        \tMockModel(mock_name='active user', is_active=True),\n        \tMockModel(mock_name='inactive user', is_active=False)\n        )\n\n        for x in self.api.active_users():\n        \tassert x.is_active\n```\n\n### Test django-rest-framework model serializer:\n\n```python\n\"\"\"\nCar model serializer that includes a nested serializer and a method field\n\"\"\"\nclass CarSerializer(serializers.ModelSerializer):\n    make = ManufacturerSerializer()\n    speed = serializers.SerializerMethodField()\n\n    def get_speed(self, obj):\n        return obj.format_speed()\n\n    class Meta:\n        model = Car\n        fields = ('id', 'make', 'model', 'speed',)\n\n\"\"\"\nTest serializer returns fields with expected values and mock the result of nested serializer for field make\n\"\"\"\ndef test_car_serializer_fields(self):\n    car = Car(id=1, make=Manufacturer(id=1, name='vw'), model='golf', speed=300)\n\n    values = {\n        'id': car.id,\n        'model': car.model,\n        'speed': car.formatted_speed(),\n    }\n\n    assert_serializer(CarSerializer) \\\n        .instance(car) \\\n        .returns('id', 'make', 'model', 'speed') \\\n        .values(**values) \\\n        .mocks('make') \\\n        .run()\n```\n\n### Full Example\nThere is a full Django application in the `examples/users` folder. It shows how\nto configure `django_mock_queries` in your tests and run them with or without\nsetting up a Django database. Running the mock tests without a database can be\nmuch faster when your Django application has a lot of database migrations.\n\nTo run your Django tests without a database, add a new settings file, and call\n`monkey_patch_test_db()`. Use a wildcard import to get all the regular settings\nas well.\n\n```python\n# settings_mocked.py\nfrom django_mock_queries.mocks import monkey_patch_test_db\n\nfrom users.settings import *\n\nmonkey_patch_test_db()\n```\n\nThen run your Django tests with the new settings file:\n\n    ./manage.py test --settings=users.settings_mocked\n\nHere's the pytest equivalent:\n\n    pytest --ds=users.settings_mocked\n\nThat will run your tests without setting up a test database. All of your tests\nthat use Django mock queries should run fine, but what about the tests that\nreally need a database?\n\n    ERROR: test_create (examples.users.analytics.tests.TestApi)\n    ----------------------------------------------------------------------\n    Traceback (most recent call last):\n      File \"/.../examples/users/analytics/tests.py\", line 28, in test_create\n        start_count = User.objects.count()\n      [...]\n    NotSupportedError: Mock database tried to execute SQL for User model.\n\nIf you want to run your tests without a database, you need to tell Django\nto skip the tests that need a database. You can do that by putting a skip\ndecorator on the test classes or test methods that need a database.\n\n```python\n@skipIfDBFeature('is_mocked')\nclass TestApi(TestCase):\n    def test_create(self):\n        start_count = User.objects.count()\n\n        User.objects.create(username='bob')\n        final_count = User.objects.count()\n\n        self.assertEqual(start_count + 1, final_count)\n```\n\n## Installation\n\n```bash\n$ pip install django_mock_queries\n```\n\n## Contributing\n\nAnything missing or not functioning correctly? PRs are always welcome! Otherwise, you can create an issue so someone else does it when time allows.\n\nYou can follow these guidelines:\n\n* Fork the repo from this page\n* Clone your fork:\n```bash\n$ git clone https://github.com/{your-username}/django-mock-queries.git\n$ cd django-mock-queries\n$ git checkout -b feature/your_cool_feature\n```\n* Implement feature/fix\n* Add/modify relevant tests\n* Run tox to verify all tests and flake8 quality checks pass\n```bash\n$ tox\n```\n* Commit and push local branch to your origin\n```bash\n$ git commit . -m \"New cool feature does this\"\n$ git push -u origin HEAD\n```\n* Create pull request\n\n## TODO\n\n* Add docs as a service like readthedocs with examples for every feature\n* Add support for missing QuerySet methods/Field lookups/Aggregation functions:\n    * Methods that return new QuerySets: annotate, reverse, dates, datetimes, none, extra, raw\n\n    * Methods that do not return QuerySets: update_or_create, bulk_create, in_bulk, update, delete, as_manager\n\n    * Field lookups: range, date, week_day, search\n\n    * Aggregation functions: StdDev, Variance\n",
+    "description": "",
     "docs_url": null,
-    "download_url": "UNKNOWN",
+    "download_url": "",
     "downloads": {
       "last_day": 0,
       "last_month": 0,
       "last_week": 0
     },
     "home_page": "https://github.com/stphivos/django-mock-queries",
-    "keywords": "django,mocking,unit-testing,tdd",
-    "license": "UNKNOWN",
-    "maintainer": null,
-    "maintainer_email": null,
+    "keywords": "django",
+    "license": "",
+    "maintainer": "",
+    "maintainer_email": "",
     "name": "django_mock_queries",
-    "platform": "UNKNOWN",
+    "platform": "",
     "project_url": "https://pypi.org/project/django_mock_queries/",
-    "release_url": "https://pypi.org/project/django_mock_queries/0.0.16.5/",
-    "requires_python": null,
+    "release_url": "https://pypi.org/project/django_mock_queries/1.0.0/",
+    "requires_dist": [],
+    "requires_python": "",
     "summary": "A django library for mocking queryset functions in memory for testing",
-    "version": "0.0.16.5"
+    "version": "1.0.0"
   },
   "releases": {
     "0.0.1": [],
@@ -34,7 +35,7 @@
           "md5": "7554ea3e1e3237509c88583cc6defdd0",
           "sha256": "4de7be94e1f0a707f223914021ab7888e1d48b62771b44512fbeaf201f343aab"
         },
-        "downloads": 142,
+        "downloads": -1,
         "filename": "django_mock_queries-0.0.10.tar.gz",
         "has_sig": false,
         "md5_digest": "7554ea3e1e3237509c88583cc6defdd0",
@@ -52,7 +53,7 @@
           "md5": "eaaa82bc563dfa43c816f44d9b241b2f",
           "sha256": "e467446cd0b55db9cef36fbc8ad7ed9f4f027bcf9f11ddaf2e46b22a298f8cf3"
         },
-        "downloads": 129,
+        "downloads": -1,
         "filename": "django_mock_queries-0.0.11.tar.gz",
         "has_sig": false,
         "md5_digest": "eaaa82bc563dfa43c816f44d9b241b2f",
@@ -70,7 +71,7 @@
           "md5": "380381f253a4a1141a4df74b6df616f7",
           "sha256": "a22b6f5bf4fc94c9bd1616944280b77f17311c9ee194090b49d49bac0cfd025f"
         },
-        "downloads": 128,
+        "downloads": -1,
         "filename": "django_mock_queries-0.0.12.tar.gz",
         "has_sig": false,
         "md5_digest": "380381f253a4a1141a4df74b6df616f7",
@@ -88,7 +89,7 @@
           "md5": "9d3649b110317f9611f7e7f01268892e",
           "sha256": "77e7eb620b17091e6699824ba22104f8c4f291246fbd592aeff510a28870f854"
         },
-        "downloads": 234,
+        "downloads": -1,
         "filename": "django_mock_queries-0.0.13.tar.gz",
         "has_sig": false,
         "md5_digest": "9d3649b110317f9611f7e7f01268892e",
@@ -106,7 +107,7 @@
           "md5": "69f75fdacec1740cd42015cfa40af2b4",
           "sha256": "d4a959cb3a8057174c4a6590eed59b87f76f8fe041f3cb1ac6bef5d352957a02"
         },
-        "downloads": 187,
+        "downloads": -1,
         "filename": "django_mock_queries-0.0.14.tar.gz",
         "has_sig": false,
         "md5_digest": "69f75fdacec1740cd42015cfa40af2b4",
@@ -124,7 +125,7 @@
           "md5": "886c1ce05e9e6213b4bd284148d39746",
           "sha256": "49735abf4a8a0cfc477355a3a29705db3b67913273f31019a56fe34701f73f29"
         },
-        "downloads": 18,
+        "downloads": -1,
         "filename": "django_mock_queries-0.0.15.tar.gz",
         "has_sig": false,
         "md5_digest": "886c1ce05e9e6213b4bd284148d39746",
@@ -142,7 +143,7 @@
           "md5": "edcf8e3693ec8b685ba4731dd2665e60",
           "sha256": "73b7e4b9e990b8db302807c7b84f460f58cfee59c60158d8ced13cc0cb530b54"
         },
-        "downloads": 18,
+        "downloads": -1,
         "filename": "django_mock_queries-0.0.16.tar.gz",
         "has_sig": false,
         "md5_digest": "edcf8e3693ec8b685ba4731dd2665e60",
@@ -160,7 +161,7 @@
           "md5": "6540db6149feb48fc5dfa7d8312425e9",
           "sha256": "d2407b26062a4d50be6cee76245b1f2947f08240bc3412adc0cf37602cd2c7a2"
         },
-        "downloads": 22,
+        "downloads": -1,
         "filename": "django_mock_queries-0.0.16.1.tar.gz",
         "has_sig": false,
         "md5_digest": "6540db6149feb48fc5dfa7d8312425e9",
@@ -178,7 +179,7 @@
           "md5": "ca3f7fa9510590c637f8a3d067b86842",
           "sha256": "7b09671dfac87867c23ae5fc0374bb30f5afff252c434180ab0ef1f68240ca44"
         },
-        "downloads": 22,
+        "downloads": -1,
         "filename": "django_mock_queries-0.0.16.2.tar.gz",
         "has_sig": false,
         "md5_digest": "ca3f7fa9510590c637f8a3d067b86842",
@@ -196,7 +197,7 @@
           "md5": "70ead27f55f1b7f8444e8f0ce3a13dc6",
           "sha256": "0be8f23a7e86f1e1fcb83ee57bdf8cf2e4048ac6a37fb8a53a4d213801c67b45"
         },
-        "downloads": 24,
+        "downloads": -1,
         "filename": "django_mock_queries-0.0.16.3.tar.gz",
         "has_sig": false,
         "md5_digest": "70ead27f55f1b7f8444e8f0ce3a13dc6",
@@ -214,7 +215,7 @@
           "md5": "c3a2fe2dae073e687b6ac36314d1392f",
           "sha256": "cd293c61014bbaed9fc42b1262ad62198f9a03dec4926096e5dc174251939c5c"
         },
-        "downloads": 22,
+        "downloads": -1,
         "filename": "django_mock_queries-0.0.16.4.tar.gz",
         "has_sig": false,
         "md5_digest": "c3a2fe2dae073e687b6ac36314d1392f",
@@ -232,7 +233,7 @@
           "md5": "d02173b4f72197676f70f6a5fff63a1d",
           "sha256": "39fb2ea673bfdb216324d69761e1f22ec638bc05226e66ad457a3782b59a4803"
         },
-        "downloads": 25,
+        "downloads": -1,
         "filename": "django_mock_queries-0.0.16.5.tar.gz",
         "has_sig": false,
         "md5_digest": "d02173b4f72197676f70f6a5fff63a1d",
@@ -251,7 +252,7 @@
           "md5": "d67ce6ae8f354e1bc1a09a4bf62ed02e",
           "sha256": "1a9170a205654ed019a0b067277d4852edd9e54e1ea91afc6c6d58ebaa4c07bb"
         },
-        "downloads": 150,
+        "downloads": -1,
         "filename": "django_mock_queries-0.0.3.tar.gz",
         "has_sig": false,
         "md5_digest": "d67ce6ae8f354e1bc1a09a4bf62ed02e",
@@ -270,7 +271,7 @@
           "md5": "df60089afe512d47339f0acb0f7dd281",
           "sha256": "77e8051b3b080bfe415e8c3721ad402ab1ff1fd6dcdaa6b030c7a2e3ae058514"
         },
-        "downloads": 483,
+        "downloads": -1,
         "filename": "django_mock_queries-0.0.5.tar.gz",
         "has_sig": false,
         "md5_digest": "df60089afe512d47339f0acb0f7dd281",
@@ -288,7 +289,7 @@
           "md5": "bfbf851178ea9053a0879616cb2faed1",
           "sha256": "4ca5b432f0b942234b01565ac98d61312f39d3e6581fc61320da81ec1954395d"
         },
-        "downloads": 131,
+        "downloads": -1,
         "filename": "django_mock_queries-0.0.6.tar.gz",
         "has_sig": false,
         "md5_digest": "bfbf851178ea9053a0879616cb2faed1",
@@ -306,7 +307,7 @@
           "md5": "d37e344788631162926df4b08ba44c59",
           "sha256": "a4124fba3f6745c8b014db49474ef9277b63bf1007aa1aeab9d9c25ba9cb790f"
         },
-        "downloads": 145,
+        "downloads": -1,
         "filename": "django_mock_queries-0.0.7.tar.gz",
         "has_sig": false,
         "md5_digest": "d37e344788631162926df4b08ba44c59",
@@ -324,7 +325,7 @@
           "md5": "30787e491e8d490c54f6d240bfc8fc89",
           "sha256": "935e2056d756fafd90b0ab53b27bdc5424e76725b6edc5b07c82f64898ea16e1"
         },
-        "downloads": 128,
+        "downloads": -1,
         "filename": "django_mock_queries-0.0.8.tar.gz",
         "has_sig": false,
         "md5_digest": "30787e491e8d490c54f6d240bfc8fc89",
@@ -342,7 +343,7 @@
           "md5": "57b58a823d847f195e77a7737d8b4c9e",
           "sha256": "35a8d632ff260bc6ebe548a637d774e7d95a26deb88a7aa62168dc248227dd54"
         },
-        "downloads": 144,
+        "downloads": -1,
         "filename": "django_mock_queries-0.0.9.tar.gz",
         "has_sig": false,
         "md5_digest": "57b58a823d847f195e77a7737d8b4c9e",
@@ -352,24 +353,42 @@
         "upload_time": "2016-03-30T23:20:09",
         "url": "https://files.pythonhosted.org/packages/3b/b0/ea985b4aeb0b1da054b1cefa2242cbc79e8d2c32117f9c2e169c22d75dac/django_mock_queries-0.0.9.tar.gz"
       }
+    ],
+    "1.0.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "071ab8f44b569cd309b090db4225a80c",
+          "sha256": "3ea70b6f7ca3bc9924d55c322b74f2370f771d98cca48f07b42ec8523d1eb993"
+        },
+        "downloads": -1,
+        "filename": "django_mock_queries-1.0.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "071ab8f44b569cd309b090db4225a80c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 13541,
+        "upload_time": "2017-10-15T17:50:26",
+        "url": "https://files.pythonhosted.org/packages/1c/12/7ffc31052b564f86eeb87880d5033616ae89d91fc92edb82e7db41c12896/django_mock_queries-1.0.0.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "d02173b4f72197676f70f6a5fff63a1d",
-        "sha256": "39fb2ea673bfdb216324d69761e1f22ec638bc05226e66ad457a3782b59a4803"
+        "md5": "071ab8f44b569cd309b090db4225a80c",
+        "sha256": "3ea70b6f7ca3bc9924d55c322b74f2370f771d98cca48f07b42ec8523d1eb993"
       },
-      "downloads": 25,
-      "filename": "django_mock_queries-0.0.16.5.tar.gz",
+      "downloads": -1,
+      "filename": "django_mock_queries-1.0.0.tar.gz",
       "has_sig": false,
-      "md5_digest": "d02173b4f72197676f70f6a5fff63a1d",
+      "md5_digest": "071ab8f44b569cd309b090db4225a80c",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 12902,
-      "upload_time": "2017-03-14T12:58:00",
-      "url": "https://files.pythonhosted.org/packages/af/ff/0ab8d8a3089166c6a0e89b9c10920a67aefe5cccd99c489da5423faa1f65/django_mock_queries-0.0.16.5.tar.gz"
+      "size": 13541,
+      "upload_time": "2017-10-15T17:50:26",
+      "url": "https://files.pythonhosted.org/packages/1c/12/7ffc31052b564f86eeb87880d5033616ae89d91fc92edb82e7db41c12896/django_mock_queries-1.0.0.tar.gz"
     }
   ]
 }
