@@ -1,7 +1,7 @@
 {
   "info": {
     "author": "Paul Harter",
-    "author_email": "username: paul, domain: glowinthedark.co.uk",
+    "author_email": "paul@glowinthedark.co.uk",
     "bugtrack_url": "",
     "classifiers": [
       "Development Status :: 4 - Beta",
@@ -10,26 +10,27 @@
       "Operating System :: OS Independent",
       "Programming Language :: Python :: 2.7"
     ],
-    "description": "#fam\n\nA simple Python ORM for CouchDB and Couchbase Sync Gateway. \n\nCurrent build status: ![Build Status](https://circleci.com/gh/paulharter/fam.png?circle-token=b11ad12686f98bb9f68956f680bb6e61184d5)\n\nFam is a work in progress growing as the needs of my current project dictate.  It is not a feature complete ORM, however it is useful if you, like me, have highly relational data in a couch type db. I use it to support a web app that sits side by side with a mobile application using sync gateway.\n\nFam adds a type and namespace to each document:\n\n- **type** - A lower case string derived from the class name\n- **namespace** - An opaque string to help avoid class name clashes and allow versioning of classes\n\nAnd uses them to provide:\n\n- A class to bind methods to documents\n- Automatic generation of design documents for relationships between classes\n- Lookup of related documents\n- Validation of documents\n- Document life-cycle callbacks for creation, updates and deletion\n- Optional cascading deletion through relationships\n\nYou can define a fam class like this:\n\n```python\n\nNAMESPACE = \"mynamespace\"\n\nclass Dog(FamObject):\n    use_rev = True\n    additional_properties = True\n    fields = {\n        \"name\": StringField(),\n        \"owner_id\": ReferenceTo(NAMESPACE, \"person\", cascade_delete=True)\n        }\n\n    def talk(self):\n        return \"woof\"\n\n```\n\nand then use it to create a document like this:\n\n```python\ndog = Dog(name=\"fly\")\ndb.put(dog)\n\n```\n\n##Installation\n\nYou can install fam from pypi with `pip install fam`\n\n##Databases\n\nfam has wrappers for connecting to different databases:\n\n- CouchDB\n- Couchbase Sync Gateway\n\nThese wrapper classes do very little except remember the location of the database and send requests, relying on the python requests library to provide connection pooling.\n\n To use fam you have to first create a class mapper passing in your classes eg:\n \n ```python\n \nfrom fam.mapper import ClassMapper\n \nmapper = ClassMapper([Dog, Cat, Person])\n\n ```\n and then create a db wrapper using the mapper, the address of the database and the name of the database/bucket\n \n ```python\n \ndb = CouchDBWrapper(mapper, database_url, database_name)\n \n ```\n \n This means that documents accessed though the db will be associated with their relative classes.\n \n You can then write or update the relational design documents in the database from the classes in the mapper like this:\n \n ```python\n \ndb.update_designs()\n \n```\n\nAn instance of a database wrapper provides these methods for adding and removing fam objects from databases\n\n- **db.put(an_object)** - Puts this object into the database\n- **db.get(key)** - Gets the object with this key from the database\n- **db.delete(an_object)** - Removes this object from the database\n- **db.delete_key(key)** - Removes the object with this key from the database\n\n\n##Classes\n \n Fam classes are defined as inheriting from fam.blud.FamObject like this:\n\n\n ```python \n \nclass Cat(FamObject):\n    use_rev = False\n    additional_properties = False\n    fields = {\n        \"name\": StringField(),\n        \"legs\": NumberField(),\n        \"owner_id\": ReferenceTo(NAMESPACE, \"person\")\n        }\n \n ```\n \n With three class attributes\n \n - **use_rev** - A boolean, True by default, which if true uses the default rev/cas collision protection of Couch DBs but if false always forces a document update as if this mechanism didn't exist\n - **additional_properties** - A boolean, false by default, which if true lets you add arbitrary additional top level attributes to an object and if false will throw an exception when you try.\n - **fields** - A dict of named fields that map to the top level attributes of the underlying json documents. See below for use.\n \nFamObject also provides six callbacks that occur as documents are saved and deleted\n\n- **pre_save_new_cb(self)**\n- **post_save_new_cb(self)**\n- **pre_save_update_cb(self, old_properties)**\n- **post_save_update_cb(self)**\n- **pre_delete_cb(self)**\n- **post_delete_cb(self)**\n      \n##Fields\n \nThere are several types of field defined in fam.blud that map to json types\n \n- **BoolField**\n- **NumberField**\n- **StringField**\n- **ListField**\n- **DictField**\n\nWhen defining a fam class you instantiate each of fields for the class and give it a name eg `\"address\": StringField()`\n\n###ObjectField Fields\n\nAn ObjectField is an instance of another python object. The class of the object must be provided when defining the field. The class has to provide an instance method `to_json` and a class method `from_json` so fam can serialise and deserialise it successfully.\n\nThis is an example of a representation of a duration of time:\n\n```python\n\n\"duration\": ObjectField(cls=TimeDuration)\n\n...\n\nclass TimeDuration(object):\n\n    def __init__(self, nom=0, denom=0, count=0):\n        self.nom = nom\n        self.denom = denom\n        self.count = count\n\n    def to_json(self):\n        return {\n            \"nom\": self.nom,\n            \"denom\": self.denom,\n            \"count\": self.count,\n        }\n\n    @classmethod\n    def from_json(cls, as_json):\n        return cls(**as_json)\n        \n    ...\n\n```\n\n###ReferenceTo Fields\n\nReferenceTo is really just a string field that is the key of another document. ReferenceTo fields are defined with the namespace and name of the type of the referenced document. \n\n```python \n\n\"owner_id\": ReferenceTo(NAMESPACE, \"person\")\n\n```\n\nThe name should always end with `_id` , this indicates that it is a reference but it also support fam's lookup of related objects. This allows you to directly access related documents for example dog.owner_id will return the key of the owner document but dog.owner will return an instance of the Owner class for that document.\n\n###ReferenceFrom Fields\n\nReferenceFrom fields are quite different and they have no representation within the json document. Instead they use the automatically created design documents to find a collection of documents with the associated ReferenceTo field. So ReferenceFrom fields only work with as existing ReferenceTo Field. They are defined with the namespace and the type that the reference is from and the name of the ReferenceTo field in that type.\n\n```python\n\n\"dogs\": ReferenceFrom(NAMESPACE, \"dog\", \"owner_id\")\n\n```\nThis gives way to do one-to-one and one-to-many relationships. In practice I find I tend to model immutable one-to-many relationships internally as lists of keys within documents and mutable ones with fam view lookups. I also create mutable one-to-one and many-to-many relationships with small join documents with compound keys. I also have write extra views by hand for more complex indexing.\n\n##Field Options\n\nThere are five optional arguments when creating a field:\n\n- **required** - A boolean, false by default that asserts that this field must be present.\n- **immutable** - A boolean, false by default asserts that you cannot change the value of ths field once it has been set.\n- **default** - A default value for this field that will be returned on read if this field is absent from the underlying json. None by default.\n- **cascade_delete** - Only applies to ReferenceTo and ReferenceFrom fields. A boolean, false by default, which if true will delete the object the reference points to when this object is deleted.\n- **unique** - The thing about uniqueness in a distributed data set is that it cannot be guaranteed, so this assertion is weaker than you would get in a monolithic dataset. This said it is still sometimes useful. It is a boolean, false by default, which if true will raise an exception when you try to add a document with a non unique field to a database using fam. It also helps provide the classmethod `get_unique_instance` which can be used like this:\n\n```python\nCat.get_unique_instance(db, \"email\", \"tiddles@glowinthedark.co.uk)\n```\n\n##Validation\n\nFam now uses JSON Schema http://json-schema.org to validate documents. Fam's mapper generates schemata dynamically from the class definitions and uses them to validate documents.\n\nYou can get the mapper to write out its internal schemata by calling ```mapper.validator.write_out_schemata(directory)```\n\n\n## Writing Views\n\nCouch views are fragments of JavaScript stored in design documents in the database. Fam automatically generates some design documents for you, those describing relationships between documents, but the chances are you will want to create some other views to help search for documents. Fam takes a minimalist approach to design documents. It provides two things: firstly, JavaScript parsing in the mapper so you can write design documents in JavaScript rather than json (which is nasty), you write in js and it turns them into json; secondly a simple method on the fam db object to query views.\n\nYou can use it like this:\n\nWrite JavaScript versions of you design documents with the views as vars in the global namespace in files with the desired name of the design document. eg\n\n```javascript\nvar cat_legs = {\n    map: function(doc){\n        if(doc.type == \"cat\"){\n            emit(doc.legs, doc)\n        }\n    }\n}\n```\n\nSaved in a file called `animal_views.js`. Then pass the paths to you JavaScript design documents to the constructor for the mapper:\n\n```python\nmapper = ClassMapper([Dog, Cat, Person], designs=[\".../animal_views.js\"])\n\n```\n\nThen you can then query these views like this `db.view(viewpath, **kwargs)` where viewpath is a composite of design name and view name `design_name/view_name` and kwargs are the normal view query attributes for either CouchDB or Sync Gateway (they differ slightly), eg:\n\n```python\ncats_with_three_legs = db.view(\"animal_views/cat_legs\", key=3)\n```\n\n## String Formats\n\nThe StringField can easiliy be extended to define strings of data in certain formats. Currently there are two in fam.string_formats, EmailField and DateTimeField.\n\n## Write Buffer\n\nThis is a context managed in-memory object buffer. Reads pass through it so the same Python object always represents same db doc,\nand document write are only saved back to the database when the context manager closes.\n\nThis replaces the old cache it is aliased to it so existing code won't break.\n\n\n```python\n\nfrom fam.buffer import buffered_db\n\n# create a database db as usual\n\n# then create an in memory cache in front of it\nwith buffered_db(db) as bdb:\n\n    # now use bdb instead of db\n    dog = Dog(name=\"fly\")\n    bdb.put(dog)\n    \n    # dog2 will be the exact same python object as dog\n    dog2 = bdb.get(dog.key)\n    \n#when the context closes the docs are saved back to db\n    \n```\n\n## Sync Function ACLs\n\nAlthough I am a big fan Couchbase Sync Gateway I feel that the sync function is a little over burdened with responsibilities,\nso I template some portions of my sync function that protect access to writing documents.\nTo support this I have added declarative acls in an additional class attribute on FamObjects. It looks like this:\n\n```python\n    acl = [\n        CreateRequirement(role=ANYONE, owner=True),\n        UpdateRequirement(role=NO_ONE, fields=[\"channels\", \"project_id\", \"immutable_name\", \"owner_name\"]),\n        UpdateRequirement(role=ANYONE, owner=True, fields=[\"name\"]),\n        DeleteRequirement(role=ANYONE, owner=True)\n    ]\n ```\n This will not be useful for everyone or it all situations as it necessarily limits the flexibility of how the sync function works. It isn't fully documented here and still requires a clear understanding of how the sync function works, so tread carefully.\n \nThere is then a function in `fam.acl.writer` which takes two templates, a top level one for the json config function and inner one for the js sync function, and a mapper, to generate a complete config file.\n\n```python\nwrite_sync_function(template_path, output_path, sync_template_path, mapper)\n```\nThe templating is crude, using simple string replacement to add a collection of the requirements to the js. Have a look at the function to see what it does. You can then apply the normal sync function checks with a function something like this:\n\n```javascript\n    function check(a_doc, req){\n\n        if(req  === undefined){\n            requireRole([]);\n            return;\n        }\n        if(req.owner !== undefined){\n            if(a_doc.owner_name === undefined){\n                throw(\"owner_name not given\");\n            }\n            requireUser(a_doc.owner_name);\n        }\n        if(req.withoutAccess === undefined){\n            requireAccess(a_doc.channels);\n        }\n        if(req.user !== undefined){\n            requireUser(req.user);\n        }\n        if(req.role !== undefined){\n            requireRole(req.role);\n        }\n    }\n\n```\n\n\n##To Do?\n\nSome possible further features:\n\n- Optional class attribute **schema** to give better control over document validation.\n- Pass schemata to sync gateway's sync function to enforce typed validation on document creation and update.\n\n",
+    "description": "",
     "docs_url": null,
-    "download_url": "UNKNOWN",
+    "download_url": "",
     "downloads": {
       "last_day": 0,
       "last_month": 0,
       "last_week": 0
     },
     "home_page": "https://github.com/paulharter/fam",
-    "keywords": null,
+    "keywords": "",
     "license": "LICENSE",
-    "maintainer": null,
-    "maintainer_email": null,
+    "maintainer": "",
+    "maintainer_email": "",
     "name": "fam",
-    "platform": "UNKNOWN",
+    "platform": "",
     "project_url": "https://pypi.org/project/fam/",
-    "release_url": "https://pypi.org/project/fam/1.1.0/",
-    "requires_python": null,
+    "release_url": "https://pypi.org/project/fam/1.1.3/",
+    "requires_dist": [],
+    "requires_python": "",
     "summary": "Simple Python ORM for CouchDB, and Sync Gateway",
-    "version": "1.1.0"
+    "version": "1.1.3"
   },
   "releases": {
     "1.0.1": [
@@ -39,7 +40,7 @@
           "md5": "0e440fcde95ee3d7f0e33c5c95b7e32f",
           "sha256": "4cfe0f75f6a4d5318c224d5ae75c8e4c709dbe8649f21e964cba88a6f67e0664"
         },
-        "downloads": 840,
+        "downloads": -1,
         "filename": "fam-1.0.1-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "0e440fcde95ee3d7f0e33c5c95b7e32f",
@@ -55,7 +56,7 @@
           "md5": "475bff36bfa5d3b55bad013fc1500d41",
           "sha256": "6ab7315009cab312007f9d9a29f8e5bcfc3e5e77c3e8d64e207fa65567256388"
         },
-        "downloads": 666,
+        "downloads": -1,
         "filename": "fam-1.0.1.tar.gz",
         "has_sig": false,
         "md5_digest": "475bff36bfa5d3b55bad013fc1500d41",
@@ -73,7 +74,7 @@
           "md5": "17b35ed4bfb8604d7662bdf6727f1b51",
           "sha256": "868e47a367ccd89f65993a45096dae05bcb4900921d1f4b031da6fb9b8d7ebc8"
         },
-        "downloads": 13,
+        "downloads": -1,
         "filename": "fam-1.0.17-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "17b35ed4bfb8604d7662bdf6727f1b51",
@@ -89,7 +90,7 @@
           "md5": "0cbbe4707c1d1db898264d2401ea51b7",
           "sha256": "810f65eba8a63206b67965ce040b745c4e607ffe62eee66a6bf1eaf70a4d26c4"
         },
-        "downloads": 15,
+        "downloads": -1,
         "filename": "fam-1.0.17.tar.gz",
         "has_sig": false,
         "md5_digest": "0cbbe4707c1d1db898264d2401ea51b7",
@@ -107,7 +108,7 @@
           "md5": "95efed8fd8492965e643739c18c2218b",
           "sha256": "41c51aa00ed06db03dc0076743da14d4574811c256470b8c48c87831f234c27f"
         },
-        "downloads": 13,
+        "downloads": -1,
         "filename": "fam-1.0.18-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "95efed8fd8492965e643739c18c2218b",
@@ -123,7 +124,7 @@
           "md5": "398db26eb7a3fc9dad965b7fb94a9c90",
           "sha256": "d4e50d90d7bc871907f3f7a217503ff46c52327fe328fb2efd1620ecda775e14"
         },
-        "downloads": 11,
+        "downloads": -1,
         "filename": "fam-1.0.18.tar.gz",
         "has_sig": false,
         "md5_digest": "398db26eb7a3fc9dad965b7fb94a9c90",
@@ -141,7 +142,7 @@
           "md5": "5d1f2252f7e30e8b1b59ce027c7ed61b",
           "sha256": "ce5942927dab911588ea79810102a2e218eabb01f589a230c9c4ad243022eb7e"
         },
-        "downloads": 147,
+        "downloads": -1,
         "filename": "fam-1.0.3-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "5d1f2252f7e30e8b1b59ce027c7ed61b",
@@ -157,7 +158,7 @@
           "md5": "c871ca1576de1999c51544d7178f45be",
           "sha256": "cd8bbab269e66129be7a6e85b5a654628d09cfba3f3d22267714b42c2e1e75f8"
         },
-        "downloads": 135,
+        "downloads": -1,
         "filename": "fam-1.0.3.tar.gz",
         "has_sig": false,
         "md5_digest": "c871ca1576de1999c51544d7178f45be",
@@ -175,7 +176,7 @@
           "md5": "82ed33313a6fb046180bf844c42c0a3f",
           "sha256": "abe729c7e0d1d4177d87c5f18faf59fb08c67fc15931f50df071258e49cab54b"
         },
-        "downloads": 464,
+        "downloads": -1,
         "filename": "fam-1.0.4-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "82ed33313a6fb046180bf844c42c0a3f",
@@ -191,7 +192,7 @@
           "md5": "5cd4002e6b32dbf88a994f93bd38808c",
           "sha256": "09b62eb32386a71734af84ad47926cda669883c6424544b4fdff19b2fbfd18aa"
         },
-        "downloads": 150,
+        "downloads": -1,
         "filename": "fam-1.0.4.tar.gz",
         "has_sig": false,
         "md5_digest": "5cd4002e6b32dbf88a994f93bd38808c",
@@ -209,7 +210,7 @@
           "md5": "f91f55c42ab08922701bbb61c15e6729",
           "sha256": "5b00b903a7cc0c5f4fb60cf18d4fc703b647f1cce248f709ef876e66c5691166"
         },
-        "downloads": 145,
+        "downloads": -1,
         "filename": "fam-1.0.7-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "f91f55c42ab08922701bbb61c15e6729",
@@ -225,7 +226,7 @@
           "md5": "a692d55739c90b81405a07996d09b362",
           "sha256": "b2593bfa09b6be17711b2b550b12c4e28433bad1f8927dc02e9f633f13c32ea4"
         },
-        "downloads": 154,
+        "downloads": -1,
         "filename": "fam-1.0.7.tar.gz",
         "has_sig": false,
         "md5_digest": "a692d55739c90b81405a07996d09b362",
@@ -243,7 +244,7 @@
           "md5": "c6b32cdf0100f71ca976a55d1480ba1d",
           "sha256": "bb478c9ae2ab0a7b349c810e63a44e2d4df5a0c371c01f09af41b53ce49ca383"
         },
-        "downloads": 19,
+        "downloads": -1,
         "filename": "fam-1.1.0-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "c6b32cdf0100f71ca976a55d1480ba1d",
@@ -259,7 +260,7 @@
           "md5": "6fb5bea0e4587be16e00d88ca33b2bb6",
           "sha256": "18f8aedc97729f36ecf7c6aa013beefe3433747b995fadb48c967ff49920f833"
         },
-        "downloads": 17,
+        "downloads": -1,
         "filename": "fam-1.1.0.tar.gz",
         "has_sig": false,
         "md5_digest": "6fb5bea0e4587be16e00d88ca33b2bb6",
@@ -269,40 +270,42 @@
         "upload_time": "2017-03-08T15:16:38",
         "url": "https://files.pythonhosted.org/packages/37/47/b98361f314eb0462da4caff5a6b4e6e32442456086d648a5b8bd1c36e54b/fam-1.1.0.tar.gz"
       }
+    ],
+    "1.1.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ebe3da722813381c4e52166541327e9d",
+          "sha256": "223469498709756663ab6c6e7c6076b31f2c6b5dca983d3e1ae770c849c5252a"
+        },
+        "downloads": -1,
+        "filename": "fam-1.1.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ebe3da722813381c4e52166541327e9d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 40766,
+        "upload_time": "2017-10-18T11:31:30",
+        "url": "https://files.pythonhosted.org/packages/1c/9f/41b487b58a645c381cbf878a5e88b6fc7a04f1bdf8e4c97d5cee5b487936/fam-1.1.3.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "c6b32cdf0100f71ca976a55d1480ba1d",
-        "sha256": "bb478c9ae2ab0a7b349c810e63a44e2d4df5a0c371c01f09af41b53ce49ca383"
+        "md5": "ebe3da722813381c4e52166541327e9d",
+        "sha256": "223469498709756663ab6c6e7c6076b31f2c6b5dca983d3e1ae770c849c5252a"
       },
-      "downloads": 19,
-      "filename": "fam-1.1.0-py2-none-any.whl",
+      "downloads": -1,
+      "filename": "fam-1.1.3.tar.gz",
       "has_sig": false,
-      "md5_digest": "c6b32cdf0100f71ca976a55d1480ba1d",
-      "packagetype": "bdist_wheel",
-      "python_version": "2.7",
-      "size": 59449,
-      "upload_time": "2017-03-08T15:16:40",
-      "url": "https://files.pythonhosted.org/packages/41/c0/2fba2ca00afe7aa9101dde2c109bb4fdf0be903d03cfbe037a6f22bd3c85/fam-1.1.0-py2-none-any.whl"
-    },
-    {
-      "comment_text": "",
-      "digests": {
-        "md5": "6fb5bea0e4587be16e00d88ca33b2bb6",
-        "sha256": "18f8aedc97729f36ecf7c6aa013beefe3433747b995fadb48c967ff49920f833"
-      },
-      "downloads": 17,
-      "filename": "fam-1.1.0.tar.gz",
-      "has_sig": false,
-      "md5_digest": "6fb5bea0e4587be16e00d88ca33b2bb6",
+      "md5_digest": "ebe3da722813381c4e52166541327e9d",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 38664,
-      "upload_time": "2017-03-08T15:16:38",
-      "url": "https://files.pythonhosted.org/packages/37/47/b98361f314eb0462da4caff5a6b4e6e32442456086d648a5b8bd1c36e54b/fam-1.1.0.tar.gz"
+      "size": 40766,
+      "upload_time": "2017-10-18T11:31:30",
+      "url": "https://files.pythonhosted.org/packages/1c/9f/41b487b58a645c381cbf878a5e88b6fc7a04f1bdf8e4c97d5cee5b487936/fam-1.1.3.tar.gz"
     }
   ]
 }
