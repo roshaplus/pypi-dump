@@ -11,7 +11,7 @@
       "Programming Language :: Python :: 3.7",
       "Topic :: Security"
     ],
-    "description": "A very simple, very safe password manager.\n\nThis package views a password as a sort of digital signature: in a sense, you use your master password to sign the string \"example.com\" (or whatever you like), resulting in a string that fulfills the site's password requirements.\n\nReasons to use this scheme:\n\n- As with other password managers, you only have to remember one password.\n- Unlike other password managers, your passwords are not stored anywhere, not even encrypted. It is impossible __even in principle__ for somebody to steal them out of this password manager, unless they have your master password (in which case you're obviously doomed) or they crack SHA256 and PBKDF2 (in which case we all are).\n- Kinda like other password managers, you can easily get your passwords on a foreign computer. Just `pip install prpg && prpg compute example.com:username`. (Well... as with other password managers, typing your master password into a foreign computer is a terrible idea. But you may be interested in the `--mangle-master` command-line option, which, at the cost of some tedious manual work, lets you enter your master password in a way that ensures it can't be recovered from a screenscraper/keylogger (though both together could recover it).)\n- Unlike other password managers, the algorithm is simple enough that you could re-implement it yourself (if you're fairly computer-and-crypto-savvy; if not, hopefully one of your friends is). You don't need to trust me. You are not reliant on me. If you lose access to this package, or stop trusting it, or something, you can re-implement the scheme on your own in under ten minutes and recover all your passwords.\n\nReasons to not use this scheme:\n\n- Because it doesn't store passwords, you can't store your pre-existing passwords.\n- If somebody steals your master password, they can rederive all your passwords. Other password managers kinda have this problem, but they at least require that the Bad Guy steal your vault-file too. Unless the password manager is cloud-based, in which case you're super doomed.\n- The passwords this produces are hard to type and harder to remember. Copy-paste is the only way you'll find this useful.\n\n\nExample Usage\n-------------\n\n(First, install, with `pip install prpg`.)\n\nBasic, standalone usage:\n\n```bash\n~ $ prpg compute 'example.com:username'\nMaster: ********\nCopied password for 'example.com:username' to clipboard.\n~ $\n```\n\nBy default, this generates a 16-character password with all the major kinds of character (lower, upper, digit, punctuation) -- but this is customizable.\n\nBut with this usage, you have to remember all your salts -- and remember them _exactly_ -- and type them in each time. What a hassle!\n\nFor this reason, PRPG can maintain a list of salts that it can easily fuzzy-search by prefix:\n\n```bash\n~ $ alias addsalt='prpg salts add'\n~ $ alias pw='prpg recall'\n~ $\n~ $ # set up a new salt, once\n~ $ addsalt 'example.com:username'\nCreating new salt-file in '/home/spencer/.prpg-salts.json'\n~ $ rot13 < ~/.prpg-salts.json\n{\n  \"example.com:username\": {}\n}\n~ $\n~ $ # compute your password\n~ $ pw ex\nChosen salt: 'example.com:username'\nMaster: ********\nCopied password for 'example.com:username' to clipboard.\n~ $\n```\n\n(The salt-file is ROT13-encrypted by default, as a weak protection against somebody grepping your computer for bank-related words. Yes, I _know_ that security through obscurity is frowned upon, but-- hey, it kinda works if you _stay_ obscure. Which I expect this package to do.)\n\n(Also, there's nothing special about the format `sitename.com:myusername`! The salts can be anything you want.)\n\nEach salt has a JSON object associated with it, which you can view using `prpg salts get SALTNAME`. You can store arbitrary random insensitive information in this object:\n\n```bash\n~ $ addsalt 'blub.com:mylogin' --json '{\"email address\": \"nobody@invalid.com\", \"birthday\": \"1970-01-01\"}'\n~ $ prpg salts get bl\n{'birthday': '1970-01-01', 'email address': 'nobody@invalid.com'}\n```\n\nThere are also three special keys that object can have:\n\n- `charsets` governs which characters may-and-must appear in the password:\n\n    ```bash\n    ~ $ addsalt 'we-disallow-punctuation.com:speeze' --json '{\"charsets\": [\"a-z\", \"A-Z\", \"0-9\"]}'\n    ~ $ prpg we --print\n    Chosen salt: 'we-disallow-punctuation.com:speeze'\n    Master: ********\n    dIfO89ZhvH07qbG3\n    ~ $\n    ```\n\n- `postprocess` lets you write an arbitrary transformation on the password, using a Python lambda:\n\n    ```bash\n    ~ $ addsalt 'stupid-short-max-password-length.com:spencer' --json '{\"postprocess\": \"lambda pw: pw[-12:]\"}'\n    ~ $ prpg stu --print\n    Chosen salt: 'stupid-short-max-password-length.com:spencer'\n    Master: ********\n    mu8AaBgRzD2!\n    ~ $\n    ```\n\n    If you try to use this feature, you may be perplexed by the fact that the string passed into the `postprocess` function is much longer than 16 characters: that's because it contains the full 32 bytes of entropy output by SHA-256, and the default `postprocess` function just trims it to 16 characters.\n\n- `salt` tells PRPG, \"I know this salt is named `example.com:username`, but I you should salt my master password with this other string instead.\" This might be useful if, say, a site changes its domain name.\n\n    ```bash\n    ~ $ prpg salts add 'blub-two-point-oh.com:mylogin' --json '{\"salt\": \"blub.com:mylogin\"}'\n    ~ $ prpg recall blub.com --print\n    Chosen salt: 'blub.com:mylogin'\n    Master: ********\n    D2YuMBK3qcVEdA3!\n    ~ $ prpg recall blub-two --print\n    Chosen salt: 'blub-two-point-oh.com:mylogin'\n    Master: ********\n    D2YuMBK3qcVEdA3!\n    ```\n\nFor more information about bells and whistles, consider running `prpg --help`.\n\n\nThe Algorithm\n-------------\n\nRead this section if you want to be able to re-implement this module in times of need. One of my design goals has been to make the algorithm as memorable as possible, while staying cryptographically respectable and suitable for most/all password purposes.\n\ntldr: interpret sha256(pbkdf2_hmac_sha256(master, salt, iterations=10**6)) as a huge hexadecimal number; express that number in the most natural numeral system defined by the required character sets; and truncate that to 16 characters.\n\nDetails:\n\nThe most natural numeral system corresponding to a bunch of charsets is a mixed-radix system where the last digit is drawn from the last charset, the second-to-last digit from the second-to-last charset, etc., until you run out of charsets; further digits are drawn from the union of all charsets. The default character sets are `['a-z', 'A-Z', '0-9', '!']`. (My mnemonic is \"the four major classes of character, ordered by how often I use them; punctuation is represented by `!` alone, because I'm excited about passwords.\")\n\n(You might think that it's more natural to say that the _first_ digit should come from the _first_ charset, etc., but that's provably bad: careful thought will reveal that the _first_ digit, i.e. the _most significant_ one, won't be completely random.)\n\nThe truncation starts from the right-hand end of the number, because that's the end that's guaranteed to have characters from all the required character sets.\n\n\n### As Code\n\nHere is the complete algorithm:\n\n```python\nimport hashlib\n\ndef number_to_password(n: int, charsets: Sequence[str]) -> str:\n  result = ''\n  for charset in reversed(charsets):\n    (n, i) = divmod(n, len(charset))\n    result = charset[i] + result\n  charset = ''.join(charsets)\n  while n > 0:\n    (n, i) = divmod(n, len(charset))\n    result = charset[i] + result\n  return result\n\ndef master_and_salt_to_password(master: str, salt: str, charsets: Sequence[str]) -> str:\n  key = hashlib.pbkdf2_hmac(\n          hash_name='sha256',\n          password=master.encode('utf-8'),\n          salt=salt.encode('utf-8'),\n          iterations=10**6)\n  sha = hashlib.sha256(key).hexdigest()\n  n = int(sha, 16)\n  return number_to_password(n, charsets)\n```\n\n\n### Background: Mixed-Radix Systems\n\ntldr: expressing a number \"in base `(...)(abcde)(fgh)(ijkl)`\" means the last digit is in base 4, where i=0, j=1, k=2, l=3; the next digit is in base 3, where f=0, g=1, h=2; and all other digits are in base 5, where a=0, ..., e=4. So in that base, \"ecbfk\" represents the number `4*300 + 2*60 + 1*12 + 0*4 + 3 = 1335`.\n\nRecall that on a microwave, \"1:23\" means there are 83 seconds left, because the middle digit only goes up to 5.\n\nSo, we can say that \"123\" is \"83 expressed in base `(...)(0-9)(0-5)(0-9)`.\" The possible characters we can put in the rightmost place are [\"0\", \"1\", ..., \"9\"]; for the second-rightmost, [\"0\", \"1\", ..., \"5\"]; for the third-rightmost and all others, 0-9 again.\n\nTo express 83 in base `(...)(0-9)(0-5)(0-9)`:\n\n- We first find the rightmost digit: there are 10 possibilities, so we take [83 mod 10 = 3] and that's the last digit.\n- To compute the rest of the digits, we take the quotient (i.e. floor(83/10) - 8) and express it in base `(...)(0-9)(0-5)` (which we got by dropping the rightmost place of the old base).\n- [8 mod 6 = 2], so the next digit is 2; quotient 1.\n- [1 mod 10 = 1], so the next digit is 1; quotient 0.\n- We've reached 0, so we're done. The final answer is \"123\", as expected.\n\nExplained more precisely\n----------------------------------\n\nInputs:\n\n- master password (string)\n- purpose/application/site/username/whatever (string)\n- an ordered list of \"required charsets\", e.g. [\"a-z\", \"A-Z\", \"0-9\", \"!\"]\n\nThe core algorithm here is a three-step process.\n\n1. Use PBKDF2-HMAC-SHA256 to convert the master password, salted with the purpose, with a million iterations, into a key.\n2. Hash that key, using HMAC-SHA256, to obtain a 64-character hex string.\n3. Interpret that as a (gigantic) hexadecimal number, and write it in a particular mixed-radix system (described below) derived from the given charsets. The result is a string that contains at least one character from each charset.\n\nIf the required charsets are `['a-z', 'A-Z', '0-9', '!']` (PRPG's default), we define the corresponding numeral system to be `(...)(a-zA-Z0-9!)(a-z)(A-Z)(0-9)(!)`\n\nThat is: the last digit is drawn from the last charset; the second-to-last from the second-to-last; etc.; until there are no more charsets, and then all remaining digits are drawn from the concatenation of all the charsets.\n\n\nHand-Worked Example\n-------------------\n\n- Get the MAC (not by hand):\n\n    ```python\n    key = pbkdf2_hmac(password=master_password, salt=\"github.com:speezepearson\", iterations=10**6, hash_function=sha256)\n    mac = hmac_sha256(key=key, msg=\"\").hexdigest()\n    ```\n\n- Suppose the MAC is `000...000864c6` (implausibly small, for the sake of example). Interpreted as a hex number, this equals 550086. Let's express this using the charsets `['a-z', '0-9']`.\n- The corresponding base is `(...)(a-z0-9)(a-z)(0-9)`.\n- 550086 mod 10 =  6 (quotient 55008); `'0123456789'[6]  = '6'`\n- 55008 mod 26 = 18 (quotient  2115); `'abcd...xyz'[18] = 's'`\n- 2115 mod 36 = 27 (quotient 58); `'a...z0...9'[27] = '1'`\n- 58 mod 36 = 22 (quotient 1); `'a...z0...9'[22] = 'w'`\n- 1 mod 36 =  1 (quotient 0); `'a...z0...9]'[1] = 'b'`\n- We've reached 0. We're done. The result is 'bw1s6'.\n\n\n",
+    "description": "A one-line password manager.\n\nCompared to other password managers:\n\n- Pro: __secure,__ in that it doesn't store your passwords(!).\n- Pro: __enables you to recover your passwords even if this software stops working__(!) as long as you have a handful of extremely-widespread cryptographic tools (like those in the Python standard library).\n- Con: __doesn't let you store your existing/custom passwords__ because all its passwords are auto-generated piles of hard-to-type mush (though, thanks to copy-paste, \"hard-to-type\" isn't usually an issue).\n\n## Table of Contents\n- [Summary](#summary)\n- [Advantages over other password managers](#advantages-over-other-password-managers)\n- [Advantages of other password managers](#advantages-of-other-password-managers)\n- [Installation/Usage](#installationusage)\n- [Internals/Reimplemenation](#internalsreimplementation)\n\n## Summary\nThe big idea: you have a master password. All your other passwords are, effectively, digital signatures: strings that are easy to produce for somebody who knows the master password, but prohibitively difficult to compute for somebody who doesn't.\n\nIt turns out that this is jaw-droppingly simple to implement:\n\n![diagram](diagram.png)\n\nIn effect, this is a cryptographically secure pseudo-random password generator (hence the name, PRPG): a deterministic algorithm that maps seeds (i.e. [master, site] pairs) to passwords, in such a way that no number of [input, output] pairs will give you information about the outputs corresponding to any other inputs.\n\n\n## Advantages over other password managers\n\n- Your passwords are not stored anywhere, not even encrypted. It is impossible __even in principle__ for somebody to steal them out of this password manager, unless they have your master password (in which case you're obviously doomed) or they crack SHA256 or PBKDF2 (in which case we all are).\n- You can carry this password manager around in your head. By remembering only your master password and the algorithm, you can re-derive all of your passwords from scratch (if you're fairly computer-savvy), from memory, in under five minutes, using only extremely-widespread rigorously-specified algorithms that every major language has functionally-exactly-identical implementations of. You don't need to trust me. You are not reliant on me. If you lose access to this package, or stop trusting it, or something, you can re-implement the scheme on your own and recover all your passwords.\n- At the expense of some tedious manual labor, you can enter your master password in a way that ensures it can't be recovered unless the bad guys are straight-up snooping on this process's memory or the OS's RNG.)\n\n## Advantages of other password managers\n\n- Since this doesn't store passwords, you can't store your pre-existing passwords. (Yet. This might come.)\n- If somebody steals your master password for this system, they can rederive all your passwords. Other password managers kinda have this problem, but they at least require that the Bad Guy steal your vault-file too. (Unless the password manager is cloud-based, in which case you're super doomed.)\n- The passwords this produces are hard to type and harder to remember. Copy-paste is the only way you'll find this useful.\n\n\n## Installation/Usage\n\n(First, install, with `pip install prpg`.)\n\nBasic, standalone usage:\n\n```bash\n~ $ prpg compute 'example.com:username'\nMaster: ********\nCopied password for 'example.com:username' to clipboard.\n~ $\n```\n\nBy default, this generates a 16-character password with all the major kinds of character (lower, upper, digit, punctuation) -- but this is customizable.\n\nBut with this usage, you have to remember all your sites/usernames/etc. -- and remember them _exactly_ -- and type them in each time. What a hassle!\n\nFor this reason, PRPG can maintain a list of strings (called \"salts\", for their cryptographic purpose) that it can easily fuzzy-search by prefix:\n\n```bash\n~ $ alias addsalt='prpg salts add'\n~ $ alias pw='prpg recall'\n~ $\n~ $ # set up a new salt, once\n~ $ addsalt 'example.com:username'\nCreating new salt-file in '/home/spencer/.prpg-salts.json'\n~ $ rot13 < ~/.prpg-salts.json\n{\n  \"example.com:username\": {}\n}\n~ $\n~ $ # compute your password\n~ $ pw ex\nChosen salt: 'example.com:username'\nMaster: ********\nCopied password for 'example.com:username' to clipboard.\n~ $\n```\n\n(The salt-file is ROT13-encrypted by default, as a weak protection against somebody grepping your computer for bank-related words. Yes, I _know_ that security through obscurity is frowned upon, but-- hey, it kinda works if you _stay_ obscure. Which I expect this package to do.)\n\n(Also, there's nothing special about the format `sitename.com:myusername`! The salts can be anything you want.)\n\nEach salt has a JSON object associated with it, which you can view using `prpg salts get SALTNAME`. You can store arbitrary information in this object (but remember it's stored in, effectively, plaintext! So nothing sensitive, please!):\n\n```bash\n~ $ addsalt 'blub.com:mylogin' --json '{\"email address\": \"nobody@invalid.com\", \"birthday\": \"1970-01-01\"}'\n~ $ prpg salts get bl\n{'birthday': '1970-01-01', 'email address': 'nobody@invalid.com'}\n```\n\nThere are also some special keys that objects can have, denoted by `__double-underscores__`:\n\n- `__postprocess__` lets you write an arbitrary transformation on the password, using a Python lambda:\n\n    ```bash\n    ~ $ addsalt 'stupid-short-max-password-length.com:spencer' --json '{\"__postprocess__\": \"lambda pw: pw[:12]\"}'\n    ~ $ prpg stu --print\n    Chosen salt: 'stupid-short-max-password-length.com:spencer'\n    Master: ********\n    +viw/GniXPdg\n    ~ $\n    ```\n\n    (Details: the string that gets passed to your lambda function is the full output of `base64(sha256(...))` -- that is to say, a 32-byte pseudorandom number, base64-encoded. This works out to 44 characters, all of which are completely pseudorandom and independent except the last two.)\n\n- `__salt__` tells PRPG, \"I know this salt is named `example.com:username`, but you should salt my master password with this other string instead.\" This might be useful if, say, a site changes its domain name.\n\n    ```bash\n    ~ $ prpg salts add 'blub-two-point-oh.com:mylogin' --json '{\"__salt__\": \"blub.com:mylogin\"}'\n    ~ $ prpg recall blub.com --print\n    Chosen salt: 'blub.com:mylogin'\n    Master: ********\n    EFX332fc3617Q1ZZAa0+\n    ~ $ prpg recall blub-two --print\n    Chosen salt: 'blub-two-point-oh.com:mylogin'\n    Master: ********\n    EFX332fc3617Q1ZZAa0+\n    ```\n\n(All other `__double-underscore__` keys are also reserved for future bells and whistles. All non-double-underscore keys are fair game.)\n\nFor more information about bells and whistles, consider running `prpg --help`.\n\n\n## Internals/Reimplementation\n\nIn short:\n\n- `base64(sha256(pbkdf2_hmac('sha256', master, salt, iterations=10**6)))`\n- Default postprocessing: take the first 16 characters, and append `Aa0+` (the lowest-value base64 characters from each character-class used by base64, i.e. lower/upper/digit/punctuation, make a nice Schelling point).\n\nI chose this to maximize \"ease of re-implementing from memory, using only extremely-widespread, precisely-specified library functions,\" subject to the constraints \"must be cryptographically respectable\" and \"must satisfy most password requirements by default.\"\n\n\n### As Code\n\nHere is the complete algorithm:\n\n```python\nimport hashlib, base64\n\ndef master_and_salt_to_password(master: str, salt: str, postprocess=(lambda pw: pw[:16]+'Aa0+')) -> str:\n  key = hashlib.pbkdf2_hmac(\n          hash_name='sha256',\n          password=master.encode('utf-8'),\n          salt=salt.encode('utf-8'),\n          iterations=10**6)\n  sha = hashlib.sha256(key).digest()\n  pw = base64.b64encode(sha).decode('utf-8')\n  return postprocess(pw)\n```\n\n\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -27,14 +27,14 @@
     "name": "prpg",
     "platform": "",
     "project_url": "https://pypi.org/project/prpg/",
-    "release_url": "https://pypi.org/project/prpg/0.1.4/",
+    "release_url": "https://pypi.org/project/prpg/0.3/",
     "requires_dist": [
       "pytest; extra == 'test'",
       "pexpect; extra == 'test'"
     ],
     "requires_python": "",
     "summary": "A pseudorandom password generator / password manager.",
-    "version": "0.1.4"
+    "version": "0.3"
   },
   "releases": {
     "0.1": [
@@ -188,40 +188,108 @@
         "upload_time": "2017-10-13T03:22:45",
         "url": "https://files.pythonhosted.org/packages/e2/62/ad8143ee7f9a53a715b7878a5722f91dc9e4642bafa41be5cc788d2484ec/prpg-0.1.4.tar.gz"
       }
+    ],
+    "0.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2757505cdf5c5d70acc40d52c4eb752f",
+          "sha256": "d6f92974cc3e682cc87182158510f3996dd1c6ea8065387014d079a778e13a7d"
+        },
+        "downloads": -1,
+        "filename": "prpg-0.2-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "2757505cdf5c5d70acc40d52c4eb752f",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "size": 17398,
+        "upload_time": "2017-10-19T03:39:16",
+        "url": "https://files.pythonhosted.org/packages/dd/8c/604cfb1306dd5d8b5e91c0ab62383fa39a4a2a5a140870620e686aee8482/prpg-0.2-py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "79d69614b431cc23c3f690591610b618",
+          "sha256": "ffa340404805475f53473032172cdf9c9e583fec5bf76f0d8b74c0e4faf31d43"
+        },
+        "downloads": -1,
+        "filename": "prpg-0.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "79d69614b431cc23c3f690591610b618",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 13813,
+        "upload_time": "2017-10-19T03:39:19",
+        "url": "https://files.pythonhosted.org/packages/65/ca/3e5fdd41efeda4453fb8fe1077885e1326fbac3ee0b435d8722136be84cb/prpg-0.2.tar.gz"
+      }
+    ],
+    "0.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2c4e60ff5e509d3529440fd9ba3edac5",
+          "sha256": "e0a78dfa2ce887d7366319f609a13fac2174e0a19b8206b599daf34010d17dd7"
+        },
+        "downloads": -1,
+        "filename": "prpg-0.3-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "2c4e60ff5e509d3529440fd9ba3edac5",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "size": 17265,
+        "upload_time": "2017-10-19T03:56:53",
+        "url": "https://files.pythonhosted.org/packages/5a/a7/be4293208dbae31ca8ac9524125ac4be2bbce404fd94f3661ffe629270eb/prpg-0.3-py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5c49b5bb31d9499b40691a52c3d9ea0c",
+          "sha256": "6bb2b39f71c9f41a145d98f9f1975f02fb74040395dd3d2008c48b51a5bcc58d"
+        },
+        "downloads": -1,
+        "filename": "prpg-0.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5c49b5bb31d9499b40691a52c3d9ea0c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 13696,
+        "upload_time": "2017-10-19T03:56:55",
+        "url": "https://files.pythonhosted.org/packages/c7/9c/54fc2d948ad475ebb94bdc900f44a06833d490a3dad5a2ffdb0ec597511b/prpg-0.3.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "66ee787dd1db55d1adc10bc7014a2222",
-        "sha256": "4057dfa529530c1e4b23832e1873b8ff07b165681fda0730e26de65f8d1a50ca"
+        "md5": "2c4e60ff5e509d3529440fd9ba3edac5",
+        "sha256": "e0a78dfa2ce887d7366319f609a13fac2174e0a19b8206b599daf34010d17dd7"
       },
       "downloads": -1,
-      "filename": "prpg-0.1.4-py3-none-any.whl",
+      "filename": "prpg-0.3-py3-none-any.whl",
       "has_sig": false,
-      "md5_digest": "66ee787dd1db55d1adc10bc7014a2222",
+      "md5_digest": "2c4e60ff5e509d3529440fd9ba3edac5",
       "packagetype": "bdist_wheel",
       "python_version": "py3",
-      "size": 20433,
-      "upload_time": "2017-10-13T03:22:43",
-      "url": "https://files.pythonhosted.org/packages/65/e2/e6928e46fc00010c6fa249f6478254fb4392d372dbe467ed1404ab4293f8/prpg-0.1.4-py3-none-any.whl"
+      "size": 17265,
+      "upload_time": "2017-10-19T03:56:53",
+      "url": "https://files.pythonhosted.org/packages/5a/a7/be4293208dbae31ca8ac9524125ac4be2bbce404fd94f3661ffe629270eb/prpg-0.3-py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "2fe489b1e8c3f7e39b0a691ee5eda9a6",
-        "sha256": "bd927c36dbbe9877aad4cd0a3f43474ffd4574a0f5fd3311dc0ef6e8c10d7242"
+        "md5": "5c49b5bb31d9499b40691a52c3d9ea0c",
+        "sha256": "6bb2b39f71c9f41a145d98f9f1975f02fb74040395dd3d2008c48b51a5bcc58d"
       },
       "downloads": -1,
-      "filename": "prpg-0.1.4.tar.gz",
+      "filename": "prpg-0.3.tar.gz",
       "has_sig": false,
-      "md5_digest": "2fe489b1e8c3f7e39b0a691ee5eda9a6",
+      "md5_digest": "5c49b5bb31d9499b40691a52c3d9ea0c",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 16705,
-      "upload_time": "2017-10-13T03:22:45",
-      "url": "https://files.pythonhosted.org/packages/e2/62/ad8143ee7f9a53a715b7878a5722f91dc9e4642bafa41be5cc788d2484ec/prpg-0.1.4.tar.gz"
+      "size": 13696,
+      "upload_time": "2017-10-19T03:56:55",
+      "url": "https://files.pythonhosted.org/packages/c7/9c/54fc2d948ad475ebb94bdc900f44a06833d490a3dad5a2ffdb0ec597511b/prpg-0.3.tar.gz"
     }
   ]
 }
