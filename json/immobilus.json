@@ -14,7 +14,7 @@
       "Programming Language :: Python :: 3.5",
       "Programming Language :: Python :: 3.6"
     ],
-    "description": "",
+    "description": "immobilus\n=========\n\n|build| |Build status|\n\nA simple time freezing tool for python tests. It mocks:\n\n* ``datetime.date.today()``\n* ``datetime.datetime.now()``\n* ``datetime.datetime.utcnow()``\n* ``datetime.datetime.fromtimestamp()``\n* ``time.time()``\n* ``time.gmtime()``\n* ``time.localtime()``\n* ``time.strftime()``\n* ``time.mktime()``\n\nUsage\n-----\n\nYou must ``import immobilus`` *before* ``datetime`` or ``time``, or any\nother module which imports them in turn, to allow it to intercept those\nmodules.\n\n.. code:: python\n\n    >>> from immobilus import immobilus\n    >>> from datetime import datetime\n\nFor example, if you use\n`pytest <https://pypi.python.org/pypi/pytest>`__, you could add\n``import immobilus`` into your root ``conftest.py`` file.\n\nContext manager\n^^^^^^^^^^^^^^^\n\nYou can use ``immobilus`` as a context manager. When the context manager\nis active, time is frozen to the specified value. Outside of the context\nmanager, the original standard library functions are used and time\nbehaves normally.\n\n.. code:: python\n\n    >>> # It is unlikely that you are living in the past\n    >>> datetime.utcnow() == datetime(2017, 10, 20)\n    False\n    >>> # But with immobilus, you can pretend that you are\n    >>> with immobilus('2017-10-20'):\n    ...     datetime.utcnow() == datetime(2017, 10, 20)\n    ...\n    True\n    >>> # Once the context manager exits, immobilus deactivates.\n    >>> # We are back in the present.\n    >>> datetime.utcnow() == datetime(2017, 10, 20)\n    False\n\nSpecifying the freeze time\n^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nAs shown above, you can use a string to describe the time to be frozen\n(e.g. ``'2017-10-20'``). Any values understood by the\n`dateutil.parser <https://dateutil.readthedocs.io/en/stable/parser.html>`__\ncan be used.\n\nYou can also use a ``datetime.datetime`` object for the freeze time:\n\n.. code:: python\n\n    >>> naive_freeze_time = datetime(2017, 10, 20)\n    >>> with immobilus(naive_freeze_time):\n    ...     print('now:    %s' % datetime.now())\n    ...     print('utcnow: %s' % datetime.utcnow())\n    ...\n    now:    2017-10-20 00:00:00\n    utcnow: 2017-10-20 00:00:00\n\n``immobilus`` will use the given ``datetime`` object to set the frozen\nUTC time *and* local time to the same value that you provide. If the\n``datetime`` you provide for the freeze time is aware, then it is\nadjusted to UTC like so:\n\n.. code:: python\n\n    >>> import pytz\n    >>>\n    >>> # Freeze to 12:00 noon in Moscow (UTC+3)\n    >>> timezone = pytz.timezone('Europe/Moscow')\n    >>> aware_freeze_time = timezone.localize(datetime(2017, 10, 20, 12))\n    >>> with immobilus(aware_freeze_time):\n    ...     # 9:00am local time which is same as UTC\n    ...     print('now:    %s' % datetime.now())\n    ...     print('utcnow: %s' % datetime.utcnow())\n    ...\n    now:    2017-10-20 09:00:00\n    utcnow: 2017-10-20 09:00:00\n\nIf you want local time to differ from UTC, read on.\n\nFreezing a local time that is not UTC time\n^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nTo have a different timezone in effect when time is frozen, use the\nsecond argument to the ``immobilus`` context manager: ``tz_offset``.\nThis is the number of hours ahead of the frozen UTC time that the frozen\nlocal time should be.\n\n.. code:: python\n\n    >>> with immobilus('2017-10-20 09:00', tz_offset=3):\n    ...     print('now:    %s' % datetime.now())\n    ...     print('utcnow: %s' % datetime.utcnow())\n    ...\n    now:    2017-10-20 12:00:00\n    utcnow: 2017-10-20 09:00:00\n\nOf course, you can be behind UTC if you wish, by using a negative\nnumber:\n\n.. code:: python\n\n    >>> with immobilus('2017-10-20 09:00', tz_offset=-7):\n    ...     print('now:    %s' % datetime.now())\n    ...     print('utcnow: %s' % datetime.utcnow())\n    ...\n    now:    2017-10-20 02:00:00\n    utcnow: 2017-10-20 09:00:00\n\nUsing as a decorator\n^^^^^^^^^^^^^^^^^^^^\n\nAs well as being a context manager, ``immobilus`` is also a decorator:\n\n.. code:: python\n\n    >>> @immobilus('2017-10-20')\n    ... def test():\n    ...     print(datetime.now())\n    ...\n    >>> test()\n    2017-10-20 00:00:00\n\nUsing directly\n^^^^^^^^^^^^^^\n\nOr you can activate and deactivate ``immobilus`` manually.\n\n.. code:: python\n\n    >>> freeze_time = datetime(2017, 10, 20)\n    >>> spell = immobilus(freeze_time)\n    >>> datetime.utcnow() == freeze_time\n    False\n    >>> spell.start()\n    FakeDatetime(2017, 10, 20, 0, 0)\n    >>> datetime.utcnow() == freeze_time\n    True\n    >>> datetime.utcnow()\n    FakeDatetime(2017, 10, 20, 0, 0)\n    >>> spell.stop()\n    >>> datetime.utcnow() == freeze_time\n    False\n\nThis can be quite useful for those using the standard library\n``unittest.TestCase`` e.g.\n\n.. code:: python\n\n    import unittest\n\n    class SomeTests(unittest.TestCase):\n        def setUp(self):\n            spell = immobilus('2017-10-20')\n            spell.start()\n            self.addCleanup(spell.stop)\n\nNesting\n^^^^^^^\n\nYou can also nest context managers (or decorators, or direct\ninvocations, or any combination) if you want to freeze different times.\n\n.. code:: python\n\n    >>> with immobilus('2017-10-20 12:00'):\n    ...     print('outer now:    %s' % datetime.now())\n    ...     print('outer utcnow: %s' % datetime.utcnow())\n    ...     with immobilus('2017-10-21 12:00', tz_offset=5):\n    ...         print('inner now:    %s' % datetime.now())\n    ...         print('inner utcnow: %s' % datetime.utcnow())\n    ...     print('outer now:    %s' % datetime.now())\n    ...     print('outer utcnow: %s' % datetime.utcnow())\n    ...\n    outer now:    2017-10-20 12:00:00\n    outer utcnow: 2017-10-20 12:00:00\n    inner now:    2017-10-21 17:00:00\n    inner utcnow: 2017-10-21 12:00:00\n    outer now:    2017-10-20 12:00:00\n    outer utcnow: 2017-10-20 12:00:00\n\nSpecial thanks for contribution:\n^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\n-  \u00c9loi Rivard (https://github.com/azmeuk)\n-  Day Barr (https://github.com/daybarr)\n\n.. |build| image:: https://secure.travis-ci.org/pokidovea/immobilus.svg?branch=master\n   :target: https://travis-ci.org/pokidovea/immobilus\n.. |Build status| image:: https://ci.appveyor.com/api/projects/status/jpidjtu298ason8h?svg=true\n   :target: https://ci.appveyor.com/project/pokidovea/immobilus\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -30,11 +30,11 @@
     "name": "immobilus",
     "platform": "",
     "project_url": "https://pypi.org/project/immobilus/",
-    "release_url": "https://pypi.org/project/immobilus/1.0.1/",
+    "release_url": "https://pypi.org/project/immobilus/1.2/",
     "requires_dist": [],
     "requires_python": "",
     "summary": "Say `Immobilus!` to freeze your tests",
-    "version": "1.0.1"
+    "version": "1.2"
   },
   "releases": {
     "0.1.0": [
@@ -378,24 +378,42 @@
         "upload_time": "2017-10-21T19:40:07",
         "url": "https://files.pythonhosted.org/packages/95/bb/87766b657439b66bc3e4a38f812119babd3428556c83e0e47d54b620a3b5/immobilus-1.0.1.tar.gz"
       }
+    ],
+    "1.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ff9aa350f57443d64e4ba7423d9e13e3",
+          "sha256": "974e668e5e85f2e3de2c39410e2ba8daf8820f9b3e5feb782823a2d764cc616c"
+        },
+        "downloads": -1,
+        "filename": "immobilus-1.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ff9aa350f57443d64e4ba7423d9e13e3",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10503,
+        "upload_time": "2017-10-21T20:13:16",
+        "url": "https://files.pythonhosted.org/packages/e8/cb/02331ee0fb0a827638dcbdc821da8a7b7b8aac57946e0a96956c278b6ca8/immobilus-1.2.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "a0054438e0dd49b28c310c83433b0e5a",
-        "sha256": "7ec49f70c7bde7e12e4c87c86ed61d887e7c28f2b10e185a61ed190ff7cefc68"
+        "md5": "ff9aa350f57443d64e4ba7423d9e13e3",
+        "sha256": "974e668e5e85f2e3de2c39410e2ba8daf8820f9b3e5feb782823a2d764cc616c"
       },
       "downloads": -1,
-      "filename": "immobilus-1.0.1.tar.gz",
+      "filename": "immobilus-1.2.tar.gz",
       "has_sig": false,
-      "md5_digest": "a0054438e0dd49b28c310c83433b0e5a",
+      "md5_digest": "ff9aa350f57443d64e4ba7423d9e13e3",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 8932,
-      "upload_time": "2017-10-21T19:40:07",
-      "url": "https://files.pythonhosted.org/packages/95/bb/87766b657439b66bc3e4a38f812119babd3428556c83e0e47d54b620a3b5/immobilus-1.0.1.tar.gz"
+      "size": 10503,
+      "upload_time": "2017-10-21T20:13:16",
+      "url": "https://files.pythonhosted.org/packages/e8/cb/02331ee0fb0a827638dcbdc821da8a7b7b8aac57946e0a96956c278b6ca8/immobilus-1.2.tar.gz"
     }
   ]
 }
