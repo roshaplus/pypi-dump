@@ -9,17 +9,17 @@
       "License :: OSI Approved :: Apache Software License",
       "Natural Language :: English",
       "Programming Language :: Python",
-      "Programming Language :: Python :: 2.6",
       "Programming Language :: Python :: 2.7",
       "Programming Language :: Python :: 3.4",
       "Programming Language :: Python :: 3.5",
+      "Programming Language :: Python :: 3.6",
       "Programming Language :: Python :: Implementation :: PyPy",
       "Topic :: Software Development :: Libraries",
       "Topic :: Software Development :: Libraries :: Python Modules"
     ],
-    "description": "python-epo-ops-client\n=====================\n\n|PyPI version| |Build Status| |Coverage Status|\n\npython-epo-ops-client is an `Apache2 Licensed`_ client library for\naccessing the `European Patent Office`_'s (\"EPO\") `Open Patent\nServices`_ (\"OPS\") v.3.2 (based on `v 1.3.1 of the reference guide`_).\n\n.. code:: python\n\n    import epo_ops\n\n    client = epo_ops.Client(key='abc', secret='xyz')  # Instantiate client\n    response = client.published_data(  # Retrieve bibliography data\n      reference_type = 'publication',  # publication, application, priority\n      input = epo_ops.models.Docdb('1000000', 'EP', 'A1'),  # original, docdb, epodoc\n      endpoint = 'biblio',  # optional, defaults to biblio in case of published_data\n      constituents = []  # optional, list of constituents\n    )\n\n--------------\n\nFeatures\n--------\n\npython\\_epo\\_ops\\_client abstracts away the complexities of accessing\nEPO OPS:\n\n-  Format the requests properly\n-  Bubble up quota problems as proper HTTP errors\n-  Handle token authentication and renewals automatically\n-  Handle throttling properly\n-  Add optional caching to minimize impact on the OPS servers\n\nThere are two main layers to python\\_epo\\_ops\\_client: Client and\nMiddleware.\n\nClient\n~~~~~~\n\nThe Client contains all the formatting and token handling logic and is\nwhat you'll interact with mostly.\n\nWhen you issue a request, the response is a `requests.Response`_ object.\nIf ``response.status_code != 200`` then a ``requests.HTTPError``\nexception will be raised \u2014 it's your responsibility to handle those\nexceptions if you want to. The one case that's handled is when the\naccess token has expired: in this case, the client will automatically\nhandle the HTTP 400 status and renew the token.\n\nNote that the Client does not attempt to interpret the data supplied by\nOPS, so it's your responsibility to parse the XML or JSON payload for\nyour own purpose.\n\nThe following custom exceptions are raised for cases when OPS quotas are\nexceeded, they are all in the ``epo_ops.exceptions`` module and are\nsubclasses of ``requests.HTTPError``, and therefore offer the same\nbehaviors:\n\n-  IndividualQuotaPerHourExceeded\n-  RegisteredQuotaPerWeekExceeded\n\nAgain, it's up to you to parse the response and decide what to do.\n\nCurrently the Client knows how to issue request for the following\nservices:\n\n+---------------------------------------------------+-----------------------+-----------+\n| Client method                                     | API end point         | throttle  |\n|                                                   |                       |           |\n+===================================================+=======================+===========+\n| ``family(reference_type, input, endpoint=None,    | family                | inpadoc   |\n| constituents=None)``                              |                       |           |\n+---------------------------------------------------+-----------------------+-----------+\n| ``number(reference_type, input, output_format)``  | number-service        | other     |\n+---------------------------------------------------+-----------------------+-----------+\n| ``published_data(reference_type, input,           | published-data        | retrieval |\n| endpoint='biblio', constituents=None)``           |                       |           |\n+---------------------------------------------------+-----------------------+-----------+\n| ``published_data_search(cql, range_begin=1,       | published-data/search | search    |\n| range_end=25, constituents=None)``                |                       |           |\n+---------------------------------------------------+-----------------------+-----------+\n| ``register(reference_type, input,                 | register              | other     |\n| constituents=['biblio'])``                        |                       |           |\n+---------------------------------------------------+-----------------------+-----------+\n| ``register_search(cql, range_begin=1,             | register/search       | other     |\n| range_end=25)``                                   |                       |           |\n+---------------------------------------------------+-----------------------+-----------+\n| ``register_search(cql, range_begin=1,             | register/search       | other     |\n| range_end=25)``                                   |                       |           |\n+---------------------------------------------------+-----------------------+-----------+\n\nSee the `OPS guide`_ for more information on how to use each service.\n\nPlease submit pull requests for the following services by enhancing the\n``epo_ops.api.Client`` class:\n\n-  Legal service\n-  Images retrieval\n-  Bulk operations\n\nMiddleware\n~~~~~~~~~~\n\nAll requests and responses are passed through each middleware object\nlisted in ``client.middlewares``. Requests are processed in the order\nlisted, and responses are processed in the *reverse* order.\n\nEach middleware should subclass ``middlewares.Middleware`` and implement\nthe ``process_request`` and ``process_response`` methods.\n\nThere are two middleware classes out of the box: Throttler and Dogpile.\nThrottler is in charge of the OPS throttling rules and will delay\nrequests accordingly. Dogpile is an optional cache which will cache all\nHTTP status 200, 404, 405, and 413 responses.\n\nBy default, only the Throttler middleware is enabled, if you want to\nenable caching:\n\n.. code:: python\n\n    import epo_ops\n\n    middlewares = [\n        epo_ops.middlewares.Dogpile(),\n        epo_ops.middlewares.Throttler(),\n    ]\n    client = epo_ops.Client(\n        key='key',\n        secret='secret',\n        middlewares=middlewares,\n    )\n\n*Note that caching middleware should be first in most cases.*\n\nDogpile\n^^^^^^^\n\nDogpile is based on (surprise) `dogpile.cache`_. By default it is\ninstantiated with a DBMBackend region with timeout of 2 weeks.\n\nDogpile takes three optional instantiation parameters:\n\n-  ``region``: You can pass whatever valid `dogpile.cache Region`_ you\n   want to backend the cache\n-  ``kwargs_handlers``: A list of keyword argument handlers, which it\n   will use to process the kwargs passed to the request object in order\n   to extract elements for generating the cache key. Currently one\n   handler is implemented (and instantiated by default) to make sure\n   that the range request header is part of the cache key.\n-  ``http_status_codes``: A list of HTTP status codes that you would\n   like to have cached. By default 200, 404, 405, and 413 responses are\n   cached.\n\n**Note**: dogpile.cache is not installed by default, if you want to use\nit, ``pip install dogpile.cache`` in your project.\n\nThrottler\n^^^^^^^^^\n\nThrottler contains all the logic for handling different throttling\nscenarios. Since OPS throttling is based on a one minute rolling window,\nwe must persist historical (at least for the past minute) throtting data\nin order to know what the proper request frequency is. Each Throttler\nmust be instantiated with a Storage object.\n\nStorage\n'''''''\n\nThe Storage object is responsible for:\n\n1. Knowing how to update the historical record with each request\n   (``Storage.update()``), making sure to observe the one minute rolling\n   window rule.\n2. Calculating how long to wait before issuing the next request\n   (``Storage.delay_for()``).\n\nCurrently the only Storage backend provided is SQLite, but you can\neasily write your own Storage backend (such as file, Redis, etc.). To\nuse a custom Storage type, just pass the Storage object when you're\ninstantiating a Throttler object. See\n``epo_ops.middlewares.throttle.storages.Storage`` for more\nimplementation details.\n\n--------------\n\nTests\n-----\n\nTests are written using `pytest`_. To run the tests:\n\n1. `Register a OPS user login with EPO`_\n2. Create an app\n3. Look up the Mock Server URL at `Apiary`_\n4. Set the ``APIARY_URL``, ``OPS_KEY``, and ``OPS_SECRET`` environment\n   variables accordingly\n5. ``make test``\n\nThe tests must be run with a working internet connection, since both OPS\nand the `mock Apiary services`_ are online.\n\n.. _Apache2 Licensed: http://www.apache.org/licenses/LICENSE-2.0\n.. _European Patent Office: http://epo.org\n.. _Open Patent Services: http://www.epo.org/searching/free/ops.html\n.. _v 1.3.1 of the reference guide: http://documents.epo.org/projects/babylon/eponet.nsf/0/F3ECDCC915C9BCD8C1258060003AA712/$File/ops_v3_2_documentation_version_1_3_1_en.pdf\n.. _requests.Response: http://requests.readthedocs.org/en/latest/user/advanced/#request-and-response-objects\n.. _OPS guide: http://documents.epo.org/projects/babylon/eponet.nsf/0/F3ECDCC915C9BCD8C1258060003AA712/$File/ops_v3_2_documentation_version_1_3_1_en.pdf\n.. _dogpile.cache: https://bitbucket.org/zzzeek/dogpile.cache\n.. _dogpile.cache Region: http://dogpilecache.readthedocs.org/en/latest/api.html#module-dogpile.cache.region\n.. _pytest: http://pytest.org/latest/\n.. _Register a OPS user login with EPO: https://developers.epo.org/user/register\n.. _Apiary: http://docs.opsv31.apiary.io\n.. _mock Apiary services: http://docs.opsv31.apiary.io\n\n.. |PyPI version| image:: http://img.shields.io/pypi/v/python-epo-ops-client.svg\n   :target: https://pypi.python.org/pypi/python-epo-ops-client\n.. |Build Status| image:: http://img.shields.io/travis/55minutes/python-epo-ops-client.svg\n   :target: https://travis-ci.org/55minutes/python-epo-ops-client\n.. |Coverage Status| image:: http://img.shields.io/coveralls/55minutes/python-epo-ops-client.svg\n   :target: https://coveralls.io/r/55minutes/python-epo-ops-client\n\n\nRelease History\n===============\n\n2.2.0 (2017-03-30)\n------------------\n\n-  EPO OPS v3.2 compatibility, thanks to `eltermann`_\n\n2.1.0 (2016-02-21)\n------------------\n\n-  Add number service, thanks to `eltermann`_\n\n2.0.0 (2015-12-11)\n------------------\n\n-  Dropping support for Python 3.3 (although it probably still works).\n-  Update to latest dependencies, no new features.\n\n1.0.0 (2015-09-20)\n------------------\n\n-  Allow no middleware to be specified\n-  Minor tweaks to development infrastructure, no new features.\n-  This has been working for a while now, let's call it 1.0!\n\n0.1.9 (2015-07-21)\n------------------\n\n-  No new features, just updating third party dependencies\n\n0.1.8 (2015-01-24)\n------------------\n\n-  No new features, just updating third party dependencies\n\n0.1.7 (2015-01-24)\n------------------\n\n-  Created default Dogpile DBM path if it doesn't exist\n\n0.1.6 (2014-12-12)\n------------------\n\n-  Fixed bug with how service URL is constructed\n\n0.1.5 (2014-10-17)\n------------------\n\n-  Added support for register retrieval and search\n\n0.1.4 (2014-10-10)\n------------------\n\n-  Verified PyPy3 support\n-  Updated various dependency pacakges\n\n0.1.3 (2014-05-21)\n------------------\n\n-  Python 3.4 compatibility\n-  Updated ``requests`` dependency to 2.3.0\n\n0.1.2 (2014-03-04)\n------------------\n\n-  Python 2.6 and 3.3 compatibility\n\n0.1.1 (2014-03-01)\n------------------\n\n-  Allow configuration of which HTTP responses (based on status code) to\n   cache\n\n0.1.0 (2014-02-20)\n------------------\n\n-  Introduced dogpile.cache for caching http200 resopnses\n-  Introduced the concept of middleware\n\n0.0.1 (2014-01-21)\n------------------\n\n-  Initial release\n\n.. _eltermann: https://github.com/eltermann\n",
+    "description": "python-epo-ops-client\n=====================\n\n|PyPI version| |Build Status| |Coverage Status|\n\npython-epo-ops-client is an `Apache2 Licensed`_ client library for\naccessing the `European Patent Office`_'s (\"EPO\") `Open Patent\nServices`_ (\"OPS\") v.3.2 (based on `v 1.3.1 of the reference guide`_).\n\n.. code:: python\n\n    import epo_ops\n\n    client = epo_ops.Client(key='abc', secret='xyz')  # Instantiate client\n    response = client.published_data(  # Retrieve bibliography data\n      reference_type = 'publication',  # publication, application, priority\n      input = epo_ops.models.Docdb('1000000', 'EP', 'A1'),  # original, docdb, epodoc\n      endpoint = 'biblio',  # optional, defaults to biblio in case of published_data\n      constituents = []  # optional, list of constituents\n    )\n\n--------------\n\nFeatures\n--------\n\npython\\_epo\\_ops\\_client abstracts away the complexities of accessing\nEPO OPS:\n\n-  Format the requests properly\n-  Bubble up quota problems as proper HTTP errors\n-  Handle token authentication and renewals automatically\n-  Handle throttling properly\n-  Add optional caching to minimize impact on the OPS servers\n\nThere are two main layers to python\\_epo\\_ops\\_client: Client and\nMiddleware.\n\nClient\n~~~~~~\n\nThe Client contains all the formatting and token handling logic and is\nwhat you'll interact with mostly.\n\nWhen you issue a request, the response is a `requests.Response`_ object.\nIf ``response.status_code != 200`` then a ``requests.HTTPError``\nexception will be raised \u2014 it's your responsibility to handle those\nexceptions if you want to. The one case that's handled is when the\naccess token has expired: in this case, the client will automatically\nhandle the HTTP 400 status and renew the token.\n\nNote that the Client does not attempt to interpret the data supplied by\nOPS, so it's your responsibility to parse the XML or JSON payload for\nyour own purpose.\n\nThe following custom exceptions are raised for cases when OPS quotas are\nexceeded, they are all in the ``epo_ops.exceptions`` module and are\nsubclasses of ``requests.HTTPError``, and therefore offer the same\nbehaviors:\n\n-  IndividualQuotaPerHourExceeded\n-  RegisteredQuotaPerWeekExceeded\n\nAgain, it's up to you to parse the response and decide what to do.\n\nCurrently the Client knows how to issue request for the following\nservices:\n\n+---------------------------------------------------+-----------------------+-----------+\n| Client method                                     | API end point         | throttle  |\n|                                                   |                       |           |\n+===================================================+=======================+===========+\n| ``family(reference_type, input, endpoint=None,    | family                | inpadoc   |\n| constituents=None)``                              |                       |           |\n+---------------------------------------------------+-----------------------+-----------+\n| ``image(path, range=1, extension='tiff')``        | published-data/images | other     |\n+---------------------------------------------------+-----------------------+-----------+\n| ``number(reference_type, input, output_format)``  | number-service        | other     |\n+---------------------------------------------------+-----------------------+-----------+\n| ``published_data(reference_type, input,           | published-data        | retrieval |\n| endpoint='biblio', constituents=None)``           |                       |           |\n+---------------------------------------------------+-----------------------+-----------+\n| ``published_data_search(cql, range_begin=1,       | published-data/search | search    |\n| range_end=25, constituents=None)``                |                       |           |\n+---------------------------------------------------+-----------------------+-----------+\n| ``register(reference_type, input,                 | register              | other     |\n| constituents=['biblio'])``                        |                       |           |\n+---------------------------------------------------+-----------------------+-----------+\n| ``register_search(cql, range_begin=1,             | register/search       | other     |\n| range_end=25)``                                   |                       |           |\n+---------------------------------------------------+-----------------------+-----------+\n| ``register_search(cql, range_begin=1,             | register/search       | other     |\n| range_end=25)``                                   |                       |           |\n+---------------------------------------------------+-----------------------+-----------+\n\nSee the `OPS guide`_ for more information on how to use each service.\n\nPlease submit pull requests for the following services by enhancing the\n``epo_ops.api.Client`` class:\n\n-  Legal service\n-  Bulk operations\n\nMiddleware\n~~~~~~~~~~\n\nAll requests and responses are passed through each middleware object\nlisted in ``client.middlewares``. Requests are processed in the order\nlisted, and responses are processed in the *reverse* order.\n\nEach middleware should subclass ``middlewares.Middleware`` and implement\nthe ``process_request`` and ``process_response`` methods.\n\nThere are two middleware classes out of the box: Throttler and Dogpile.\nThrottler is in charge of the OPS throttling rules and will delay\nrequests accordingly. Dogpile is an optional cache which will cache all\nHTTP status 200, 404, 405, and 413 responses.\n\nBy default, only the Throttler middleware is enabled, if you want to\nenable caching:\n\n.. code:: python\n\n    import epo_ops\n\n    middlewares = [\n        epo_ops.middlewares.Dogpile(),\n        epo_ops.middlewares.Throttler(),\n    ]\n    client = epo_ops.Client(\n        key='key',\n        secret='secret',\n        middlewares=middlewares,\n    )\n\n*Note that caching middleware should be first in most cases.*\n\nDogpile\n^^^^^^^\n\nDogpile is based on (surprise) `dogpile.cache`_. By default it is\ninstantiated with a DBMBackend region with timeout of 2 weeks.\n\nDogpile takes three optional instantiation parameters:\n\n-  ``region``: You can pass whatever valid `dogpile.cache Region`_ you\n   want to backend the cache\n-  ``kwargs_handlers``: A list of keyword argument handlers, which it\n   will use to process the kwargs passed to the request object in order\n   to extract elements for generating the cache key. Currently one\n   handler is implemented (and instantiated by default) to make sure\n   that the range request header is part of the cache key.\n-  ``http_status_codes``: A list of HTTP status codes that you would\n   like to have cached. By default 200, 404, 405, and 413 responses are\n   cached.\n\n**Note**: dogpile.cache is not installed by default, if you want to use\nit, ``pip install dogpile.cache`` in your project.\n\nThrottler\n^^^^^^^^^\n\nThrottler contains all the logic for handling different throttling\nscenarios. Since OPS throttling is based on a one minute rolling window,\nwe must persist historical (at least for the past minute) throtting data\nin order to know what the proper request frequency is. Each Throttler\nmust be instantiated with a Storage object.\n\nStorage\n'''''''\n\nThe Storage object is responsible for:\n\n1. Knowing how to update the historical record with each request\n   (``Storage.update()``), making sure to observe the one minute rolling\n   window rule.\n2. Calculating how long to wait before issuing the next request\n   (``Storage.delay_for()``).\n\nCurrently the only Storage backend provided is SQLite, but you can\neasily write your own Storage backend (such as file, Redis, etc.). To\nuse a custom Storage type, just pass the Storage object when you're\ninstantiating a Throttler object. See\n``epo_ops.middlewares.throttle.storages.Storage`` for more\nimplementation details.\n\n--------------\n\nTests\n-----\n\nTests are written using `pytest`_. To run the tests:\n\n1. `Register a OPS user login with EPO`_\n2. Create an app\n3. Look up the Mock Server URL at `Apiary`_\n4. Set the ``APIARY_URL``, ``OPS_KEY``, and ``OPS_SECRET`` environment\n   variables accordingly\n5. ``make test``\n\nThe tests must be run with a working internet connection, since both OPS\nand the `mock Apiary services`_ are online.\n\n.. _Apache2 Licensed: http://www.apache.org/licenses/LICENSE-2.0\n.. _European Patent Office: http://epo.org\n.. _Open Patent Services: http://www.epo.org/searching/free/ops.html\n.. _v 1.3.1 of the reference guide: http://documents.epo.org/projects/babylon/eponet.nsf/0/F3ECDCC915C9BCD8C1258060003AA712/$File/ops_v3_2_documentation_version_1_3_1_en.pdf\n.. _requests.Response: http://requests.readthedocs.org/en/latest/user/advanced/#request-and-response-objects\n.. _OPS guide: http://documents.epo.org/projects/babylon/eponet.nsf/0/F3ECDCC915C9BCD8C1258060003AA712/$File/ops_v3_2_documentation_version_1_3_1_en.pdf\n.. _dogpile.cache: https://bitbucket.org/zzzeek/dogpile.cache\n.. _dogpile.cache Region: http://dogpilecache.readthedocs.org/en/latest/api.html#module-dogpile.cache.region\n.. _pytest: http://pytest.org/latest/\n.. _Register a OPS user login with EPO: https://developers.epo.org/user/register\n.. _Apiary: http://docs.opsv31.apiary.io\n.. _mock Apiary services: http://docs.opsv31.apiary.io\n\n.. |PyPI version| image:: http://img.shields.io/pypi/v/python-epo-ops-client.svg\n   :target: https://pypi.python.org/pypi/python-epo-ops-client\n.. |Build Status| image:: http://img.shields.io/travis/55minutes/python-epo-ops-client.svg\n   :target: https://travis-ci.org/55minutes/python-epo-ops-client\n.. |Coverage Status| image:: http://img.shields.io/coveralls/55minutes/python-epo-ops-client.svg\n   :target: https://coveralls.io/r/55minutes/python-epo-ops-client\n\n\nRelease History\n===============\n\n2.3.0 (2017-10-22)\n------------------\n\n-  Drop support for Python 2.6\n-  Officially support Python 3.6\n-  Update to latest dependencies\n-  Add image retrieval service, thanks to `rfaga`_\n\n2.2.0 (2017-03-30)\n------------------\n\n-  EPO OPS v3.2 compatibility, thanks to `eltermann`_\n\n2.1.0 (2016-02-21)\n------------------\n\n-  Add number service, thanks to `eltermann`_\n\n2.0.0 (2015-12-11)\n------------------\n\n-  Dropping support for Python 3.3 (although it probably still works).\n-  Update to latest dependencies, no new features.\n\n1.0.0 (2015-09-20)\n------------------\n\n-  Allow no middleware to be specified\n-  Minor tweaks to development infrastructure, no new features.\n-  This has been working for a while now, let's call it 1.0!\n\n0.1.9 (2015-07-21)\n------------------\n\n-  No new features, just updating third party dependencies\n\n0.1.8 (2015-01-24)\n------------------\n\n-  No new features, just updating third party dependencies\n\n0.1.7 (2015-01-24)\n------------------\n\n-  Created default Dogpile DBM path if it doesn't exist\n\n0.1.6 (2014-12-12)\n------------------\n\n-  Fixed bug with how service URL is constructed\n\n0.1.5 (2014-10-17)\n------------------\n\n-  Added support for register retrieval and search\n\n0.1.4 (2014-10-10)\n------------------\n\n-  Verified PyPy3 support\n-  Updated various dependency pacakges\n\n0.1.3 (2014-05-21)\n------------------\n\n-  Python 3.4 compatibility\n-  Updated ``requests`` dependency to 2.3.0\n\n0.1.2 (2014-03-04)\n------------------\n\n-  Python 2.6 and 3.3 compatibility\n\n0.1.1 (2014-03-01)\n------------------\n\n-  Allow configuration of which HTTP responses (based on status code) to\n   cache\n\n0.1.0 (2014-02-20)\n------------------\n\n-  Introduced dogpile.cache for caching http200 resopnses\n-  Introduced the concept of middleware\n\n0.0.1 (2014-01-21)\n------------------\n\n-  Initial release\n\n.. _rfaga: https://github.com/rfaga\n.. _eltermann: https://github.com/eltermann\n",
     "docs_url": null,
-    "download_url": "https://github.com/55minutes/python-epo-ops-client/archive/v2.2.0.tar.gz",
+    "download_url": "https://github.com/55minutes/python-epo-ops-client/archive/v2.3.0.tar.gz",
     "downloads": {
       "last_day": 0,
       "last_month": 0,
@@ -33,10 +33,11 @@
     "name": "python-epo-ops-client",
     "platform": "",
     "project_url": "https://pypi.org/project/python-epo-ops-client/",
-    "release_url": "https://pypi.org/project/python-epo-ops-client/2.2.0/",
+    "release_url": "https://pypi.org/project/python-epo-ops-client/2.3.0/",
+    "requires_dist": [],
     "requires_python": "",
     "summary": "Python Client for the European Patent Office's Open Patent Services API",
-    "version": "2.2.0"
+    "version": "2.3.0"
   },
   "releases": {
     "0.0.1": [
@@ -46,7 +47,7 @@
           "md5": "c047a8ba6065520c0f862b36b56e8926",
           "sha256": "0452e683a506a9ec2bf23e1df4ba3510a198d8cc872621a3a9094b6278934db2"
         },
-        "downloads": 2395,
+        "downloads": -1,
         "filename": "python-epo-ops-client-0.0.1.tar.gz",
         "has_sig": false,
         "md5_digest": "c047a8ba6065520c0f862b36b56e8926",
@@ -64,7 +65,7 @@
           "md5": "aa215929ca785a5f83a1afc1c4140063",
           "sha256": "10c919fed0db41592f646088cc35b50f4839b69dd627c74b6e00f255acfa4ffb"
         },
-        "downloads": 1893,
+        "downloads": -1,
         "filename": "python-epo-ops-client-0.1.0.tar.gz",
         "has_sig": false,
         "md5_digest": "aa215929ca785a5f83a1afc1c4140063",
@@ -82,7 +83,7 @@
           "md5": "f17ed7e249d90694951307c99a684f84",
           "sha256": "6a7054e53ca5d5a2fb390b355d8e04afddeba4506c240bc229314d6cdf5bb355"
         },
-        "downloads": 1800,
+        "downloads": -1,
         "filename": "python-epo-ops-client-0.1.1.tar.gz",
         "has_sig": false,
         "md5_digest": "f17ed7e249d90694951307c99a684f84",
@@ -100,7 +101,7 @@
           "md5": "631cb2f6aa5aba5e8410616c955029a4",
           "sha256": "9fed3ee131c941587b99bc8e4015861003dab4d0dc3d64b07f25d998ca25a8f5"
         },
-        "downloads": 1696,
+        "downloads": -1,
         "filename": "python_epo_ops_client-0.1.2-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "631cb2f6aa5aba5e8410616c955029a4",
@@ -116,7 +117,7 @@
           "md5": "c1d6105faf3bc63c6997b500c4146451",
           "sha256": "0993e666addafabeb3f128e8eab4929ece14c3ceb94cb3b5f9565e0165996f1b"
         },
-        "downloads": 1801,
+        "downloads": -1,
         "filename": "python-epo-ops-client-0.1.2.tar.gz",
         "has_sig": false,
         "md5_digest": "c1d6105faf3bc63c6997b500c4146451",
@@ -134,7 +135,7 @@
           "md5": "8f7107f3746e7ef7676e2bbbee638e0e",
           "sha256": "9e5b87190ac1bb6f2a6414a34554c55ae0bee322c1ac49e4f001c75bc3274491"
         },
-        "downloads": 1537,
+        "downloads": -1,
         "filename": "python_epo_ops_client-0.1.3-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "8f7107f3746e7ef7676e2bbbee638e0e",
@@ -150,7 +151,7 @@
           "md5": "13649caeea0c8c9c0292833621900fab",
           "sha256": "b79f040382d5dfcae6e99fca789701d0dbfcefc98658e9f0035d1b6e5afc745b"
         },
-        "downloads": 1620,
+        "downloads": -1,
         "filename": "python-epo-ops-client-0.1.3.tar.gz",
         "has_sig": false,
         "md5_digest": "13649caeea0c8c9c0292833621900fab",
@@ -168,7 +169,7 @@
           "md5": "0bda016cffd6c47a20ed25d068424c82",
           "sha256": "1e1ba9ec3762a2c2df3854c05ddac425a94b7613a5d61344e622626ed01860da"
         },
-        "downloads": 1223,
+        "downloads": -1,
         "filename": "python_epo_ops_client-0.1.4-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "0bda016cffd6c47a20ed25d068424c82",
@@ -184,7 +185,7 @@
           "md5": "8df7ee27f470f9bce662628423f0ba46",
           "sha256": "9619aac65379451a23fd07f84af6ca2f5a1cc0c2aad19df06199e67bd38bb1c8"
         },
-        "downloads": 1242,
+        "downloads": -1,
         "filename": "python-epo-ops-client-0.1.4.tar.gz",
         "has_sig": false,
         "md5_digest": "8df7ee27f470f9bce662628423f0ba46",
@@ -202,7 +203,7 @@
           "md5": "84938117e2ef8848acd18dc800178148",
           "sha256": "15cfa1879f6389fa56e4a79291f2c2b4909b0a44dcd1ef192a09b0f7c08c42bd"
         },
-        "downloads": 1222,
+        "downloads": -1,
         "filename": "python_epo_ops_client-0.1.5-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "84938117e2ef8848acd18dc800178148",
@@ -218,7 +219,7 @@
           "md5": "4f58510213dedc38bb4a167a20a27dac",
           "sha256": "9961fa888a41e1146667f88e8d068af350051f5cd714d0daa9ac2298b73c240d"
         },
-        "downloads": 1283,
+        "downloads": -1,
         "filename": "python-epo-ops-client-0.1.5.tar.gz",
         "has_sig": false,
         "md5_digest": "4f58510213dedc38bb4a167a20a27dac",
@@ -236,7 +237,7 @@
           "md5": "934bb32329f6c9ee0ff7cd9acb828b9e",
           "sha256": "21817e0df3d45fa47c0593a06478385c1d2766dff3b3f15895fcdd0d978310fc"
         },
-        "downloads": 1335,
+        "downloads": -1,
         "filename": "python_epo_ops_client-0.1.6-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "934bb32329f6c9ee0ff7cd9acb828b9e",
@@ -252,7 +253,7 @@
           "md5": "7f10ee03642358d1c482f28e71b2d2cf",
           "sha256": "140dc0f5cee044ec9191fcd92b7fb0c0791c794601010da7194e922cc11f722d"
         },
-        "downloads": 1153,
+        "downloads": -1,
         "filename": "python-epo-ops-client-0.1.6.tar.gz",
         "has_sig": false,
         "md5_digest": "7f10ee03642358d1c482f28e71b2d2cf",
@@ -270,7 +271,7 @@
           "md5": "02c581ced1a2548d9480c4035b841b43",
           "sha256": "7f79b9ed1d2980cc83076dc994f4ba0f132cf7fb8cbd8e624c451a0231fea033"
         },
-        "downloads": 958,
+        "downloads": -1,
         "filename": "python_epo_ops_client-0.1.7-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "02c581ced1a2548d9480c4035b841b43",
@@ -286,7 +287,7 @@
           "md5": "978a6bd6f5f3e08c3691d7ee3ad3b8e6",
           "sha256": "4f264e85ae291e926583efbe2485a5e31c0baa7907f13a11a865f06de1f6945f"
         },
-        "downloads": 996,
+        "downloads": -1,
         "filename": "python-epo-ops-client-0.1.7.tar.gz",
         "has_sig": false,
         "md5_digest": "978a6bd6f5f3e08c3691d7ee3ad3b8e6",
@@ -304,7 +305,7 @@
           "md5": "042007024453b9968ab6622895c111be",
           "sha256": "a4bdfe691aa390a12161902011bc47da3ff7bc3abd247ec0ddd2741a9fa5c191"
         },
-        "downloads": 1014,
+        "downloads": -1,
         "filename": "python_epo_ops_client-0.1.8-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "042007024453b9968ab6622895c111be",
@@ -320,7 +321,7 @@
           "md5": "556e4c1adff5544c43fbecd4e060e329",
           "sha256": "99340459a69d8bb6ddb9ec5285d627557a8dca06c228a4120a0d39236d154c4e"
         },
-        "downloads": 1133,
+        "downloads": -1,
         "filename": "python-epo-ops-client-0.1.8.tar.gz",
         "has_sig": false,
         "md5_digest": "556e4c1adff5544c43fbecd4e060e329",
@@ -338,7 +339,7 @@
           "md5": "ec24e02eee8117c35486430d530214a0",
           "sha256": "84bf9125f36310f92e1919f3afa554d7c7b02bafbb00b00a622e63ba7e7d049b"
         },
-        "downloads": 768,
+        "downloads": -1,
         "filename": "python_epo_ops_client-0.1.9-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "ec24e02eee8117c35486430d530214a0",
@@ -354,7 +355,7 @@
           "md5": "f3babc34fa376e22dc700a1f9d02b724",
           "sha256": "573665587fd9c248e503ed54a8f848293ab7e383db40e0fbc92a87d837880e62"
         },
-        "downloads": 2038,
+        "downloads": -1,
         "filename": "python-epo-ops-client-0.1.9.tar.gz",
         "has_sig": false,
         "md5_digest": "f3babc34fa376e22dc700a1f9d02b724",
@@ -372,7 +373,7 @@
           "md5": "d98978f1f7dc0f3df5d6c796e38a4531",
           "sha256": "c3fe8ee34b94204138797a31c2bcfca32a1a5649d350a99baee7e3b0f4d9a4ac"
         },
-        "downloads": 712,
+        "downloads": -1,
         "filename": "python_epo_ops_client-1.0.0-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "d98978f1f7dc0f3df5d6c796e38a4531",
@@ -388,7 +389,7 @@
           "md5": "9e867b57a762441a0ddfcac177705de8",
           "sha256": "323a3ddee160cb8cf6402bd864792959e5223777e585a62f49efce095cabb421"
         },
-        "downloads": 627,
+        "downloads": -1,
         "filename": "python-epo-ops-client-1.0.0.tar.gz",
         "has_sig": false,
         "md5_digest": "9e867b57a762441a0ddfcac177705de8",
@@ -406,7 +407,7 @@
           "md5": "1acb4950f81f86f6576a7d8999b65996",
           "sha256": "74dcb603d88e8658bcfc87756a62444a6bfa09d80adce1f5c645f01733592dbc"
         },
-        "downloads": 332,
+        "downloads": -1,
         "filename": "python_epo_ops_client-2.0.0-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "1acb4950f81f86f6576a7d8999b65996",
@@ -422,7 +423,7 @@
           "md5": "da5323ea84d43fca8a9c15fdec8ea0f2",
           "sha256": "1e6bd871954a469223337fd41db4b567e74a5c5423d0b1e9796eb30713f67c36"
         },
-        "downloads": 407,
+        "downloads": -1,
         "filename": "python-epo-ops-client-2.0.0.tar.gz",
         "has_sig": false,
         "md5_digest": "da5323ea84d43fca8a9c15fdec8ea0f2",
@@ -440,7 +441,7 @@
           "md5": "f3fa3a7361f1c394667201808ad11f18",
           "sha256": "3ce2e84c2727cc2fe302f3c7e4d1c159179f5246f6a7c179e9d34704976dcb61"
         },
-        "downloads": 183,
+        "downloads": -1,
         "filename": "python_epo_ops_client-2.1.0-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "f3fa3a7361f1c394667201808ad11f18",
@@ -456,7 +457,7 @@
           "md5": "b918e58fbf46621040e11042692ae4d9",
           "sha256": "2c10b92f0b9b2343bdad981353c3700bad57e506ccc9fdce12cf1404062b150c"
         },
-        "downloads": 142,
+        "downloads": -1,
         "filename": "python-epo-ops-client-2.1.0.tar.gz",
         "has_sig": false,
         "md5_digest": "b918e58fbf46621040e11042692ae4d9",
@@ -474,7 +475,7 @@
           "md5": "493dbc53a305b8ad1655de39074ab137",
           "sha256": "2749858630daf860f55f193545b20df0526a7fcd47fcaf7e4098c7b256ef7c62"
         },
-        "downloads": 17,
+        "downloads": -1,
         "filename": "python_epo_ops_client-2.2.0-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "493dbc53a305b8ad1655de39074ab137",
@@ -490,7 +491,7 @@
           "md5": "9f4146906b24d6874733d0f1da92af6c",
           "sha256": "7914f06770ab2966bc051277c147d30abbc6926cfefeebe3df8f9b8b683a70d9"
         },
-        "downloads": 16,
+        "downloads": -1,
         "filename": "python-epo-ops-client-2.2.0.tar.gz",
         "has_sig": false,
         "md5_digest": "9f4146906b24d6874733d0f1da92af6c",
@@ -500,40 +501,74 @@
         "upload_time": "2017-03-30T15:54:57",
         "url": "https://files.pythonhosted.org/packages/79/fd/7ae06e6c235ad338e140a916fefc50f7dd27d1c9a56da491bff79f645ccd/python-epo-ops-client-2.2.0.tar.gz"
       }
+    ],
+    "2.3.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "21635ee46f2f17db5dc3db60bbfb1eb0",
+          "sha256": "615ea4ab6ad40e7f91686ad1c3e3d838bf7ee6e0c698a47a7840d00e40a6da32"
+        },
+        "downloads": -1,
+        "filename": "python_epo_ops_client-2.3.0-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "21635ee46f2f17db5dc3db60bbfb1eb0",
+        "packagetype": "bdist_wheel",
+        "python_version": "3.6",
+        "size": 22716,
+        "upload_time": "2017-10-23T03:57:22",
+        "url": "https://files.pythonhosted.org/packages/7d/b2/698379243a6c2343a2b24cecafae1e0bd82d98da5ff6752f2854e384592b/python_epo_ops_client-2.3.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4b105d2995fecb5c661b7dec0b1f6104",
+          "sha256": "691564d73d22f1787961d90a0f088a2793a14a007eb52ef53d2f9b0745cb012e"
+        },
+        "downloads": -1,
+        "filename": "python-epo-ops-client-2.3.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4b105d2995fecb5c661b7dec0b1f6104",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 17450,
+        "upload_time": "2017-10-23T03:57:19",
+        "url": "https://files.pythonhosted.org/packages/8e/c2/c6df2f705c6f57c94875fca23176d36257ba596299bd083e3d9db5d7e07e/python-epo-ops-client-2.3.0.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "493dbc53a305b8ad1655de39074ab137",
-        "sha256": "2749858630daf860f55f193545b20df0526a7fcd47fcaf7e4098c7b256ef7c62"
+        "md5": "21635ee46f2f17db5dc3db60bbfb1eb0",
+        "sha256": "615ea4ab6ad40e7f91686ad1c3e3d838bf7ee6e0c698a47a7840d00e40a6da32"
       },
-      "downloads": 17,
-      "filename": "python_epo_ops_client-2.2.0-py2.py3-none-any.whl",
+      "downloads": -1,
+      "filename": "python_epo_ops_client-2.3.0-py2.py3-none-any.whl",
       "has_sig": false,
-      "md5_digest": "493dbc53a305b8ad1655de39074ab137",
+      "md5_digest": "21635ee46f2f17db5dc3db60bbfb1eb0",
       "packagetype": "bdist_wheel",
-      "python_version": "3.5",
-      "size": 22364,
-      "upload_time": "2017-03-30T15:54:59",
-      "url": "https://files.pythonhosted.org/packages/a0/c6/881494a46cc369c909231dcdba2612e1e9b87b5e1769b6d5e111df11de47/python_epo_ops_client-2.2.0-py2.py3-none-any.whl"
+      "python_version": "3.6",
+      "size": 22716,
+      "upload_time": "2017-10-23T03:57:22",
+      "url": "https://files.pythonhosted.org/packages/7d/b2/698379243a6c2343a2b24cecafae1e0bd82d98da5ff6752f2854e384592b/python_epo_ops_client-2.3.0-py2.py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "9f4146906b24d6874733d0f1da92af6c",
-        "sha256": "7914f06770ab2966bc051277c147d30abbc6926cfefeebe3df8f9b8b683a70d9"
+        "md5": "4b105d2995fecb5c661b7dec0b1f6104",
+        "sha256": "691564d73d22f1787961d90a0f088a2793a14a007eb52ef53d2f9b0745cb012e"
       },
-      "downloads": 16,
-      "filename": "python-epo-ops-client-2.2.0.tar.gz",
+      "downloads": -1,
+      "filename": "python-epo-ops-client-2.3.0.tar.gz",
       "has_sig": false,
-      "md5_digest": "9f4146906b24d6874733d0f1da92af6c",
+      "md5_digest": "4b105d2995fecb5c661b7dec0b1f6104",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 17282,
-      "upload_time": "2017-03-30T15:54:57",
-      "url": "https://files.pythonhosted.org/packages/79/fd/7ae06e6c235ad338e140a916fefc50f7dd27d1c9a56da491bff79f645ccd/python-epo-ops-client-2.2.0.tar.gz"
+      "size": 17450,
+      "upload_time": "2017-10-23T03:57:19",
+      "url": "https://files.pythonhosted.org/packages/8e/c2/c6df2f705c6f57c94875fca23176d36257ba596299bd083e3d9db5d7e07e/python-epo-ops-client-2.3.0.tar.gz"
     }
   ]
 }

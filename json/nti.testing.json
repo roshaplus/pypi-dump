@@ -17,7 +17,7 @@
       "Programming Language :: Python :: Implementation :: PyPy",
       "Topic :: Software Development :: Testing"
     ],
-    "description": "=============\n nti.testing\n=============\n\n.. image:: https://travis-ci.org/NextThought/nti.testing.svg?branch=master\n  :target: https://travis-ci.org/NextThought/nti.testing\n\n.. image:: https://coveralls.io/repos/github/NextThought/nti.testing/badge.svg\n  :target: https://coveralls.io/github/NextThought/nti.testing\n\n.. image:: http://readthedocs.org/projects/ntitesting/badge/?version=latest\n  :target: http://ntitesting.readthedocs.io/en/latest/?badge=latest\n  :alt: Documentation Status\n\n\nSupport for writing tests, particularly in a Zope3/ZTK environment,\nusing either nose2 or zope.testing.\n\nInstallation\n============\n\nnti.testing can be installed using pip, either from the git repository\nor from PyPI::\n\n  pip install nti.testing\n\n\nPyHamcrest\n==========\n\nnti.testing provides a group of `PyHamcrest`_ matchers. There are both\ngeneral-purpose matchers and matchers that are of use to users of\n`zope.interface`_ and `zope.schema`_.\n\n\n.. _PyHamcrest: https://pyhamcrest.readthedocs.io/en/latest/\n.. _zope.interface: https://pypi.python.org/pypi/zope.interface\n.. _zope.schema: https://pypi.python.org/pypi/zope.schema\n\n\nMatchers can be imported from the ``nti.testing.matchers`` module.\n\nBasic Matchers\n--------------\n\n``is_true`` and ``is_false`` check the ``bool`` value of a supplied\nobject (we're using literals for explanation purposes, but it\nobviously makes more sense, and reads better, when the matched object\nis a variable, often of a more complex type)::\n\n   >>> from hamcrest import assert_that, is_\n   >>> from nti.testing.matchers import is_true, is_false\n   >>> assert_that(\"Hi\", is_true())\n   >>> assert_that(0, is_false())\n\nInterface Matchers\n------------------\n\nNext we come to matchers that support basic use of ``zope.interface``.\n\nWe can check that an object provides an interface and that a factory\nimplements it::\n\n   >>> from zope.interface import Interface, Attribute, implementer\n   >>> class IThing1(Interface):\n   ...     pass\n   >>> class IThing2(Interface):\n   ...     pass\n   >>> class IThings(IThing1, IThing2):\n   ...     got_that_thing_i_sent_you = Attribute(\"Did you get that thing?\")\n   >>> @implementer(IThings)\n   ... class Thing(object):\n   ...     pass\n\n   >>> from nti.testing.matchers import provides, implements\n   >>> assert_that(Thing(), provides(IThings))\n   >>> assert_that(Thing, implements(IThings))\n\nThe attentive reader will have noticed that ``IThings`` defines an\nattribute that our implementation doesn't *actually* provide. This is\nwhere the next stricter check comes in. ``verifiably_provides`` uses\nthe interface machinery to determine that all attributes and methods\nspecified by the interface are present as described::\n\n\n  >>> from nti.testing.matchers import verifiably_provides\n  >>> assert_that(Thing(), verifiably_provides(IThing2, IThing1))\n  >>> assert_that(Thing(), verifiably_provides(IThings))\n  Traceback (most recent call last):\n  ...\n  AssertionError:...\n  Expected: object verifiably providing IThings\n       but: <class 'Thing'> failed to provide attribute \"got_that_thing_i_sent_you\" from IThings\n  <BLANKLINE>\n\n``zope.interface`` can only check whether or not an attribute or\nmethod is present. To place (arbitrary) tighter constraints on the\nvalues of the attributes, we can step up to ``zope.schema`` and the\n``validly_provides`` matcher::\n\n  >>> from zope.schema import Bool\n  >>> class IBoolThings(IThing1, IThing2):\n  ...     got_that_thing_i_sent_you = Bool()\n  >>> @implementer(IBoolThings)\n  ... class BoolThing(object):\n  ...     pass\n\n``validly_provides`` is a superset of ``verifiably_provides``::\n\n  >>> from nti.testing.matchers import validly_provides\n  >>> assert_that(BoolThing(), validly_provides(IThing1, IThing2))\n  >>> assert_that(BoolThing(), validly_provides(IBoolThings))\n  Traceback (most recent call last):\n  ...\n  AssertionError:...\n  Expected: (object verifiably providing IBoolThings and object validly providing <InterfaceClass ....IBoolThings>)\n       but: object verifiably providing IBoolThings <class 'BoolThing'> failed to provide attribute \"got_that_thing_i_sent_you\" from IBoolThings\n  <BLANKLINE>\n\nFor finer grained control, we can compare data against schema fields::\n\n  >>> from nti.testing.matchers import validated_by, not_validated_by\n  >>> field = IBoolThings.get('got_that_thing_i_sent_you')\n  >>> assert_that(True, is_(validated_by(field)))\n  >>> assert_that(None, is_(not_validated_by(field)))\n\nParent/Child Relationships\n--------------------------\n\nThe ``aq_inContextOf`` matcher uses the concepts from Acquisition to\ncheck parent/child relationships::\n\n  >>> from nti.testing.matchers import aq_inContextOf\n  >>> class Parent(object):\n  ...     pass\n  >>> class Child(object):\n  ...     __parent__ = None\n  >>> parent = Parent()\n  >>> child = Child()\n  >>> child.__parent__ = parent\n\n  >>> assert_that(child, aq_inContextOf(parent))\n\nTest Fixtures\n=============\n\nSupport for test fixtures can be found in ``nti.testing.base`` and\n``nti.testing.layers``. The ``base`` package includes fully-fleshed\nout base classes for direct use, while the ``layers`` package includes\nmixins that can be used to construct your own test layers.\n\nThe ``base`` package makes a distinction between \"normal\" and \"shared\"\nfixtures. Normal fixtures are those that are used for a single test\ncase. They are established via ``setUp`` and torn down via\n``tearDown``.\n\nIn contrast, shared fixtures are expected to endure for the duration\nof all the tests in the class or all the tests in the layer. These are\nbest used when the fixture is expensive to create. Anything that\nextends from ``base.AbstractSharedTestBase`` creates a shared fixture.\nThrough the magic of metaclasses, such a subclass can also be assigned\nas the ``layer`` property of another class to be used as a test layer\nthat can be shared across more than one class.\n\nThe most important bases are ``base.ConfiguringTestBase`` and\n``base.SharedConfiguringTestBase``. These are both fixtures for\nconfiguring ZCML, either from existing packages or complete file\npaths. To use these, subclass them and define class attributes\n``set_up_packages`` and (if necessary) ``features``::\n\n  >>> from nti.testing.base import ConfiguringTestBase\n  >>> import zope.security\n  >>> class MyConfiguringTest(ConfiguringTestBase):\n  ...     set_up_packages = (\n  ...         'zope.component', # the default configuration by name\n  ...          # a named file in a named package\n  ...          ('ftesting.zcml', 'zope.traversing.tests'),\n  ...          # an imported module\n  ...          zope.security,\n  ...          # Our own package; in a test, this will mean the parent\n  ...          # package\n  ...          \".\")\n\nWe would then proceed to write our test methods. The packages that we\nspecified will be set up and torn down around every test method. In\naddition, the ``zope.testing`` cleanup functions will also run around\nevery test method.\n\nTime\n====\n\nHaving a clock that's guaranteed to move in a positive increasing way\nin every call to ``time.time`` is useful. ``nti.testing.time``\nprovides a decorator to accomplish this that ensures values always are\nat least the current time and always are increasing. (It is not thread\nsafe.) It can be applied to functions or methods, and optionally takes\na ``granularity`` argument::\n\n  >>> from nti.testing.time import time_monotonically_increases\n  >>> from nti.testing.time import reset_monotonic_time\n  >>> @time_monotonically_increases(0.1) # increment by 0.1\n  ... def test():\n  ...     import time\n  ...     t1 = time.time()\n  ...     t2 = time.time()\n  ...     assert t2 == t1 + 0.1, (t2, t1)\n\n  >>> test()\n\n\n=========\n Changes\n=========\n\n\n2.0.1 (2017-10-18)\n==================\n\n- The validation matchers (``validated_by`` and ``not_validated_by``)\n  now consider it a failure (by default) if the validate method raises\n  anything other than ``zope.interface.exceptions.Invalid`` (which\n  includes the ``zope.schema`` exceptions like ``WrongType``).\n  Previously, they accepted any exception as meaning the object was\n  invalid, but this could hide bugs in the actual validation method\n  itself. You can supply the ``invalid`` argument to the matchers to\n  loosen or tighten this as desired. (Giving ``invalid=Exception``\n  will restore the old behaviour.)\n  See `issue 7 <https://github.com/NextThought/nti.testing/issues/7>`_.\n\n\n2.0.0 (2017-04-12)\n==================\n\n- Add support for Python 3.6.\n- Remove ``unicode_literals``.\n- Substantially rework ``time_monotonically_increases`` for greater\n  safety. Fixes `issue 5 <https://github.com/NextThought/nti.testing/issues/5>`_.\n\n1.0.0 (2016-07-28)\n==================\n\n- Add Python 3 support.\n- Initial PyPI release.\n\n\n",
+    "description": "=============\n nti.testing\n=============\n\n.. image:: https://img.shields.io/pypi/v/nti.testing.svg\n        :target: https://pypi.python.org/pypi/nti.testing/\n        :alt: Latest release\n\n.. image:: https://img.shields.io/pypi/pyversions/nti.testing.svg\n        :target: https://pypi.org/project/nti.testing/\n        :alt: Supported Python versions\n\n.. image:: https://travis-ci.org/NextThought/nti.testing.svg?branch=master\n        :target: https://travis-ci.org/NextThought/nti.testing\n\n.. image:: https://coveralls.io/repos/github/NextThought/nti.testing/badge.svg\n        :target: https://coveralls.io/github/NextThought/nti.testing\n\n.. image:: http://readthedocs.org/projects/ntitesting/badge/?version=latest\n        :target: http://ntitesting.readthedocs.io/en/latest/?badge=latest\n        :alt: Documentation Status\n\nSupport for writing tests, particularly in a Zope3/ZTK environment,\nusing zope.testing (nose2 may also work, but is not recommended).\n\nComplete documentation is hosted at https://ntitesting.readthedocs.io/\n\nInstallation\n============\n\nnti.testing can be installed using pip, either from the git repository\nor from PyPI::\n\n  pip install nti.testing\n\n\nPyHamcrest\n==========\n\nnti.testing provides a group of `PyHamcrest`_ matchers. There are both\ngeneral-purpose matchers and matchers that are of use to users of\n`zope.interface`_ and `zope.schema`_.\n\n\n.. _PyHamcrest: https://pyhamcrest.readthedocs.io/en/latest/\n.. _zope.interface: https://pypi.python.org/pypi/zope.interface\n.. _zope.schema: https://pypi.python.org/pypi/zope.schema\n\n\nMatchers can be imported from the ``nti.testing.matchers`` module.\n\nBasic Matchers\n--------------\n\n``is_true`` and ``is_false`` check the ``bool`` value of a supplied\nobject (we're using literals for explanation purposes, but it\nobviously makes more sense, and reads better, when the matched object\nis a variable, often of a more complex type)::\n\n   >>> from hamcrest import assert_that, is_\n   >>> from nti.testing.matchers import is_true, is_false\n   >>> assert_that(\"Hi\", is_true())\n   >>> assert_that(0, is_false())\n\nInterface Matchers\n------------------\n\nNext we come to matchers that support basic use of ``zope.interface``.\n\nWe can check that an object provides an interface and that a factory\nimplements it::\n\n   >>> from zope.interface import Interface, Attribute, implementer\n   >>> class IThing1(Interface):\n   ...     pass\n   >>> class IThing2(Interface):\n   ...     pass\n   >>> class IThings(IThing1, IThing2):\n   ...     got_that_thing_i_sent_you = Attribute(\"Did you get that thing?\")\n   >>> @implementer(IThings)\n   ... class Thing(object):\n   ...     pass\n\n   >>> from nti.testing.matchers import provides, implements\n   >>> assert_that(Thing(), provides(IThings))\n   >>> assert_that(Thing, implements(IThings))\n\nThe attentive reader will have noticed that ``IThings`` defines an\nattribute that our implementation doesn't *actually* provide. This is\nwhere the next stricter check comes in. ``verifiably_provides`` uses\nthe interface machinery to determine that all attributes and methods\nspecified by the interface are present as described::\n\n\n  >>> from nti.testing.matchers import verifiably_provides\n  >>> assert_that(Thing(), verifiably_provides(IThing2, IThing1))\n  >>> assert_that(Thing(), verifiably_provides(IThings))\n  Traceback (most recent call last):\n  ...\n  AssertionError:...\n  Expected: object verifiably providing IThings\n       but: <class 'Thing'> failed to provide attribute \"got_that_thing_i_sent_you\" from IThings\n  <BLANKLINE>\n\n``zope.interface`` can only check whether or not an attribute or\nmethod is present. To place (arbitrary) tighter constraints on the\nvalues of the attributes, we can step up to ``zope.schema`` and the\n``validly_provides`` matcher::\n\n  >>> from zope.schema import Bool\n  >>> class IBoolThings(IThing1, IThing2):\n  ...     got_that_thing_i_sent_you = Bool()\n  >>> @implementer(IBoolThings)\n  ... class BoolThing(object):\n  ...     pass\n\n``validly_provides`` is a superset of ``verifiably_provides``::\n\n  >>> from nti.testing.matchers import validly_provides\n  >>> assert_that(BoolThing(), validly_provides(IThing1, IThing2))\n  >>> assert_that(BoolThing(), validly_provides(IBoolThings))\n  Traceback (most recent call last):\n  ...\n  AssertionError:...\n  Expected: (object verifiably providing IBoolThings and object validly providing <InterfaceClass ....IBoolThings>)\n       but: object verifiably providing IBoolThings <class 'BoolThing'> failed to provide attribute \"got_that_thing_i_sent_you\" from IBoolThings\n  <BLANKLINE>\n\nFor finer grained control, we can compare data against schema fields::\n\n  >>> from nti.testing.matchers import validated_by, not_validated_by\n  >>> field = IBoolThings.get('got_that_thing_i_sent_you')\n  >>> assert_that(True, is_(validated_by(field)))\n  >>> assert_that(None, is_(not_validated_by(field)))\n\nParent/Child Relationships\n--------------------------\n\nThe ``aq_inContextOf`` matcher uses the concepts from Acquisition to\ncheck parent/child relationships::\n\n  >>> from nti.testing.matchers import aq_inContextOf\n  >>> class Parent(object):\n  ...     pass\n  >>> class Child(object):\n  ...     __parent__ = None\n  >>> parent = Parent()\n  >>> child = Child()\n  >>> child.__parent__ = parent\n\n  >>> assert_that(child, aq_inContextOf(parent))\n\nTest Fixtures\n=============\n\nSupport for test fixtures can be found in ``nti.testing.base`` and\n``nti.testing.layers``. The ``base`` package includes fully-fleshed\nout base classes for direct use, while the ``layers`` package includes\nmixins that can be used to construct your own test layers.\n\nThe ``base`` package makes a distinction between \"normal\" and \"shared\"\nfixtures. Normal fixtures are those that are used for a single test\ncase. They are established via ``setUp`` and torn down via\n``tearDown``.\n\nIn contrast, shared fixtures are expected to endure for the duration\nof all the tests in the class or all the tests in the layer. These are\nbest used when the fixture is expensive to create. Anything that\nextends from ``base.AbstractSharedTestBase`` creates a shared fixture.\nThrough the magic of metaclasses, such a subclass can also be assigned\nas the ``layer`` property of another class to be used as a test layer\nthat can be shared across more than one class.\n\nThe most important bases are ``base.ConfiguringTestBase`` and\n``base.SharedConfiguringTestBase``. These are both fixtures for\nconfiguring ZCML, either from existing packages or complete file\npaths. To use these, subclass them and define class attributes\n``set_up_packages`` and (if necessary) ``features``::\n\n  >>> from nti.testing.base import ConfiguringTestBase\n  >>> import zope.security\n  >>> class MyConfiguringTest(ConfiguringTestBase):\n  ...     set_up_packages = (\n  ...         'zope.component', # the default configuration by name\n  ...          # a named file in a named package\n  ...          ('ftesting.zcml', 'zope.traversing.tests'),\n  ...          # an imported module\n  ...          zope.security,\n  ...          # Our own package; in a test, this will mean the parent\n  ...          # package\n  ...          \".\")\n\nWe would then proceed to write our test methods. The packages that we\nspecified will be set up and torn down around every test method. In\naddition, the ``zope.testing`` cleanup functions will also run around\nevery test method.\n\nTime\n====\n\nHaving a clock that's guaranteed to move in a positive increasing way\nin every call to ``time.time`` is useful. ``nti.testing.time``\nprovides a decorator to accomplish this that ensures values always are\nat least the current time and always are increasing. (It is not thread\nsafe.) It can be applied to functions or methods, and optionally takes\na ``granularity`` argument::\n\n  >>> from nti.testing.time import time_monotonically_increases\n  >>> from nti.testing.time import reset_monotonic_time\n  >>> @time_monotonically_increases(0.1) # increment by 0.1\n  ... def test():\n  ...     import time\n  ...     t1 = time.time()\n  ...     t2 = time.time()\n  ...     assert t2 == t1 + 0.1, (t2, t1)\n\n  >>> test()\n\n\n=========\n Changes\n=========\n\n\n2.1.0 (2017-10-23)\n==================\n\n- Make ``Acquisition`` an optional dependency. If it is not installed,\n  the ``aq_inContextOf`` matcher will always return False.\n- Remove dependency on ``fudge``. Instead, we now use ``unittest.mock`` on\n  Python 3, or its backport ``mock`` on Python 2. See `issue 11\n  <https://github.com/NextThought/nti.testing/issues/11>`_.\n- Refactor ZCML configuration support to share more code and\n  documentation. See `issue 10\n  <https://github.com/NextThought/nti.testing/issues/10>`_.\n- The layer ``ConfiguringLayerMixin`` and the base class\n  ``SharedConfiguringTestBase`` now default to running\n  configuration in the package the subclass is defined in, just as\n  subclasses of ``ConfiguringTestBase`` did.\n\n2.0.1 (2017-10-18)\n==================\n\n- The validation matchers (``validated_by`` and ``not_validated_by``)\n  now consider it a failure (by default) if the validate method raises\n  anything other than ``zope.interface.exceptions.Invalid`` (which\n  includes the ``zope.schema`` exceptions like ``WrongType``).\n  Previously, they accepted any exception as meaning the object was\n  invalid, but this could hide bugs in the actual validation method\n  itself. You can supply the ``invalid`` argument to the matchers to\n  loosen or tighten this as desired. (Giving ``invalid=Exception``\n  will restore the old behaviour.)\n  See `issue 7 <https://github.com/NextThought/nti.testing/issues/7>`_.\n\n\n2.0.0 (2017-04-12)\n==================\n\n- Add support for Python 3.6.\n- Remove ``unicode_literals``.\n- Substantially rework ``time_monotonically_increases`` for greater\n  safety. Fixes `issue 5 <https://github.com/NextThought/nti.testing/issues/5>`_.\n\n1.0.0 (2016-07-28)\n==================\n\n- Add Python 3 support.\n- Initial PyPI release.\n\n\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -33,11 +33,14 @@
     "name": "nti.testing",
     "platform": "",
     "project_url": "https://pypi.org/project/nti.testing/",
-    "release_url": "https://pypi.org/project/nti.testing/2.0.1/",
+    "release_url": "https://pypi.org/project/nti.testing/2.1.0/",
     "requires_dist": [
       "zope.testrunner; extra == 'test'",
       "zope.site; extra == 'test'",
-      "nose2[coverage_plugin]; extra == 'test'",
+      "Acquisition; extra == 'test'",
+      "sphinx-rtd-theme; extra == 'docs'",
+      "Sphinx; extra == 'docs'",
+      "mock; python_version == \"2.7\"",
       "zope.testing",
       "zope.schema",
       "zope.dottedname",
@@ -47,13 +50,11 @@
       "setuptools",
       "six",
       "pyhamcrest",
-      "fudge",
-      "Acquisition",
       "zope.interface (>=4.1.2)"
     ],
     "requires_python": "",
     "summary": "Support for testing code",
-    "version": "2.0.1"
+    "version": "2.1.0"
   },
   "releases": {
     "0.0.0.dev0": [],
@@ -158,40 +159,74 @@
         "upload_time": "2017-10-18T16:44:47",
         "url": "https://files.pythonhosted.org/packages/27/d4/e22f72ce87e0a9c60850720e5add120976998329806d8b58deca004015a0/nti.testing-2.0.1.tar.gz"
       }
+    ],
+    "2.1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f308806f35ea3c753f771ad8a5c74b95",
+          "sha256": "5f04126ec998654f01c720eae02b00723003bdafcdd82c0856189f062ee5d5c6"
+        },
+        "downloads": -1,
+        "filename": "nti.testing-2.1.0-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "f308806f35ea3c753f771ad8a5c74b95",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 30437,
+        "upload_time": "2017-10-23T18:16:38",
+        "url": "https://files.pythonhosted.org/packages/b6/6e/87a4590f8aa459dea666628415148ec5c4ae5128785dc9f651f41d3da9c9/nti.testing-2.1.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a23200d00f171d1d17cd85927bdd642f",
+          "sha256": "70d2e0f4e6cc21faf097b04a1c470c8e3da21c5b643c9e027f3931ea583b57d2"
+        },
+        "downloads": -1,
+        "filename": "nti.testing-2.1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a23200d00f171d1d17cd85927bdd642f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 31009,
+        "upload_time": "2017-10-23T18:16:40",
+        "url": "https://files.pythonhosted.org/packages/8c/50/cc6979c05459f71b8f17395dbe06f7cdb209f333758ece92fb412f8c4ca9/nti.testing-2.1.0.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "b74b0ba470bf1abadd20d818749de698",
-        "sha256": "f66805af315f1c98ae990834bd0004519cb3d6a8bc267b92ccc8db743eb4de31"
+        "md5": "f308806f35ea3c753f771ad8a5c74b95",
+        "sha256": "5f04126ec998654f01c720eae02b00723003bdafcdd82c0856189f062ee5d5c6"
       },
       "downloads": -1,
-      "filename": "nti.testing-2.0.1-py2.py3-none-any.whl",
+      "filename": "nti.testing-2.1.0-py2.py3-none-any.whl",
       "has_sig": false,
-      "md5_digest": "b74b0ba470bf1abadd20d818749de698",
+      "md5_digest": "f308806f35ea3c753f771ad8a5c74b95",
       "packagetype": "bdist_wheel",
       "python_version": "py2.py3",
-      "size": 30260,
-      "upload_time": "2017-10-18T16:44:46",
-      "url": "https://files.pythonhosted.org/packages/df/8d/2110be31110b787e255b75d578fdefbf6a380e5e8fb4ce8c6fda896e1f04/nti.testing-2.0.1-py2.py3-none-any.whl"
+      "size": 30437,
+      "upload_time": "2017-10-23T18:16:38",
+      "url": "https://files.pythonhosted.org/packages/b6/6e/87a4590f8aa459dea666628415148ec5c4ae5128785dc9f651f41d3da9c9/nti.testing-2.1.0-py2.py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "3ae508cc3a5f8d6fc32953d706bec67d",
-        "sha256": "63471041f0a47588aabf8bf3e499f718723f5651561d18eaa7f3f8500fea287f"
+        "md5": "a23200d00f171d1d17cd85927bdd642f",
+        "sha256": "70d2e0f4e6cc21faf097b04a1c470c8e3da21c5b643c9e027f3931ea583b57d2"
       },
       "downloads": -1,
-      "filename": "nti.testing-2.0.1.tar.gz",
+      "filename": "nti.testing-2.1.0.tar.gz",
       "has_sig": false,
-      "md5_digest": "3ae508cc3a5f8d6fc32953d706bec67d",
+      "md5_digest": "a23200d00f171d1d17cd85927bdd642f",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 24120,
-      "upload_time": "2017-10-18T16:44:47",
-      "url": "https://files.pythonhosted.org/packages/27/d4/e22f72ce87e0a9c60850720e5add120976998329806d8b58deca004015a0/nti.testing-2.0.1.tar.gz"
+      "size": 31009,
+      "upload_time": "2017-10-23T18:16:40",
+      "url": "https://files.pythonhosted.org/packages/8c/50/cc6979c05459f71b8f17395dbe06f7cdb209f333758ece92fb412f8c4ca9/nti.testing-2.1.0.tar.gz"
     }
   ]
 }
