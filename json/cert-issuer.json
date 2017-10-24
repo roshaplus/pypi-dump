@@ -4,7 +4,7 @@
     "author_email": "info@blockcerts.org",
     "bugtrack_url": null,
     "classifiers": [],
-    "description": "[![Build Status](https://travis-ci.org/blockchain-certificates/cert-issuer.svg?branch=master)](https://travis-ci.org/blockchain-certificates/cert-issuer)\n[![PyPI version](https://badge.fury.io/py/cert-issuer.svg)](https://badge.fury.io/py/cert-issuer)\n\n\n# cert-issuer\n\nThe cert-issuer project issues blockchain certificates by creating a transaction from the issuing institution to the\nrecipient on the Bitcoin blockchain that includes the hash of the certificate itself. \n\n## Quick start using Docker\n\nThis uses bitcoind in regtest mode. This route makes many simplifications to allow a quick start, and is intended for\nexperimenting only.\n\n1. First ensure you have Docker installed. [See our Docker installation help](docs/docker_install.md).\n\n2. Clone the repo and change to the directory\n\n    ```\n    git clone https://github.com/blockchain-certificates/cert-issuer.git && cd cert-issuer\n    ```\n\n\n3. From a command line in cert-issuer dir, build your docker container:\n    \n    ```\n    docker build -t bc/cert-issuer:1.0 .\n    ```\n\n4. Read before running!\n\n    - Once you launch the docker container, you will make some changes using your personal issuing information. This flow mirrors what you would if you were issuing real certificates.\n    - To avoid losing your work, you should create snapshots of your docker container. You can do this by running:\n\n        ```\n        docker ps -l\n        docker commit <container for your bc/cert-issuer> my_cert_issuer\n        ```\n\n5. When you're ready to run:\n\n    ```\n    docker run -it bc/cert-issuer:1.0 bash\n    ```\n\n## Create issuing address\n\n__Important__: this is a simplification to avoid using a USB, which needs to be inserted and removed during the\nstandard certficate issuing process. Do not use these addresses or private keys for anything other than experimenting.\n\nEnsure your docker image is running and bitcoind process is started\n\n1. Create an 'issuing address' and save the output as follows:\n\n    ```\n    issuer=`bitcoin-cli getnewaddress`\n    sed -i.bak \"s/<issuing-address>/$issuer/g\" /etc/cert-issuer/conf.ini\n    bitcoin-cli dumpprivkey $issuer > /etc/cert-issuer/pk_issuer.txt\n    ```\n    \n2. Don't forget to save snapshots so you don't lose your work (see step 3 of client setup)\n\n## Issuing certificates\n\n1. Add your certificate to /etc/cert-issuer/data/unsigned_certificates/. \n\n    ```\n    # To use a sample unsigned certificate as follows:\n    cp /cert-issuer/examples/data-testnet/unsigned_certificates/3bc1a96a-3501-46ed-8f75-49612bbac257.json /etc/cert-issuer/data/unsigned_certificates/ \n    \n    # If you created your own unsigned certificate using cert-tools (assuming you placed it under data/unsigned_certificates):\n    cp <cert-issuer-home>/data/unsigned_certificates/<your-cert-guid>.json /etc/cert-issuer/data/unsigned_certificates/\n    ```\n\n2. Make sure you have enough BTC in your issuing address.\n\n    a. You're using bitcoind in regtest mode, so you can print money. This should give you 50 (fake) BTC:\n\n    ```\n    bitcoin-cli generate 101\n    bitcoin-cli getbalance\n    ```\n\n    b. Send the money to your issuing address -- note that bitcoin-cli's standard denomination is bitcoins not satoshis! (In our\n    app, the standard unit is satoshis.) This command sends 5 bitcoins to the address\n\n    ```\n    bitcoin-cli sendtoaddress $issuer 5\n    ```\n\n3. Issue the certificates on the blockchain\n\n    ```\n    cert-issuer -c /etc/cert-issuer/conf.ini\n    ```\n    \n4. Your Blockchain certificates are located in `/etc/cert-issuer/data/blockchain_certificates`. Copy these to your local machine, and add them to cert-viewer's `cert_data` folder to see your certificates in the Certificate Viewer.\n\n```\ndocker ps  // shows the docker containerId\ndocker cp <containerId>:/etc/cert-issuer/data/blockchain_certificates <localPath>/cert-viewer/cert_data\n```\n\n## Unit tests\n\nThis project uses tox to validate against several python environments.\n\n1. Ensure you have an python environment. [Recommendations](docs/virtualenv.md)\n\n2. Run tests\n    ```\n    ./run_tests.sh\n    ```\n\n## Issuing options\n\nThe quick start instructions use a test mode for issuing certificates. Most of the steps apply for issuing certificates on the real Bitcoin blockchain. Read [Certificate Issuing Options](docs/bitcoin_options.md) for an overview of issuing options.\n\n\n## How batch issuing works\n\nWhile it is possible to issue one certificate with one Bitcoin transaction, it is far more efficient to use one Bitcoin transaction to issue a batch of certificates. \n\nThe issuer builds a Merkle tree of certificate hashes and registers the Merkle root as the OP_RETURN field in the Bitcoin transaction. \n\nSuppose the batch contains `n` certificates, and certificate `i` contains recipient `i`'s information. The issuer hashes each certificate and combines them into a Merkle tree:\n\n![](img/merkle.png)\n\n\nThe root of the Merkle tree, which is a 256-bit hash, is issued on the Bitcoin blockchain. The complete Bitcoin transaction outputs are described in 'Transaction structure'.\n\nThe Blockchain Certificate given to recipient `i` contains a [2017 Merkle Proof Signature Suite](https://w3c-dvcg.github.io/lds-merkleproof2017/)-formatted signature, proving that certificate `i` is contained in the Merkle tree. \n\n![](img/blockchain_certificate_components.png)\n\nThis receipt contains:\n\n*   The Bitcoin transaction ID storing the Merkle root\n*   The expected Merkle root on the blockchain\n*   The expected hash for recipient `i`'s certificate\n*   The Merkle path from recipient `i`'s certificate to the Merkle root, i.e. the path highlighted in orange above. `h_i -> \u2026 -> Merkle root`\n\nThe [verification process](https://github.com/blockchain-certificates/cert-verifier-js#verification-process) performs computations to check that:\n\n*   The hash of certificate `i` matches the value in the receipt\n*   The Merkle path is valid\n*   The Merkle root stored on the blockchain matches the value in the receipt\n\nThese steps establish that the certificate has not been tampered with since it was issued.\n\n### Hashing a certificate\n\nThe Blockchain Certificate JSON contents without the `signature` node is the certificate that the issuer created. This is the value needed to hash for comparison against the receipt. Because there are no guarantees about ordering or formatting of JSON, first canonicalize the certificate (without the `signature`) against the JSON LD schema. This allows us to obtain a deterministic hash across platforms.\n\nThe detailed steps are described in the [verification process](https://github.com/blockchain-certificates/cert-verifier-js#verification-process).\n\n\n### What should be in a batch?\n\nHow a batch is defined can vary, but it should be defined such that it changes infrequently. For example, \u201c2016 MIT grads\u201d would be preferred over \u201cMIT grads\u201d (the latter would have to be updated every year). The size of the batch is limited by the 100KB maximum transaction size imposed by the Bitcoin network. This will amount to a maximum of around 2,000 recipients per certificate batch.\n\n### Transaction structure\n\n\nOne Bitcoin transaction is performed for every batch of certificates. There is no limit to the number of certificates that may be included in a batch, so typically batches are defined in logical groups such as \"Graduates of Fall 2017 Robotics Class\".\n\n![](/img/tx_out.png)\n\n\nThe transaction structure is the following:\n\n*   Input:\n    *    Minimal amount of bitcoin (currently ~$.80 USD) from Issuer's Bitcoin address\n*   Outputs:\n    *   OP_RETURN field, storing a hash of the batch of certificates\n    *   Optional: change to an issuer address\n\nThe OP_RETURN output is used to prove the validity of the certificate batch. This output stores data, which is the hash of the Merkle root of the certificate batch. At any time, we can look up this value on the blockchain to help confirm a claim.\n\nThe Issuer Bitcoin address and timestamp from the transaction are also critical for the verification process. These are used to check the authenticity of the claim, as described in [verification process](https://github.com/blockchain-certificates/cert-verifier-js#verification-process).\n\n\n## Class design\n\n### Core issuing classes\n![](img/issuer_main_classes.png)\n\nThe `Issuer` api is quite simple; it relies on `CertificateHandler`s and `Transaction Handler`s to do the work of \nextracting the data to issue on the blockchain, and handling the blockchain transaction, respectively.\n\n`CertificateBatchHandler` manages the certificates to issue on the blockchain. It ensures that all accessors iterate\n certificates in a predictable order. This is critical because the Merkle Proofs must be associated with the correct\n certificate. Python generators are used here to help keep the memory footprint low while reading from files.\n\n- `prepare_batch` \n    - performs the preparatory steps on certificates in the batch, including validation of the schema and forming the \n    data that will go on the blockchain. Certificate-level details are handled by `CertificateHandler`s\n    - returns the hex byte array that will go on the blockchain\n- `finish_batch` ensures each certificate is updated with the blockchain transaction information (and proof in general)\n\n`CertificateHandler` is responsible for reading from and updating a specific certificate (identified by certificate_metadata). \nIt is used exclusively by `CertificateBatchHandler` to handle certificate-level details:\n- `validate`: ensure the certificate is well-formed\n- `sign`: (currently unused)\n- `get_byte_array_to_issue`: return byte array that will be hashed, hex-digested and added to the Merkle Tree\n- `add_proof`: associate a a proof with a certificate (in the current implementation, the proof is embedded in the file)\n\n`TransactionHandler` deals with putting the data on the blockchain. Currently only a Bitcoin implementation exists\n\n### Signing and secret management\n\n![](img/signing_classes.png)\n\nFinalizable signer is a convenience class allowing use of python's `with` syntax. E.g.:\n\n```\n\nwith FinalizableSigner(secret_manager) as fs:\n    fs.sign_message(message_to_sign)\n\n```\n\nSecretManagers ensure the secret key (wif) is loaded into memory for signing. FileSecretManager is the only current\nimplemenation.\n\n### Merkle tree generator\n\n![](img/merkle_tree_generator.png)\n\nHandles forming the Merkle Tree, returning the data to put on the blockchain, and returning a python generator of the\nproofs.\n\nThis class structure is intended to be general-purpose to allow other implementations. (Do this carefully if at all.)\n\n## Additional Details\n- [Issuing certificates](docs/issuing.md)\n- [Installing and using a local bitcoin node](docs/bitcoind.md)\n\n\n## Examples\n\nThe files in examples/data-testnet and examples/data-mainnet contain results of previous runs. \n\n## Checking transaction status\n\nYou can validate your transaction before sending by looking it up by rawtx at blockchain.info. Example:\n\n   ```\n   curl 'https://blockchain.info/rawtx/45a9306dfe99820eb346bb17ae0b64173ac11cac2d0e4227c7a7cacbcc0bad31?cors=true'\n   ```\n\n## Contact\n\nContact [info@blockcerts.org](mailto:info@blockcerts.org) with questions\n\n\n",
+    "description": "[![Build Status](https://travis-ci.org/blockchain-certificates/cert-issuer.svg?branch=master)](https://travis-ci.org/blockchain-certificates/cert-issuer)\n[![PyPI version](https://badge.fury.io/py/cert-issuer.svg)](https://badge.fury.io/py/cert-issuer)\n\n\n# cert-issuer\n\nThe cert-issuer project issues blockchain certificates by creating a transaction from the issuing institution to the\nrecipient on the Bitcoin blockchain that includes the hash of the certificate itself. \n\n# Quick start using Docker\n\n## Getting the Docker image\nThis uses bitcoind in regtest mode. This route makes many simplifications to allow a quick start, and is intended for\nexperimenting only.\n\n1. First ensure you have Docker installed. [See our Docker installation help](docs/docker_install.md).\n\n2. Clone the repo and change to the directory\n\n    ```\n    git clone https://github.com/blockchain-certificates/cert-issuer.git && cd cert-issuer\n    ```\n\n\n3. From a command line in cert-issuer dir, build your docker container:\n    \n    ```\n    docker build -t bc/cert-issuer:1.0 .\n    ```\n\n4. Read before running!\n\n    - Once you launch the docker container, you will make some changes using your personal issuing information. This flow mirrors what you would if you were issuing real certificates.\n    - To avoid losing your work, you should create snapshots of your docker container. You can do this by running:\n\n        ```\n        docker ps -l\n        docker commit <container for your bc/cert-issuer> my_cert_issuer\n        ```\n\n5. When you're ready to run:\n\n    ```\n    docker run -it bc/cert-issuer:1.0 bash\n    ```\n\n## Create issuing address\n\n__Important__: this is a simplification to avoid using a USB, which needs to be inserted and removed during the\nstandard certficate issuing process. Do not use these addresses or private keys for anything other than experimenting.\n\nEnsure your docker image is running and bitcoind process is started\n\n1. Create an 'issuing address' and save the output as follows:\n\n    ```\n    issuer=`bitcoin-cli getnewaddress`\n    sed -i.bak \"s/<issuing-address>/$issuer/g\" /etc/cert-issuer/conf.ini\n    bitcoin-cli dumpprivkey $issuer > /etc/cert-issuer/pk_issuer.txt\n    ```\n    \n2. Don't forget to save snapshots so you don't lose your work (see step 3 of client setup)\n\n## Issuing certificates\n\n1. Add your certificate to /etc/cert-issuer/data/unsigned_certificates/. \n\n    ```\n    # To use a sample unsigned certificate as follows:\n    cp /cert-issuer/examples/data-testnet/unsigned_certificates/3bc1a96a-3501-46ed-8f75-49612bbac257.json /etc/cert-issuer/data/unsigned_certificates/ \n    \n    # If you created your own unsigned certificate using cert-tools (assuming you placed it under data/unsigned_certificates):\n    cp <cert-issuer-home>/data/unsigned_certificates/<your-cert-guid>.json /etc/cert-issuer/data/unsigned_certificates/\n    ```\n\n2. Make sure you have enough BTC in your issuing address.\n\n    a. You're using bitcoind in regtest mode, so you can print money. This should give you 50 (fake) BTC:\n\n    ```\n    bitcoin-cli generate 101\n    bitcoin-cli getbalance\n    ```\n\n    b. Send the money to your issuing address -- note that bitcoin-cli's standard denomination is bitcoins not satoshis! (In our\n    app, the standard unit is satoshis.) This command sends 5 bitcoins to the address\n\n    ```\n    bitcoin-cli sendtoaddress $issuer 5\n    ```\n\n3. Issue the certificates on the blockchain\n\n    ```\n    cert-issuer -c /etc/cert-issuer/conf.ini\n    ```\n    \n4. Your Blockchain certificates are located in `/etc/cert-issuer/data/blockchain_certificates`. Copy these to your local machine, and add them to cert-viewer's `cert_data` folder to see your certificates in the Certificate Viewer.\n\n```\ndocker ps  // shows the docker containerId\ndocker cp <containerId>:/etc/cert-issuer/data/blockchain_certificates <localPath>/cert-viewer/cert_data\n```\n\n# How batch issuing works\n\nWhile it is possible to issue one certificate with one Bitcoin transaction, it is far more efficient to use one Bitcoin transaction to issue a batch of certificates. \n\nThe issuer builds a Merkle tree of certificate hashes and registers the Merkle root as the OP_RETURN field in the Bitcoin transaction. \n\nSuppose the batch contains `n` certificates, and certificate `i` contains recipient `i`'s information. The issuer hashes each certificate and combines them into a Merkle tree:\n\n![](img/merkle.png)\n\n\nThe root of the Merkle tree, which is a 256-bit hash, is issued on the Bitcoin blockchain. The complete Bitcoin transaction outputs are described in 'Transaction structure'.\n\nThe Blockchain Certificate given to recipient `i` contains a [2017 Merkle Proof Signature Suite](https://w3c-dvcg.github.io/lds-merkleproof2017/)-formatted signature, proving that certificate `i` is contained in the Merkle tree. \n\n![](img/blockchain_certificate_components.png)\n\nThis receipt contains:\n\n*   The Bitcoin transaction ID storing the Merkle root\n*   The expected Merkle root on the blockchain\n*   The expected hash for recipient `i`'s certificate\n*   The Merkle path from recipient `i`'s certificate to the Merkle root, i.e. the path highlighted in orange above. `h_i -> \u2026 -> Merkle root`\n\nThe [verification process](https://github.com/blockchain-certificates/cert-verifier-js#verification-process) performs computations to check that:\n\n*   The hash of certificate `i` matches the value in the receipt\n*   The Merkle path is valid\n*   The Merkle root stored on the blockchain matches the value in the receipt\n\nThese steps establish that the certificate has not been tampered with since it was issued.\n\n## Hashing a certificate\n\nThe Blockchain Certificate JSON contents without the `signature` node is the certificate that the issuer created. This is the value needed to hash for comparison against the receipt. Because there are no guarantees about ordering or formatting of JSON, first canonicalize the certificate (without the `signature`) against the JSON LD schema. This allows us to obtain a deterministic hash across platforms.\n\nThe detailed steps are described in the [verification process](https://github.com/blockchain-certificates/cert-verifier-js#verification-process).\n\n\n## What should be in a batch?\n\nHow a batch is defined can vary, but it should be defined such that it changes infrequently. For example, \u201c2016 MIT grads\u201d would be preferred over \u201cMIT grads\u201d (the latter would have to be updated every year). The size of the batch is limited by the 100KB maximum transaction size imposed by the Bitcoin network. This will amount to a maximum of around 2,000 recipients per certificate batch.\n\n## Transaction structure\n\n\nOne Bitcoin transaction is performed for every batch of certificates. There is no limit to the number of certificates that may be included in a batch, so typically batches are defined in logical groups such as \"Graduates of Fall 2017 Robotics Class\".\n\n![](/img/tx_out.png)\n\n\nThe transaction structure is the following:\n\n*   Input:\n    *    Minimal amount of bitcoin (currently ~$.80 USD) from Issuer's Bitcoin address\n*   Outputs:\n    *   OP_RETURN field, storing a hash of the batch of certificates\n    *   Optional: change to an issuer address\n\nThe OP_RETURN output is used to prove the validity of the certificate batch. This output stores data, which is the hash of the Merkle root of the certificate batch. At any time, we can look up this value on the blockchain to help confirm a claim.\n\nThe Issuer Bitcoin address and timestamp from the transaction are also critical for the verification process. These are used to check the authenticity of the claim, as described in [verification process](https://github.com/blockchain-certificates/cert-verifier-js#verification-process).\n\n# Issuing options\n\nThe Quick Start assumed you are issuing certificates in Bitcoin regtest mode, which doesn't actually write to a public blockchain. To actually write your transaction, you need to run in testnet (with test coins -- not real money) or mainnet (real money).\n\nWe recommend starting in testnet before mainnet.\n\nBy default, cert-issuer does not assume you have a bitcoin/ethereum node running locally, and it uses APIs to look up and broadcast transactions. There is API support for both testnet and mainnet chains. \n\nIf you do want to use a local bitcoin node, [see details about installing and configuring a bitcoin node for use with cert-issuer](docs/bitcoind.md) before continuing.\n\nThese steps walk you through issuing in testnet and mainnet mode. Note that the prerequisites and the configuration for the Bitcoin issuing and the Ethereum issuing differ. \n\n## Prerequisites\n\nDecide which chain (Bitcoin or Ethereum) to issue to and follow the steps. The bitcoin chain is currently best supported by the Blockcerts libraries. Follow the steps for the chosen chain.\n\n### Create a Bitcoin issuing address\n\nFirst, ensure you've created an issuing address appropriate for the Bitcoin chain you are using. Please note:\n- regtest or testnet addresses will start with 'm' or 'n'\n- mainnet addresses will start with '1'\n  \n __These steps involve storing secure information on a USB. Do not plug in this USB when your computer's wifi is on.__\n\n1. Use bitaddress.org\n    - for testnet addresses go to [bitaddress.org?testnet=true](http://bitaddress.org?testnet=true)\n    - for mainnet addresses go to [bitaddress.org](http://bitaddress.org)\n2. Create an 'issuing address', i.e. the address from which your certificates are issued.\n    - save the unencrypted private key to a file (we recommend to store it on a removable drive for security).\n    - save the public address as the `issuing_address` value in conf.ini\n\nIf you are using a local bitcoin node, you can create addresses by command line. See [bitcoind.md](docs/bitcoind.md)\n\n\n### Create an Ethereum issuing address\n\nCurrently Blockcerts just supports issuing to the Ropsten Ethereum testnet, and the Ethereum mainnet. In Ethereum a public/private key pair is the same accross all test/main networks.\n\n __These steps involve storing secure information on a USB. Do not plug in this USB when your computer's wifi is on.__\n \n 1. Create issuing address on Myetherwallet\n    - Go to https://www.myetherwallet.com/.\n    - For the best security turn off your connection to the internet when you are on the create wallet page.\n 2. Go through the create wallet process\n    - Store the private key on the USB stick and unplug it afterwards.\n    - Copy the public key to the `issuing_address` value in conf.ini\n\n### Get coins\n\nNote ensure you've transferred sufficient funds to your issuing address to cover the transaction fee.  Some notes:\n- The transaction fee is the same no matter the number of certificates in the batch\n- __For Bitcoin:__\n  - The default transaction fee used by cert-issuer is 60,000 satoshis for bitcoin (~$2.88 USD, 10/11/2017)\n  - Because the transaction fee is a factor in confirmation time, you may decide to increase or decrease this value in the config file (read more about current transaction fee/latency estimates: https://bitcoinfees.21.co/)\n- __For Ethereum:__\n  - The default gasprice is set at 20 GWei, which makes the transaction price about 0.00047 ETH (~$0.14 USD, 10/11/2017)\n  - Lowering the default setting may impact the confirmation time. Please reference http://ethgasstation.info/ to find a fitting gasprice.\n\n#### Obtaining testnet coins\n\n- Request some testnet coins by searching for \u201cTestnet Faucet\u201d, and entering your issuing public address. It may take a while for the transaction to be confirmed.\n- Important: make sure you follow the guidance of the testnet faucet provider!\n    \n#### Obtaining mainnet coins\n\n- If this is your first time purchasing Bitcoin or Ethereum, start by reading starter information:\n   - For __Bitcoin__: [https://bitcoin.org/en/getting-started] Specifically, the first section \u201cHow to use Bitcoin\u201d is an overview of choosing a wallet, obtaining your first Bitcoins, and securing your money.\n   - For __Ethereum__: https://myetherwallet.github.io/knowledge-base/getting-started/getting-started-new.html - MyEtherWallet's knowledge base getting started entry. \n- Transfer a small amount of money to the issuer address created in step 1.\n\n\n## Configuring cert-issuer \n\nEdit your conf.ini file (the config file for this application). \n\n```\nissuing_address = <issuing-address>\n\nchain=<bitcoin_regtest|bitcoin_testnet|bitcoin_mainnet|ethereum_testnet|ethereum_ropsten|ethereum_mainnet|mockchain>\n    \nusb_name = </Volumes/path-to-usb/>\nkey_file = <file-you-saved-pk-to>\n\nunsigned_certificates_dir=<path-to-your-unsigned-certificates>\nblockchain_certificates_dir=<path-to-your-blockchain-certificates>\nwork_dir=<path-to-your-workdir>\n\nno_safe_mode\n\n# advanced: uncomment the following line if you're running a bitcoin node\n# bitcoind\n```\n\nNotes:\n  - The `bitcoind` option is technically not required in `regtest` mode. `regtest` mode _only_ works with a local bitcoin node. The quick start in docker brushed over this detail by installing a regtest-configured bitcoin node in the docker container.\n  - The Ethereum option does not support a local (test)node currently. The issuer will broadcast the transaction via the Etherscan API.\n\n## Issuing\n\n1. Add your certificates to data/unsigned_certs/\n\n2. Run the issue_certificates.py script to create your certificates. If you've installed the package\nyou can run:\n\n```\npython cert-issuer -c conf.ini\n```\n\n3. Output\n  - The Blockchain Certificates will be located in data/blockchain_certificates.\n  - If you ran in the mainnet or testnet mode, you can also see your transaction on a live blockchain explorer. \n    - For Bitcoin, Blockr.io has explorers for both [testnet](https://tbtc.blockr.io/) and [mainnet](https://blockr.io/).\n    - For Ethereum, Etherscan has explorers for [ropsten](https://ropsten.etherscan.io/) and [mainnet](https://etherscan.io/)\n    - The transaction id is located in the Blockchain Certificate under `signature.anchors[0].sourceId`\n\n\n# Unit tests\n\nThis project uses tox to validate against several python environments.\n\n1. Ensure you have an python environment. [Recommendations](docs/virtualenv.md)\n\n2. Run tests\n    ```\n    ./run_tests.sh\n    ```\n    \n# Class design\n\n## Core issuing classes\n![](img/issuer_main_classes.png)\n\nThe `Issuer` api is quite simple; it relies on `CertificateHandler`s and `Transaction Handler`s to do the work of \nextracting the data to issue on the blockchain, and handling the blockchain transaction, respectively.\n\n`CertificateBatchHandler` manages the certificates to issue on the blockchain. It ensures that all accessors iterate\n certificates in a predictable order. This is critical because the Merkle Proofs must be associated with the correct\n certificate. Python generators are used here to help keep the memory footprint low while reading from files.\n\n- `prepare_batch` \n    - performs the preparatory steps on certificates in the batch, including validation of the schema and forming the \n    data that will go on the blockchain. Certificate-level details are handled by `CertificateHandler`s\n    - returns the hex byte array that will go on the blockchain\n- `finish_batch` ensures each certificate is updated with the blockchain transaction information (and proof in general)\n\n`CertificateHandler` is responsible for reading from and updating a specific certificate (identified by certificate_metadata). \nIt is used exclusively by `CertificateBatchHandler` to handle certificate-level details:\n- `validate`: ensure the certificate is well-formed\n- `sign`: (currently unused)\n- `get_byte_array_to_issue`: return byte array that will be hashed, hex-digested and added to the Merkle Tree\n- `add_proof`: associate a a proof with a certificate (in the current implementation, the proof is embedded in the file)\n\n`TransactionHandler` deals with putting the data on the blockchain. Currently only a Bitcoin implementation exists\n\n## Signing and secret management\n\n![](img/signing_classes.png)\n\nFinalizable signer is a convenience class allowing use of python's `with` syntax. E.g.:\n\n```\n\nwith FinalizableSigner(secret_manager) as fs:\n    fs.sign_message(message_to_sign)\n\n```\n\nSecretManagers ensure the secret key (wif) is loaded into memory for signing. FileSecretManager is the only current\nimplemenation.\n\n## Merkle tree generator\n\n![](img/merkle_tree_generator.png)\n\nHandles forming the Merkle Tree, returning the data to put on the blockchain, and returning a python generator of the\nproofs.\n\nThis class structure is intended to be general-purpose to allow other implementations. (Do this carefully if at all.)\n\n# Advanced setup\n- [Installing and using a local bitcoin node](docs/bitcoind.md)\n\n# Examples\n\nThe files in examples/data-testnet contain results of previous runs. \n\n# FAQs\n\n## Checking transaction status\n\nYou can validate your transaction before sending by looking it up by rawtx at blockchain.info. Example:\n\n   ```\n   curl 'https://blockchain.info/rawtx/45a9306dfe99820eb346bb17ae0b64173ac11cac2d0e4227c7a7cacbcc0bad31?cors=true'\n   ```\n\n## Mac scrypt problems\n\nIf your install on Mac is failing with a message like the following, try the [workaround described in this thread](https://github.com/ethereum/pyethereum/issues/292).\n\n```\nfatal error: 'openssl/aes.h'\n      file not found\n#include <openssl/aes.h>\n```\n\n# Contact\n\nContact us at [the Blockcerts community forum](http://community.blockcerts.org/).\n\n\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -20,11 +20,11 @@
     "name": "cert-issuer",
     "platform": "",
     "project_url": "https://pypi.org/project/cert-issuer/",
-    "release_url": "https://pypi.org/project/cert-issuer/2.0.9/",
+    "release_url": "https://pypi.org/project/cert-issuer/2.0.10/",
     "requires_dist": [],
     "requires_python": "",
     "summary": "Issues blockchain certificates using the Bitcoin blockchain",
-    "version": "2.0.9"
+    "version": "2.0.10"
   },
   "releases": {
     "0.0.11": [
@@ -34,7 +34,7 @@
           "md5": "fb7cf91ed45a30a2ef7587ce5123653c",
           "sha256": "b43b9fed4a0bc7e1fdda1f3b96d4793133dcb91f5d302dddb76e8fb56e9050a0"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cert-issuer-0.0.11.tar.gz",
         "has_sig": false,
         "md5_digest": "fb7cf91ed45a30a2ef7587ce5123653c",
@@ -52,7 +52,7 @@
           "md5": "fc78157974ea66448dc67db9c26f850a",
           "sha256": "5194f0f3f41e68a73ef0009cf267da7d88d59b6710c5712e9f78326e55ccb9ea"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cert-issuer-0.0.12.tar.gz",
         "has_sig": false,
         "md5_digest": "fc78157974ea66448dc67db9c26f850a",
@@ -70,7 +70,7 @@
           "md5": "95b357ace2832bddfbfa9b2ff5996036",
           "sha256": "71e5a13f7794e24ac3c90a7caf436667003450238dc90d9e7b5c591e12d7381f"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cert-issuer-0.0.13.tar.gz",
         "has_sig": false,
         "md5_digest": "95b357ace2832bddfbfa9b2ff5996036",
@@ -88,7 +88,7 @@
           "md5": "950152a2f43e40d59001f574625208fa",
           "sha256": "46e20accba8104d64111ca322bc966736483ad2ffcbd70138c09d85a0a14fda8"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cert-issuer-0.0.14.tar.gz",
         "has_sig": false,
         "md5_digest": "950152a2f43e40d59001f574625208fa",
@@ -106,7 +106,7 @@
           "md5": "f82fb4eb23e5762ac7b52b3e2acc7a04",
           "sha256": "a68bf02044cf2fecde88217b808ba377fc76f0ccf583cc3197b6b114642a5330"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cert-issuer-0.0.15.tar.gz",
         "has_sig": false,
         "md5_digest": "f82fb4eb23e5762ac7b52b3e2acc7a04",
@@ -124,7 +124,7 @@
           "md5": "17b215c5fefa73cc3de6632027f87840",
           "sha256": "f9e9902b69797f5dab1af0df5be0b98702764e7e75113c8f393cf9eba3971df2"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cert-issuer-0.0.16.tar.gz",
         "has_sig": false,
         "md5_digest": "17b215c5fefa73cc3de6632027f87840",
@@ -142,7 +142,7 @@
           "md5": "ab726f3112c6f0f5b8b61db605a781d8",
           "sha256": "da9d003f0d7b81be785e1effec95e8c8d38664535fa2f20286f2d9369aad97c1"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cert-issuer-0.0.17.tar.gz",
         "has_sig": false,
         "md5_digest": "ab726f3112c6f0f5b8b61db605a781d8",
@@ -160,7 +160,7 @@
           "md5": "24ce01999de3442f37b2acae407b2973",
           "sha256": "236fd6717c2318310382cc287c38bccaa7837ead436dad10f2bc3c66394f00cf"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cert-issuer-0.0.18.tar.gz",
         "has_sig": false,
         "md5_digest": "24ce01999de3442f37b2acae407b2973",
@@ -178,7 +178,7 @@
           "md5": "3180091d4e877f760888df830d223d88",
           "sha256": "a37e0f43de151d697c2647d8dec114fe92e686805348dfa2ec19a38b29442e11"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cert-issuer-0.0.19.tar.gz",
         "has_sig": false,
         "md5_digest": "3180091d4e877f760888df830d223d88",
@@ -196,7 +196,7 @@
           "md5": "04492896fa7feb792cb3c787e6924876",
           "sha256": "b031963a0dc2df75fea17c607e4b13826bb20dd592571073cf96d9b89bdedc02"
         },
-        "downloads": 19,
+        "downloads": -1,
         "filename": "cert-issuer-0.0.3.tar.gz",
         "has_sig": false,
         "md5_digest": "04492896fa7feb792cb3c787e6924876",
@@ -214,7 +214,7 @@
           "md5": "1004d9b2f1af3c4ffdc770793ebd9479",
           "sha256": "a9df2266cb3bac655121d5464f13799257c97886196665a3f5bc0f8838f982a6"
         },
-        "downloads": 21,
+        "downloads": -1,
         "filename": "cert-issuer-0.0.4.tar.gz",
         "has_sig": false,
         "md5_digest": "1004d9b2f1af3c4ffdc770793ebd9479",
@@ -232,7 +232,7 @@
           "md5": "90ad0dacf461f568d6218c09dcad0292",
           "sha256": "e1c35c73a4509033cfcc071edb7d76584ca62366c966f327ca251bc3c72f9424"
         },
-        "downloads": 65,
+        "downloads": -1,
         "filename": "cert-issuer-0.0.6.tar.gz",
         "has_sig": false,
         "md5_digest": "90ad0dacf461f568d6218c09dcad0292",
@@ -250,7 +250,7 @@
           "md5": "480ef7dee5d2af6ccef89f782719773d",
           "sha256": "08ad27abf4299b30ff556ba4808bff81320f6695a966bb31e0273218c3393d53"
         },
-        "downloads": 18,
+        "downloads": -1,
         "filename": "cert-issuer-0.0.7.tar.gz",
         "has_sig": false,
         "md5_digest": "480ef7dee5d2af6ccef89f782719773d",
@@ -268,7 +268,7 @@
           "md5": "035b48c62143c4e2ffa144fdc01ca232",
           "sha256": "6760453f3378b9d723875e8d0fdf92a3fe77c69c012ef2d04c680a6e6fc83ee3"
         },
-        "downloads": 19,
+        "downloads": -1,
         "filename": "cert-issuer-0.0.8.tar.gz",
         "has_sig": false,
         "md5_digest": "035b48c62143c4e2ffa144fdc01ca232",
@@ -286,7 +286,7 @@
           "md5": "683f0dfbabc74e299b0fdb6e08417e83",
           "sha256": "b8c31035758d9e101b7725f49bcfd2d12ee24886dd79cd62f1c3dbd4f99f0fe8"
         },
-        "downloads": 23,
+        "downloads": -1,
         "filename": "cert-issuer-0.0.9.tar.gz",
         "has_sig": false,
         "md5_digest": "683f0dfbabc74e299b0fdb6e08417e83",
@@ -304,7 +304,7 @@
           "md5": "6a20e9c12fa713ee5b6e6262dca3d4c2",
           "sha256": "a6404c706e35a86d1b7df4b7f9120232ff2a816cc8221a44589050ed92ce3011"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cert-issuer-2.0.1.tar.gz",
         "has_sig": false,
         "md5_digest": "6a20e9c12fa713ee5b6e6262dca3d4c2",
@@ -315,6 +315,24 @@
         "url": "https://files.pythonhosted.org/packages/22/bf/fce0e41136521f8d88e0fe47da4b07b639af05f7db25b2b2ea3b68e22c25/cert-issuer-2.0.1.tar.gz"
       }
     ],
+    "2.0.10": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "be825d69a06cb32777a439eeb547635d",
+          "sha256": "28d3370f253d1c17aa1390dac8ad746e3bc2551b5c1b9d8d0627f003e207f7c8"
+        },
+        "downloads": -1,
+        "filename": "cert-issuer-2.0.10.tar.gz",
+        "has_sig": false,
+        "md5_digest": "be825d69a06cb32777a439eeb547635d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 29224,
+        "upload_time": "2017-10-24T19:25:13",
+        "url": "https://files.pythonhosted.org/packages/5a/ad/f0a5052c3a5959855169c3664cead17e78c264d4aff1975057659d75bf8d/cert-issuer-2.0.10.tar.gz"
+      }
+    ],
     "2.0.2": [
       {
         "comment_text": "",
@@ -322,7 +340,7 @@
           "md5": "17de6bb965e3eb8016b42f8477769e79",
           "sha256": "4b4fd33fb73e0912592d380ef08936555a9cf2ae70e334d85a503cbc10cda728"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cert-issuer-2.0.2.tar.gz",
         "has_sig": false,
         "md5_digest": "17de6bb965e3eb8016b42f8477769e79",
@@ -340,7 +358,7 @@
           "md5": "545838f62867ef23eeb93af2da84eb62",
           "sha256": "72d31bc5c8da62ecd689d169f85ba1b5aa90875e390cb332b4cb0b7526fe4caa"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cert-issuer-2.0.3.tar.gz",
         "has_sig": false,
         "md5_digest": "545838f62867ef23eeb93af2da84eb62",
@@ -358,7 +376,7 @@
           "md5": "7d728d13664e03f5f93fc5e99ee1b45c",
           "sha256": "51016a9e274efb5408380a1c8b1d26c94130bb6ae6e931011c575744530c1b9b"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cert-issuer-2.0.4.tar.gz",
         "has_sig": false,
         "md5_digest": "7d728d13664e03f5f93fc5e99ee1b45c",
@@ -376,7 +394,7 @@
           "md5": "0d61b8a5c5ead66c10a6d26a01c12dff",
           "sha256": "cc667d794e5f171917b2571971f691d447cf1c9758950dba101ee64605aad0f8"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cert-issuer-2.0.5.tar.gz",
         "has_sig": false,
         "md5_digest": "0d61b8a5c5ead66c10a6d26a01c12dff",
@@ -394,7 +412,7 @@
           "md5": "1872c2e852082e9db64ceab9a142ee5a",
           "sha256": "061e1b61435933048c4306359cd1ccaea20d4926ffe726410021c4efc710e755"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cert-issuer-2.0.6.tar.gz",
         "has_sig": false,
         "md5_digest": "1872c2e852082e9db64ceab9a142ee5a",
@@ -412,7 +430,7 @@
           "md5": "9c912497dc45d1584df8aebc3dcdf8f9",
           "sha256": "210aa5c0ee95abc0c8b1a9869f0dab0a8661a77ec808e8745634f3f166a7d1cc"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cert-issuer-2.0.7.tar.gz",
         "has_sig": false,
         "md5_digest": "9c912497dc45d1584df8aebc3dcdf8f9",
@@ -430,7 +448,7 @@
           "md5": "cc43842c781d8fc07179d20e7548252a",
           "sha256": "590e8cffbae6ec8dcd926e4534d666515a6d23662257a388cb41b23ed3c7f986"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cert-issuer-2.0.8.tar.gz",
         "has_sig": false,
         "md5_digest": "cc43842c781d8fc07179d20e7548252a",
@@ -448,7 +466,7 @@
           "md5": "0968f8cb34328b3dc5b86f605653cefc",
           "sha256": "dc54524a0ef818c6dc7bbe63c92b2c28ea5e10c84cec2ea12b442baf6521bd7a"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cert-issuer-2.0.9.tar.gz",
         "has_sig": false,
         "md5_digest": "0968f8cb34328b3dc5b86f605653cefc",
@@ -466,7 +484,7 @@
           "md5": "7934f6a0162fd3bfc868402d2ba45cbe",
           "sha256": "0ecf7ab8d73cc27049a38da6f22fd6a3ef86cf9b52685926165154753192e886"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cert-issuer-2.0b10.tar.gz",
         "has_sig": false,
         "md5_digest": "7934f6a0162fd3bfc868402d2ba45cbe",
@@ -484,7 +502,7 @@
           "md5": "cd06b2e43b2bca1bd699d22d6b089dbf",
           "sha256": "e163ef57f36e28ec66c6c81d18ed652d6bb14781fe621bb02463e15dc0c8c495"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cert-issuer-2.0b11.tar.gz",
         "has_sig": false,
         "md5_digest": "cd06b2e43b2bca1bd699d22d6b089dbf",
@@ -502,7 +520,7 @@
           "md5": "de52eb772f4f4b84c32c48b7bafac73d",
           "sha256": "368406ae9af80c26f01ed4b3fa1db2ee1d6174923ad9bf4b87d9ed280619ae87"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cert-issuer-2.0b12.tar.gz",
         "has_sig": false,
         "md5_digest": "de52eb772f4f4b84c32c48b7bafac73d",
@@ -520,7 +538,7 @@
           "md5": "3ba7cb5821fe37b6260427bcfbbef693",
           "sha256": "4e38b43f453e8fbd3297fdd11461ba8756b4cfe88d418b2c095982c1ca211ee3"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cert-issuer-2.0b13.tar.gz",
         "has_sig": false,
         "md5_digest": "3ba7cb5821fe37b6260427bcfbbef693",
@@ -538,7 +556,7 @@
           "md5": "a996027886c9c788d59d3a961912a30d",
           "sha256": "997d54d08c6ead2b0d56de7f0e0408c4e64f8dfd37b60697e18fb72e95afbe70"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cert-issuer-2.0b14.tar.gz",
         "has_sig": false,
         "md5_digest": "a996027886c9c788d59d3a961912a30d",
@@ -556,7 +574,7 @@
           "md5": "2e6d370cbd40a92030b01c000ae58826",
           "sha256": "50028ddabd00c94ec4c9e9216939a56838652898a7716979b309072c9f4d4ee0"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cert-issuer-2.0b15.tar.gz",
         "has_sig": false,
         "md5_digest": "2e6d370cbd40a92030b01c000ae58826",
@@ -574,7 +592,7 @@
           "md5": "ede9dbc08a69c1b5105b90b8ad6d4c89",
           "sha256": "b4233514c4722082fc763559c99711e70be0bf2a37499aab8e357d310437e5ba"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cert-issuer-2.0b16.tar.gz",
         "has_sig": false,
         "md5_digest": "ede9dbc08a69c1b5105b90b8ad6d4c89",
@@ -592,7 +610,7 @@
           "md5": "6622036a89f5f4f91b49da5e6572f495",
           "sha256": "39303e2f2c8a76e4d501c03e4e915741e6733c9c46f1ba1c92b3eb35dd860785"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cert-issuer-2.0b17.tar.gz",
         "has_sig": false,
         "md5_digest": "6622036a89f5f4f91b49da5e6572f495",
@@ -610,7 +628,7 @@
           "md5": "817e0a3d6a0a7305b3f92b3689701b98",
           "sha256": "1d13fe08055558f1345bca63f58b6c21d39eb47cbe52b970d0ad39ff31666be0"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cert-issuer-2.0b18.tar.gz",
         "has_sig": false,
         "md5_digest": "817e0a3d6a0a7305b3f92b3689701b98",
@@ -628,7 +646,7 @@
           "md5": "559f7e2defb27441d27a7c8fddb95b4a",
           "sha256": "b38e33e04df6a5d156611745286b03f14148775a6011c7db1d7abb40ba187200"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cert-issuer-2.0b3.tar.gz",
         "has_sig": false,
         "md5_digest": "559f7e2defb27441d27a7c8fddb95b4a",
@@ -646,7 +664,7 @@
           "md5": "66581836df4cd198b38cbdf90f5f623f",
           "sha256": "c5cbe176f7e1ee2d9f45bee184d32855c3b2a967c95382a7a338d07ae47fa918"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cert-issuer-2.0b4.tar.gz",
         "has_sig": false,
         "md5_digest": "66581836df4cd198b38cbdf90f5f623f",
@@ -664,7 +682,7 @@
           "md5": "3fdeeedc17d1e81d936250d346916fbe",
           "sha256": "7ca887d915867b9c5e513ef08432741a3118e3955161dcb6d9920ef5bf83ef6a"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cert-issuer-2.0b5.tar.gz",
         "has_sig": false,
         "md5_digest": "3fdeeedc17d1e81d936250d346916fbe",
@@ -682,7 +700,7 @@
           "md5": "8e5ed3f74444f96438f0cdb573205050",
           "sha256": "de258d78ca10179b43cda90759c56abd88d8d0ca86bda335339dce47e3bd32b6"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cert-issuer-2.0b6.tar.gz",
         "has_sig": false,
         "md5_digest": "8e5ed3f74444f96438f0cdb573205050",
@@ -700,7 +718,7 @@
           "md5": "b16e6d3c031338256a347e1c20206dac",
           "sha256": "654c26589d3b3bf8143cc2ad0d645418894ea1765ded7e015409a7047dd73b54"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cert-issuer-2.0b7.tar.gz",
         "has_sig": false,
         "md5_digest": "b16e6d3c031338256a347e1c20206dac",
@@ -718,7 +736,7 @@
           "md5": "6bd5b50dc20881a3498f37c5a2df7325",
           "sha256": "71a5a3c412165b29ca6157fe7c9e1a84713dbd790ac746bf5f78264b908b6097"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cert-issuer-2.0b8.tar.gz",
         "has_sig": false,
         "md5_digest": "6bd5b50dc20881a3498f37c5a2df7325",
@@ -736,7 +754,7 @@
           "md5": "9c39fdd8d6ccde32af12470edb850cff",
           "sha256": "a36d93d55a3b9bba7eb689d1b71404984358a8b2b3df11c60be8af7f2d4676e3"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cert-issuer-2.0b9.tar.gz",
         "has_sig": false,
         "md5_digest": "9c39fdd8d6ccde32af12470edb850cff",
@@ -752,18 +770,18 @@
     {
       "comment_text": "",
       "digests": {
-        "md5": "0968f8cb34328b3dc5b86f605653cefc",
-        "sha256": "dc54524a0ef818c6dc7bbe63c92b2c28ea5e10c84cec2ea12b442baf6521bd7a"
+        "md5": "be825d69a06cb32777a439eeb547635d",
+        "sha256": "28d3370f253d1c17aa1390dac8ad746e3bc2551b5c1b9d8d0627f003e207f7c8"
       },
-      "downloads": 0,
-      "filename": "cert-issuer-2.0.9.tar.gz",
+      "downloads": -1,
+      "filename": "cert-issuer-2.0.10.tar.gz",
       "has_sig": false,
-      "md5_digest": "0968f8cb34328b3dc5b86f605653cefc",
+      "md5_digest": "be825d69a06cb32777a439eeb547635d",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 23529,
-      "upload_time": "2017-09-13T19:51:03",
-      "url": "https://files.pythonhosted.org/packages/56/ac/83e5c30fd77502bab9f250efc3ffe8e26a65ba5dbda9a04473a1afd3be41/cert-issuer-2.0.9.tar.gz"
+      "size": 29224,
+      "upload_time": "2017-10-24T19:25:13",
+      "url": "https://files.pythonhosted.org/packages/5a/ad/f0a5052c3a5959855169c3664cead17e78c264d4aff1975057659d75bf8d/cert-issuer-2.0.10.tar.gz"
     }
   ]
 }
