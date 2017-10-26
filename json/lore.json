@@ -14,7 +14,7 @@
       "Topic :: Scientific/Engineering",
       "Topic :: Scientific/Engineering :: Artificial Intelligence"
     ],
-    "description": ".. role:: python(code)\n   :language: python\n\n.. role:: bash(code)\n   :language: bash\n\n======\n Lore\n======\n\n|circleci_badge|\n\n\nLore is a python data science framework to design, fit, and exploit data science models from development to production. It codifies best practices to simplify collaborating and deploying models developed on a laptop with Jupyter notebook, into high availability distributed production data centers.\n\n\nWhy?\n----\nWriting code with a fast feedback loop is fulfilling. With complex data, you can spend hours, days, then weeks iterating through more complex edge cases on larger samples until the last bits are smoothed over. Instead of spending time partially reimplementing common patterns, frequent challenges should be solved once, and thoroughly.\n\n\n\nCreate a Lore project\n--------------------\n\n.. code-block:: bash\n\n  $ pip install lore\n  $ lore init my_project --python_version=3.6.3\n\n  # fix up .env, config/database.cfg, circle.yml, README.rst\n\n\nA Cute Little Example\n---------------------\n\nWe'll naively try to predict whether users are subscribers, given their first name.\n\n\n\nUpdate config/database.cfg to specify your database url:\n\n.. code-block:: ini\n\n  # config/database.cfg\n\n  [MAIN]\n  url: $DATABASE_URL\n\nyou can set environment variable for only the lore process with the .env file:\n\n.. code-block:: bash\n\n  # .env\n\n  DATABASE_URL=postgres://user:password@localhost:5432/main_development\n\n\nCreate a sql file that specifies your data:\n\n.. code-block:: sql\n\n  -- app/extracts/subscribers.sql\n\n  SELECT\n    first_name,\n    has_subscription\n  FROM users\n  LIMIT = %(limit)s\n\nPipelines are the unsexy, but essential component of most machine learning applications. They transform raw data into encoded training (and prediction) data for a model. Lore has several features to make data munging more palatable.\n\n.. code-block:: python\n\n  # app/pipelines/subscribers.py\n\n  import lore.io\n  import lore.pipelines\n  from lore.encoders import Norm, Discrete, Boolean, Unique\n  from lore.transformers import NameAge, NameSex, Log\n\n\n  class TrainTestSplit(lore.pipelines.TrainTestSplit):\n\n      def get_data(self):\n          # lore.io.main is a Connection created by config/database.cfg + DATABASE_URL\n          # dataframe() supports keyword args for interpolation (limit)\n          # subscribers is the name of the extract\n          # cache=True enables LRU query caching\n          return lore.io.main.dataframe('subscribers', limit=100, cache=True)\n\n      def get_encoders(self):\n          # An arbitrairily chosen set of encoders (w/ transformers)\n          # that reference sql columns in the extract by name.\n          # A fair bit of thought will probably go into expanding\n          # your list with features for your model.\n          return (\n              Unique('first_name', minimum_occurrences=100),\n              Norm(Log(NameAge('first_name'))),\n              Discrete(NameSex('first_name'), bins=10),\n          )\n\n      def get_output_encoder(self):\n          # A single encoder that references the predicted outcome\n          return Boolean('has_subscription')\n\n\nThe superclass :python:`lore.pipelines.TrainTestSplit` will take care of:\n\n# splitting the data into training_data/validation_data/test_data dataframes\n# fitting the encoders to training_data\n# transforming training_data/validation_data/test_data for the model\n\nDefine some models that will fit and predict the data. Base models are designed to be extended and overridden, but work with defaults out of the box.\n\n.. code-block:: python\n\n  # app/models/subscribers.py\n\n  import lore.models\n  from app.pipelines.subscribers import TrainTestSplit\n\n  class DeepName(lore.models.Keras):\n      def __init__():\n          super(DeepName, self).__init__(\n              pipeline=TrainTestSplit(),\n              estimator=lore.estimators.Keras() # a canned estimator for deep learning\n          )\n\n  class BoostedName(lore.models.Base):\n      def __init__():\n          super(XGBoostedName, self).__init__(\n              pipeline=TrainTestSplit(),\n              estimator=lore.estimators.XGBoost() # a canned estimator for XGBoost\n          )\n\n\nTest the models predictive power:\n\n.. code-block:: python\n\n  # tests/unit/subscribers.py\n\n  from app.models.subscribers import DeepName, BoostedName\n\n  class TestSubscribers(unittest.TestCase):\n      def test_deep_name(self):\n          model = DeepName() # initialize a new model\n          model.fit(epochs=20) # fit to the pipeline's training_data\n          predictions = model.predict(model.pipeline.test_data.x) # predict the holdout\n          self.assertEqual(predictions, model.pipeline.test_data.y) # hah!\n\n      def test_xgboosted_name(self):\n          model = BoostedName()\n          model.fit()\n          predictions = model.predict(model.pipeline.test_data.x)\n          self.assertEqual(predictions, model.pipeline.test_data.y) # hah hah hah!\n\nRun tests:\n\n.. code-block:: bash\n\n  $ lore test\n\nExperiment and tune :bash:`notebooks/` with :bash:`$ lore notebook` using the app kernel\n\n\nProject Structure\n-----------------\n\n.. code-block::\n\n  \u251c\u2500\u2500 .env.template            <- Template for environment variables for developers (mirrors production)\n  \u251c\u2500\u2500 README.md                <- The top-level README for developers using this project.\n  \u251c\u2500\u2500 requirements.txt         <- keeps dev and production in sync (pip)\n  \u251c\u2500\u2500 runtime.txt              <- keeps dev and production in sync (pyenv)\n  \u2502\n  \u251c\u2500\u2500 data/                    <- query cache and other temp data\n  \u2502\n  \u251c\u2500\u2500 docs/                    <- generated from src\n  \u2502\n  \u251c\u2500\u2500 logs/                    <- log files per environment\n  \u2502\n  \u251c\u2500\u2500 models/                  <- local model store from fittings\n  \u2502\n  \u251c\u2500\u2500 notebooks/               <- explorations of data and models\n  \u2502       \u2514\u2500\u2500 my_exploration/\n  \u2502            \u2514\u2500\u2500 exploration_1.ipynb\n  \u2502\n  \u251c\u2500\u2500 appname/                 <- python module for appname\n  \u2502   \u251c\u2500\u2500 __init__.py          <- loads the various components (makes this a module)\n  \u2502   \u2502\n  \u2502   \u251c\u2500\u2500 api/                 <- external entry points to runtime models\n  \u2502   \u2502   \u2514\u2500\u2500 my_endpoint.py   <- hub endpoint for predictions\n  \u2502   \u2502\n  \u2502   \u251c\u2500\u2500 extracts/            <- sql\n  \u2502   \u2502   \u2514\u2500\u2500 my_sql.sql\n  \u2502   \u2502\n  \u2502   \u251c\u2500\u2500 estimators/          <- Code that make predictions\n  \u2502   \u2502   \u2514\u2500\u2500 my_estimator.py  <- Keras/XGBoost implementations\n  \u2502   \u2502\n  \u2502   \u251c\u2500\u2500 models/              <- Combine estimator(s) w/ pipeline(s)\n  \u2502   \u2502   \u2514\u2500\u2500 my_model.py\n  \u2502   \u2502\n  \u2502   \u2514\u2500\u2500 pipelines/           <- abstractions for processing data\n  \u2502       \u2514\u2500\u2500 my_pipeline.py   <- train/test/split data encoding\n  \u2502\n  \u2514\u2500\u2500 tests/\n      \u251c\u2500\u2500 data/                <- cached queries for fixture data\n      \u251c\u2500\u2500 models/              <- model store for test runs\n      \u2514\u2500\u2500 unit/                <- unit tests\n\n\nModules Overview\n================\nLore provides python modules to standardize Machine Learning techniques across multiple libraries.\n\nCore Functionality\n------------------\n- **lore.models** are compatibility wrappers for your favorite library (keras, xgboost, scikit). They come with reasonable defaults for rough draft training out of the box.\n- **lore.pipelines** fetch, encode, and split data into training/test sets for models. A single pipeline will have one Encoder per feature in the model.\n- **lore.encoders** operate within Pipelines to transform a single feature into an optimal representation for learning.\n- **lore.transformers** provide common operations, like extracting the area code from a free text phone number. They can be chained together inside encoders. They efficiently\n\nSupporting functionality\n------------------------\n- **lore.io** allows connecting to postgres/redshift and upload/download from s3\n- **lore.serializers** persist models with their pipelines and encoders (and get them back again)\n- **lore.stores** save intermediate data, for reproducibility and efficiency.\n\nUtilities\n---------\n- **lore.util** has those extra niceties we rewrite in every project, and then some\n- **lore.env** takes care of ensuring that all dependencies are correctly installed before running\n\nFeatures\n========\n\nIntegrated Libraries\n--------------------\nUse your favorite library in a lore project, just like you'd use them in any other python project. They'll play nicely together.\n\n- Keras/Tensorflow + Tensorboard\n- XGBoost\n- Scikit-Learn\n- Jupyter Notebook\n- Pandas\n- Numpy\n- Matplotlib, ggplot, plotnine\n- Sqlalchemy, Psycopg2\n- Hub\n\nDev Ops\n-------\nThere are many ways to manage python dependencies in development and production, and each has it's own pitfalls. Lore codifies a solution that \u201cjust works\u201d with lore install, which exactly replicates what will be run in production.\n\n**Python 2 & 3 compatibility**\n\n- pip install lore works regardless of whether your base system python is 2 or 3. Lore projects will always use the version of python specified in their runtime.txt\n- Lore projects use the system service manager (upstart on ubuntu) instead of supervisord which requires python 2.\n\n**Heroku_ buildpack compatibility CircleCI_, Domino_ , isc)**\n\n- Lore supports runtime.txt to install and use a consistent version of python 2 or 3 in both development and production.\n- lore install automatically manages freezing requirements.txt, using a virtualenv, so pip dependencies are exactly the same in development and production. This includes workarounds to support correctly (not) freezing github packages in requirements.txt\n\n**Environment Specific Configuration**\n\n- Lore supports reading environment variables from .env, for easy per project configuration. We recommend .gitignore .env and checking in a .env.template for developer reference to prevent leaking secrets.\n- :python:`logging.getLogger(__name__)` is setup appropriately to console, file and/or syslog depending on environment\n- syslog is replicated with structured data to loggly_ in production\n- lore.util.timer logs info in development, and records  to librato_ in production\n- Exception handling logs stack traces in development and test, but reports to rollbar_ in production\n- lore console interactive python shell is color coded to prevent environmental confusion\n\n**Multiple concurrent project compatibility**\n\n- Lore manages a distinct python virtualenv for each project, which can be installed from scratch in development with lore install\n\n**ISC compatibility**\n\n- The commonly used virtualenvwrapper (and conda) breaks system python utilities, like isc, whenever you're working on a project. Lore works around this by bootstrapping into the appropriate virtualenv only when it is invoked by the developer.\n\n**Binary library installation for MAXIMUM SPEED**\n\n- Lore can build *tensorflow* from source when it is listed in requirements for development machines, which results in a 2-3x runtime training performance increase. Use lore install --native\n- Lore also compiles *xgboost* on OS X with gcc-5 instead of clang to enable automatic parallelization\n\nLore Library\n------------\n\n**IO**\n\n- :python:`lore.io.connection.Connection.select()` and :python:`Connection.dataframe()` can be automatically LRU cached to disk\n- :python:`Connection` supports python %(name)s variable replacement in SQL\n- :python:`Connection` statements are always annotated with metadata for pgHero\n- :python:`Connection` is lazy, for fast startup, and avoids bootup errors in development with low connectivity\n- :python:`Connection` supports multiple concurrent database connections\n\n**Serialization**\n\n- Lore serializers provide environment aware S3 distribution for keras/xgboost/scikit models\n- Coming soon: heroku buildpack support for serialized models to marry the appropriate code for repeatable and deploys that can be safely rolled back\n\n**Caching**\n\n- Lore provides mulitple configurable cache types, RAM, Disk, coming soon: MemCached & Redis\n- Disk cache is tested with pandas to avoid pitfalls encountered serializing w/ csv, h5py, pickle\n\n**Encoders**\n\n- Unique\n- Discrete\n- Quantile\n- Norm\n\n**Transformers**\n\n- AreaCode\n- EmailDomain\n- NameAge\n- NameSex\n- NamePopulation\n- NameFamilial\n\n**Base Models**\n\n- Abstract base classes for keras, xgboost, and scikit\n  - inheriting class to define data(), encoders(), output_encoder(), benchmark()\n  - multiple inheritance from custom base class w/ specific ABC for library\n- provides hyper parameter optimization\n\n**Fitting**\n\n- Each call to Model.fit() saves the resulting model, along with the params to fit, epoch checkpoints and the resulting statistics, that can be reloaded, or uploaded with a Serializer\n\n**Keras/Tensorflow**\n\n- tensorboard support out of the box with tensorboard --logdir=models\n- lore cleans up tensorflow before process exit to prevent spurious exceptions\n- lore serializes Keras 2.0 models with extra care, to avoid several bugs (some that only appear at scale)\n- ReloadBest callback early stops training on val_loss increase, and reloads the best epoch\n\n**Utils**\n\n- :python:`lore.util.timer` context manager writes to the log in development or librato in production*\n- :python:`lore.util.timed` is a decorator for recording function execution wall time\n\nCommands\n--------\n\n.. code-block:: bash\n\n  $ lore api  #  start an api process\n  $ lore console\n  $ lore fit MODEL  #  train the model\n  $ lore generate [all, api, model, notebook, task] NAME\n  $ lore init [project]  #  create file structure\n  $ lore install  #  setup dependencies in virtualenv\n  $ lore test  #  make sure the project is in working order\n  $ lore pip  #  launch pip in your virtual env\n  $ lore python  # launch python in your virtual env\n  $ lore notebook  # launch jupyter notebook in your virtual env\n\n\n.. |circleci_badge| image:: https://circleci.com/gh/instacart/lore.png?style=shield&circle-token=54008e55ae13a0fa354203d13e7874c5efcb19a2\n.. _Heroku: https://heroku.com/\n.. _CircleCI: https://circleci.com/\n.. _Domino: https://www.dominodatalab.com/\n.. _loggly: https://www.loggly.com/\n.. _librato: https://www.librato.com/\n.. _rollbar: https://rollbar.com/",
+    "description": ".. role:: python(code)\n   :language: python\n\n.. role:: bash(code)\n   :language: bash\n\n======\n Lore\n======\n\n|circleci_badge|\n\n\nLore is a python data science framework to design, fit, and exploit machine learning models from development to production. It codifies best practices to simplify collaborating and deploying models developed on a laptop with Jupyter notebook, into high availability distributed production data centers.\n\n\nWhy?\n----\nWriting code with a fast feedback loop is fulfilling. With complex data, you can spend hours, days, then weeks iterating through more complex edge cases on larger samples until the last bits are smoothed over. Instead of spending time partially reimplementing common patterns, frequent challenges should be solved once, and thoroughly.\n\n\n\nCreate a Lore project\n--------------------\n\n.. code-block:: bash\n\n  $ pip install lore\n  $ lore init my_project --python_version=3.6.3\n\n  # fix up .env, config/database.cfg, circle.yml, README.rst\n\n\nA Cute Little Example\n---------------------\n\nWe'll naively try to predict whether users are subscribers, given their first name.\n\n\n\nUpdate config/database.cfg to specify your database url:\n\n.. code-block:: ini\n\n  # config/database.cfg\n\n  [MAIN]\n  url: $DATABASE_URL\n\nyou can set environment variable for only the lore process with the .env file:\n\n.. code-block:: bash\n\n  # .env\n\n  DATABASE_URL=postgres://user:password@localhost:5432/main_development\n\n\nCreate a sql file that specifies your data:\n\n.. code-block:: sql\n\n  -- app/extracts/subscribers.sql\n\n  SELECT\n    first_name,\n    has_subscription\n  FROM users\n  LIMIT = %(limit)s\n\nPipelines are the unsexy, but essential component of most machine learning applications. They transform raw data into encoded training (and prediction) data for a model. Lore has several features to make data munging more palatable.\n\n.. code-block:: python\n\n  # app/pipelines/subscribers.py\n\n  import lore.io\n  import lore.pipelines\n  from lore.encoders import Norm, Discrete, Boolean, Unique\n  from lore.transformers import NameAge, NameSex, Log\n\n\n  class TrainTestSplit(lore.pipelines.TrainTestSplit):\n\n      def get_data(self):\n          # lore.io.main is a Connection created by config/database.cfg + DATABASE_URL\n          # dataframe() supports keyword args for interpolation (limit)\n          # subscribers is the name of the extract\n          # cache=True enables LRU query caching\n          return lore.io.main.dataframe('subscribers', limit=100, cache=True)\n\n      def get_encoders(self):\n          # An arbitrairily chosen set of encoders (w/ transformers)\n          # that reference sql columns in the extract by name.\n          # A fair bit of thought will probably go into expanding\n          # your list with features for your model.\n          return (\n              Unique('first_name', minimum_occurrences=100),\n              Norm(Log(NameAge('first_name'))),\n              Discrete(NameSex('first_name'), bins=10),\n          )\n\n      def get_output_encoder(self):\n          # A single encoder that references the predicted outcome\n          return Boolean('has_subscription')\n\n\nThe superclass :python:`lore.pipelines.TrainTestSplit` will take care of:\n\n# splitting the data into training_data/validation_data/test_data dataframes\n# fitting the encoders to training_data\n# transforming training_data/validation_data/test_data for the model\n\nDefine some models that will fit and predict the data. Base models are designed to be extended and overridden, but work with defaults out of the box.\n\n.. code-block:: python\n\n  # app/models/subscribers.py\n\n  import lore.models\n  from app.pipelines.subscribers import TrainTestSplit\n\n  class DeepName(lore.models.Keras):\n      def __init__():\n          super(DeepName, self).__init__(\n              pipeline=TrainTestSplit(),\n              estimator=lore.estimators.Keras() # a canned estimator for deep learning\n          )\n\n  class BoostedName(lore.models.Base):\n      def __init__():\n          super(XGBoostedName, self).__init__(\n              pipeline=TrainTestSplit(),\n              estimator=lore.estimators.XGBoost() # a canned estimator for XGBoost\n          )\n\n\nTest the models predictive power:\n\n.. code-block:: python\n\n  # tests/unit/subscribers.py\n\n  from app.models.subscribers import DeepName, BoostedName\n\n  class TestSubscribers(unittest.TestCase):\n      def test_deep_name(self):\n          model = DeepName() # initialize a new model\n          model.fit(epochs=20) # fit to the pipeline's training_data\n          predictions = model.predict(model.pipeline.test_data.x) # predict the holdout\n          self.assertEqual(predictions, model.pipeline.test_data.y) # hah!\n\n      def test_xgboosted_name(self):\n          model = BoostedName()\n          model.fit()\n          predictions = model.predict(model.pipeline.test_data.x)\n          self.assertEqual(predictions, model.pipeline.test_data.y) # hah hah hah!\n\nRun tests:\n\n.. code-block:: bash\n\n  $ lore test\n\nExperiment and tune :bash:`notebooks/` with :bash:`$ lore notebook` using the app kernel\n\n\nProject Structure\n-----------------\n\n.. code-block::\n\n  \u251c\u2500\u2500 .env.template            <- Template for environment variables for developers (mirrors production)\n  \u251c\u2500\u2500 README.md                <- The top-level README for developers using this project.\n  \u251c\u2500\u2500 requirements.txt         <- keeps dev and production in sync (pip)\n  \u251c\u2500\u2500 runtime.txt              <- keeps dev and production in sync (pyenv)\n  \u2502\n  \u251c\u2500\u2500 data/                    <- query cache and other temp data\n  \u2502\n  \u251c\u2500\u2500 docs/                    <- generated from src\n  \u2502\n  \u251c\u2500\u2500 logs/                    <- log files per environment\n  \u2502\n  \u251c\u2500\u2500 models/                  <- local model store from fittings\n  \u2502\n  \u251c\u2500\u2500 notebooks/               <- explorations of data and models\n  \u2502       \u2514\u2500\u2500 my_exploration/\n  \u2502            \u2514\u2500\u2500 exploration_1.ipynb\n  \u2502\n  \u251c\u2500\u2500 appname/                 <- python module for appname\n  \u2502   \u251c\u2500\u2500 __init__.py          <- loads the various components (makes this a module)\n  \u2502   \u2502\n  \u2502   \u251c\u2500\u2500 api/                 <- external entry points to runtime models\n  \u2502   \u2502   \u2514\u2500\u2500 my_endpoint.py   <- hub endpoint for predictions\n  \u2502   \u2502\n  \u2502   \u251c\u2500\u2500 extracts/            <- sql\n  \u2502   \u2502   \u2514\u2500\u2500 my_sql.sql\n  \u2502   \u2502\n  \u2502   \u251c\u2500\u2500 estimators/          <- Code that make predictions\n  \u2502   \u2502   \u2514\u2500\u2500 my_estimator.py  <- Keras/XGBoost implementations\n  \u2502   \u2502\n  \u2502   \u251c\u2500\u2500 models/              <- Combine estimator(s) w/ pipeline(s)\n  \u2502   \u2502   \u2514\u2500\u2500 my_model.py\n  \u2502   \u2502\n  \u2502   \u2514\u2500\u2500 pipelines/           <- abstractions for processing data\n  \u2502       \u2514\u2500\u2500 my_pipeline.py   <- train/test/split data encoding\n  \u2502\n  \u2514\u2500\u2500 tests/\n      \u251c\u2500\u2500 data/                <- cached queries for fixture data\n      \u251c\u2500\u2500 models/              <- model store for test runs\n      \u2514\u2500\u2500 unit/                <- unit tests\n\n\nModules Overview\n================\nLore provides python modules to standardize Machine Learning techniques across multiple libraries.\n\nCore Functionality\n------------------\n- **lore.models** are compatibility wrappers for your favorite library (keras, xgboost, scikit). They come with reasonable defaults for rough draft training out of the box.\n- **lore.pipelines** fetch, encode, and split data into training/test sets for models. A single pipeline will have one Encoder per feature in the model.\n- **lore.encoders** operate within Pipelines to transform a single feature into an optimal representation for learning.\n- **lore.transformers** provide common operations, like extracting the area code from a free text phone number. They can be chained together inside encoders. They efficiently\n\nSupporting functionality\n------------------------\n- **lore.io** allows connecting to postgres/redshift and upload/download from s3\n- **lore.serializers** persist models with their pipelines and encoders (and get them back again)\n- **lore.stores** save intermediate data, for reproducibility and efficiency.\n\nUtilities\n---------\n- **lore.util** has those extra niceties we rewrite in every project, and then some\n- **lore.env** takes care of ensuring that all dependencies are correctly installed before running\n\nFeatures\n========\n\nIntegrated Libraries\n--------------------\nUse your favorite library in a lore project, just like you'd use them in any other python project. They'll play nicely together.\n\n- Keras/Tensorflow + Tensorboard\n- XGBoost\n- Scikit-Learn\n- Jupyter Notebook\n- Pandas\n- Numpy\n- Matplotlib, ggplot, plotnine\n- Sqlalchemy, Psycopg2\n- Hub\n\nDev Ops\n-------\nThere are many ways to manage python dependencies in development and production, and each has it's own pitfalls. Lore codifies a solution that \u201cjust works\u201d with lore install, which exactly replicates what will be run in production.\n\n**Python 2 & 3 compatibility**\n\n- pip install lore works regardless of whether your base system python is 2 or 3. Lore projects will always use the version of python specified in their runtime.txt\n- Lore projects use the system service manager (upstart on ubuntu) instead of supervisord which requires python 2.\n\n**Heroku_ buildpack compatibility CircleCI_, Domino_ , isc)**\n\n- Lore supports runtime.txt to install and use a consistent version of python 2 or 3 in both development and production.\n- lore install automatically manages freezing requirements.txt, using a virtualenv, so pip dependencies are exactly the same in development and production. This includes workarounds to support correctly (not) freezing github packages in requirements.txt\n\n**Environment Specific Configuration**\n\n- Lore supports reading environment variables from .env, for easy per project configuration. We recommend .gitignore .env and checking in a .env.template for developer reference to prevent leaking secrets.\n- :python:`logging.getLogger(__name__)` is setup appropriately to console, file and/or syslog depending on environment\n- syslog is replicated with structured data to loggly_ in production\n- lore.util.timer logs info in development, and records  to librato_ in production\n- Exception handling logs stack traces in development and test, but reports to rollbar_ in production\n- lore console interactive python shell is color coded to prevent environmental confusion\n\n**Multiple concurrent project compatibility**\n\n- Lore manages a distinct python virtualenv for each project, which can be installed from scratch in development with lore install\n\n**ISC compatibility**\n\n- The commonly used virtualenvwrapper (and conda) breaks system python utilities, like isc, whenever you're working on a project. Lore works around this by bootstrapping into the appropriate virtualenv only when it is invoked by the developer.\n\n**Binary library installation for MAXIMUM SPEED**\n\n- Lore can build *tensorflow* from source when it is listed in requirements for development machines, which results in a 2-3x runtime training performance increase. Use lore install --native\n- Lore also compiles *xgboost* on OS X with gcc-5 instead of clang to enable automatic parallelization\n\nLore Library\n------------\n\n**IO**\n\n- :python:`lore.io.connection.Connection.select()` and :python:`Connection.dataframe()` can be automatically LRU cached to disk\n- :python:`Connection` supports python %(name)s variable replacement in SQL\n- :python:`Connection` statements are always annotated with metadata for pgHero\n- :python:`Connection` is lazy, for fast startup, and avoids bootup errors in development with low connectivity\n- :python:`Connection` supports multiple concurrent database connections\n\n**Serialization**\n\n- Lore serializers provide environment aware S3 distribution for keras/xgboost/scikit models\n- Coming soon: heroku buildpack support for serialized models to marry the appropriate code for repeatable and deploys that can be safely rolled back\n\n**Caching**\n\n- Lore provides mulitple configurable cache types, RAM, Disk, coming soon: MemCached & Redis\n- Disk cache is tested with pandas to avoid pitfalls encountered serializing w/ csv, h5py, pickle\n\n**Encoders**\n\n- Unique\n- Discrete\n- Quantile\n- Norm\n\n**Transformers**\n\n- AreaCode\n- EmailDomain\n- NameAge\n- NameSex\n- NamePopulation\n- NameFamilial\n\n**Base Models**\n\n- Abstract base classes for keras, xgboost, and scikit\n  - inheriting class to define data(), encoders(), output_encoder(), benchmark()\n  - multiple inheritance from custom base class w/ specific ABC for library\n- provides hyper parameter optimization\n\n**Fitting**\n\n- Each call to Model.fit() saves the resulting model, along with the params to fit, epoch checkpoints and the resulting statistics, that can be reloaded, or uploaded with a Serializer\n\n**Keras/Tensorflow**\n\n- tensorboard support out of the box with tensorboard --logdir=models\n- lore cleans up tensorflow before process exit to prevent spurious exceptions\n- lore serializes Keras 2.0 models with extra care, to avoid several bugs (some that only appear at scale)\n- ReloadBest callback early stops training on val_loss increase, and reloads the best epoch\n\n**Utils**\n\n- :python:`lore.util.timer` context manager writes to the log in development or librato in production*\n- :python:`lore.util.timed` is a decorator for recording function execution wall time\n\nCommands\n--------\n\n.. code-block:: bash\n\n  $ lore api  #  start an api process\n  $ lore console\n  $ lore fit MODEL  #  train the model\n  $ lore generate [all, api, model, notebook, task] NAME\n  $ lore init [project]  #  create file structure\n  $ lore install  #  setup dependencies in virtualenv\n  $ lore test  #  make sure the project is in working order\n  $ lore pip  #  launch pip in your virtual env\n  $ lore python  # launch python in your virtual env\n  $ lore notebook  # launch jupyter notebook in your virtual env\n\n\n.. |circleci_badge| image:: https://circleci.com/gh/instacart/lore.png?style=shield&circle-token=54008e55ae13a0fa354203d13e7874c5efcb19a2\n.. _Heroku: https://heroku.com/\n.. _CircleCI: https://circleci.com/\n.. _Domino: https://www.dominodatalab.com/\n.. _loggly: https://www.loggly.com/\n.. _librato: https://www.librato.com/\n.. _rollbar: https://rollbar.com/\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -30,11 +30,11 @@
     "name": "lore",
     "platform": "",
     "project_url": "https://pypi.org/project/lore/",
-    "release_url": "https://pypi.org/project/lore/0.4.19/",
+    "release_url": "https://pypi.org/project/lore/0.4.24/",
     "requires_dist": [],
     "requires_python": "",
     "summary": "a framework for building and using data science",
-    "version": "0.4.19"
+    "version": "0.4.24"
   },
   "releases": {
     "0.0": [
@@ -2273,6 +2273,176 @@
         "url": "https://files.pythonhosted.org/packages/3a/c7/da51a735b7bf9d53fdf39f157d9bf6495eea613ed2bb68d73da7380049c1/lore-0.4.2.tar.gz"
       }
     ],
+    "0.4.20": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7705db1e2b9ff1b54d6b9df704d2a61e",
+          "sha256": "aec31a268f50648916ca5f977054a8a59a8ed00e3a99240fa8fb03afc42f37b9"
+        },
+        "downloads": -1,
+        "filename": "lore-0.4.20-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "7705db1e2b9ff1b54d6b9df704d2a61e",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 182854,
+        "upload_time": "2017-10-26T02:32:24",
+        "url": "https://files.pythonhosted.org/packages/db/3b/f4ad684159a5b6b78426613eebf1af26a5db5ca0a8cbef212619b757a2df/lore-0.4.20-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "298270058e662568852dc49d7754d738",
+          "sha256": "786e63fa543562c23ce880d4f97d1b8c8ca063529f8cc1f9e353203c40e493c3"
+        },
+        "downloads": -1,
+        "filename": "lore-0.4.20.tar.gz",
+        "has_sig": false,
+        "md5_digest": "298270058e662568852dc49d7754d738",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 169495,
+        "upload_time": "2017-10-26T02:32:22",
+        "url": "https://files.pythonhosted.org/packages/01/b5/85b844140b0e4969ed912b4647e57c9b79901a00e1df44ed816dce359801/lore-0.4.20.tar.gz"
+      }
+    ],
+    "0.4.21": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "eb736bdb50e64ff99e8711b18b808765",
+          "sha256": "9a9b0b9be4ec8490c627c90cb99ed01b2dcc8c3027b58f892e5a1829c1b074a3"
+        },
+        "downloads": -1,
+        "filename": "lore-0.4.21-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "eb736bdb50e64ff99e8711b18b808765",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 182882,
+        "upload_time": "2017-10-26T18:09:52",
+        "url": "https://files.pythonhosted.org/packages/c2/a7/611463892720ebb188a9dc670e805b7c30734f8ed190088225ad2f45a6e1/lore-0.4.21-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b603761d23c551873105b17a7b189da5",
+          "sha256": "e835a1d430f91e14e7babceac8bc7fd0c1d90a09b6be9e0b53d7764e747207bb"
+        },
+        "downloads": -1,
+        "filename": "lore-0.4.21.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b603761d23c551873105b17a7b189da5",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 169513,
+        "upload_time": "2017-10-26T18:09:50",
+        "url": "https://files.pythonhosted.org/packages/f1/01/b7949d6152546f3116205118f061bcae9fafdd0f7e59d145240ccc8598bb/lore-0.4.21.tar.gz"
+      }
+    ],
+    "0.4.22": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "415408d7a495f06e417afed0086e7c06",
+          "sha256": "8e9d442fb091caa4beb7d00a6207627c975bbae9eafff34a054144a9ebcd1a93"
+        },
+        "downloads": -1,
+        "filename": "lore-0.4.22-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "415408d7a495f06e417afed0086e7c06",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 182908,
+        "upload_time": "2017-10-26T18:45:02",
+        "url": "https://files.pythonhosted.org/packages/ce/76/8b96776f080268ba8973d809319efb9f1efe0044f9d72364f0176111774d/lore-0.4.22-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "63a2d4596011c4cd9d9c6a907bf8ba22",
+          "sha256": "8418432ea876534eb6ad70d39a633725c5c3355d11fd4d85c8d6c3f443a2c50f"
+        },
+        "downloads": -1,
+        "filename": "lore-0.4.22.tar.gz",
+        "has_sig": false,
+        "md5_digest": "63a2d4596011c4cd9d9c6a907bf8ba22",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 169552,
+        "upload_time": "2017-10-26T18:44:59",
+        "url": "https://files.pythonhosted.org/packages/6c/e3/92827ccce7362fe5c7b51c3e6c4459156eb4ba0d89aaeff7d4f7b1aeb6f5/lore-0.4.22.tar.gz"
+      }
+    ],
+    "0.4.23": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7ac3a8ccc0b756ba7dca50570c1f07eb",
+          "sha256": "3d43fd6cf2149934c44350ec1caec2ffc9afdf280978c53d5ed616144a99c097"
+        },
+        "downloads": -1,
+        "filename": "lore-0.4.23-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "7ac3a8ccc0b756ba7dca50570c1f07eb",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 182904,
+        "upload_time": "2017-10-26T18:50:59",
+        "url": "https://files.pythonhosted.org/packages/55/33/ce90b198fe964479ce8dd5ec61899b080611444d335ad2c9d80fd6e8d468/lore-0.4.23-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6728dfaae8d2735895dc6fe2ce5e1be6",
+          "sha256": "2583ceee8460962c98ada38a54cf29b169fd09a335b511f02f11b12ddf12f78c"
+        },
+        "downloads": -1,
+        "filename": "lore-0.4.23.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6728dfaae8d2735895dc6fe2ce5e1be6",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 169558,
+        "upload_time": "2017-10-26T18:50:55",
+        "url": "https://files.pythonhosted.org/packages/dd/37/cea61f8f85b07d9dcf06c58cee98e28a30d622399acaa68b2cb57a32c528/lore-0.4.23.tar.gz"
+      }
+    ],
+    "0.4.24": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "370a74b7ad912a537bde79f2b7082032",
+          "sha256": "90ce727432fab374bad3af67f5cb8d37a23ccc258720ba6c062b89699a35e66f"
+        },
+        "downloads": -1,
+        "filename": "lore-0.4.24-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "370a74b7ad912a537bde79f2b7082032",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 182912,
+        "upload_time": "2017-10-26T19:12:19",
+        "url": "https://files.pythonhosted.org/packages/a5/c9/ac5af9f6de3cbfdb80243b8567831e52a59af669920cf4debf704b60871f/lore-0.4.24-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "bc40eb3d8e8760395c8c0f980de2225c",
+          "sha256": "83e5a90fa03608526e360bb5f0c60a5789d77f258512b915a69cc7cd1ddb6d02"
+        },
+        "downloads": -1,
+        "filename": "lore-0.4.24.tar.gz",
+        "has_sig": false,
+        "md5_digest": "bc40eb3d8e8760395c8c0f980de2225c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 169557,
+        "upload_time": "2017-10-26T19:12:15",
+        "url": "https://files.pythonhosted.org/packages/29/8e/6e5b5796ea9fa728148ff1f9faf59c420d90681afff2ccc26af00f81911d/lore-0.4.24.tar.gz"
+      }
+    ],
     "0.4.3": [
       {
         "comment_text": "",
@@ -2516,34 +2686,34 @@
     {
       "comment_text": "",
       "digests": {
-        "md5": "20590cd2fd8308d0cfacedbff89b7764",
-        "sha256": "2f5fc1182205846e5d56e35da6edfc86a8d23229fe6e228db3435df33eb60e64"
+        "md5": "370a74b7ad912a537bde79f2b7082032",
+        "sha256": "90ce727432fab374bad3af67f5cb8d37a23ccc258720ba6c062b89699a35e66f"
       },
       "downloads": -1,
-      "filename": "lore-0.4.19-py2.py3-none-any.whl",
+      "filename": "lore-0.4.24-py2.py3-none-any.whl",
       "has_sig": false,
-      "md5_digest": "20590cd2fd8308d0cfacedbff89b7764",
+      "md5_digest": "370a74b7ad912a537bde79f2b7082032",
       "packagetype": "bdist_wheel",
       "python_version": "2.7",
-      "size": 183231,
-      "upload_time": "2017-10-24T21:20:59",
-      "url": "https://files.pythonhosted.org/packages/fa/a8/c1ad6358fb12db0031f1ff974b4a0f8cc24fdfaf55f59f2b34136a24db91/lore-0.4.19-py2.py3-none-any.whl"
+      "size": 182912,
+      "upload_time": "2017-10-26T19:12:19",
+      "url": "https://files.pythonhosted.org/packages/a5/c9/ac5af9f6de3cbfdb80243b8567831e52a59af669920cf4debf704b60871f/lore-0.4.24-py2.py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "fc7843107f18851f0cc1dd827b066b64",
-        "sha256": "dd7460f88b5e7fbe029e213401809a410cb35a1764a74339b31926b9d91f12c3"
+        "md5": "bc40eb3d8e8760395c8c0f980de2225c",
+        "sha256": "83e5a90fa03608526e360bb5f0c60a5789d77f258512b915a69cc7cd1ddb6d02"
       },
       "downloads": -1,
-      "filename": "lore-0.4.19.tar.gz",
+      "filename": "lore-0.4.24.tar.gz",
       "has_sig": false,
-      "md5_digest": "fc7843107f18851f0cc1dd827b066b64",
+      "md5_digest": "bc40eb3d8e8760395c8c0f980de2225c",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 166829,
-      "upload_time": "2017-10-24T21:20:57",
-      "url": "https://files.pythonhosted.org/packages/3a/c8/333b32022a06cb69743a687d1540be2e12fcf2a551fdfac0ddc753465baa/lore-0.4.19.tar.gz"
+      "size": 169557,
+      "upload_time": "2017-10-26T19:12:15",
+      "url": "https://files.pythonhosted.org/packages/29/8e/6e5b5796ea9fa728148ff1f9faf59c420d90681afff2ccc26af00f81911d/lore-0.4.24.tar.gz"
     }
   ]
 }
