@@ -13,7 +13,7 @@
       "Programming Language :: Python :: 3",
       "Topic :: Scientific/Engineering :: GIS"
     ],
-    "description": "=====\nFiona\n=====\n\nFiona is OGR's neat, nimble, no-nonsense API for Python programmers.\n\n.. image:: https://travis-ci.org/Toblerity/Fiona.png?branch=master   \n   :target: https://travis-ci.org/Toblerity/Fiona\n\n.. image:: https://coveralls.io/repos/Toblerity/Fiona/badge.png\n   :target: https://coveralls.io/r/Toblerity/Fiona\n\nFiona is designed to be simple and dependable. It focuses on reading and\nwriting data in standard Python IO style and relies upon familiar Python types\nand protocols such as files, dictionaries, mappings, and iterators instead of\nclasses specific to OGR. Fiona can read and write real-world data using\nmulti-layered GIS formats and zipped virtual file systems and integrates\nreadily with other Python GIS packages such as pyproj_, Rtree_, and Shapely_.\n\nFor more details, see:\n\n* Fiona `home page <https://github.com/Toblerity/Fiona>`__\n* Fiona `docs and manual <http://toblerity.github.com/fiona/>`__\n* Fiona `examples <https://github.com/Toblerity/Fiona/tree/master/examples>`__\n\nUsage\n=====\n\nCollections\n-----------\n\nRecords are read from and written to ``file``-like `Collection` objects\nreturned from the ``fiona.open()`` function.  Records are mappings modeled on\nthe GeoJSON format. They don't have any spatial methods of their own, so if you\nwant to do anything fancy with them you will probably need Shapely or something\nlike it. Here is an example of using Fiona to read some records from one data\nfile, change their geometry attributes, and write them to a new data file.\n\n.. code-block:: python\n\n    import fiona\n\n    # Register format drivers with a context manager\n\n    with fiona.drivers():\n\n        # Open a file for reading. We'll call this the \"source.\"\n\n        with fiona.open('tests/data/coutwildrnp.shp') as source:\n\n            # The file we'll write to, the \"sink\", must be initialized\n            # with a coordinate system, a format driver name, and\n            # a record schema.  We can get initial values from the open\n            # collection's ``meta`` property and then modify them as\n            # desired.\n\n            meta = source.meta\n            meta['schema']['geometry'] = 'Point'\n\n            # Open an output file, using the same format driver and\n            # coordinate reference system as the source. The ``meta``\n            # mapping fills in the keyword parameters of fiona.open().\n\n            with fiona.open('test_write.shp', 'w', **meta) as sink:\n\n                # Process only the records intersecting a box.\n                for f in source.filter(bbox=(-107.0, 37.0, -105.0, 39.0)):\n\n                    # Get a point on the boundary of the record's\n                    # geometry.\n\n                    f['geometry'] = {\n                        'type': 'Point',\n                        'coordinates': f['geometry']['coordinates'][0][0]}\n\n                    # Write the record out.\n\n                    sink.write(f)\n\n        # The sink's contents are flushed to disk and the file is\n        # closed when its ``with`` block ends. This effectively\n        # executes ``sink.flush(); sink.close()``.\n\n    # At the end of the ``with fiona.drivers()`` block, context\n    # manager exits and all drivers are de-registered.\n\nThe fiona.drivers() function and context manager are new in 1.1. The\nexample above shows the way to use it to register and de-register\ndrivers in a deterministic and efficient way. Code written for Fiona 1.0\nwill continue to work: opened collections may manage the global driver\nregistry if no other manager is present.\n\nReading Multilayer data\n-----------------------\n\nCollections can also be made from single layers within multilayer files or\ndirectories of data. The target layer is specified by name or by its integer\nindex within the file or directory. The ``fiona.listlayers()`` function\nprovides an index ordered list of layer names.\n\n.. code-block:: python\n\n    with fiona.drivers():\n\n        for layername in fiona.listlayers('tests/data'):\n            with fiona.open('tests/data', layer=layername) as src:\n                print(layername, len(src))\n\n    # Output:\n    # (u'coutwildrnp', 67)\n\nLayer can also be specified by index. In this case, ``layer=0`` and\n``layer='test_uk'`` specify the same layer in the data file or directory.\n\n.. code-block:: python\n\n    with fiona.drivers():\n\n        for i, layername in enumerate(fiona.listlayers('tests/data')):\n            with fiona.open('tests/data', layer=i) as src:\n                print(i, layername, len(src))\n\n    # Output:\n    # (0, u'coutwildrnp', 67)\n\nWriting Multilayer data\n-----------------------\n\nMultilayer data can be written as well. Layers must be specified by name when\nwriting.\n\n.. code-block:: python\n\n    with fiona.drivers():\n\n        with open('tests/data/cowildrnp.shp') as src:\n            meta = src.meta\n            f = next(src)\n\n        with fiona.open('/tmp/foo', 'w', layer='bar', **meta) as dst:\n            dst.write(f)\n\n        print(fiona.listlayers('/tmp/foo'))\n\n        with fiona.open('/tmp/foo', layer='bar') as src:\n            print(len(src))\n            f = next(src)\n            print(f['geometry']['type'])\n            print(f['properties'])\n\n        # Output:\n        # [u'bar']\n        # 1\n        # Polygon\n        # OrderedDict([(u'PERIMETER', 1.22107), (u'FEATURE2', None), (u'NAME', u'Mount Naomi Wilderness'), (u'FEATURE1', u'Wilderness'), (u'URL', u'http://www.wilderness.net/index.cfm?fuse=NWPS&sec=wildView&wname=Mount%20Naomi'), (u'AGBUR', u'FS'), (u'AREA', 0.0179264), (u'STATE_FIPS', u'49'), (u'WILDRNP020', 332), (u'STATE', u'UT')])\n\nA view of the /tmp/foo directory will confirm the creation of the new files.\n\n.. code-block:: console\n\n    $ ls /tmp/foo\n    bar.cpg bar.dbf bar.prj bar.shp bar.shx\n\nCollections from archives and virtual file systems\n--------------------------------------------------\n\nZip and Tar archives can be treated as virtual filesystems and Collections can\nbe made from paths and layers within them. In other words, Fiona lets you read\nand write zipped Shapefiles.\n\n.. code-block:: python\n\n    with fiona.drivers():\n\n        for i, layername in enumerate(\n                fiona.listlayers(\n                    '/', \n                    vfs='zip://tests/data/coutwildrnp.zip')):\n            with fiona.open(\n                    '/', \n                    vfs='zip://tests/data/coutwildrnp.zip', \n                    layer=i) as src:\n                print(i, layername, len(src))\n\n    # Output:\n    # (0, u'coutwildrnp', 67)\n\nFiona CLI\n=========\n\nFiona's command line interface, named \"fio\", is documented at `docs/cli.rst\n<https://github.com/Toblerity/Fiona/blob/master/docs/cli.rst>`__. Its ``fio\ninfo`` pretty prints information about a data file.\n\n.. code-block:: console\n\n    $ fio info --indent 2 tests/data/coutwildrnp.shp\n    {\n      \"count\": 67,\n      \"crs\": \"EPSG:4326\",\n      \"driver\": \"ESRI Shapefile\",\n      \"bounds\": [\n        -113.56424713134766,\n        37.0689811706543,\n        -104.97087097167969,\n        41.99627685546875\n      ],\n      \"schema\": {\n        \"geometry\": \"Polygon\",\n        \"properties\": {\n          \"PERIMETER\": \"float:24.15\",\n          \"FEATURE2\": \"str:80\",\n          \"NAME\": \"str:80\",\n          \"FEATURE1\": \"str:80\",\n          \"URL\": \"str:101\",\n          \"AGBUR\": \"str:80\",\n          \"AREA\": \"float:24.15\",\n          \"STATE_FIPS\": \"str:80\",\n          \"WILDRNP020\": \"int:10\",\n          \"STATE\": \"str:80\"\n        }\n      }\n    }\n\nInstallation\n============\n\nFiona requires Python 2.6, 2.7, 3.3, or 3.4 and GDAL/OGR 1.8+. To build from\na source distribution you will need a C compiler and GDAL and Python\ndevelopment headers and libraries (libgdal1-dev for Debian/Ubuntu, gdal-dev for\nCentOS/Fedora).\n\nTo build from a repository copy, you will also need Cython to build C sources\nfrom the project's .pyx files. See the project's requirements-dev.txt file for\nguidance.\n\nThe `Kyngchaos GDAL frameworks\n<http://www.kyngchaos.com/software/frameworks#gdal_complete>`__ will satisfy\nthe GDAL/OGR dependency for OS X, as will Homebrew's GDAL Formula (``brew install\ngdal``).\n\nPython Requirements\n-------------------\n\nFiona depends on the modules ``six``, ``cligj``,  ``munch``, ``argparse``, and\n``ordereddict`` (the two latter modules are standard in Python 2.7+). Pip will\nfetch these requirements for you, but users installing Fiona from a Windows\ninstaller must get them separately.\n\nUnix-like systems\n-----------------\n\nAssuming you're using a virtualenv (if not, skip to the 4th command) and\nGDAL/OGR libraries, headers, and `gdal-config`_ program are installed to well\nknown locations on your system via your system's package manager (``brew\ninstall gdal`` using Homebrew on OS X), installation is this simple.\n\n.. code-block:: console\n\n  $ mkdir fiona_env\n  $ virtualenv fiona_env\n  $ source fiona_env/bin/activate\n  (fiona_env)$ pip install fiona\n\nIf gdal-config is not available or if GDAL/OGR headers and libs aren't\ninstalled to a well known location, you must set include dirs, library dirs,\nand libraries options via the setup.cfg file or setup command line as shown\nbelow (using ``git``). You must also specify the major version of the GDAL API\n(1 or 2) on the setup command line.\n\n.. code-block:: console\n\n  (fiona_env)$ git clone git://github.com/Toblerity/Fiona.git\n  (fiona_env)$ cd Fiona\n  (fiona_env)$ python setup.py build_ext -I/path/to/gdal/include -L/path/to/gdal/lib -lgdal install --gdalversion 1\n\nOr specify that build options and GDAL API version should be provided by a\nparticular gdal-config program.\n\n.. code-block:: console\n\n  (fiona_env)$ GDAL_CONFIG=/path/to/gdal-config pip install fiona\n\nWindows\n-------\n\nBinary installers are available at\nhttp://www.lfd.uci.edu/~gohlke/pythonlibs/#fiona and coming eventually to PyPI.\n\nYou can download a binary distribution of GDAL from `here\n<http://www.gisinternals.com/release.php>`_.  You will also need to download\nthe compiled libraries and headers (include files).\n\nWhen building from source on Windows, it is important to know that setup.py\ncannot rely on gdal-config, which is only present on UNIX systems, to discover \nthe locations of header files and libraries that Fiona needs to compile its \nC extensions. On Windows, these paths need to be provided by the user. \nYou will need to find the include files and the library files for gdal and \nuse setup.py as follows. You must also specify the major version of the GDAL\nAPI (1 or 2) on the setup command line.\n\n.. code-block:: console\n\n    $ python setup.py build_ext -I<path to gdal include files> -lgdal_i -L<path to gdal library> install --gdalversion 1\n\nNote: The GDAL dll (gdal111.dll) and gdal-data directory need to be in your \nWindows PATH otherwise Fiona will fail to work.\n\nDevelopment and testing\n=======================\n\nBuilding from the source requires Cython. Tests require Nose. If the GDAL/OGR\nlibraries, headers, and `gdal-config`_ program are installed to well known\nlocations on your system (via your system's package manager), you can do this::\n\n  (fiona_env)$ git clone git://github.com/Toblerity/Fiona.git\n  (fiona_env)$ cd Fiona\n  (fiona_env)$ pip install cython\n  (fiona_env)$ pip install -e .[test]\n  (fiona_env)$ nosetests\n\nOr you can use the ``pep-518-install`` script::\n\n  (fiona_env)$ git clone git://github.com/Toblerity/Fiona.git\n  (fiona_env)$ cd Fiona\n  (fiona_env)$ ./pep-518-install\n\nIf you have a non-standard environment, you'll need to specify the include and\nlib dirs and GDAL library on the command line::\n\n  (fiona_env)$ python setup.py build_ext -I/path/to/gdal/include -L/path/to/gdal/lib -lgdal --gdalversion 2 develop\n  (fiona_env)$ nosetests\n\n.. _OGR: http://www.gdal.org/ogr\n.. _pyproj: http://pypi.python.org/pypi/pyproj/\n.. _Rtree: http://pypi.python.org/pypi/Rtree/\n.. _Shapely: http://pypi.python.org/pypi/Shapely/\n.. _gdal-config: http://www.gdal.org/gdal-config.html\n\nChanges\n=======\n\nAll issue numbers are relative to https://github.com/Toblerity/Fiona/issues.\n\n1.7.9.post1 (2017-08-21)\n------------------------\n\nThis release introduces no changes in the Fiona package. It upgrades GDAL\nfrom 2.2.0 to 2.2.1 in wheels that we publish to the Python Package Index.\n\n1.7.9 (2017-08-17)\n------------------\n\nBug fixes:\n\n- Acquire the GIL for GDAL error callback functions to prevent crashes when\n  GDAL errors occur when the GIL has been released by user code.\n- Sync and flush layers when closing even when the number of features is not\n  precisely known (#467).\n\n1.7.8 (2017-06-20)\n------------------\n\nBug fixes:\n\n- Provide all arguments needed by CPLError based exceptions (#456).\n\n1.7.7 (2017-06-05)\n------------------\n\nBug fixes:\n\n- Switch logger `warn()` (deprecated) calls to `warning()`.\n- Replace all relative imports and cimports in Cython modules with absolute\n  imports (#450).\n- Avoid setting `PROJ_LIB` to a non-existent directory (#439).\n\n1.7.6 (2017-04-26)\n------------------\n\nBug fixes:\n\n- Fall back to `share/proj` for PROJ_LIB (#440).\n- Replace every call to `OSRDestroySpatialReference()` with `OSRRelease()`,\n  fixing the GPKG driver crasher reported in #441 (#443).\n- Add a `DriverIOError` derived from `IOError` to use for driver-specific\n  errors such as the GeoJSON driver's refusal to overwrite existing files.\n  Also we now ensure that when this error is raised by `fiona.open()` any\n  created read or write session is deleted, this eliminates spurious \n  exceptions on teardown of broken `Collection` objects (#437, #444).\n\n1.7.5 (2017-03-20)\n------------------\n\nBug fixes:\n\n- Opening a data file in read (the default) mode with `fiona.open()` using the\n  the `driver` or `drivers` keyword arguments (to specify certain format \n  drivers) would sometimes cause a crash on Windows due to improperly\n  terminated lists of strings (#428). The fix: Fiona's buggy `string_list()`\n  has been replaced by GDAL's `CSLAddString()`.\n\n1.7.4 (2017-02-20)\n------------------\n\nBug fixes:\n\n- OGR's EsriJSON detection fails when certain keys aren't found in the first\n  6000 bytes of data passed to `BytesCollection` (#422). A .json file extension\n  is now explicitly given to the in-memory file behind `BytesCollection` when\n  the `driver='GeoJSON'` keyword argument is given (#423). \n\n1.7.3 (2017-02-14)\n------------------\n\nRoses are red.\nTan is a pug.\nSoftware regression's\nthe most embarrassing bug.\n\nBug fixes:\n\n- Use __stdcall for GDAL error handling callback on Windows as in Rasterio.\n- Turn on latent support for zip:// URLs in rio-cat and rio-info (#421).\n- The 1.7.2 release broke support for zip files with absolute paths (#418).\n  This regression has been fixed with tests to confirm.\n\n1.7.2 (2017-01-27)\n------------------\n\nFuture Deprecation:\n\n- `Collection.__next__()` is buggy in that it can lead to duplication of \n  features when used in combination with `Collection.filter()` or\n  `Collection.__iter__()`. It will be removed in Fiona 2.0. Please check for\n  usage of this deprecated feature by running your tests or programs with\n  `PYTHONWARNINGS=\"always:::fiona\"` or `-W\"always:::fiona\"` and switch from\n  `next(collection)` to `next(iter(collection))` (#301).\n\nBug fix:\n\n- Zipped streams of bytes can be accessed by `BytesCollection` (#318).\n\n1.7.1.post1 (2016-12-23)\n------------------------\n- New binary wheels using version 1.2.0 of sgillies/frs-wheel-builds. See\n  https://github.com/sgillies/frs-wheel-builds/blob/master/CHANGES.txt.\n\n1.7.1 (2016-11-16)\n------------------\n\nBug Fixes:\n\n- Prevent Fiona from stumbling over 'Z', 'M', and 'ZM' geometry types\n  introduced in GDAL 2.1 (#384). Fiona 1.7.1 doesn't add explicit support for\n  these types, they are coerced to geometry types 1-7 ('Point', 'LineString',\n  etc.)\n- Raise an `UnsupportedGeometryTypeError` when a bogus or unsupported \n  geometry type is encountered in a new collection's schema or elsewhere\n  (#340).\n- Enable `--precision 0` for fio-cat (#370).\n- Prevent datetime exceptions from unnecessarily stopping collection iteration\n  by yielding `None` (#385)\n- Replace log.warn calls with log.warning calls (#379).\n- Print an error message if neither gdal-config or `--gdalversion` indicate\n  a GDAL C API version when running `setup.py` (#364).\n- Let dict-like subclasses through CRS type checks (#367).\n\n1.7.0post2 (2016-06-15)\n-----------------------\n\nPackaging: define extension modules for 'clean' and 'config' targets (#363).\n\n1.7.0post1 (2016-06-15)\n-----------------------\n\nPackaging: No files are copied for the 'clean' setup target (#361, #362).\n\n1.7.0 (2016-06-14)\n------------------\n\nThe C extension modules in this library can now be built and used with either\na 1.x or 2.x release of the GDAL library. Big thanks to Ren\u00e9 Buffat for\nleading this effort.\n\nRefactoring:\n\n- The `ogrext1.pyx` and `ogrext2.pyx` files now use separate\n  C APIs defined in `ogrext1.pxd` and `ogrex2.pxd`. The other extension\n  modules have been refactored so that they do not depend on either of these\n  modules and use subsets of the GDAL/OGR API compatible with both GDAL 1.x and\n  2.x (#359).\n\nPackaging:\n\n- Source distributions now contain two different sources for the\n  `ogrext` extension module. The `ogrext1.c` file will be used with GDAL 1.x\n  and the `ogrext2.c` file will be used with GDAL 2.x.\n\n1.7b2 (2016-06-13)\n------------------\n\n- New feature: enhancement of the `--layer` option for fio-cat and fio-dump\n  to allow separate layers of one or more multi-layer input files to be\n  selected (#349).\n\n1.7b1 (2016-06-10)\n------------------\n\n- New feature: support for GDAL version 2+ (#259).\n- New feature: a new fio-calc CLI command (#273).\n- New feature: `--layer` options for fio-info (#316) and fio-load (#299).\n- New feature: a `--no-parse` option for fio-collect that lets a careful user\n  avoid extra JSON serialization and deserialization (#306).\n- Bug fix: `+wktext` is now preserved when serializing CRS from WKT to PROJ.4\n  dicts (#352).\n- Bug fix: a small memory leak when opening a collection has been fixed (#337).\n- Bug fix: internal unicode errors now result in a log message and a \n  `UnicodeError` exception, not a `TypeError` (#356).\n\n1.6.4 (2016-05-06)\n------------------\n- Raise ImportError if the active GDAL library version is >= 2.0 instead of\n  failing unpredictably (#338, #341). Support for GDAL>=2.0 is coming in\n  Fiona 1.7.\n\n1.6.3.post1 (2016-03-27)\n------------------------\n- No changes to the library in this post-release version, but there is a\n  significant change to the distributions on PyPI: to help make Fiona more\n  compatible with Shapely on OS X, the GDAL shared library included in the\n  macosx (only) binary wheels now statically links the GEOS library. See\n  https://github.com/sgillies/frs-wheel-builds/issues/5.\n\n1.6.3 (2015-12-22)\n------------------\n- Daytime has been decreasing in the Northern Hemisphere, but is now\n  increasing again as it should.\n- Non-UTF strings were being passed into OGR functions in some situations\n  and on Windows this would sometimes crash a Python process (#303). Fiona\n  now raises errors derived from UnicodeError when field names or field\n  values can't be encoded.\n\n1.6.2 (2015-09-22)\n------------------\n- Providing only PROJ4 representations in the dataset meta property resulted in\n  loss of CRS information when using the `fiona.open(..., **src.meta) as dst`\n  pattern (#265). This bug has been addressed by adding a crs_wkt item to the`\n  meta property and extending the `fiona.open()` and the collection constructor\n  to look for and prioritize this keyword argument.\n\n1.6.1 (2015-08-12)\n------------------\n- Bug fix: Fiona now deserializes JSON-encoded string properties provided by\n  the OGR GeoJSON driver (#244, #245, #246).\n- Bug fix: proj4 data was not copied properly into binary distributions due to\n  a typo (#254).\n\nSpecial thanks to WFMU DJ Liz Berg for the awesome playlist that's fueling my\nrelease sprint. Check it out at http://wfmu.org/playlists/shows/62083. You\ncan't unhear Love Coffin.\n\n1.6.0 (2015-07-21)\n------------------\n- Upgrade Cython requirement to 0.22 (#214).\n- New BytesCollection class (#215).\n- Add GDAL's OpenFileGDB driver to registered drivers (#221).\n- Implement CLI commands as plugins (#228).\n- Raise click.abort instead of calling sys.exit, preventing suprising exits\n  (#236).\n\n1.5.1 (2015-03-19)\n------------------\n- Restore test data to sdists by fixing MANIFEST.in (#216).\n\n1.5.0 (2015-02-02)\n------------------\n- Finalize GeoJSON feature sequence options (#174).\n- Fix for reading of datasets that don't support feature counting (#190).\n- New test dataset (#188).\n- Fix for encoding error (#191).\n- Remove confusing warning (#195).\n- Add data files for binary wheels (#196).\n- Add control over drivers enabled when reading datasets (#203).\n- Use cligj for CLI options involving GeoJSON (#204).\n- Fix fio-info --bounds help (#206).\n\n1.4.8 (2014-11-02)\n------------------\n- Add missing crs_wkt property as in Rasterio (#182).\n\n1.4.7 (2014-10-28)\n------------------\n- Fix setting of CRS from EPSG codes (#149).\n\n1.4.6 (2014-10-21)\n------------------\n- Handle 3D coordinates in bounds() #178.\n\n1.4.5 (2014-10-18)\n------------------\n- Add --bbox option to fio-cat (#163).\n- Skip geopackage tests if run from an sdist (#167).\n- Add fio-bounds and fio-distrib.\n- Restore fio-dump to working order.\n\n1.4.4 (2014-10-13)\n------------------\n- Fix accidental requirement on GDAL 1.11 introduced in 1.4.3 (#164).\n\n1.4.3 (2014-10-10)\n------------------\n- Add support for geopackage format (#160).\n- Add -f and --format aliases for --driver in CLI (#162).\n- Add --version option and env command to CLI.\n\n1.4.2 (2014-10-03)\n------------------\n- --dst-crs and --src-crs options for fio cat and collect (#159).\n\n1.4.1 (2014-09-30)\n------------------\n- Fix encoding bug in collection's __getitem__ (#153).\n\n1.4.0 (2014-09-22)\n------------------\n- Add fio cat and fio collect commands (#150).\n- Return of Python 2.6 compatibility (#148).\n- Improved CRS support (#149).\n\n1.3.0 (2014-09-17)\n------------------\n- Add single metadata item accessors to fio inf (#142).\n- Move fio to setuptools entry point (#142).\n- Add fio dump and load commands (#143).\n- Remove fio translate command.\n\n1.2.0 (2014-09-02)\n------------------\n- Always show property width and precision in schema (#123).\n- Write datetime properties of features (#125).\n- Reset spatial filtering in filter() (#129).\n- Accept datetime.date objects as feature properties (#130).\n- Add slicing to collection iterators (#132).\n- Add geometry object masks to collection iterators (#136).\n- Change source layout to match Shapely and Rasterio (#138).\n\n1.1.6 (2014-07-23)\n------------------\n- Implement Collection __getitem__() (#112).\n- Leave GDAL finalization to the DLL's destructor (#113).\n- Add Collection keys(), values(), items(), __contains__() (#114).\n- CRS bug fix (#116).\n- Add fio CLI program.\n\n1.1.5 (2014-05-21)\n------------------\n- Addition of cpl_errs context manager (#108).\n- Check for NULLs with '==' test instead of 'is' (#109).\n- Open auxiliary files with encoding='utf-8' in setup for Python 3 (#110).\n\n1.1.4 (2014-04-03)\n------------------\n- Convert 'long' in schemas to 'int' (#101).\n- Carefully map Python schema to the possibly munged internal schema (#105).\n- Allow writing of features with geometry: None (#71).\n\n1.1.3 (2014-03-23)\n------------------\n- Always register all GDAL and OGR drivers when entering the DriverManager\n  context (#80, #92).\n- Skip unsupported field types with a warning (#91).\n- Allow OGR config options to be passed to fiona.drivers() (#90, #93).\n- Add a bounds() function (#100).\n- Turn on GPX driver.\n\n1.1.2 (2014-02-14)\n------------------\n- Remove collection slice left in dumpgj (#88).\n\n1.1.1 (2014-02-02)\n------------------\n- Add an interactive file inspector like the one in rasterio.\n- CRS to_string bug fix (#83).\n\n1.1 (2014-01-22)\n----------------\n- Use a context manager to manage drivers (#78), a backwards compatible but\n  big change. Fiona is now compatible with rasterio and plays better with the\n  osgeo package.\n\n1.0.3 (2014-01-21)\n------------------\n- Fix serialization of +init projections (#69).\n\n1.0.2 (2013-09-09)\n------------------\n- Smarter, better test setup (#65, #66, #67).\n- Add type='Feature' to records read from a Collection (#68).\n- Skip geometry validation when using GeoJSON driver (#61).\n- Dumpgj file description reports record properties as a list (as in\n  dict.items()) instead of a dict.\n\n1.0.1 (2013-08-16)\n------------------\n- Allow ordering of written fields and preservation of field order when\n  reading (#57).\n\n1.0 (2013-07-30)\n-----------------\n- Add prop_type() function.\n- Allow UTF-8 encoded paths for Python 2 (#51). For Python 3, paths must\n  always be str, never bytes.\n- Remove encoding from collection.meta, it's a file creation option only.\n- Support for linking GDAL frameworks (#54).\n\n0.16.1 (2013-07-02)\n-------------------\n- Add listlayers, open, prop_width to __init__py:__all__.\n- Reset reading of OGR layer whenever we ask for a collection iterator (#49).\n\n0.16 (2013-06-24)\n-----------------\n- Add support for writing layers to multi-layer files.\n- Add tests to reach 100% Python code coverage.\n\n0.15 (2013-06-06)\n-----------------\n- Get and set numeric field widths (#42).\n- Add support for multi-layer data sources (#17).\n- Add support for zip and tar virtual filesystems (#45).\n- Add listlayers() function.\n- Add GeoJSON to list of supported formats (#47).\n- Allow selection of layers by index or name.\n\n0.14 (2013-05-04)\n-----------------\n- Add option to add JSON-LD in the dumpgj program.\n- Compare values to six.string_types in Collection constructor.\n- Add encoding to Collection.meta.\n- Document dumpgj in README.\n\n0.13 (2013-04-30)\n-----------------\n- Python 2/3 compatibility in a single package. Pythons 2.6, 2.7, 3.3 now supported.\n\n0.12.1 (2013-04-16)\n-------------------\n- Fix messed up linking of README in sdist (#39).\n\n0.12 (2013-04-15)\n-----------------\n- Fix broken installation of extension modules (#35).\n- Log CPL errors at their matching Python log levels.\n- Use upper case for encoding names within OGR, lower case in Python.\n\n0.11 (2013-04-14)\n-----------------\n- Cythonize .pyx files (#34).\n- Work with or around OGR's internal recoding of record data (#35).\n- Fix bug in serialization of int/float PROJ.4 params.\n\n0.10 (2013-03-23)\n-----------------\n- Add function to get the width of str type properties.\n- Handle validation and schema representation of 3D geometry types (#29).\n- Return {'geometry': None} in the case of a NULL geometry (#31).\n\n0.9.1 (2013-03-07)\n------------------\n- Silence the logger in ogrext.so (can be overridden).\n- Allow user specification of record field encoding (like 'Windows-1252' for\n  Natural Earth shapefiles) to help when OGR can't detect it.\n\n0.9 (2013-03-06)\n----------------\n- Accessing file metadata (crs, schema, bounds) on never inspected closed files\n  returns None without exceptions.\n- Add a dict of supported_drivers and their supported modes.\n- Raise ValueError for unsupported drivers and modes.\n- Remove asserts from ogrext.pyx.\n- Add validate_record method to collections.\n- Add helpful coordinate system functions to fiona.crs.\n- Promote use of fiona.open over fiona.collection.\n- Handle Shapefile's mix of LineString/Polygon and multis (#18).\n- Allow users to specify width of shapefile text fields (#20).\n\n0.8 (2012-02-21)\n----------------\n- Replaced .opened attribute with .closed (product of collection() is always\n  opened). Also a __del__() which will close a Collection, but still not to be\n  depended upon.\n- Added writerecords method.\n- Added a record buffer and better counting of records in a collection.\n- Manage one iterator per collection/session.\n- Added a read-only bounds property.\n\n0.7 (2012-01-29)\n----------------\n- Initial timezone-naive support for date, time, and datetime fields. Don't use\n  these field types if you can avoid them. RFC 3339 datetimes in a string field\n  are much better.\n\n0.6.2 (2012-01-10)\n------------------\n- Diagnose and set the driver property of collection in read mode.\n- Fail if collection paths are not to files. Multi-collection workspaces are\n  a (maybe) TODO.\n\n0.6.1 (2012-01-06)\n------------------\n- Handle the case of undefined crs for disk collections.\n\n0.6 (2012-01-05)\n----------------\n- Support for collection coordinate reference systems based on Proj4.\n- Redirect OGR warnings and errors to the Fiona log.\n- Assert that pointers returned from the ograpi functions are not NULL before\n  using.\n\n0.5 (2011-12-19)\n----------------\n- Support for reading and writing collections of any geometry type.\n- Feature and Geometry classes replaced by mappings (dicts).\n- Removal of Workspace class.\n\n0.2 (2011-09-16)\n----------------\n- Rename WorldMill to Fiona.\n\n0.1.1 (2008-12-04)\n------------------\n- Support for features with no geometry.\n\n\nCredits\n=======\n\nFiona is written by:\n\n- Sean Gillies <sean.gillies@gmail.com>\n- Rene Buffat <buffat@gmail.com>\n- Kevin Wurster <wursterk@gmail.com>\n- Micah Cochran <micah@micahcochran.net>\n- Matthew Perry <perrygeo@gmail.com>\n- Joshua Arnott <josh@snorfalorpagus.net>\n- Kelsey Jordahl <kjordahl@enthought.com>\n- Patrick Young <patrick.mckendree.young@gmail.com>\n- Simon Norris <snorris@hillcrestgeo.ca>\n- Hannes Gr\u00e4uler <graeuler@geoplex.de>\n- Johan Van de Wauw <johan.vandewauw@gmail.com>\n- Jacob Wasserman <jwasserman@gmail.com>\n- Ryan Grout <rgrout@continuum.io>\n- Michael Weisman <mweisman@gmail.com>\n- fredj <frederic.junod@camptocamp.com>\n- Bas Couwenberg <sebastic@xs4all.nl>\n- Brendan Ward <bcward@consbio.org>\n- Michele Citterio <michele@citterio.net>\n- Miro Hron\u010dok <miro@hroncok.cz>\n- qinfeng <guo.qinfeng+github@gmail.com>\n- Michael Weisman <michael@urbanmapping.com>\n- Brandon Liu <bdon@bdon.org>\n- Ludovic Delaun\u00e9 <ludotux@gmail.com>\n- Martijn Visser <mgvisser@gmail.com>\n- Ariel Nunez <ingenieroariel@gmail.com>\n- Oliver Tonnhofer <olt@bogosoft.com>\n- Stefano Costa <steko@iosa.it>\n- dimlev <dimlev@gmail.com>\n- wilsaj <wilson.andrew.j+github@gmail.com>\n- Jesse Crocker <jesse@gaiagps.com>\n\nFiona would not be possible without the great work of Frank Warmerdam and other\nGDAL/OGR developers.\n\nSome portions of this work were supported by a grant (for Pleiades_) from the\nU.S. National Endowment for the Humanities (http://www.neh.gov).\n\n.. _Pleiades: http://pleiades.stoa.org\n\n\n",
+    "description": "=====\nFiona\n=====\n\nFiona is OGR's neat, nimble, no-nonsense API for Python programmers.\n\n.. image:: https://travis-ci.org/Toblerity/Fiona.png?branch=master   \n   :target: https://travis-ci.org/Toblerity/Fiona\n\n.. image:: https://coveralls.io/repos/Toblerity/Fiona/badge.png\n   :target: https://coveralls.io/r/Toblerity/Fiona\n\nFiona is designed to be simple and dependable. It focuses on reading and\nwriting data in standard Python IO style and relies upon familiar Python types\nand protocols such as files, dictionaries, mappings, and iterators instead of\nclasses specific to OGR. Fiona can read and write real-world data using\nmulti-layered GIS formats and zipped virtual file systems and integrates\nreadily with other Python GIS packages such as pyproj_, Rtree_, and Shapely_.\n\nFor more details, see:\n\n* Fiona `home page <https://github.com/Toblerity/Fiona>`__\n* Fiona `docs and manual <http://toblerity.github.com/fiona/>`__\n* Fiona `examples <https://github.com/Toblerity/Fiona/tree/master/examples>`__\n\nUsage\n=====\n\nCollections\n-----------\n\nRecords are read from and written to ``file``-like `Collection` objects\nreturned from the ``fiona.open()`` function.  Records are mappings modeled on\nthe GeoJSON format. They don't have any spatial methods of their own, so if you\nwant to do anything fancy with them you will probably need Shapely or something\nlike it. Here is an example of using Fiona to read some records from one data\nfile, change their geometry attributes, and write them to a new data file.\n\n.. code-block:: python\n\n    import fiona\n\n    # Register format drivers with a context manager\n\n    with fiona.drivers():\n\n        # Open a file for reading. We'll call this the \"source.\"\n\n        with fiona.open('tests/data/coutwildrnp.shp') as source:\n\n            # The file we'll write to, the \"sink\", must be initialized\n            # with a coordinate system, a format driver name, and\n            # a record schema.  We can get initial values from the open\n            # collection's ``meta`` property and then modify them as\n            # desired.\n\n            meta = source.meta\n            meta['schema']['geometry'] = 'Point'\n\n            # Open an output file, using the same format driver and\n            # coordinate reference system as the source. The ``meta``\n            # mapping fills in the keyword parameters of fiona.open().\n\n            with fiona.open('test_write.shp', 'w', **meta) as sink:\n\n                # Process only the records intersecting a box.\n                for f in source.filter(bbox=(-107.0, 37.0, -105.0, 39.0)):\n\n                    # Get a point on the boundary of the record's\n                    # geometry.\n\n                    f['geometry'] = {\n                        'type': 'Point',\n                        'coordinates': f['geometry']['coordinates'][0][0]}\n\n                    # Write the record out.\n\n                    sink.write(f)\n\n        # The sink's contents are flushed to disk and the file is\n        # closed when its ``with`` block ends. This effectively\n        # executes ``sink.flush(); sink.close()``.\n\n    # At the end of the ``with fiona.drivers()`` block, context\n    # manager exits and all drivers are de-registered.\n\nThe fiona.drivers() function and context manager are new in 1.1. The\nexample above shows the way to use it to register and de-register\ndrivers in a deterministic and efficient way. Code written for Fiona 1.0\nwill continue to work: opened collections may manage the global driver\nregistry if no other manager is present.\n\nReading Multilayer data\n-----------------------\n\nCollections can also be made from single layers within multilayer files or\ndirectories of data. The target layer is specified by name or by its integer\nindex within the file or directory. The ``fiona.listlayers()`` function\nprovides an index ordered list of layer names.\n\n.. code-block:: python\n\n    with fiona.drivers():\n\n        for layername in fiona.listlayers('tests/data'):\n            with fiona.open('tests/data', layer=layername) as src:\n                print(layername, len(src))\n\n    # Output:\n    # (u'coutwildrnp', 67)\n\nLayer can also be specified by index. In this case, ``layer=0`` and\n``layer='test_uk'`` specify the same layer in the data file or directory.\n\n.. code-block:: python\n\n    with fiona.drivers():\n\n        for i, layername in enumerate(fiona.listlayers('tests/data')):\n            with fiona.open('tests/data', layer=i) as src:\n                print(i, layername, len(src))\n\n    # Output:\n    # (0, u'coutwildrnp', 67)\n\nWriting Multilayer data\n-----------------------\n\nMultilayer data can be written as well. Layers must be specified by name when\nwriting.\n\n.. code-block:: python\n\n    with fiona.drivers():\n\n        with open('tests/data/cowildrnp.shp') as src:\n            meta = src.meta\n            f = next(src)\n\n        with fiona.open('/tmp/foo', 'w', layer='bar', **meta) as dst:\n            dst.write(f)\n\n        print(fiona.listlayers('/tmp/foo'))\n\n        with fiona.open('/tmp/foo', layer='bar') as src:\n            print(len(src))\n            f = next(src)\n            print(f['geometry']['type'])\n            print(f['properties'])\n\n        # Output:\n        # [u'bar']\n        # 1\n        # Polygon\n        # OrderedDict([(u'PERIMETER', 1.22107), (u'FEATURE2', None), (u'NAME', u'Mount Naomi Wilderness'), (u'FEATURE1', u'Wilderness'), (u'URL', u'http://www.wilderness.net/index.cfm?fuse=NWPS&sec=wildView&wname=Mount%20Naomi'), (u'AGBUR', u'FS'), (u'AREA', 0.0179264), (u'STATE_FIPS', u'49'), (u'WILDRNP020', 332), (u'STATE', u'UT')])\n\nA view of the /tmp/foo directory will confirm the creation of the new files.\n\n.. code-block:: console\n\n    $ ls /tmp/foo\n    bar.cpg bar.dbf bar.prj bar.shp bar.shx\n\nCollections from archives and virtual file systems\n--------------------------------------------------\n\nZip and Tar archives can be treated as virtual filesystems and Collections can\nbe made from paths and layers within them. In other words, Fiona lets you read\nand write zipped Shapefiles.\n\n.. code-block:: python\n\n    with fiona.drivers():\n\n        for i, layername in enumerate(\n                fiona.listlayers(\n                    '/', \n                    vfs='zip://tests/data/coutwildrnp.zip')):\n            with fiona.open(\n                    '/', \n                    vfs='zip://tests/data/coutwildrnp.zip', \n                    layer=i) as src:\n                print(i, layername, len(src))\n\n    # Output:\n    # (0, u'coutwildrnp', 67)\n\nFiona CLI\n=========\n\nFiona's command line interface, named \"fio\", is documented at `docs/cli.rst\n<https://github.com/Toblerity/Fiona/blob/master/docs/cli.rst>`__. Its ``fio\ninfo`` pretty prints information about a data file.\n\n.. code-block:: console\n\n    $ fio info --indent 2 tests/data/coutwildrnp.shp\n    {\n      \"count\": 67,\n      \"crs\": \"EPSG:4326\",\n      \"driver\": \"ESRI Shapefile\",\n      \"bounds\": [\n        -113.56424713134766,\n        37.0689811706543,\n        -104.97087097167969,\n        41.99627685546875\n      ],\n      \"schema\": {\n        \"geometry\": \"Polygon\",\n        \"properties\": {\n          \"PERIMETER\": \"float:24.15\",\n          \"FEATURE2\": \"str:80\",\n          \"NAME\": \"str:80\",\n          \"FEATURE1\": \"str:80\",\n          \"URL\": \"str:101\",\n          \"AGBUR\": \"str:80\",\n          \"AREA\": \"float:24.15\",\n          \"STATE_FIPS\": \"str:80\",\n          \"WILDRNP020\": \"int:10\",\n          \"STATE\": \"str:80\"\n        }\n      }\n    }\n\nInstallation\n============\n\nFiona requires Python 2.6, 2.7, 3.3, or 3.4 and GDAL/OGR 1.8+. To build from\na source distribution you will need a C compiler and GDAL and Python\ndevelopment headers and libraries (libgdal1-dev for Debian/Ubuntu, gdal-dev for\nCentOS/Fedora).\n\nTo build from a repository copy, you will also need Cython to build C sources\nfrom the project's .pyx files. See the project's requirements-dev.txt file for\nguidance.\n\nThe `Kyngchaos GDAL frameworks\n<http://www.kyngchaos.com/software/frameworks#gdal_complete>`__ will satisfy\nthe GDAL/OGR dependency for OS X, as will Homebrew's GDAL Formula (``brew install\ngdal``).\n\nPython Requirements\n-------------------\n\nFiona depends on the modules ``six``, ``cligj``,  ``munch``, ``argparse``, and\n``ordereddict`` (the two latter modules are standard in Python 2.7+). Pip will\nfetch these requirements for you, but users installing Fiona from a Windows\ninstaller must get them separately.\n\nUnix-like systems\n-----------------\n\nAssuming you're using a virtualenv (if not, skip to the 4th command) and\nGDAL/OGR libraries, headers, and `gdal-config`_ program are installed to well\nknown locations on your system via your system's package manager (``brew\ninstall gdal`` using Homebrew on OS X), installation is this simple.\n\n.. code-block:: console\n\n  $ mkdir fiona_env\n  $ virtualenv fiona_env\n  $ source fiona_env/bin/activate\n  (fiona_env)$ pip install fiona\n\nIf gdal-config is not available or if GDAL/OGR headers and libs aren't\ninstalled to a well known location, you must set include dirs, library dirs,\nand libraries options via the setup.cfg file or setup command line as shown\nbelow (using ``git``). You must also specify the major version of the GDAL API\n(1 or 2) on the setup command line.\n\n.. code-block:: console\n\n  (fiona_env)$ git clone git://github.com/Toblerity/Fiona.git\n  (fiona_env)$ cd Fiona\n  (fiona_env)$ python setup.py build_ext -I/path/to/gdal/include -L/path/to/gdal/lib -lgdal install --gdalversion 1\n\nOr specify that build options and GDAL API version should be provided by a\nparticular gdal-config program.\n\n.. code-block:: console\n\n  (fiona_env)$ GDAL_CONFIG=/path/to/gdal-config pip install fiona\n\nWindows\n-------\n\nBinary installers are available at\nhttp://www.lfd.uci.edu/~gohlke/pythonlibs/#fiona and coming eventually to PyPI.\n\nYou can download a binary distribution of GDAL from `here\n<http://www.gisinternals.com/release.php>`_.  You will also need to download\nthe compiled libraries and headers (include files).\n\nWhen building from source on Windows, it is important to know that setup.py\ncannot rely on gdal-config, which is only present on UNIX systems, to discover \nthe locations of header files and libraries that Fiona needs to compile its \nC extensions. On Windows, these paths need to be provided by the user. \nYou will need to find the include files and the library files for gdal and \nuse setup.py as follows. You must also specify the major version of the GDAL\nAPI (1 or 2) on the setup command line.\n\n.. code-block:: console\n\n    $ python setup.py build_ext -I<path to gdal include files> -lgdal_i -L<path to gdal library> install --gdalversion 1\n\nNote: The GDAL dll (gdal111.dll) and gdal-data directory need to be in your \nWindows PATH otherwise Fiona will fail to work.\n\nDevelopment and testing\n=======================\n\nBuilding from the source requires Cython. Tests require Nose. If the GDAL/OGR\nlibraries, headers, and `gdal-config`_ program are installed to well known\nlocations on your system (via your system's package manager), you can do this::\n\n  (fiona_env)$ git clone git://github.com/Toblerity/Fiona.git\n  (fiona_env)$ cd Fiona\n  (fiona_env)$ pip install cython\n  (fiona_env)$ pip install -e .[test]\n  (fiona_env)$ nosetests\n\nOr you can use the ``pep-518-install`` script::\n\n  (fiona_env)$ git clone git://github.com/Toblerity/Fiona.git\n  (fiona_env)$ cd Fiona\n  (fiona_env)$ ./pep-518-install\n\nIf you have a non-standard environment, you'll need to specify the include and\nlib dirs and GDAL library on the command line::\n\n  (fiona_env)$ python setup.py build_ext -I/path/to/gdal/include -L/path/to/gdal/lib -lgdal --gdalversion 2 develop\n  (fiona_env)$ nosetests\n\n.. _OGR: http://www.gdal.org/ogr\n.. _pyproj: http://pypi.python.org/pypi/pyproj/\n.. _Rtree: http://pypi.python.org/pypi/Rtree/\n.. _Shapely: http://pypi.python.org/pypi/Shapely/\n.. _gdal-config: http://www.gdal.org/gdal-config.html\n\nChanges\n=======\n\nAll issue numbers are relative to https://github.com/Toblerity/Fiona/issues.\n\n1.7.10 (2017-10-26)\n-------------------\n\nBug fixes:\n\n- An extraneous printed line from the ``rio cat --layers`` validator has been\n  removed (#478).\n\nPackaging:\n\n- Official OS X and Manylinux1 wheels (on PyPI) for this release will be\n  compatible with Shapely 1.6.2 and Rasterio 1.0a10 wheels.\n\n1.7.9.post1 (2017-08-21)\n------------------------\n\nThis release introduces no changes in the Fiona package. It upgrades GDAL\nfrom 2.2.0 to 2.2.1 in wheels that we publish to the Python Package Index.\n\n1.7.9 (2017-08-17)\n------------------\n\nBug fixes:\n\n- Acquire the GIL for GDAL error callback functions to prevent crashes when\n  GDAL errors occur when the GIL has been released by user code.\n- Sync and flush layers when closing even when the number of features is not\n  precisely known (#467).\n\n1.7.8 (2017-06-20)\n------------------\n\nBug fixes:\n\n- Provide all arguments needed by CPLError based exceptions (#456).\n\n1.7.7 (2017-06-05)\n------------------\n\nBug fixes:\n\n- Switch logger `warn()` (deprecated) calls to `warning()`.\n- Replace all relative imports and cimports in Cython modules with absolute\n  imports (#450).\n- Avoid setting `PROJ_LIB` to a non-existent directory (#439).\n\n1.7.6 (2017-04-26)\n------------------\n\nBug fixes:\n\n- Fall back to `share/proj` for PROJ_LIB (#440).\n- Replace every call to `OSRDestroySpatialReference()` with `OSRRelease()`,\n  fixing the GPKG driver crasher reported in #441 (#443).\n- Add a `DriverIOError` derived from `IOError` to use for driver-specific\n  errors such as the GeoJSON driver's refusal to overwrite existing files.\n  Also we now ensure that when this error is raised by `fiona.open()` any\n  created read or write session is deleted, this eliminates spurious \n  exceptions on teardown of broken `Collection` objects (#437, #444).\n\n1.7.5 (2017-03-20)\n------------------\n\nBug fixes:\n\n- Opening a data file in read (the default) mode with `fiona.open()` using the\n  the `driver` or `drivers` keyword arguments (to specify certain format \n  drivers) would sometimes cause a crash on Windows due to improperly\n  terminated lists of strings (#428). The fix: Fiona's buggy `string_list()`\n  has been replaced by GDAL's `CSLAddString()`.\n\n1.7.4 (2017-02-20)\n------------------\n\nBug fixes:\n\n- OGR's EsriJSON detection fails when certain keys aren't found in the first\n  6000 bytes of data passed to `BytesCollection` (#422). A .json file extension\n  is now explicitly given to the in-memory file behind `BytesCollection` when\n  the `driver='GeoJSON'` keyword argument is given (#423). \n\n1.7.3 (2017-02-14)\n------------------\n\nRoses are red.\nTan is a pug.\nSoftware regression's\nthe most embarrassing bug.\n\nBug fixes:\n\n- Use __stdcall for GDAL error handling callback on Windows as in Rasterio.\n- Turn on latent support for zip:// URLs in rio-cat and rio-info (#421).\n- The 1.7.2 release broke support for zip files with absolute paths (#418).\n  This regression has been fixed with tests to confirm.\n\n1.7.2 (2017-01-27)\n------------------\n\nFuture Deprecation:\n\n- `Collection.__next__()` is buggy in that it can lead to duplication of \n  features when used in combination with `Collection.filter()` or\n  `Collection.__iter__()`. It will be removed in Fiona 2.0. Please check for\n  usage of this deprecated feature by running your tests or programs with\n  `PYTHONWARNINGS=\"always:::fiona\"` or `-W\"always:::fiona\"` and switch from\n  `next(collection)` to `next(iter(collection))` (#301).\n\nBug fix:\n\n- Zipped streams of bytes can be accessed by `BytesCollection` (#318).\n\n1.7.1.post1 (2016-12-23)\n------------------------\n- New binary wheels using version 1.2.0 of sgillies/frs-wheel-builds. See\n  https://github.com/sgillies/frs-wheel-builds/blob/master/CHANGES.txt.\n\n1.7.1 (2016-11-16)\n------------------\n\nBug Fixes:\n\n- Prevent Fiona from stumbling over 'Z', 'M', and 'ZM' geometry types\n  introduced in GDAL 2.1 (#384). Fiona 1.7.1 doesn't add explicit support for\n  these types, they are coerced to geometry types 1-7 ('Point', 'LineString',\n  etc.)\n- Raise an `UnsupportedGeometryTypeError` when a bogus or unsupported \n  geometry type is encountered in a new collection's schema or elsewhere\n  (#340).\n- Enable `--precision 0` for fio-cat (#370).\n- Prevent datetime exceptions from unnecessarily stopping collection iteration\n  by yielding `None` (#385)\n- Replace log.warn calls with log.warning calls (#379).\n- Print an error message if neither gdal-config or `--gdalversion` indicate\n  a GDAL C API version when running `setup.py` (#364).\n- Let dict-like subclasses through CRS type checks (#367).\n\n1.7.0post2 (2016-06-15)\n-----------------------\n\nPackaging: define extension modules for 'clean' and 'config' targets (#363).\n\n1.7.0post1 (2016-06-15)\n-----------------------\n\nPackaging: No files are copied for the 'clean' setup target (#361, #362).\n\n1.7.0 (2016-06-14)\n------------------\n\nThe C extension modules in this library can now be built and used with either\na 1.x or 2.x release of the GDAL library. Big thanks to Ren\u00e9 Buffat for\nleading this effort.\n\nRefactoring:\n\n- The `ogrext1.pyx` and `ogrext2.pyx` files now use separate\n  C APIs defined in `ogrext1.pxd` and `ogrex2.pxd`. The other extension\n  modules have been refactored so that they do not depend on either of these\n  modules and use subsets of the GDAL/OGR API compatible with both GDAL 1.x and\n  2.x (#359).\n\nPackaging:\n\n- Source distributions now contain two different sources for the\n  `ogrext` extension module. The `ogrext1.c` file will be used with GDAL 1.x\n  and the `ogrext2.c` file will be used with GDAL 2.x.\n\n1.7b2 (2016-06-13)\n------------------\n\n- New feature: enhancement of the `--layer` option for fio-cat and fio-dump\n  to allow separate layers of one or more multi-layer input files to be\n  selected (#349).\n\n1.7b1 (2016-06-10)\n------------------\n\n- New feature: support for GDAL version 2+ (#259).\n- New feature: a new fio-calc CLI command (#273).\n- New feature: `--layer` options for fio-info (#316) and fio-load (#299).\n- New feature: a `--no-parse` option for fio-collect that lets a careful user\n  avoid extra JSON serialization and deserialization (#306).\n- Bug fix: `+wktext` is now preserved when serializing CRS from WKT to PROJ.4\n  dicts (#352).\n- Bug fix: a small memory leak when opening a collection has been fixed (#337).\n- Bug fix: internal unicode errors now result in a log message and a \n  `UnicodeError` exception, not a `TypeError` (#356).\n\n1.6.4 (2016-05-06)\n------------------\n- Raise ImportError if the active GDAL library version is >= 2.0 instead of\n  failing unpredictably (#338, #341). Support for GDAL>=2.0 is coming in\n  Fiona 1.7.\n\n1.6.3.post1 (2016-03-27)\n------------------------\n- No changes to the library in this post-release version, but there is a\n  significant change to the distributions on PyPI: to help make Fiona more\n  compatible with Shapely on OS X, the GDAL shared library included in the\n  macosx (only) binary wheels now statically links the GEOS library. See\n  https://github.com/sgillies/frs-wheel-builds/issues/5.\n\n1.6.3 (2015-12-22)\n------------------\n- Daytime has been decreasing in the Northern Hemisphere, but is now\n  increasing again as it should.\n- Non-UTF strings were being passed into OGR functions in some situations\n  and on Windows this would sometimes crash a Python process (#303). Fiona\n  now raises errors derived from UnicodeError when field names or field\n  values can't be encoded.\n\n1.6.2 (2015-09-22)\n------------------\n- Providing only PROJ4 representations in the dataset meta property resulted in\n  loss of CRS information when using the `fiona.open(..., **src.meta) as dst`\n  pattern (#265). This bug has been addressed by adding a crs_wkt item to the`\n  meta property and extending the `fiona.open()` and the collection constructor\n  to look for and prioritize this keyword argument.\n\n1.6.1 (2015-08-12)\n------------------\n- Bug fix: Fiona now deserializes JSON-encoded string properties provided by\n  the OGR GeoJSON driver (#244, #245, #246).\n- Bug fix: proj4 data was not copied properly into binary distributions due to\n  a typo (#254).\n\nSpecial thanks to WFMU DJ Liz Berg for the awesome playlist that's fueling my\nrelease sprint. Check it out at http://wfmu.org/playlists/shows/62083. You\ncan't unhear Love Coffin.\n\n1.6.0 (2015-07-21)\n------------------\n- Upgrade Cython requirement to 0.22 (#214).\n- New BytesCollection class (#215).\n- Add GDAL's OpenFileGDB driver to registered drivers (#221).\n- Implement CLI commands as plugins (#228).\n- Raise click.abort instead of calling sys.exit, preventing suprising exits\n  (#236).\n\n1.5.1 (2015-03-19)\n------------------\n- Restore test data to sdists by fixing MANIFEST.in (#216).\n\n1.5.0 (2015-02-02)\n------------------\n- Finalize GeoJSON feature sequence options (#174).\n- Fix for reading of datasets that don't support feature counting (#190).\n- New test dataset (#188).\n- Fix for encoding error (#191).\n- Remove confusing warning (#195).\n- Add data files for binary wheels (#196).\n- Add control over drivers enabled when reading datasets (#203).\n- Use cligj for CLI options involving GeoJSON (#204).\n- Fix fio-info --bounds help (#206).\n\n1.4.8 (2014-11-02)\n------------------\n- Add missing crs_wkt property as in Rasterio (#182).\n\n1.4.7 (2014-10-28)\n------------------\n- Fix setting of CRS from EPSG codes (#149).\n\n1.4.6 (2014-10-21)\n------------------\n- Handle 3D coordinates in bounds() #178.\n\n1.4.5 (2014-10-18)\n------------------\n- Add --bbox option to fio-cat (#163).\n- Skip geopackage tests if run from an sdist (#167).\n- Add fio-bounds and fio-distrib.\n- Restore fio-dump to working order.\n\n1.4.4 (2014-10-13)\n------------------\n- Fix accidental requirement on GDAL 1.11 introduced in 1.4.3 (#164).\n\n1.4.3 (2014-10-10)\n------------------\n- Add support for geopackage format (#160).\n- Add -f and --format aliases for --driver in CLI (#162).\n- Add --version option and env command to CLI.\n\n1.4.2 (2014-10-03)\n------------------\n- --dst-crs and --src-crs options for fio cat and collect (#159).\n\n1.4.1 (2014-09-30)\n------------------\n- Fix encoding bug in collection's __getitem__ (#153).\n\n1.4.0 (2014-09-22)\n------------------\n- Add fio cat and fio collect commands (#150).\n- Return of Python 2.6 compatibility (#148).\n- Improved CRS support (#149).\n\n1.3.0 (2014-09-17)\n------------------\n- Add single metadata item accessors to fio inf (#142).\n- Move fio to setuptools entry point (#142).\n- Add fio dump and load commands (#143).\n- Remove fio translate command.\n\n1.2.0 (2014-09-02)\n------------------\n- Always show property width and precision in schema (#123).\n- Write datetime properties of features (#125).\n- Reset spatial filtering in filter() (#129).\n- Accept datetime.date objects as feature properties (#130).\n- Add slicing to collection iterators (#132).\n- Add geometry object masks to collection iterators (#136).\n- Change source layout to match Shapely and Rasterio (#138).\n\n1.1.6 (2014-07-23)\n------------------\n- Implement Collection __getitem__() (#112).\n- Leave GDAL finalization to the DLL's destructor (#113).\n- Add Collection keys(), values(), items(), __contains__() (#114).\n- CRS bug fix (#116).\n- Add fio CLI program.\n\n1.1.5 (2014-05-21)\n------------------\n- Addition of cpl_errs context manager (#108).\n- Check for NULLs with '==' test instead of 'is' (#109).\n- Open auxiliary files with encoding='utf-8' in setup for Python 3 (#110).\n\n1.1.4 (2014-04-03)\n------------------\n- Convert 'long' in schemas to 'int' (#101).\n- Carefully map Python schema to the possibly munged internal schema (#105).\n- Allow writing of features with geometry: None (#71).\n\n1.1.3 (2014-03-23)\n------------------\n- Always register all GDAL and OGR drivers when entering the DriverManager\n  context (#80, #92).\n- Skip unsupported field types with a warning (#91).\n- Allow OGR config options to be passed to fiona.drivers() (#90, #93).\n- Add a bounds() function (#100).\n- Turn on GPX driver.\n\n1.1.2 (2014-02-14)\n------------------\n- Remove collection slice left in dumpgj (#88).\n\n1.1.1 (2014-02-02)\n------------------\n- Add an interactive file inspector like the one in rasterio.\n- CRS to_string bug fix (#83).\n\n1.1 (2014-01-22)\n----------------\n- Use a context manager to manage drivers (#78), a backwards compatible but\n  big change. Fiona is now compatible with rasterio and plays better with the\n  osgeo package.\n\n1.0.3 (2014-01-21)\n------------------\n- Fix serialization of +init projections (#69).\n\n1.0.2 (2013-09-09)\n------------------\n- Smarter, better test setup (#65, #66, #67).\n- Add type='Feature' to records read from a Collection (#68).\n- Skip geometry validation when using GeoJSON driver (#61).\n- Dumpgj file description reports record properties as a list (as in\n  dict.items()) instead of a dict.\n\n1.0.1 (2013-08-16)\n------------------\n- Allow ordering of written fields and preservation of field order when\n  reading (#57).\n\n1.0 (2013-07-30)\n-----------------\n- Add prop_type() function.\n- Allow UTF-8 encoded paths for Python 2 (#51). For Python 3, paths must\n  always be str, never bytes.\n- Remove encoding from collection.meta, it's a file creation option only.\n- Support for linking GDAL frameworks (#54).\n\n0.16.1 (2013-07-02)\n-------------------\n- Add listlayers, open, prop_width to __init__py:__all__.\n- Reset reading of OGR layer whenever we ask for a collection iterator (#49).\n\n0.16 (2013-06-24)\n-----------------\n- Add support for writing layers to multi-layer files.\n- Add tests to reach 100% Python code coverage.\n\n0.15 (2013-06-06)\n-----------------\n- Get and set numeric field widths (#42).\n- Add support for multi-layer data sources (#17).\n- Add support for zip and tar virtual filesystems (#45).\n- Add listlayers() function.\n- Add GeoJSON to list of supported formats (#47).\n- Allow selection of layers by index or name.\n\n0.14 (2013-05-04)\n-----------------\n- Add option to add JSON-LD in the dumpgj program.\n- Compare values to six.string_types in Collection constructor.\n- Add encoding to Collection.meta.\n- Document dumpgj in README.\n\n0.13 (2013-04-30)\n-----------------\n- Python 2/3 compatibility in a single package. Pythons 2.6, 2.7, 3.3 now supported.\n\n0.12.1 (2013-04-16)\n-------------------\n- Fix messed up linking of README in sdist (#39).\n\n0.12 (2013-04-15)\n-----------------\n- Fix broken installation of extension modules (#35).\n- Log CPL errors at their matching Python log levels.\n- Use upper case for encoding names within OGR, lower case in Python.\n\n0.11 (2013-04-14)\n-----------------\n- Cythonize .pyx files (#34).\n- Work with or around OGR's internal recoding of record data (#35).\n- Fix bug in serialization of int/float PROJ.4 params.\n\n0.10 (2013-03-23)\n-----------------\n- Add function to get the width of str type properties.\n- Handle validation and schema representation of 3D geometry types (#29).\n- Return {'geometry': None} in the case of a NULL geometry (#31).\n\n0.9.1 (2013-03-07)\n------------------\n- Silence the logger in ogrext.so (can be overridden).\n- Allow user specification of record field encoding (like 'Windows-1252' for\n  Natural Earth shapefiles) to help when OGR can't detect it.\n\n0.9 (2013-03-06)\n----------------\n- Accessing file metadata (crs, schema, bounds) on never inspected closed files\n  returns None without exceptions.\n- Add a dict of supported_drivers and their supported modes.\n- Raise ValueError for unsupported drivers and modes.\n- Remove asserts from ogrext.pyx.\n- Add validate_record method to collections.\n- Add helpful coordinate system functions to fiona.crs.\n- Promote use of fiona.open over fiona.collection.\n- Handle Shapefile's mix of LineString/Polygon and multis (#18).\n- Allow users to specify width of shapefile text fields (#20).\n\n0.8 (2012-02-21)\n----------------\n- Replaced .opened attribute with .closed (product of collection() is always\n  opened). Also a __del__() which will close a Collection, but still not to be\n  depended upon.\n- Added writerecords method.\n- Added a record buffer and better counting of records in a collection.\n- Manage one iterator per collection/session.\n- Added a read-only bounds property.\n\n0.7 (2012-01-29)\n----------------\n- Initial timezone-naive support for date, time, and datetime fields. Don't use\n  these field types if you can avoid them. RFC 3339 datetimes in a string field\n  are much better.\n\n0.6.2 (2012-01-10)\n------------------\n- Diagnose and set the driver property of collection in read mode.\n- Fail if collection paths are not to files. Multi-collection workspaces are\n  a (maybe) TODO.\n\n0.6.1 (2012-01-06)\n------------------\n- Handle the case of undefined crs for disk collections.\n\n0.6 (2012-01-05)\n----------------\n- Support for collection coordinate reference systems based on Proj4.\n- Redirect OGR warnings and errors to the Fiona log.\n- Assert that pointers returned from the ograpi functions are not NULL before\n  using.\n\n0.5 (2011-12-19)\n----------------\n- Support for reading and writing collections of any geometry type.\n- Feature and Geometry classes replaced by mappings (dicts).\n- Removal of Workspace class.\n\n0.2 (2011-09-16)\n----------------\n- Rename WorldMill to Fiona.\n\n0.1.1 (2008-12-04)\n------------------\n- Support for features with no geometry.\n\n\nCredits\n=======\n\nFiona is written by:\n\n- Sean Gillies <sean.gillies@gmail.com>\n- Rene Buffat <buffat@gmail.com>\n- Kevin Wurster <wursterk@gmail.com>\n- Micah Cochran <micah@micahcochran.net>\n- Matthew Perry <perrygeo@gmail.com>\n- Joshua Arnott <josh@snorfalorpagus.net>\n- Kelsey Jordahl <kjordahl@enthought.com>\n- Patrick Young <patrick.mckendree.young@gmail.com>\n- Simon Norris <snorris@hillcrestgeo.ca>\n- Hannes Gr\u00e4uler <graeuler@geoplex.de>\n- Johan Van de Wauw <johan.vandewauw@gmail.com>\n- Jacob Wasserman <jwasserman@gmail.com>\n- Ryan Grout <rgrout@continuum.io>\n- Michael Weisman <mweisman@gmail.com>\n- fredj <frederic.junod@camptocamp.com>\n- Bas Couwenberg <sebastic@xs4all.nl>\n- Brendan Ward <bcward@consbio.org>\n- Michele Citterio <michele@citterio.net>\n- Miro Hron\u010dok <miro@hroncok.cz>\n- qinfeng <guo.qinfeng+github@gmail.com>\n- Michael Weisman <michael@urbanmapping.com>\n- Brandon Liu <bdon@bdon.org>\n- Ludovic Delaun\u00e9 <ludotux@gmail.com>\n- Martijn Visser <mgvisser@gmail.com>\n- Ariel Nunez <ingenieroariel@gmail.com>\n- Oliver Tonnhofer <olt@bogosoft.com>\n- Stefano Costa <steko@iosa.it>\n- dimlev <dimlev@gmail.com>\n- wilsaj <wilson.andrew.j+github@gmail.com>\n- Jesse Crocker <jesse@gaiagps.com>\n\nFiona would not be possible without the great work of Frank Warmerdam and other\nGDAL/OGR developers.\n\nSome portions of this work were supported by a grant (for Pleiades_) from the\nU.S. National Endowment for the Humanities (http://www.neh.gov).\n\n.. _Pleiades: http://pleiades.stoa.org\n\n\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -29,19 +29,19 @@
     "name": "Fiona",
     "platform": "",
     "project_url": "https://pypi.org/project/Fiona/",
-    "release_url": "https://pypi.org/project/Fiona/1.7.9.post1/",
+    "release_url": "https://pypi.org/project/Fiona/1.7.10/",
     "requires_dist": [
       "nose; extra == 'test'",
       "shapely; extra == 'calc'",
-      "six",
-      "munch",
       "enum34",
-      "cligj",
-      "click-plugins"
+      "munch",
+      "six",
+      "click-plugins",
+      "cligj"
     ],
     "requires_python": "",
     "summary": "Fiona reads and writes spatial data files",
-    "version": "1.7.9.post1"
+    "version": "1.7.10"
   },
   "releases": {
     "0.10": [
@@ -51,7 +51,7 @@
           "md5": "e0db2bb89a31a8c6f6bdad960cf01d2d",
           "sha256": "31196e9281dd77bfcb85ed9684637bf39ac0b5cf74658e5e2b3cb151cc55c2d4"
         },
-        "downloads": 3381,
+        "downloads": -1,
         "filename": "Fiona-0.10.tar.gz",
         "has_sig": false,
         "md5_digest": "e0db2bb89a31a8c6f6bdad960cf01d2d",
@@ -69,7 +69,7 @@
           "md5": "e91c0f9702366f49be50cb7cba4ec029",
           "sha256": "7f2871e73b8286ee4bd609d38b285fe4d634bb4c15ee96b070afe8b43052013c"
         },
-        "downloads": 3038,
+        "downloads": -1,
         "filename": "Fiona-0.12.tar.gz",
         "has_sig": false,
         "md5_digest": "e91c0f9702366f49be50cb7cba4ec029",
@@ -87,7 +87,7 @@
           "md5": "0ab77c67021d331ecb2f277ef16cf74c",
           "sha256": "b33dc6be3df58b404de8b303a9b54f9387d8436eda0389b9e1470d3560fbb0a6"
         },
-        "downloads": 3104,
+        "downloads": -1,
         "filename": "Fiona-0.12.1.tar.gz",
         "has_sig": false,
         "md5_digest": "0ab77c67021d331ecb2f277ef16cf74c",
@@ -105,7 +105,7 @@
           "md5": "843a5f136bb16214d1632a428ac160a1",
           "sha256": "317fe9cc75e03fd82ca8408b9a1794141087c9c84c3de60d00b31b3b532bcf90"
         },
-        "downloads": 2887,
+        "downloads": -1,
         "filename": "Fiona-0.13.tar.gz",
         "has_sig": false,
         "md5_digest": "843a5f136bb16214d1632a428ac160a1",
@@ -123,7 +123,7 @@
           "md5": "5e428672f4f3c1dd71e3793c347accdb",
           "sha256": "39a0d69bb04483d58506c15ad6ef759a2d444c10f7385763345dc04d7bd0de9a"
         },
-        "downloads": 2890,
+        "downloads": -1,
         "filename": "Fiona-0.14.tar.gz",
         "has_sig": false,
         "md5_digest": "5e428672f4f3c1dd71e3793c347accdb",
@@ -141,7 +141,7 @@
           "md5": "a356b897b15164bb0f6a6b0abf26c505",
           "sha256": "6df567b918b1669c334847f3985c91198e5f6177905829c4581e6ac3d2e11864"
         },
-        "downloads": 2879,
+        "downloads": -1,
         "filename": "Fiona-0.15.tar.gz",
         "has_sig": false,
         "md5_digest": "a356b897b15164bb0f6a6b0abf26c505",
@@ -159,7 +159,7 @@
           "md5": "9ad12dcfae764b12173a357e613b25c1",
           "sha256": "37a98dc906f74ea7db0e6996e7343301c00b094c336d6322c3015f6a83357960"
         },
-        "downloads": 2644,
+        "downloads": -1,
         "filename": "Fiona-0.16.tar.gz",
         "has_sig": false,
         "md5_digest": "9ad12dcfae764b12173a357e613b25c1",
@@ -177,7 +177,7 @@
           "md5": "d1a560447ed6cfcbacefe81b3388d339",
           "sha256": "4a91c9312f9d8878567508a7192cfedf3744e672faee8412720b79f48b0ebe4e"
         },
-        "downloads": 3112,
+        "downloads": -1,
         "filename": "Fiona-0.16.1.tar.gz",
         "has_sig": false,
         "md5_digest": "d1a560447ed6cfcbacefe81b3388d339",
@@ -195,7 +195,7 @@
           "md5": "7816263c88ea46efef38f37f4adbd0b8",
           "sha256": "6421dfebecf5c57981e0bf56f10e5c23f26622f26440e3c0ac63584763a41c60"
         },
-        "downloads": 4306,
+        "downloads": -1,
         "filename": "Fiona-0.5.tar.gz",
         "has_sig": false,
         "md5_digest": "7816263c88ea46efef38f37f4adbd0b8",
@@ -213,7 +213,7 @@
           "md5": "b0246e924990b07a64d32ebc4e17cfd1",
           "sha256": "b194fe7b75428a07c49bfe18f5f3c1e3809d5ece3ecccce5c08fcae4bdef5fd3"
         },
-        "downloads": 4088,
+        "downloads": -1,
         "filename": "Fiona-0.6.tar.gz",
         "has_sig": false,
         "md5_digest": "b0246e924990b07a64d32ebc4e17cfd1",
@@ -231,7 +231,7 @@
           "md5": "eff5f4444b4b67d8452fed8c294297ed",
           "sha256": "033642d1ca96168f0a31a48d17f63d7e7aea1f660c923ac39c1941ee7057cbb6"
         },
-        "downloads": 4099,
+        "downloads": -1,
         "filename": "Fiona-0.6.1.tar.gz",
         "has_sig": false,
         "md5_digest": "eff5f4444b4b67d8452fed8c294297ed",
@@ -249,7 +249,7 @@
           "md5": "88c9a1743cedce14cc08b0e6bfbf7e50",
           "sha256": "8882808c5c0201790dd39bfa84e561ff00d11580fde09a4d4eee34773edea238"
         },
-        "downloads": 4056,
+        "downloads": -1,
         "filename": "Fiona-0.6.2.tar.gz",
         "has_sig": false,
         "md5_digest": "88c9a1743cedce14cc08b0e6bfbf7e50",
@@ -267,7 +267,7 @@
           "md5": "3d2c26b5a589e02d61d09d5ff4e142f5",
           "sha256": "ae9200f6beb8a43236503e6a0273d0297bab3be49b11d67488fae7336b53bd01"
         },
-        "downloads": 4074,
+        "downloads": -1,
         "filename": "Fiona-0.7.tar.gz",
         "has_sig": false,
         "md5_digest": "3d2c26b5a589e02d61d09d5ff4e142f5",
@@ -285,7 +285,7 @@
           "md5": "532df1beedee8c7e5f5ae1e05483f93b",
           "sha256": "61575ec9ae636157637cc288f8506b1ddae4b35f6cc4c32ce459d6a33b17fab7"
         },
-        "downloads": 5112,
+        "downloads": -1,
         "filename": "Fiona-0.8.tar.gz",
         "has_sig": false,
         "md5_digest": "532df1beedee8c7e5f5ae1e05483f93b",
@@ -303,7 +303,7 @@
           "md5": "515ae67e2bc3266545883703319eea3e",
           "sha256": "1d1e63defed1b370d5931cfb8be2e87019b68b7c3c9b300b4432bca09fe8c2ef"
         },
-        "downloads": 3382,
+        "downloads": -1,
         "filename": "Fiona-0.9.tar.gz",
         "has_sig": false,
         "md5_digest": "515ae67e2bc3266545883703319eea3e",
@@ -321,7 +321,7 @@
           "md5": "24c75832743481f797295d66133846db",
           "sha256": "50e2700a7e8b21248a4de3032ab1158ff335300ed492c269e1addd1e232e0d9f"
         },
-        "downloads": 3355,
+        "downloads": -1,
         "filename": "Fiona-0.9.1.tar.gz",
         "has_sig": false,
         "md5_digest": "24c75832743481f797295d66133846db",
@@ -339,7 +339,7 @@
           "md5": "2b3279d5239c7770c51239317ef23fee",
           "sha256": "306159d0d3b0c1f43dcd51884f9836def3a7c4864fcfd9d6f363f62846ec7973"
         },
-        "downloads": 3378,
+        "downloads": -1,
         "filename": "Fiona-1.0.tar.gz",
         "has_sig": false,
         "md5_digest": "2b3279d5239c7770c51239317ef23fee",
@@ -357,7 +357,7 @@
           "md5": "15e07a0ffbfb70c0098a5617b5f23a75",
           "sha256": "aa77a0b4315b7081650e6f9d87ab52b24dcd54f68963e5e26f7d4d26516c6e3f"
         },
-        "downloads": 3236,
+        "downloads": -1,
         "filename": "Fiona-1.0.1.tar.gz",
         "has_sig": false,
         "md5_digest": "15e07a0ffbfb70c0098a5617b5f23a75",
@@ -375,7 +375,7 @@
           "md5": "9752d7df2e753b1aaf5c43a49616674e",
           "sha256": "4246fb47a2b33bdfa9603de1ec0a6ea1e6b4398d8c92465e5ac17031841348f9"
         },
-        "downloads": 6970,
+        "downloads": -1,
         "filename": "Fiona-1.0.2.tar.gz",
         "has_sig": false,
         "md5_digest": "9752d7df2e753b1aaf5c43a49616674e",
@@ -393,7 +393,7 @@
           "md5": "65b344759dbefb5fa8f9294731fd2cfe",
           "sha256": "85686561cbe3a5a8d46f4f3dc7f5f716bfdfef4558530b4fe9250914c67648d2"
         },
-        "downloads": 2522,
+        "downloads": -1,
         "filename": "Fiona-1.0.3.tar.gz",
         "has_sig": false,
         "md5_digest": "65b344759dbefb5fa8f9294731fd2cfe",
@@ -411,7 +411,7 @@
           "md5": "6ac59b24dc35eb44a3ea6fb252582007",
           "sha256": "b330493c9a8088923c85f0a1ef4429c50693eeab7b474dd762ab6927ba369362"
         },
-        "downloads": 2652,
+        "downloads": -1,
         "filename": "Fiona-1.1.tar.gz",
         "has_sig": false,
         "md5_digest": "6ac59b24dc35eb44a3ea6fb252582007",
@@ -429,7 +429,7 @@
           "md5": "68b535dbf8ae00a26ce9d947be8a1659",
           "sha256": "8274d60559ca0ba5142fe83fb798c732acc589175503b62425f0a135ee04abed"
         },
-        "downloads": 3124,
+        "downloads": -1,
         "filename": "Fiona-1.1.1.tar.gz",
         "has_sig": false,
         "md5_digest": "68b535dbf8ae00a26ce9d947be8a1659",
@@ -447,7 +447,7 @@
           "md5": "553dfb7fc188232738ce1627e9ccb8a7",
           "sha256": "8679fadbb2ce5fc76d9007d7c285225e4ec2d3c6ddd6e39c836a525be1f96369"
         },
-        "downloads": 3774,
+        "downloads": -1,
         "filename": "Fiona-1.1.2.tar.gz",
         "has_sig": false,
         "md5_digest": "553dfb7fc188232738ce1627e9ccb8a7",
@@ -465,7 +465,7 @@
           "md5": "dd240877cd9a2d93d2ce51dfb4e5c46d",
           "sha256": "d33b2c5a1816211627f6bdbd736cae1ac725ba4b4aa04d6639f63419e6e16942"
         },
-        "downloads": 2869,
+        "downloads": -1,
         "filename": "Fiona-1.1.3.tar.gz",
         "has_sig": false,
         "md5_digest": "dd240877cd9a2d93d2ce51dfb4e5c46d",
@@ -483,7 +483,7 @@
           "md5": "441fc924b635ccde2d581038333ad4f2",
           "sha256": "3b2610a6f1d1c37f1947554f7d28c6523bdc74e314640a99c6e86bf78bcf0b44"
         },
-        "downloads": 23797,
+        "downloads": -1,
         "filename": "Fiona-1.1.4.tar.gz",
         "has_sig": false,
         "md5_digest": "441fc924b635ccde2d581038333ad4f2",
@@ -501,7 +501,7 @@
           "md5": "66c74809b2e8c7c4b3db4dade38b7d24",
           "sha256": "4e58849c9d085bbf5dd6a4daf362fc94c538b53a091b69dad6bb7da2ea74a49b"
         },
-        "downloads": 1995,
+        "downloads": -1,
         "filename": "Fiona-1.1.5-cp27-none-macosx_10_9_x86_64.whl",
         "has_sig": false,
         "md5_digest": "66c74809b2e8c7c4b3db4dade38b7d24",
@@ -517,7 +517,7 @@
           "md5": "556b3500fdbbaadac6f5c70400f096c7",
           "sha256": "ebebc9b84ffd8ed2c571387b4d5ec39e9455dade9d399d2888ad19ac0d94e9d5"
         },
-        "downloads": 1846,
+        "downloads": -1,
         "filename": "Fiona-1.1.5-cp34-cp34m-macosx_10_9_x86_64.whl",
         "has_sig": false,
         "md5_digest": "556b3500fdbbaadac6f5c70400f096c7",
@@ -533,7 +533,7 @@
           "md5": "3b91554cbf20f57c789f92c7962387a0",
           "sha256": "be0113f47c46cb44656b8e431e31ed37f1a875af0dc9081c92c4dcf5916f6670"
         },
-        "downloads": 14191,
+        "downloads": -1,
         "filename": "Fiona-1.1.5.tar.gz",
         "has_sig": false,
         "md5_digest": "3b91554cbf20f57c789f92c7962387a0",
@@ -551,7 +551,7 @@
           "md5": "ddd5e9af3efb9d0f0f96843bce6ee536",
           "sha256": "eb7a1e9c12b0b6187f380d0799f98847ef8912741fd18ebda03fd8160fbe692c"
         },
-        "downloads": 1974,
+        "downloads": -1,
         "filename": "Fiona-1.1.6-cp27-none-macosx_10_9_x86_64.whl",
         "has_sig": false,
         "md5_digest": "ddd5e9af3efb9d0f0f96843bce6ee536",
@@ -567,7 +567,7 @@
           "md5": "6be18966cd8f684feb51bd1de75aea51",
           "sha256": "9ee44889347534cef0c5ac30232610c6dd5c352c08b16f17761e8116eec73fbb"
         },
-        "downloads": 1819,
+        "downloads": -1,
         "filename": "Fiona-1.1.6-cp34-cp34m-macosx_10_9_x86_64.whl",
         "has_sig": false,
         "md5_digest": "6be18966cd8f684feb51bd1de75aea51",
@@ -583,7 +583,7 @@
           "md5": "4db4fb720977b1a974be4899705b43d2",
           "sha256": "9ba0d66ce0e30783904bea629a647a56cc8c47f146ec789aa6b1df1b6827156e"
         },
-        "downloads": 4450,
+        "downloads": -1,
         "filename": "Fiona-1.1.6.tar.gz",
         "has_sig": false,
         "md5_digest": "4db4fb720977b1a974be4899705b43d2",
@@ -601,7 +601,7 @@
           "md5": "3a157b7316cc4bac499070ba29617c3b",
           "sha256": "58b08f9b77f11769ab9912f5939c36990a19fb9ba88e6de3b66ae9a4d8d34487"
         },
-        "downloads": 1722,
+        "downloads": -1,
         "filename": "Fiona-1.2.0-cp27-none-macosx_10_9_x86_64.whl",
         "has_sig": false,
         "md5_digest": "3a157b7316cc4bac499070ba29617c3b",
@@ -617,7 +617,7 @@
           "md5": "3d834a145bfc3aa6ec15e1e52765a8d5",
           "sha256": "77cc2e819b9bc427672c652f1b2b23740743b76129db60c209bdc1c091a2f38e"
         },
-        "downloads": 1702,
+        "downloads": -1,
         "filename": "Fiona-1.2.0-cp34-cp34m-macosx_10_9_x86_64.whl",
         "has_sig": false,
         "md5_digest": "3d834a145bfc3aa6ec15e1e52765a8d5",
@@ -633,7 +633,7 @@
           "md5": "b35b1ab72ae04ee0ac934d11ef81988e",
           "sha256": "f796a2bede13ee6aeece107c37fa6e8af462f365c83203c71aa6f32dd5d82fdc"
         },
-        "downloads": 2633,
+        "downloads": -1,
         "filename": "Fiona-1.2.0.tar.gz",
         "has_sig": false,
         "md5_digest": "b35b1ab72ae04ee0ac934d11ef81988e",
@@ -651,7 +651,7 @@
           "md5": "8161efc214413cd31d25e016e29ccaf9",
           "sha256": "40a788b4ea310c623505b055116ae5d679a9ebcb6b1971b30f79e955202b961d"
         },
-        "downloads": 1946,
+        "downloads": -1,
         "filename": "Fiona-1.3.0.tar.gz",
         "has_sig": false,
         "md5_digest": "8161efc214413cd31d25e016e29ccaf9",
@@ -669,7 +669,7 @@
           "md5": "5ab7064aa650b6a7d796d71676b7bdf7",
           "sha256": "4716bdba4d0901ff976df42ebe02fb4b3e04afa6a5086c0dc2a940c2ddf5225f"
         },
-        "downloads": 2089,
+        "downloads": -1,
         "filename": "Fiona-1.4.0.tar.gz",
         "has_sig": false,
         "md5_digest": "5ab7064aa650b6a7d796d71676b7bdf7",
@@ -687,7 +687,7 @@
           "md5": "91fc547c61ab3b196c11e6797ab2a2be",
           "sha256": "ca70e563c2eadf791d744084cb38d57ba6f6ece00b62857d3b1dca3f63d1fd29"
         },
-        "downloads": 1986,
+        "downloads": -1,
         "filename": "Fiona-1.4.1.tar.gz",
         "has_sig": false,
         "md5_digest": "91fc547c61ab3b196c11e6797ab2a2be",
@@ -705,7 +705,7 @@
           "md5": "d58272a3508b2b15c7df83b1d745b5c4",
           "sha256": "1ae39bd40509bbd53bfdb667389fe365c2776af5ee595df968b2fc2c22b42620"
         },
-        "downloads": 2005,
+        "downloads": -1,
         "filename": "Fiona-1.4.2.tar.gz",
         "has_sig": false,
         "md5_digest": "d58272a3508b2b15c7df83b1d745b5c4",
@@ -723,7 +723,7 @@
           "md5": "8b5c300ce711a0bfc95a75475a33acc1",
           "sha256": "56c6ebeb565a84a826c5e3927b97b33cfdd936c8980cfe969052ce86f45c4547"
         },
-        "downloads": 1791,
+        "downloads": -1,
         "filename": "Fiona-1.4.3.tar.gz",
         "has_sig": false,
         "md5_digest": "8b5c300ce711a0bfc95a75475a33acc1",
@@ -741,7 +741,7 @@
           "md5": "ca499e0b40c1ecbee7dd9ee9129d1f07",
           "sha256": "a2d5514d22d329d58ffa219f0c27e5b314e47e73f22af80a62733e56d52e143a"
         },
-        "downloads": 2030,
+        "downloads": -1,
         "filename": "Fiona-1.4.4.tar.gz",
         "has_sig": false,
         "md5_digest": "ca499e0b40c1ecbee7dd9ee9129d1f07",
@@ -759,7 +759,7 @@
           "md5": "e1c1285b775020db31a49564061ad90c",
           "sha256": "8ca07e56efad141a211b3ad8704b49359e4a6b36f264293e9bb5f7c041ca65de"
         },
-        "downloads": 1811,
+        "downloads": -1,
         "filename": "Fiona-1.4.5.tar.gz",
         "has_sig": false,
         "md5_digest": "e1c1285b775020db31a49564061ad90c",
@@ -777,7 +777,7 @@
           "md5": "92d2b40c389af5d1f101b37d56d62dde",
           "sha256": "f74b909d9962e4b4c7f6c98a533c138be30e562c162b0859c78eb3c8787d8936"
         },
-        "downloads": 1998,
+        "downloads": -1,
         "filename": "Fiona-1.4.6.tar.gz",
         "has_sig": false,
         "md5_digest": "92d2b40c389af5d1f101b37d56d62dde",
@@ -795,7 +795,7 @@
           "md5": "c81a5f1c3108c848768edc36ec9d7635",
           "sha256": "0bbb1742edc0ef8b7bacc26586216614c1352fb6f7ef0f97ae0d048f982251f9"
         },
-        "downloads": 1802,
+        "downloads": -1,
         "filename": "Fiona-1.4.7.tar.gz",
         "has_sig": false,
         "md5_digest": "c81a5f1c3108c848768edc36ec9d7635",
@@ -813,7 +813,7 @@
           "md5": "f1b8dc4653ed256502730c3cfb0c9588",
           "sha256": "379cbe19ea767f827e3d6af27dda30f5010e76937d88c2de1262cd0cc8e1d8cd"
         },
-        "downloads": 1354,
+        "downloads": -1,
         "filename": "Fiona-1.4.8-cp27-none-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
         "has_sig": false,
         "md5_digest": "f1b8dc4653ed256502730c3cfb0c9588",
@@ -829,7 +829,7 @@
           "md5": "955937db8b267a507bcda0c8562567f8",
           "sha256": "e084d5f63e20a626420768f19bf691a724794583cf87dd569d196919fa18894e"
         },
-        "downloads": 1304,
+        "downloads": -1,
         "filename": "Fiona-1.4.8-cp34-cp34m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
         "has_sig": false,
         "md5_digest": "955937db8b267a507bcda0c8562567f8",
@@ -845,7 +845,7 @@
           "md5": "0fa065f5420e6901570ef87cea3cba35",
           "sha256": "9c1f3021119c01b07ee3020c33e2dc4c38889bfc0676bc9232159e69029216a7"
         },
-        "downloads": 6206,
+        "downloads": -1,
         "filename": "Fiona-1.4.8.tar.gz",
         "has_sig": false,
         "md5_digest": "0fa065f5420e6901570ef87cea3cba35",
@@ -863,7 +863,7 @@
           "md5": "1ef8f772a71ed4d370a2a2b71050cfed",
           "sha256": "7d0e5cb02559de71a631097cc32e53e2746133b0331a2a08f65de7cc3f39007c"
         },
-        "downloads": 1368,
+        "downloads": -1,
         "filename": "Fiona-1.5.0-cp27-none-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
         "has_sig": false,
         "md5_digest": "1ef8f772a71ed4d370a2a2b71050cfed",
@@ -879,7 +879,7 @@
           "md5": "015a82aa454c3e1c8927feb1e5b182a6",
           "sha256": "759f7a97651e89d24ee36c8b526baabf999b1329fd141bc254a48055b303e88d"
         },
-        "downloads": 1263,
+        "downloads": -1,
         "filename": "Fiona-1.5.0-cp34-cp34m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
         "has_sig": false,
         "md5_digest": "015a82aa454c3e1c8927feb1e5b182a6",
@@ -895,7 +895,7 @@
           "md5": "3bc50832321aad0df33d9efba622b6aa",
           "sha256": "600540bc2dc5fed258f64090cde48a552f377feee39974a18224441e5b3aa23f"
         },
-        "downloads": 3533,
+        "downloads": -1,
         "filename": "Fiona-1.5.0.tar.gz",
         "has_sig": false,
         "md5_digest": "3bc50832321aad0df33d9efba622b6aa",
@@ -913,7 +913,7 @@
           "md5": "7560f90cebfdf1599a3946d1cd8c68ca",
           "sha256": "e355e46b2cd01530326436281ed9be808e61ae4edd90ff314e8d454d14cad8c9"
         },
-        "downloads": 2180,
+        "downloads": -1,
         "filename": "Fiona-1.5.1-cp27-none-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
         "has_sig": false,
         "md5_digest": "7560f90cebfdf1599a3946d1cd8c68ca",
@@ -929,7 +929,7 @@
           "md5": "a01d288bf07f84c46e5d777ef4c693ab",
           "sha256": "8b7d830a87b9a0a83f8c420f70bb45a399f0c606c0b7fcdabd3ddcde0b09812a"
         },
-        "downloads": 1383,
+        "downloads": -1,
         "filename": "Fiona-1.5.1-cp34-cp34m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
         "has_sig": false,
         "md5_digest": "a01d288bf07f84c46e5d777ef4c693ab",
@@ -945,7 +945,7 @@
           "md5": "e976183d253c33c0c66d67753c52b1a7",
           "sha256": "2e2469190107dc671b4aa05d5b8bed5c01ffeb9de79525c91129bad76915e095"
         },
-        "downloads": 17788,
+        "downloads": -1,
         "filename": "Fiona-1.5.1.tar.gz",
         "has_sig": false,
         "md5_digest": "e976183d253c33c0c66d67753c52b1a7",
@@ -963,7 +963,7 @@
           "md5": "8c0896dbc72446e3919bec20dfae69c8",
           "sha256": "9817ce88c95937fc707be68b03b6a31cc98df25711cf813cf730cad5cfef4e88"
         },
-        "downloads": 2443,
+        "downloads": -1,
         "filename": "Fiona-1.6.0-cp27-none-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
         "has_sig": false,
         "md5_digest": "8c0896dbc72446e3919bec20dfae69c8",
@@ -979,7 +979,7 @@
           "md5": "fcc5e08dd75ac6e7b004fb77c888a0c8",
           "sha256": "b51e95687da6120dd1a5f5b02d8bea99caa9ef81d07c748275a5b55a9dadcf71"
         },
-        "downloads": 981,
+        "downloads": -1,
         "filename": "Fiona-1.6.0-cp34-cp34m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
         "has_sig": false,
         "md5_digest": "fcc5e08dd75ac6e7b004fb77c888a0c8",
@@ -995,7 +995,7 @@
           "md5": "40f945898c550721db715f69658cf7e9",
           "sha256": "feca46c640b910a4e7ad03a1e5c969606dff9db0ccee0555197c6fb6d1615f6e"
         },
-        "downloads": 3184,
+        "downloads": -1,
         "filename": "Fiona-1.6.0.tar.gz",
         "has_sig": false,
         "md5_digest": "40f945898c550721db715f69658cf7e9",
@@ -1013,7 +1013,7 @@
           "md5": "b5e8c46dbcd0dd97e3c5e711d1678076",
           "sha256": "c0d9e9fc567d3a38ffc6754c86494d8155ce08fa40f83a1de6037d863ffe47ef"
         },
-        "downloads": 1286,
+        "downloads": -1,
         "filename": "Fiona-1.6.1-cp27-none-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
         "has_sig": false,
         "md5_digest": "b5e8c46dbcd0dd97e3c5e711d1678076",
@@ -1029,7 +1029,7 @@
           "md5": "2f6b0d6a2695d54498ad3f57db79bec5",
           "sha256": "20f209b0a31507b03265107e3687272af044836c637cc372075554e6a6b8a73d"
         },
-        "downloads": 911,
+        "downloads": -1,
         "filename": "Fiona-1.6.1-cp34-cp34m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
         "has_sig": false,
         "md5_digest": "2f6b0d6a2695d54498ad3f57db79bec5",
@@ -1045,7 +1045,7 @@
           "md5": "1a8ff1a1b706af644b39ff77cab5b1c2",
           "sha256": "ac05e4937a8c320f301fcf3192b934df95d8f50e0755acd0a7e0f1d3a8f32993"
         },
-        "downloads": 4733,
+        "downloads": -1,
         "filename": "Fiona-1.6.1.tar.gz",
         "has_sig": false,
         "md5_digest": "1a8ff1a1b706af644b39ff77cab5b1c2",
@@ -1063,7 +1063,7 @@
           "md5": "c2af794870435fdd8a4e69753f0674b7",
           "sha256": "53b5125430c99e662cf68b54c56319497dfcdeddaeb40586912dd1d8d058abe7"
         },
-        "downloads": 2050,
+        "downloads": -1,
         "filename": "Fiona-1.6.2-cp27-none-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
         "has_sig": false,
         "md5_digest": "c2af794870435fdd8a4e69753f0674b7",
@@ -1079,7 +1079,7 @@
           "md5": "e90b0fc0e8b23aa54ae087106bfc545c",
           "sha256": "1a0f8d0aba39ec490555c5d1b8faea044a0031d4819552007a878381790333f5"
         },
-        "downloads": 865,
+        "downloads": -1,
         "filename": "Fiona-1.6.2-cp34-cp34m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
         "has_sig": false,
         "md5_digest": "e90b0fc0e8b23aa54ae087106bfc545c",
@@ -1095,7 +1095,7 @@
           "md5": "871674792aa53004c5af5c8bb45e399f",
           "sha256": "e13ca226ac2df52a1ecf7b23c8c2e6ab2ec167542ce8802a0874674336aa9a28"
         },
-        "downloads": 12746,
+        "downloads": -1,
         "filename": "Fiona-1.6.2.tar.gz",
         "has_sig": false,
         "md5_digest": "871674792aa53004c5af5c8bb45e399f",
@@ -1113,7 +1113,7 @@
           "md5": "b1b901a11bcae57d9547fae4db83edc5",
           "sha256": "39c5758e6916a4344318a5bdb7a15a3bc5313b8b969e0d92b88f5a2a23c2c89e"
         },
-        "downloads": 909,
+        "downloads": -1,
         "filename": "Fiona-1.6.3-cp27-none-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
         "has_sig": false,
         "md5_digest": "b1b901a11bcae57d9547fae4db83edc5",
@@ -1129,7 +1129,7 @@
           "md5": "f5ad69a91225da932d568ff58c94c901",
           "sha256": "30322f1b58a5d54a60e58f7a6875c7abcdb34b8ff2e7ea4de122cf9f40a64817"
         },
-        "downloads": 504,
+        "downloads": -1,
         "filename": "Fiona-1.6.3-cp34-cp34m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
         "has_sig": false,
         "md5_digest": "f5ad69a91225da932d568ff58c94c901",
@@ -1145,7 +1145,7 @@
           "md5": "45635061b45c45ce4d5ed00b4cc81228",
           "sha256": "5cb86e59346680d46a4528cfe827590ea8fda4f403c6cee2f73e0536951ad938"
         },
-        "downloads": 176,
+        "downloads": -1,
         "filename": "Fiona-1.6.3-cp35-cp35m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
         "has_sig": false,
         "md5_digest": "45635061b45c45ce4d5ed00b4cc81228",
@@ -1161,7 +1161,7 @@
           "md5": "f6b70e1a30fc8db597c360e375d186de",
           "sha256": "313dfff022e7e1ffeffe678ca26be0b833e988738dc2fd9bc1f7d9978c0bb7e7"
         },
-        "downloads": 8303,
+        "downloads": -1,
         "filename": "Fiona-1.6.3.tar.gz",
         "has_sig": false,
         "md5_digest": "f6b70e1a30fc8db597c360e375d186de",
@@ -1179,7 +1179,7 @@
           "md5": "dece6ead1181188d6239012cf5933a12",
           "sha256": "ba7d5a91d55105521d4ec5d2d610375a16fac9c13291c6107b3c738e05d5ef19"
         },
-        "downloads": 188,
+        "downloads": -1,
         "filename": "Fiona-1.6.3.post1-cp27-cp27m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
         "has_sig": false,
         "md5_digest": "dece6ead1181188d6239012cf5933a12",
@@ -1195,7 +1195,7 @@
           "md5": "59c6ffdb88f5329d91dafd71963f7af2",
           "sha256": "56e5058af56eaa9010f8e3a4746a9b6e0246eada95a8b9399d6077106310a61c"
         },
-        "downloads": 173,
+        "downloads": -1,
         "filename": "Fiona-1.6.3.post1-cp34-cp34m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
         "has_sig": false,
         "md5_digest": "59c6ffdb88f5329d91dafd71963f7af2",
@@ -1211,7 +1211,7 @@
           "md5": "bd72aa79ff4e4e580461f1b07ce228dd",
           "sha256": "f40a79190f2734a857922d0736c6e50e6f98500ec873e4768daa4bb8cc833eb0"
         },
-        "downloads": 173,
+        "downloads": -1,
         "filename": "Fiona-1.6.3.post1-cp35-cp35m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
         "has_sig": false,
         "md5_digest": "bd72aa79ff4e4e580461f1b07ce228dd",
@@ -1227,7 +1227,7 @@
           "md5": "f68a470455f92cb45d56e4a549a2161c",
           "sha256": "20cffed8d03f697b316265099dbe1d7b5cddf8cfe6b313b2f4a3f7a92f1c9386"
         },
-        "downloads": 238,
+        "downloads": -1,
         "filename": "Fiona-1.6.3.post1.tar.gz",
         "has_sig": false,
         "md5_digest": "f68a470455f92cb45d56e4a549a2161c",
@@ -1245,7 +1245,7 @@
           "md5": "b4b917eaf311c53ac3241cc17954d14c",
           "sha256": "663ebe82bd502ec943b15d87ddbc1a421bbc5b087137fe295315d1ce8f9f1803"
         },
-        "downloads": 244,
+        "downloads": -1,
         "filename": "Fiona-1.6.4-cp27-cp27m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
         "has_sig": false,
         "md5_digest": "b4b917eaf311c53ac3241cc17954d14c",
@@ -1261,7 +1261,7 @@
           "md5": "d20b023ee329ff954c6625f00981edc5",
           "sha256": "63a8d890355128718ecd61d64dc40af5752b05429a823fbd86310aedbced9578"
         },
-        "downloads": 269,
+        "downloads": -1,
         "filename": "Fiona-1.6.4-cp34-cp34m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
         "has_sig": false,
         "md5_digest": "d20b023ee329ff954c6625f00981edc5",
@@ -1277,7 +1277,7 @@
           "md5": "19d26bb38c14ebaa37f6ecbfba101f48",
           "sha256": "4491063441b4ac4b2aae4b8558c36d619f089306fb40a028fb1f7dad862b881f"
         },
-        "downloads": 247,
+        "downloads": -1,
         "filename": "Fiona-1.6.4-cp35-cp35m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
         "has_sig": false,
         "md5_digest": "19d26bb38c14ebaa37f6ecbfba101f48",
@@ -1293,7 +1293,7 @@
           "md5": "c2efaee28048021cd1421006e7b58c2e",
           "sha256": "98b8dd72779af843f25e445e56a463dd1521ec0ef139e8973a9a60ac2c2958ae"
         },
-        "downloads": 6375,
+        "downloads": -1,
         "filename": "Fiona-1.6.4.tar.gz",
         "has_sig": false,
         "md5_digest": "c2efaee28048021cd1421006e7b58c2e",
@@ -1311,7 +1311,7 @@
           "md5": "dd09e8f7bd91420390201bf22db8b943",
           "sha256": "2af0cff7afba3092d0e0bdd4b5521098dc3220361a89777b3ab64c591adf8e66"
         },
-        "downloads": 196,
+        "downloads": -1,
         "filename": "Fiona-1.7.0-cp27-cp27m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
         "has_sig": false,
         "md5_digest": "dd09e8f7bd91420390201bf22db8b943",
@@ -1327,7 +1327,7 @@
           "md5": "fc0b56cd020ad98356459e0d297b8d10",
           "sha256": "4eaea609cb602504b0bb9f6726b121f4e419cc9cdb943dbf5b0e6abcdf7b98f3"
         },
-        "downloads": 177,
+        "downloads": -1,
         "filename": "Fiona-1.7.0-cp34-cp34m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
         "has_sig": false,
         "md5_digest": "fc0b56cd020ad98356459e0d297b8d10",
@@ -1343,7 +1343,7 @@
           "md5": "8fa6c619b6d1aabefc9920b6e2a0def1",
           "sha256": "ebe880922d89cac494b1e04e05d1176fd2febb202e65b834e354496623a10b7b"
         },
-        "downloads": 183,
+        "downloads": -1,
         "filename": "Fiona-1.7.0-cp35-cp35m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
         "has_sig": false,
         "md5_digest": "8fa6c619b6d1aabefc9920b6e2a0def1",
@@ -1359,7 +1359,7 @@
           "md5": "d513e5f0a806555234cd6b4f3d5f37f4",
           "sha256": "5fa21d56264e1ac6ff51d54aca0751c2ad1a8cb43e1d31050109079158f45424"
         },
-        "downloads": 268,
+        "downloads": -1,
         "filename": "Fiona-1.7.0.tar.gz",
         "has_sig": false,
         "md5_digest": "d513e5f0a806555234cd6b4f3d5f37f4",
@@ -1377,7 +1377,7 @@
           "md5": "4eebb535be045d53ca271de22954212d",
           "sha256": "c0df721feb4e20c94462412ca641b6e5229844c9ab46e6e5eb80399ac535648b"
         },
-        "downloads": 204,
+        "downloads": -1,
         "filename": "Fiona-1.7.0.post1-cp27-cp27m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
         "has_sig": false,
         "md5_digest": "4eebb535be045d53ca271de22954212d",
@@ -1395,7 +1395,7 @@
           "md5": "afbba074c7c077aa04899d33f94bb4df",
           "sha256": "20ef6eed20cb329e53c00211b7fb36434d7dda4f7bdc90ee4c5d26aca6e491cb"
         },
-        "downloads": 649,
+        "downloads": -1,
         "filename": "Fiona-1.7.0.post2-cp27-cp27m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
         "has_sig": false,
         "md5_digest": "afbba074c7c077aa04899d33f94bb4df",
@@ -1411,7 +1411,7 @@
           "md5": "e211f33c95b58d833d7d6ae60d6a5f1c",
           "sha256": "465225dd2c5c0b98f334788a96c0fb0d51dd771ca1b49fac122459340f522486"
         },
-        "downloads": 273,
+        "downloads": -1,
         "filename": "Fiona-1.7.0.post2-cp34-cp34m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
         "has_sig": false,
         "md5_digest": "e211f33c95b58d833d7d6ae60d6a5f1c",
@@ -1427,7 +1427,7 @@
           "md5": "24aba4f66bbf97169093ed3f939f06f5",
           "sha256": "2f13af7b64308faed8dcebb3a4c03bc442fd28ec78aab62609e51ba156282552"
         },
-        "downloads": 413,
+        "downloads": -1,
         "filename": "Fiona-1.7.0.post2-cp35-cp35m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
         "has_sig": false,
         "md5_digest": "24aba4f66bbf97169093ed3f939f06f5",
@@ -1443,7 +1443,7 @@
           "md5": "e286a765cf1053e1c08b202928ee9312",
           "sha256": "cb1ec737457a2fee2ea6f524e5c03a49aa3f9f0c8531961fc5f2794db3406120"
         },
-        "downloads": 8342,
+        "downloads": -1,
         "filename": "Fiona-1.7.0.post2.tar.gz",
         "has_sig": false,
         "md5_digest": "e286a765cf1053e1c08b202928ee9312",
@@ -1461,7 +1461,7 @@
           "md5": "f8372fd51b963d0b14ff26bcef8ad389",
           "sha256": "0db46e726b37f9fbd251d6324083e0e6257db62676ed94253d1db31c08c604cd"
         },
-        "downloads": 148,
+        "downloads": -1,
         "filename": "Fiona-1.7.1-cp27-cp27m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "f8372fd51b963d0b14ff26bcef8ad389",
@@ -1477,7 +1477,7 @@
           "md5": "45dcedafb731f09f9f5fce41e18b0acc",
           "sha256": "13fea890a0b619d0f9b29f5949b69a5048fb9537ccc3583ec54ba31fcf5476fd"
         },
-        "downloads": 92,
+        "downloads": -1,
         "filename": "Fiona-1.7.1-cp27-cp27m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "45dcedafb731f09f9f5fce41e18b0acc",
@@ -1493,7 +1493,7 @@
           "md5": "69132cd429e205ede88fc6d187fef31e",
           "sha256": "e57eb9ab39c891da1d7d8c6fd2c6b2d65023364439c67a6183759cfc74fbe456"
         },
-        "downloads": 1384,
+        "downloads": -1,
         "filename": "Fiona-1.7.1-cp27-cp27mu-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "69132cd429e205ede88fc6d187fef31e",
@@ -1509,7 +1509,7 @@
           "md5": "4d7b00d6fd0a62a1964c93d1f6c4c45d",
           "sha256": "90b84951a7f7da578b04e81a9503471aef3152e1a8882bcdd79148d36c6583a3"
         },
-        "downloads": 76,
+        "downloads": -1,
         "filename": "Fiona-1.7.1-cp33-cp33m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "4d7b00d6fd0a62a1964c93d1f6c4c45d",
@@ -1525,7 +1525,7 @@
           "md5": "0474d2274c7a55e9a4b53202576e3155",
           "sha256": "d451a8dee0746e6b4d28891e59d0f050dc25369f986779f001c79e4bde32beef"
         },
-        "downloads": 83,
+        "downloads": -1,
         "filename": "Fiona-1.7.1-cp34-cp34m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "0474d2274c7a55e9a4b53202576e3155",
@@ -1541,7 +1541,7 @@
           "md5": "05e7632d3c5bbdbfa89d0c8b2c947a09",
           "sha256": "e0555c5d0c431f8dd0232de4c466643fed08b2c43cc13f27bdcf01dc4c489982"
         },
-        "downloads": 116,
+        "downloads": -1,
         "filename": "Fiona-1.7.1-cp34-cp34m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "05e7632d3c5bbdbfa89d0c8b2c947a09",
@@ -1557,7 +1557,7 @@
           "md5": "f87b4d36e02ba20aa5d3110fa2aa66fb",
           "sha256": "0cc11ba3b5e383f6271fcb560310eff150c249d7d2704434f417eea251c670c2"
         },
-        "downloads": 142,
+        "downloads": -1,
         "filename": "Fiona-1.7.1-cp35-cp35m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "f87b4d36e02ba20aa5d3110fa2aa66fb",
@@ -1573,7 +1573,7 @@
           "md5": "6f67d03b221cd732db9661d2095076f0",
           "sha256": "c129563cd66082d31e9cbdabb0c6be93a6d313cb72049625333a7aaa774e245a"
         },
-        "downloads": 749,
+        "downloads": -1,
         "filename": "Fiona-1.7.1-cp35-cp35m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "6f67d03b221cd732db9661d2095076f0",
@@ -1589,7 +1589,7 @@
           "md5": "157bdbc5297cfc4e19188fa590ce00c9",
           "sha256": "9277ddb24f340c22e12e34557184f82b956aababbeae7cfe4764d3cbc3adbdce"
         },
-        "downloads": 1033,
+        "downloads": -1,
         "filename": "Fiona-1.7.1.tar.gz",
         "has_sig": false,
         "md5_digest": "157bdbc5297cfc4e19188fa590ce00c9",
@@ -1607,7 +1607,7 @@
           "md5": "133640acb49fe90d00bcc8c690ef1d71",
           "sha256": "c5a54036cbe36013ffbc791447e8870a59c3cb54d7d6e39ecf3d9a5faf9cf78b"
         },
-        "downloads": 510,
+        "downloads": -1,
         "filename": "Fiona-1.7.1.post1-cp27-cp27m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "133640acb49fe90d00bcc8c690ef1d71",
@@ -1623,7 +1623,7 @@
           "md5": "0fef5597cb3125c00d6e1288a030b644",
           "sha256": "04eaabf7b7fde06565c3c115002dec446db00858c4e79712cb52425c155a32d9"
         },
-        "downloads": 344,
+        "downloads": -1,
         "filename": "Fiona-1.7.1.post1-cp27-cp27m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "0fef5597cb3125c00d6e1288a030b644",
@@ -1639,7 +1639,7 @@
           "md5": "41448dfa0f26343bc218a1e79b235a01",
           "sha256": "c757ba597910118b4e9926549d4b53006ad4755ca087752de0d0fe1ae49d5ded"
         },
-        "downloads": 1884,
+        "downloads": -1,
         "filename": "Fiona-1.7.1.post1-cp27-cp27mu-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "41448dfa0f26343bc218a1e79b235a01",
@@ -1655,7 +1655,7 @@
           "md5": "28fe5d03ae530f13bb72ad8847dd3a73",
           "sha256": "b96e4d0338aa0f4816cf4b4c238b68b44d4e71befa3786d6b27ce1d386925e1c"
         },
-        "downloads": 257,
+        "downloads": -1,
         "filename": "Fiona-1.7.1.post1-cp33-cp33m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "28fe5d03ae530f13bb72ad8847dd3a73",
@@ -1671,7 +1671,7 @@
           "md5": "a3158b03629ef411e04dba7060b7e8f9",
           "sha256": "6f878a8ea85500484ad1684b2cd1f935fa0480d148ab4be8d2f49aa19c45c5c8"
         },
-        "downloads": 254,
+        "downloads": -1,
         "filename": "Fiona-1.7.1.post1-cp34-cp34m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "a3158b03629ef411e04dba7060b7e8f9",
@@ -1687,7 +1687,7 @@
           "md5": "1c3deb6a41733f2c14afee4a7479df0a",
           "sha256": "09712997507b00e150cd79f17392358a6415a8eb6cabc922088d0e73c416a4ad"
         },
-        "downloads": 287,
+        "downloads": -1,
         "filename": "Fiona-1.7.1.post1-cp34-cp34m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "1c3deb6a41733f2c14afee4a7479df0a",
@@ -1703,7 +1703,7 @@
           "md5": "23b2fcf3e1df048caff473b98b0508bb",
           "sha256": "e5e8c2b4f9e46e9de91f461e7b937afe0021b41e60858f5e7e06af47a83e3302"
         },
-        "downloads": 331,
+        "downloads": -1,
         "filename": "Fiona-1.7.1.post1-cp35-cp35m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "23b2fcf3e1df048caff473b98b0508bb",
@@ -1719,7 +1719,7 @@
           "md5": "3a78261a50d3664a7767ce5591346f65",
           "sha256": "a6d219b973d4e850f98ca4dbb744e66f15a1abfa66bd1c41cc23c2bbc49682e4"
         },
-        "downloads": 396,
+        "downloads": -1,
         "filename": "Fiona-1.7.1.post1-cp35-cp35m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "3a78261a50d3664a7767ce5591346f65",
@@ -1735,7 +1735,7 @@
           "md5": "8eb127c5b29cade07e7955530115fc81",
           "sha256": "41b651186e07d577a91e1d22c3f031c1cf6b623014ed3a1dc81024b083957e86"
         },
-        "downloads": 272,
+        "downloads": -1,
         "filename": "Fiona-1.7.1.post1-cp36-cp36m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "8eb127c5b29cade07e7955530115fc81",
@@ -1751,7 +1751,7 @@
           "md5": "508724c870b4f1c77631f37fb6e62cfa",
           "sha256": "a0e04a069baf4507821b353b9848f6afd76979d41a74f3cfb8710efaaba5acb0"
         },
-        "downloads": 15,
+        "downloads": -1,
         "filename": "Fiona-1.7.1.post1.tar.gz",
         "has_sig": false,
         "md5_digest": "508724c870b4f1c77631f37fb6e62cfa",
@@ -1762,6 +1762,168 @@
         "url": "https://files.pythonhosted.org/packages/ff/5f/9b6c682c4608d4698d43c17c661a7545c5f9d51ce45c0a232f274df84efc/Fiona-1.7.1.post1.tar.gz"
       }
     ],
+    "1.7.10": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f067c8fad8d2a4ab0a01e1a86498d1e8",
+          "sha256": "363dad47edeac6fe305e22ea07536e2447d7337b3476d0d0025a350c948dba4d"
+        },
+        "downloads": -1,
+        "filename": "Fiona-1.7.10-cp27-cp27m-macosx_10_6_intel.whl",
+        "has_sig": false,
+        "md5_digest": "f067c8fad8d2a4ab0a01e1a86498d1e8",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 24958229,
+        "upload_time": "2017-10-27T03:17:11",
+        "url": "https://files.pythonhosted.org/packages/72/69/8ba215d6b01586131a630eec542e94bf1c3f00563d61b9d7cd2d466b9118/Fiona-1.7.10-cp27-cp27m-macosx_10_6_intel.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9e614bd2ab6fb0802bef50d194616f8e",
+          "sha256": "9fb2826d83b8ea4cfa72c42fe6396a5d15197dae1064ca3ca41876e967b01ee7"
+        },
+        "downloads": -1,
+        "filename": "Fiona-1.7.10-cp27-cp27m-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "9e614bd2ab6fb0802bef50d194616f8e",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 50906602,
+        "upload_time": "2017-10-27T03:20:50",
+        "url": "https://files.pythonhosted.org/packages/63/af/0e1472a71757396a142a419225d7d782c7c2a00e4f454df5997c0c2b3a72/Fiona-1.7.10-cp27-cp27m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9e46f48afc35deb18ca079cae07c1787",
+          "sha256": "7aa5a1451a3b7f5a61aa012996ecaa80f730183b000b87f5cb4f186d5f9215f0"
+        },
+        "downloads": -1,
+        "filename": "Fiona-1.7.10-cp27-cp27mu-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "9e46f48afc35deb18ca079cae07c1787",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 50906669,
+        "upload_time": "2017-10-27T03:24:14",
+        "url": "https://files.pythonhosted.org/packages/41/6e/f6b949c03c3a7c8be3b0ab6b33c95772a0c2a109a68a39bce4043ba2c0fc/Fiona-1.7.10-cp27-cp27mu-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "700fe30b766ec99432c6d06662151de8",
+          "sha256": "d433f22be92595fd711d0842654cd1bbc3e70e250ea480776a757950e26c7ce5"
+        },
+        "downloads": -1,
+        "filename": "Fiona-1.7.10-cp34-cp34m-macosx_10_6_intel.whl",
+        "has_sig": false,
+        "md5_digest": "700fe30b766ec99432c6d06662151de8",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 24956008,
+        "upload_time": "2017-10-27T03:25:57",
+        "url": "https://files.pythonhosted.org/packages/b4/1f/325cb2a54afb2d7c2bba779ac563519bc87917f50cfa6941ac44164d9593/Fiona-1.7.10-cp34-cp34m-macosx_10_6_intel.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "676aec45c675b5a667dc38adf94eaab4",
+          "sha256": "9280303630866e4815619fd3782b2c170ae1882130f922ba5d1adda0937f3fa6"
+        },
+        "downloads": -1,
+        "filename": "Fiona-1.7.10-cp34-cp34m-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "676aec45c675b5a667dc38adf94eaab4",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp34",
+        "size": 51073131,
+        "upload_time": "2017-10-27T03:29:41",
+        "url": "https://files.pythonhosted.org/packages/77/38/41ca3e56a226b42049edf405cdb9c48463fc5fafedaf967a0a31dd5c3caf/Fiona-1.7.10-cp34-cp34m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b1614b8081301ef10883bd800b38cdb3",
+          "sha256": "887d91733c80745c57bde79b3100ca5f080f8b1d45fd7a990d68163b3ce30561"
+        },
+        "downloads": -1,
+        "filename": "Fiona-1.7.10-cp35-cp35m-macosx_10_6_intel.whl",
+        "has_sig": false,
+        "md5_digest": "b1614b8081301ef10883bd800b38cdb3",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 24933358,
+        "upload_time": "2017-10-27T03:31:25",
+        "url": "https://files.pythonhosted.org/packages/45/87/3de7988a16e5239001984713fc3c7ec18446b1b99addf9b59c50b6e4b49f/Fiona-1.7.10-cp35-cp35m-macosx_10_6_intel.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3311e604a21c67b6e1d358d191d000e6",
+          "sha256": "1937780f97e4cdd5b8451b26f37d650c3b18060d63d57ed2a7f8adc7c6d370e0"
+        },
+        "downloads": -1,
+        "filename": "Fiona-1.7.10-cp35-cp35m-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "3311e604a21c67b6e1d358d191d000e6",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 51052389,
+        "upload_time": "2017-10-27T03:34:42",
+        "url": "https://files.pythonhosted.org/packages/72/4f/75c90982c06a4bcd6f49704c28eaff8340e67d207c34d7398c158a566dd9/Fiona-1.7.10-cp35-cp35m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b4ec93a741f23d0c4526cc0168b765e5",
+          "sha256": "b9dcf71bfbf0e6fb75450d84247bae71eb18cf0ede7887949c32e62ef9dc8e37"
+        },
+        "downloads": -1,
+        "filename": "Fiona-1.7.10-cp36-cp36m-macosx_10_6_intel.whl",
+        "has_sig": false,
+        "md5_digest": "b4ec93a741f23d0c4526cc0168b765e5",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "size": 24934213,
+        "upload_time": "2017-10-27T03:36:32",
+        "url": "https://files.pythonhosted.org/packages/1c/10/4824f3bf26aaecf00d79c5cd0b0fd2c590105441f15eb52c1173d9472310/Fiona-1.7.10-cp36-cp36m-macosx_10_6_intel.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "133b3e975a932337c77bc6167e6c308e",
+          "sha256": "92ea0020e9db94a5e961bdffd9bb66c5ee49c597a6ac8f8e2ea56c7c476a0d96"
+        },
+        "downloads": -1,
+        "filename": "Fiona-1.7.10-cp36-cp36m-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "133b3e975a932337c77bc6167e6c308e",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "size": 51101037,
+        "upload_time": "2017-10-27T03:39:45",
+        "url": "https://files.pythonhosted.org/packages/cb/f2/6dcf13a865200434f51cdfbbc8af43dcfe6b6337632243afa2071edff62d/Fiona-1.7.10-cp36-cp36m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3ba502299c5b75a31fb4a9ce4c9283b5",
+          "sha256": "564d2f3485547a6b45e3e322249f02c1cc5a651890a27b3b5bab596a64ae0b67"
+        },
+        "downloads": -1,
+        "filename": "Fiona-1.7.10.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3ba502299c5b75a31fb4a9ce4c9283b5",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 702548,
+        "upload_time": "2017-10-27T03:40:06",
+        "url": "https://files.pythonhosted.org/packages/8a/d2/c0315cbe7cc4994bd2ba2d8e26439e0362fe089686ccd06b9772ca2813ba/Fiona-1.7.10.tar.gz"
+      }
+    ],
     "1.7.2": [
       {
         "comment_text": "",
@@ -1769,7 +1931,7 @@
           "md5": "7a9863209debd3395b06fb759de08c8b",
           "sha256": "7573fb39d252d3c2147e4a676dc5e0a61f9605c1439551fda1cbfbb2138ec54c"
         },
-        "downloads": 14,
+        "downloads": -1,
         "filename": "Fiona-1.7.2-cp27-cp27m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "7a9863209debd3395b06fb759de08c8b",
@@ -1785,7 +1947,7 @@
           "md5": "0a7a75af5c02c49bef0c61e868ccc1e0",
           "sha256": "3ee221117ddab75b283fa40a691367316eefd0a173ea8628459734754fd404e6"
         },
-        "downloads": 15,
+        "downloads": -1,
         "filename": "Fiona-1.7.2-cp27-cp27m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "0a7a75af5c02c49bef0c61e868ccc1e0",
@@ -1801,7 +1963,7 @@
           "md5": "ece7356aa3f57190ac169eb8039b18c3",
           "sha256": "98a8a918bd2cd822841924aec2bacb6b8128d737a9cfc42858eeadebe6f8af45"
         },
-        "downloads": 12,
+        "downloads": -1,
         "filename": "Fiona-1.7.2-cp33-cp33m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "ece7356aa3f57190ac169eb8039b18c3",
@@ -1817,7 +1979,7 @@
           "md5": "2d384a2acf70599d573b62a4fa49138b",
           "sha256": "d8bdcacfd9d8d6932b608b47d30897653f5373e402cb7a7fe51706cdaac0c881"
         },
-        "downloads": 10,
+        "downloads": -1,
         "filename": "Fiona-1.7.2-cp34-cp34m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "2d384a2acf70599d573b62a4fa49138b",
@@ -1833,7 +1995,7 @@
           "md5": "8ad429d799a5b6617776de728a44fa19",
           "sha256": "5f43c9ee4155d1cf0aaaaec628740988b3720aaee2d5884c23d096ee1e66c45a"
         },
-        "downloads": 20,
+        "downloads": -1,
         "filename": "Fiona-1.7.2-cp34-cp34m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "8ad429d799a5b6617776de728a44fa19",
@@ -1849,7 +2011,7 @@
           "md5": "fad5355d30b55123aa90109096ecccb6",
           "sha256": "c0b5d7924d330620b9f95b9e14c369526026ddb0ba275dc5b571ef3c1a7cfa36"
         },
-        "downloads": 11,
+        "downloads": -1,
         "filename": "Fiona-1.7.2-cp35-cp35m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "fad5355d30b55123aa90109096ecccb6",
@@ -1865,7 +2027,7 @@
           "md5": "c9d782ed2af984f693fabdc24984de6a",
           "sha256": "42c7d41891e3dc944fbda0f5a3dad06bbde79f00cdb924ecb79e151927883026"
         },
-        "downloads": 15,
+        "downloads": -1,
         "filename": "Fiona-1.7.2-cp35-cp35m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "c9d782ed2af984f693fabdc24984de6a",
@@ -1881,7 +2043,7 @@
           "md5": "b69c89b75077acebad5964e3b04fea2e",
           "sha256": "14c6f7244217d6f1a020af6dec6420ecef316d55ae4790d50c28aa4929e394a8"
         },
-        "downloads": 17,
+        "downloads": -1,
         "filename": "Fiona-1.7.2.tar.gz",
         "has_sig": false,
         "md5_digest": "b69c89b75077acebad5964e3b04fea2e",
@@ -1899,7 +2061,7 @@
           "md5": "d36f028436ad1dd9602ba06022e43b80",
           "sha256": "6553b5badaed3fb426a62163417c9214f6748a5dbfb8d64e386add37000a4b3f"
         },
-        "downloads": 20,
+        "downloads": -1,
         "filename": "Fiona-1.7.3-cp27-cp27m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "d36f028436ad1dd9602ba06022e43b80",
@@ -1915,7 +2077,7 @@
           "md5": "7aa3a3bac6dc0554179fb4644d9030a2",
           "sha256": "c45cf3e91f2edee7a263e8eb341e1fad3a0e9dcf4728e6af101c2bf6ddd79318"
         },
-        "downloads": 21,
+        "downloads": -1,
         "filename": "Fiona-1.7.3-cp27-cp27m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "7aa3a3bac6dc0554179fb4644d9030a2",
@@ -1931,7 +2093,7 @@
           "md5": "660d9704f0e9f0cd5af01d23322ac261",
           "sha256": "95f5c80ecc33ddf75d7559dea85ce7fcb8d88eb47c0673f66c6a37200afb9587"
         },
-        "downloads": 16,
+        "downloads": -1,
         "filename": "Fiona-1.7.3-cp27-cp27mu-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "660d9704f0e9f0cd5af01d23322ac261",
@@ -1947,7 +2109,7 @@
           "md5": "8408af4c491f0f96800aa6c7a62400a1",
           "sha256": "787c53dc53111e6fc5b14740c65a1b4ea2e4f8e16c732f74c4c2978e4ac8b89f"
         },
-        "downloads": 16,
+        "downloads": -1,
         "filename": "Fiona-1.7.3-cp33-cp33m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "8408af4c491f0f96800aa6c7a62400a1",
@@ -1963,7 +2125,7 @@
           "md5": "4925890a911cab71f81588645bac9522",
           "sha256": "3c5df3d785f96cb85784420c7d78dc65f667f0b4806d164e711ebabf9a6e575a"
         },
-        "downloads": 16,
+        "downloads": -1,
         "filename": "Fiona-1.7.3-cp34-cp34m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "4925890a911cab71f81588645bac9522",
@@ -1979,7 +2141,7 @@
           "md5": "a338fac57d38d8e7bd878c72abacba3d",
           "sha256": "088fa018c21ff0a37f352655ed638f06bb382e1dff3d09c2309cf49bb0278fbd"
         },
-        "downloads": 17,
+        "downloads": -1,
         "filename": "Fiona-1.7.3-cp34-cp34m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "a338fac57d38d8e7bd878c72abacba3d",
@@ -1995,7 +2157,7 @@
           "md5": "c02760ee2311c13cb68f1ce1872ff37f",
           "sha256": "efcfeded435657ee8db0bd61d1b8cf00e1b443ad316345bf60e5d006cafce81a"
         },
-        "downloads": 14,
+        "downloads": -1,
         "filename": "Fiona-1.7.3-cp35-cp35m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "c02760ee2311c13cb68f1ce1872ff37f",
@@ -2011,7 +2173,7 @@
           "md5": "46ec142bc7e5cf70378a77abf8c5a125",
           "sha256": "f55401641429b09d6a4d9181eda4f65cc06286ed696e51d64e0c8166efc8b4fe"
         },
-        "downloads": 17,
+        "downloads": -1,
         "filename": "Fiona-1.7.3-cp35-cp35m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "46ec142bc7e5cf70378a77abf8c5a125",
@@ -2027,7 +2189,7 @@
           "md5": "c665b842cba5734fec05bdfae7132488",
           "sha256": "acd9144504e7cee203e12107e5eedfa44379cd8724db9dc897bc4249e74d3d01"
         },
-        "downloads": 14,
+        "downloads": -1,
         "filename": "Fiona-1.7.3-cp36-cp36m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "c665b842cba5734fec05bdfae7132488",
@@ -2043,7 +2205,7 @@
           "md5": "f449afb60f5a1efe15d3d868a9e5c742",
           "sha256": "4a8c2a5a67b5d24ba873405e68e1848e5387547d392ddb2f4882a9b912793913"
         },
-        "downloads": 17,
+        "downloads": -1,
         "filename": "Fiona-1.7.3.tar.gz",
         "has_sig": false,
         "md5_digest": "f449afb60f5a1efe15d3d868a9e5c742",
@@ -2061,7 +2223,7 @@
           "md5": "971393c23ffc552664b7c694b992fb3e",
           "sha256": "25f0146a7f25d53df16e33771830bf163ef0fa6e6510763309aac5a0ce385469"
         },
-        "downloads": 47,
+        "downloads": -1,
         "filename": "Fiona-1.7.4-cp27-cp27m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "971393c23ffc552664b7c694b992fb3e",
@@ -2077,7 +2239,7 @@
           "md5": "81d8af536812457ece9a1dbe2beee24a",
           "sha256": "6eb66af1a0402dbb1bb21db657e4196c784b04603f7ddd27aad5366801a994ad"
         },
-        "downloads": 22,
+        "downloads": -1,
         "filename": "Fiona-1.7.4-cp27-cp27m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "81d8af536812457ece9a1dbe2beee24a",
@@ -2093,7 +2255,7 @@
           "md5": "9d24d91450ec768cf602fb3403c47034",
           "sha256": "434eb800041c763538d8e244864721d9ccd8af566d20ecd62988b87648bb73d6"
         },
-        "downloads": 280,
+        "downloads": -1,
         "filename": "Fiona-1.7.4-cp27-cp27mu-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "9d24d91450ec768cf602fb3403c47034",
@@ -2109,7 +2271,7 @@
           "md5": "ced3d8557bceeae6583fb35d691cf5e1",
           "sha256": "a4b243795f1027360e82bb19f3b898a8d955d4bedb119633ee449be34c0b2d8c"
         },
-        "downloads": 24,
+        "downloads": -1,
         "filename": "Fiona-1.7.4-cp33-cp33m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "ced3d8557bceeae6583fb35d691cf5e1",
@@ -2125,7 +2287,7 @@
           "md5": "43a5a68ce6b3b6c52ec8ce14411d6713",
           "sha256": "c1729a7a4fb28d0f313c126b43d47b35dc2c92e4768ff7f81196b59e0e4eedac"
         },
-        "downloads": 18,
+        "downloads": -1,
         "filename": "Fiona-1.7.4-cp34-cp34m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "43a5a68ce6b3b6c52ec8ce14411d6713",
@@ -2141,7 +2303,7 @@
           "md5": "1c7c7c2eed6d0359ea1008b30888191c",
           "sha256": "2a211a798cb449c4633c3f4244e71d23e30d6d2b2c1a43d6327d0a7b25ec049c"
         },
-        "downloads": 38,
+        "downloads": -1,
         "filename": "Fiona-1.7.4-cp34-cp34m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "1c7c7c2eed6d0359ea1008b30888191c",
@@ -2157,7 +2319,7 @@
           "md5": "f50659d4758d0012176df4cce39ef7e6",
           "sha256": "54cb587fdeaa347755183d8285d8e25581c8646226809a8a5e9b8b0d027f8f51"
         },
-        "downloads": 30,
+        "downloads": -1,
         "filename": "Fiona-1.7.4-cp35-cp35m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "f50659d4758d0012176df4cce39ef7e6",
@@ -2173,7 +2335,7 @@
           "md5": "26d52063ede677a17df14f48ba13f9b2",
           "sha256": "927f8dc87fafe596ef20de0b9fea90b1eff379b2e628e3a989767e9226cbdb0f"
         },
-        "downloads": 71,
+        "downloads": -1,
         "filename": "Fiona-1.7.4-cp35-cp35m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "26d52063ede677a17df14f48ba13f9b2",
@@ -2189,7 +2351,7 @@
           "md5": "f856e47c2efd6c8215c8df5d8b691e4f",
           "sha256": "fdda31038c6770c8037b0e055751f253eda68218c86408d8ecd645df89082e96"
         },
-        "downloads": 29,
+        "downloads": -1,
         "filename": "Fiona-1.7.4-cp36-cp36m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "f856e47c2efd6c8215c8df5d8b691e4f",
@@ -2205,7 +2367,7 @@
           "md5": "1d511b790aa938db9a30a0c7ad8f731e",
           "sha256": "2524487464bf72bcc04cf5c29760485eba65e88d54ce8ea1c7bbb3f35a31b77d"
         },
-        "downloads": 93,
+        "downloads": -1,
         "filename": "Fiona-1.7.4.tar.gz",
         "has_sig": false,
         "md5_digest": "1d511b790aa938db9a30a0c7ad8f731e",
@@ -2223,7 +2385,7 @@
           "md5": "6b3aef22f54f5d7934dcad2c35550cb0",
           "sha256": "9098bd2998d3f73f1c754bd7967e6098433822ee0632a34709460506b4e8bded"
         },
-        "downloads": 70,
+        "downloads": -1,
         "filename": "Fiona-1.7.5-cp27-cp27m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "6b3aef22f54f5d7934dcad2c35550cb0",
@@ -2239,7 +2401,7 @@
           "md5": "ceffcc2bcc2a35837db45b8441307c88",
           "sha256": "f426579b5ccfa5f0074ecab7c8952b67105e7f412816a60ac178ba8e54b34f54"
         },
-        "downloads": 23,
+        "downloads": -1,
         "filename": "Fiona-1.7.5-cp27-cp27m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "ceffcc2bcc2a35837db45b8441307c88",
@@ -2255,7 +2417,7 @@
           "md5": "aeeed1fcf7758bca20c7198e48bdb627",
           "sha256": "7cfe746ab98a7b18783ba1c8fcc604f6d1c454246321650f4eaed1f7d6ced5fc"
         },
-        "downloads": 312,
+        "downloads": -1,
         "filename": "Fiona-1.7.5-cp27-cp27mu-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "aeeed1fcf7758bca20c7198e48bdb627",
@@ -2271,7 +2433,7 @@
           "md5": "c043a3588caae89a3737d890687e136b",
           "sha256": "c89cf3e69974a239566aa1903ad56b85e7fd8e48375daf54e47568ab66663cf1"
         },
-        "downloads": 13,
+        "downloads": -1,
         "filename": "Fiona-1.7.5-cp33-cp33m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "c043a3588caae89a3737d890687e136b",
@@ -2287,7 +2449,7 @@
           "md5": "0f3045be11a7631187cb6a71ad677705",
           "sha256": "eafdc91b04685a92d54a21d61be0aaf2ab8d8850991ec2c9b291bc6c04871ea2"
         },
-        "downloads": 15,
+        "downloads": -1,
         "filename": "Fiona-1.7.5-cp34-cp34m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "0f3045be11a7631187cb6a71ad677705",
@@ -2303,7 +2465,7 @@
           "md5": "47fc98cbc742cc060c5bca3fd25ec0ff",
           "sha256": "9f6d3e2288a92e822ec88e4da8e0d7e15cc79f4b44abb475e9f0431facc4d7bf"
         },
-        "downloads": 32,
+        "downloads": -1,
         "filename": "Fiona-1.7.5-cp34-cp34m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "47fc98cbc742cc060c5bca3fd25ec0ff",
@@ -2319,7 +2481,7 @@
           "md5": "6f3d6bd17362126d5f51efbdb25afca8",
           "sha256": "1105591c00496459c76dfce7aee0f82467e3ad4b7cf8c0a327fa4d7ea66eedaa"
         },
-        "downloads": 27,
+        "downloads": -1,
         "filename": "Fiona-1.7.5-cp35-cp35m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "6f3d6bd17362126d5f51efbdb25afca8",
@@ -2335,7 +2497,7 @@
           "md5": "e59e8b4b74fa3f4c295656f4597389d0",
           "sha256": "df8c2572277052c749fd7e18d08f301035e65035962af774abd531f1dfa2c92e"
         },
-        "downloads": 111,
+        "downloads": -1,
         "filename": "Fiona-1.7.5-cp35-cp35m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "e59e8b4b74fa3f4c295656f4597389d0",
@@ -2351,7 +2513,7 @@
           "md5": "22ae27db94570744deaca0ad66ce0799",
           "sha256": "fbabb83581802980409e5ffed8c72812fecf5f75ee46296a34fff8fbc3366348"
         },
-        "downloads": 39,
+        "downloads": -1,
         "filename": "Fiona-1.7.5-cp36-cp36m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "22ae27db94570744deaca0ad66ce0799",
@@ -2367,7 +2529,7 @@
           "md5": "6c1cc39de23928f200f231ec20033069",
           "sha256": "7c7c2b1e911efed50e1026b1b41299f5e2b03affc2e2b60194508df8b3f3dd64"
         },
-        "downloads": 43,
+        "downloads": -1,
         "filename": "Fiona-1.7.5-cp36-cp36m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "6c1cc39de23928f200f231ec20033069",
@@ -2383,7 +2545,7 @@
           "md5": "287f1561584c0dfcc54c3d91a170a4f3",
           "sha256": "7875f64f717c97ac5d54521fbeb1f0a1594463119d8fd43d5aa2aa28d8bccffd"
         },
-        "downloads": 198,
+        "downloads": -1,
         "filename": "Fiona-1.7.5.tar.gz",
         "has_sig": false,
         "md5_digest": "287f1561584c0dfcc54c3d91a170a4f3",
@@ -2401,7 +2563,7 @@
           "md5": "ee3625123b68e66e792cb8a8eef830f7",
           "sha256": "89910de5f5c508f3776698b563546da788cdbb43b51c4f9c0387f4ea51dedecf"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.6-cp27-cp27m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "ee3625123b68e66e792cb8a8eef830f7",
@@ -2417,7 +2579,7 @@
           "md5": "9d9b96ba6f40c641f3ff83958c4f282a",
           "sha256": "f091f271a42e205d4a53b0941b554822239c9346ffab37da312796f59046c1f5"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.6-cp27-cp27m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "9d9b96ba6f40c641f3ff83958c4f282a",
@@ -2433,7 +2595,7 @@
           "md5": "741ff583535868ddc2ae392fc0a6a8e2",
           "sha256": "b17e0c4e40a20f33dad5d9a2baa26a94df9792db0f79f0eb1be969a4d22b47fb"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.6-cp27-cp27mu-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "741ff583535868ddc2ae392fc0a6a8e2",
@@ -2449,7 +2611,7 @@
           "md5": "5eefef5ab6cd398a71893a69e8df5bbc",
           "sha256": "203a90c483a949478499aa838c3c06d2dc90e480a25daf15cb246363dff2fad5"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.6-cp34-cp34m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "5eefef5ab6cd398a71893a69e8df5bbc",
@@ -2465,7 +2627,7 @@
           "md5": "50216d57bf5119117c4de53e3147479e",
           "sha256": "4d12f4a31b11648f50e589b988cb05c63b2ce78974180352b630e6dad58ff0f7"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.6-cp34-cp34m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "50216d57bf5119117c4de53e3147479e",
@@ -2481,7 +2643,7 @@
           "md5": "3695ff3f0a73b1af4c254ce9af4bebab",
           "sha256": "133f333cc1484a04a41000ebf0c998bb02033d2eedde02375975f674c9422813"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.6-cp35-cp35m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "3695ff3f0a73b1af4c254ce9af4bebab",
@@ -2497,7 +2659,7 @@
           "md5": "82bdc68cba0bb5cc86e39c40312e1b24",
           "sha256": "2e3601d07d68712295ed756ffe3c7606622ed24eb9138a47d4b73a51a4078d24"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.6-cp35-cp35m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "82bdc68cba0bb5cc86e39c40312e1b24",
@@ -2513,7 +2675,7 @@
           "md5": "86e1e584c8efd675b8936f813e189fe7",
           "sha256": "3e97f87db0e70d35de059d20e9a3802c2f359505f0874fce8e8a39d874fb28ea"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.6-cp36-cp36m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "86e1e584c8efd675b8936f813e189fe7",
@@ -2529,7 +2691,7 @@
           "md5": "1e39b7d133f390b9e143d61acd07eef6",
           "sha256": "e18cda459810d927a1d7b4be8c8401d0be363ec67b6d98cd8b976d22240c00a4"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.6-cp36-cp36m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "1e39b7d133f390b9e143d61acd07eef6",
@@ -2545,7 +2707,7 @@
           "md5": "49291fdefa4f7337ae943bcdc4ba1b07",
           "sha256": "d0ab7d04556005a6354c4edfd820a4001a4ad7b57332e28f7dd6c4cdab9a0e3c"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.6.tar.gz",
         "has_sig": false,
         "md5_digest": "49291fdefa4f7337ae943bcdc4ba1b07",
@@ -2563,7 +2725,7 @@
           "md5": "fa7064a989969408b1843794b5a5839d",
           "sha256": "65491b05ceae4e4412357b29ff36c9f1ddf270eaa8743df5a677527996d9b3bf"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.7-cp27-cp27m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "fa7064a989969408b1843794b5a5839d",
@@ -2579,7 +2741,7 @@
           "md5": "f35d79b10462669feceada5a0f2ab7db",
           "sha256": "85db5bceaa0477f20e06983e28dffb31e3098915ff3f9529b2c7f4b528e71f6e"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.7-cp27-cp27m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "f35d79b10462669feceada5a0f2ab7db",
@@ -2595,7 +2757,7 @@
           "md5": "6ccb7ffeebdb9171b401877e7df91e85",
           "sha256": "b93095099d7b20c8de577d20b5adca6456597c354f49f608f67f485fb1963b91"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.7-cp27-cp27mu-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "6ccb7ffeebdb9171b401877e7df91e85",
@@ -2611,7 +2773,7 @@
           "md5": "937ee3c650bff719992322c91b9df370",
           "sha256": "cd0d6df876609208b7349f49b9d3bc3fd42061663765d6ec7b5e255a862c000f"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.7-cp34-cp34m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "937ee3c650bff719992322c91b9df370",
@@ -2627,7 +2789,7 @@
           "md5": "0b5d7fa29f9879bd31d54d617a542ebc",
           "sha256": "05d26df1f76353aedf549d986923e7315a0a48068792e8580773a8e641f79df5"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.7-cp34-cp34m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "0b5d7fa29f9879bd31d54d617a542ebc",
@@ -2643,7 +2805,7 @@
           "md5": "ff3427ba5f8c65501c1d9d5c7f80913c",
           "sha256": "ffec1ec8eba81b948dab90ec2613aa04eec80111509eb336fab5c41af1799aa1"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.7-cp35-cp35m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "ff3427ba5f8c65501c1d9d5c7f80913c",
@@ -2659,7 +2821,7 @@
           "md5": "bf349bde2c8ba3dd52bcda0aae834f96",
           "sha256": "2b3c394044191bb57f827270ad1c0c6f0210e47fab704933549e8008067f16a1"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.7-cp35-cp35m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "bf349bde2c8ba3dd52bcda0aae834f96",
@@ -2675,7 +2837,7 @@
           "md5": "da71276c0fc3243227e112febc10d7e6",
           "sha256": "19ff80f0f707084ba88a59c9945fd0029e145d922e56a1322724a7eba5e2e191"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.7-cp36-cp36m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "da71276c0fc3243227e112febc10d7e6",
@@ -2691,7 +2853,7 @@
           "md5": "19019fad04be0b3f12abf940aba13a22",
           "sha256": "cf7adc45ccb0cb6db6888823d9f2b8b93b987c085dc6c93f820cb447992fb1d9"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.7-cp36-cp36m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "19019fad04be0b3f12abf940aba13a22",
@@ -2707,7 +2869,7 @@
           "md5": "5a124acc828fa2093fe2babda3b57445",
           "sha256": "c9d12e2b796fb3dee0d0bb3a286e960649712526b2d41081a9c2eaed21e69e72"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.7.tar.gz",
         "has_sig": false,
         "md5_digest": "5a124acc828fa2093fe2babda3b57445",
@@ -2725,7 +2887,7 @@
           "md5": "ac9dbc32079d7ea6f5b1445d6bdb1cac",
           "sha256": "5b62537f90c94348ad8d04e40b503b7158f0dce1aa361186428e80c7627f0948"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.8-cp27-cp27m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "ac9dbc32079d7ea6f5b1445d6bdb1cac",
@@ -2741,7 +2903,7 @@
           "md5": "e36ecf2d1435a4fa9eb79475913a4e1c",
           "sha256": "780d3a35a2591d4f30824d72bb13c6e3958b6887d4b94c3ec268b5dbfb991ae7"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.8-cp27-cp27m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "e36ecf2d1435a4fa9eb79475913a4e1c",
@@ -2757,7 +2919,7 @@
           "md5": "a513371be2582ee4d8963790f3796615",
           "sha256": "4dd7322a802d17c2b8d282c384b4e25ef48d2311cb27f0fb44e94100ea6753a8"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.8-cp27-cp27mu-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "a513371be2582ee4d8963790f3796615",
@@ -2773,7 +2935,7 @@
           "md5": "cc77c3e8537bb81010f7d44ff82361d5",
           "sha256": "6cdc67cf6b7e4ccd8eb4fcfaa831f325f9b4773b06d3677842bf2ec5482ca4a4"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.8-cp34-cp34m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "cc77c3e8537bb81010f7d44ff82361d5",
@@ -2789,7 +2951,7 @@
           "md5": "d36428383a817cd4c36ff120de1ce63c",
           "sha256": "b7e38b6f98138924f94b00b85179bedb1f4bb7330c93cc0bf19d58d38d8237ef"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.8-cp34-cp34m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "d36428383a817cd4c36ff120de1ce63c",
@@ -2805,7 +2967,7 @@
           "md5": "34e2f37e97b1541083fbeb7c4a801815",
           "sha256": "99b3e9e0430d5e7d5fc0043f2e26b5655c55f23f19d45fdf9c4bed75a83c741b"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.8-cp35-cp35m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "34e2f37e97b1541083fbeb7c4a801815",
@@ -2821,7 +2983,7 @@
           "md5": "4b519c552acd1f930c6ac70835589b47",
           "sha256": "d71bf321f621a498564d1e814c7df7e258881a663586da48c543e0e0abc8bdbf"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.8-cp35-cp35m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "4b519c552acd1f930c6ac70835589b47",
@@ -2837,7 +2999,7 @@
           "md5": "b6c8a4aad5d2e8b56e45389db04051c6",
           "sha256": "33672a216b7d03c9706189f10c6f4f89b7089ff3a285c25b0d4be0796268d437"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.8-cp36-cp36m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "b6c8a4aad5d2e8b56e45389db04051c6",
@@ -2853,7 +3015,7 @@
           "md5": "3109f46e752ae28dcc560d398770c347",
           "sha256": "f436831af272891fdf7abe0282d302042813a44c25b447e078931c71d14df710"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.8-cp36-cp36m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "3109f46e752ae28dcc560d398770c347",
@@ -2869,7 +3031,7 @@
           "md5": "ccff408d9deb6a184fd4ae2b6cb408fe",
           "sha256": "c406f3f60061da1978fa8e4bcc152b125e23a47dcc64f0948dda429f3792e79b"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.8.tar.gz",
         "has_sig": false,
         "md5_digest": "ccff408d9deb6a184fd4ae2b6cb408fe",
@@ -2887,7 +3049,7 @@
           "md5": "da0fe39954f8fb5d47b77913040c0ac6",
           "sha256": "d9a5a6a2db803f6c9230284a331d0f314e944d47830b797d9dfe0d753738676a"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.9-cp27-cp27m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "da0fe39954f8fb5d47b77913040c0ac6",
@@ -2903,7 +3065,7 @@
           "md5": "870d75a7359713b1e29957f0d8ec91d8",
           "sha256": "65d0dbc6d7708e48d69da3c1227bc034deb44130fa573858b83fc93cd26f96fc"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.9-cp27-cp27m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "870d75a7359713b1e29957f0d8ec91d8",
@@ -2919,7 +3081,7 @@
           "md5": "72b4f86a96a663b28eaf7362270bba9f",
           "sha256": "9abe173068e81a79b2104eb98873f500f69387fbe576d0a623f625e8ef2ff8a1"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.9-cp27-cp27mu-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "72b4f86a96a663b28eaf7362270bba9f",
@@ -2935,7 +3097,7 @@
           "md5": "47c74264cfecdd32ce6928a07af4dae9",
           "sha256": "f1f71d8cb11b4071c8f17d6514114c4bab511596a4fdc189e3fd1e0426d5412e"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.9-cp34-cp34m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "47c74264cfecdd32ce6928a07af4dae9",
@@ -2951,7 +3113,7 @@
           "md5": "84380ca0a1904ead0319e09c88e74515",
           "sha256": "dd4b439f03b8b1cce9c6c7156d6f2a3efa0d4cf22df0f7e9d3981ad98531cc03"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.9-cp34-cp34m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "84380ca0a1904ead0319e09c88e74515",
@@ -2967,7 +3129,7 @@
           "md5": "d8cdc2f14d8c3f033cd0512518daa65f",
           "sha256": "5bc7266fb630c8f7237c20f6e3b539122c828e21611341c8a9a8ca138166400e"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.9-cp35-cp35m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "d8cdc2f14d8c3f033cd0512518daa65f",
@@ -2983,7 +3145,7 @@
           "md5": "505c1ebc634b89e6475b85d6e7e055dc",
           "sha256": "3183ca8cb00b7b1e49215b61b8c6767ca625f883ac64cf4eda41e6584fa16100"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.9-cp35-cp35m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "505c1ebc634b89e6475b85d6e7e055dc",
@@ -2999,7 +3161,7 @@
           "md5": "3c2033ef889358d60b0a955a9ac28e01",
           "sha256": "99752563d9865269b8e0c2452781eb8eaadc97a3605b5acbbd1aee32c1ff8039"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.9-cp36-cp36m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "3c2033ef889358d60b0a955a9ac28e01",
@@ -3015,7 +3177,7 @@
           "md5": "447aac66584fc289da6b779d90b9dbbb",
           "sha256": "d1fdf134aa4d0eaa22a242949d43fd758a02f3c883a7fad6c89f179b44b9bd7f"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.9-cp36-cp36m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "447aac66584fc289da6b779d90b9dbbb",
@@ -3031,7 +3193,7 @@
           "md5": "e5c6a7859cfb1510cdd1188ca6d657cc",
           "sha256": "91bb71b744a7444c3d96472158b74af1569ec2bc934737397658b968dd7dadba"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.9.tar.gz",
         "has_sig": false,
         "md5_digest": "e5c6a7859cfb1510cdd1188ca6d657cc",
@@ -3049,7 +3211,7 @@
           "md5": "42cc9588c5ceb0412773dcafa3ecb1a9",
           "sha256": "29262bc8d1d55eb93dd640eb5d98abf76d55a9bdce59574e4e083c77b6034528"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.9.post1-cp27-cp27m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "42cc9588c5ceb0412773dcafa3ecb1a9",
@@ -3065,7 +3227,7 @@
           "md5": "b09b491f5fe6602884b87b0bb5402f1a",
           "sha256": "75d6d4290f215fdf9b4e298c57c3f6bddfe08a4304807fe2b8fa2b54efbef374"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.9.post1-cp27-cp27m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "b09b491f5fe6602884b87b0bb5402f1a",
@@ -3081,7 +3243,7 @@
           "md5": "253f17242fc555812dc07e4c55428e87",
           "sha256": "4e5a89263d36fe7e5ca4e127aff233d68d6d5a97d73788c53c5b1f0200dd7ddd"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.9.post1-cp27-cp27mu-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "253f17242fc555812dc07e4c55428e87",
@@ -3097,7 +3259,7 @@
           "md5": "793aca444e1a92299b6b5c106a865987",
           "sha256": "4b45e4c8d9c2af443052aa30c514dd4a48dff9fcf82a942a0c0da6330c1c1ef3"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.9.post1-cp34-cp34m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "793aca444e1a92299b6b5c106a865987",
@@ -3113,7 +3275,7 @@
           "md5": "673e06709af1970b3c34977d1b22021e",
           "sha256": "a90394cf2340586ead26d19aa9d11d74f91202e4daf7058f605f761ba70927e6"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.9.post1-cp34-cp34m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "673e06709af1970b3c34977d1b22021e",
@@ -3129,7 +3291,7 @@
           "md5": "8e7f05496a521b81baa9657d4b1b09ec",
           "sha256": "8e70ea3e6556ab88f75ee87bb82ad8b8fc4f4ac72d28e345674b97ae73edb3db"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.9.post1-cp35-cp35m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "8e7f05496a521b81baa9657d4b1b09ec",
@@ -3145,7 +3307,7 @@
           "md5": "9f63564ec581cf8cf6917d945e9bb92c",
           "sha256": "87da16b430b41bfa808bd681b6e039e8392e6cc53beb9e9d4be6207c3a0f7c77"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.9.post1-cp35-cp35m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "9f63564ec581cf8cf6917d945e9bb92c",
@@ -3161,7 +3323,7 @@
           "md5": "3ac0207b3acd687d02ec9062f3bfe168",
           "sha256": "f4e3e7b35b82eaf9e788b699bac09b6be565426d72b36da0a2660d4bcd3cfa9c"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.9.post1-cp36-cp36m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "3ac0207b3acd687d02ec9062f3bfe168",
@@ -3177,7 +3339,7 @@
           "md5": "28586f84f27e05cf015d28f24b840c88",
           "sha256": "ff1dca503c0fd6f4013800a0772bf748f08f8e88101485cc65c62c5ec45cdeb8"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.9.post1-cp36-cp36m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "28586f84f27e05cf015d28f24b840c88",
@@ -3193,7 +3355,7 @@
           "md5": "9f3074c2f27c59cdb4081410e569abec",
           "sha256": "68e8a925b23e3987845c11b0fdd6378fdec4316fe8ba767a935151b6ee1fc607"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "Fiona-1.7.9.post1.tar.gz",
         "has_sig": false,
         "md5_digest": "9f3074c2f27c59cdb4081410e569abec",
@@ -3211,7 +3373,7 @@
           "md5": "609081d8471b45b24ee5206204800c94",
           "sha256": "fcf5de7a0b4fd0e2a8aee5d479c0e47f8dec9ef37e451e20c3595fdc0f9a8b7e"
         },
-        "downloads": 194,
+        "downloads": -1,
         "filename": "Fiona-1.7b1-cp27-cp27m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
         "has_sig": false,
         "md5_digest": "609081d8471b45b24ee5206204800c94",
@@ -3227,7 +3389,7 @@
           "md5": "4635159313454350584b914da800e06e",
           "sha256": "29c94a67e1d565787fe48e52df15e31f35c28eaa273ac11928bc69c1845d4b64"
         },
-        "downloads": 186,
+        "downloads": -1,
         "filename": "Fiona-1.7b1-cp34-cp34m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
         "has_sig": false,
         "md5_digest": "4635159313454350584b914da800e06e",
@@ -3243,7 +3405,7 @@
           "md5": "e6d4cd4f2cc22d109d964d59f4b4dfe4",
           "sha256": "c48f950cb1f9ebd315d5916a0d8b56aeaba54726bbb39184e97c14a785c3450d"
         },
-        "downloads": 184,
+        "downloads": -1,
         "filename": "Fiona-1.7b1-cp35-cp35m-macosx_10_6_intel.macosx_10_9_intel.macosx_10_9_x86_64.macosx_10_10_intel.macosx_10_10_x86_64.whl",
         "has_sig": false,
         "md5_digest": "e6d4cd4f2cc22d109d964d59f4b4dfe4",
@@ -3259,7 +3421,7 @@
           "md5": "a4fbc8008a7418813639085cf9f27590",
           "sha256": "e894de4d519e6e2ab1285181550a82a59cdf53bacb8f3a665aacad09ef5c9ccb"
         },
-        "downloads": 185,
+        "downloads": -1,
         "filename": "Fiona-1.7b1.tar.gz",
         "has_sig": false,
         "md5_digest": "a4fbc8008a7418813639085cf9f27590",
@@ -3275,162 +3437,162 @@
     {
       "comment_text": "",
       "digests": {
-        "md5": "42cc9588c5ceb0412773dcafa3ecb1a9",
-        "sha256": "29262bc8d1d55eb93dd640eb5d98abf76d55a9bdce59574e4e083c77b6034528"
+        "md5": "f067c8fad8d2a4ab0a01e1a86498d1e8",
+        "sha256": "363dad47edeac6fe305e22ea07536e2447d7337b3476d0d0025a350c948dba4d"
       },
-      "downloads": 0,
-      "filename": "Fiona-1.7.9.post1-cp27-cp27m-macosx_10_6_intel.whl",
+      "downloads": -1,
+      "filename": "Fiona-1.7.10-cp27-cp27m-macosx_10_6_intel.whl",
       "has_sig": false,
-      "md5_digest": "42cc9588c5ceb0412773dcafa3ecb1a9",
+      "md5_digest": "f067c8fad8d2a4ab0a01e1a86498d1e8",
       "packagetype": "bdist_wheel",
       "python_version": "cp27",
-      "size": 20927548,
-      "upload_time": "2017-08-21T16:08:50",
-      "url": "https://files.pythonhosted.org/packages/ae/2b/7bb936c7bb57d1f8a4f26680eb024e3c2778060f54e8fced684299be1c8b/Fiona-1.7.9.post1-cp27-cp27m-macosx_10_6_intel.whl"
+      "size": 24958229,
+      "upload_time": "2017-10-27T03:17:11",
+      "url": "https://files.pythonhosted.org/packages/72/69/8ba215d6b01586131a630eec542e94bf1c3f00563d61b9d7cd2d466b9118/Fiona-1.7.10-cp27-cp27m-macosx_10_6_intel.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "b09b491f5fe6602884b87b0bb5402f1a",
-        "sha256": "75d6d4290f215fdf9b4e298c57c3f6bddfe08a4304807fe2b8fa2b54efbef374"
+        "md5": "9e614bd2ab6fb0802bef50d194616f8e",
+        "sha256": "9fb2826d83b8ea4cfa72c42fe6396a5d15197dae1064ca3ca41876e967b01ee7"
       },
-      "downloads": 0,
-      "filename": "Fiona-1.7.9.post1-cp27-cp27m-manylinux1_x86_64.whl",
+      "downloads": -1,
+      "filename": "Fiona-1.7.10-cp27-cp27m-manylinux1_x86_64.whl",
       "has_sig": false,
-      "md5_digest": "b09b491f5fe6602884b87b0bb5402f1a",
+      "md5_digest": "9e614bd2ab6fb0802bef50d194616f8e",
       "packagetype": "bdist_wheel",
       "python_version": "cp27",
-      "size": 48372327,
-      "upload_time": "2017-08-21T16:11:50",
-      "url": "https://files.pythonhosted.org/packages/fa/f8/f24d5694fe2f675db599745c44574745f38b765e1d93e9a178c2bec4c84b/Fiona-1.7.9.post1-cp27-cp27m-manylinux1_x86_64.whl"
+      "size": 50906602,
+      "upload_time": "2017-10-27T03:20:50",
+      "url": "https://files.pythonhosted.org/packages/63/af/0e1472a71757396a142a419225d7d782c7c2a00e4f454df5997c0c2b3a72/Fiona-1.7.10-cp27-cp27m-manylinux1_x86_64.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "253f17242fc555812dc07e4c55428e87",
-        "sha256": "4e5a89263d36fe7e5ca4e127aff233d68d6d5a97d73788c53c5b1f0200dd7ddd"
+        "md5": "9e46f48afc35deb18ca079cae07c1787",
+        "sha256": "7aa5a1451a3b7f5a61aa012996ecaa80f730183b000b87f5cb4f186d5f9215f0"
       },
-      "downloads": 0,
-      "filename": "Fiona-1.7.9.post1-cp27-cp27mu-manylinux1_x86_64.whl",
+      "downloads": -1,
+      "filename": "Fiona-1.7.10-cp27-cp27mu-manylinux1_x86_64.whl",
       "has_sig": false,
-      "md5_digest": "253f17242fc555812dc07e4c55428e87",
+      "md5_digest": "9e46f48afc35deb18ca079cae07c1787",
       "packagetype": "bdist_wheel",
       "python_version": "cp27",
-      "size": 48372325,
-      "upload_time": "2017-08-21T16:14:50",
-      "url": "https://files.pythonhosted.org/packages/6f/85/7900a613a24be9d5834231ada08d2a7d5dbdf28a19d95390d0195cbc65ca/Fiona-1.7.9.post1-cp27-cp27mu-manylinux1_x86_64.whl"
+      "size": 50906669,
+      "upload_time": "2017-10-27T03:24:14",
+      "url": "https://files.pythonhosted.org/packages/41/6e/f6b949c03c3a7c8be3b0ab6b33c95772a0c2a109a68a39bce4043ba2c0fc/Fiona-1.7.10-cp27-cp27mu-manylinux1_x86_64.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "793aca444e1a92299b6b5c106a865987",
-        "sha256": "4b45e4c8d9c2af443052aa30c514dd4a48dff9fcf82a942a0c0da6330c1c1ef3"
+        "md5": "700fe30b766ec99432c6d06662151de8",
+        "sha256": "d433f22be92595fd711d0842654cd1bbc3e70e250ea480776a757950e26c7ce5"
       },
-      "downloads": 0,
-      "filename": "Fiona-1.7.9.post1-cp34-cp34m-macosx_10_6_intel.whl",
+      "downloads": -1,
+      "filename": "Fiona-1.7.10-cp34-cp34m-macosx_10_6_intel.whl",
       "has_sig": false,
-      "md5_digest": "793aca444e1a92299b6b5c106a865987",
+      "md5_digest": "700fe30b766ec99432c6d06662151de8",
       "packagetype": "bdist_wheel",
       "python_version": "cp34",
-      "size": 20925695,
-      "upload_time": "2017-08-21T16:16:13",
-      "url": "https://files.pythonhosted.org/packages/bf/06/ca69c345dad902694fc62a93f9e1be23d9dc9c4b8e5ce6e0e0c8a1ab8850/Fiona-1.7.9.post1-cp34-cp34m-macosx_10_6_intel.whl"
+      "size": 24956008,
+      "upload_time": "2017-10-27T03:25:57",
+      "url": "https://files.pythonhosted.org/packages/b4/1f/325cb2a54afb2d7c2bba779ac563519bc87917f50cfa6941ac44164d9593/Fiona-1.7.10-cp34-cp34m-macosx_10_6_intel.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "673e06709af1970b3c34977d1b22021e",
-        "sha256": "a90394cf2340586ead26d19aa9d11d74f91202e4daf7058f605f761ba70927e6"
+        "md5": "676aec45c675b5a667dc38adf94eaab4",
+        "sha256": "9280303630866e4815619fd3782b2c170ae1882130f922ba5d1adda0937f3fa6"
       },
-      "downloads": 0,
-      "filename": "Fiona-1.7.9.post1-cp34-cp34m-manylinux1_x86_64.whl",
+      "downloads": -1,
+      "filename": "Fiona-1.7.10-cp34-cp34m-manylinux1_x86_64.whl",
       "has_sig": false,
-      "md5_digest": "673e06709af1970b3c34977d1b22021e",
+      "md5_digest": "676aec45c675b5a667dc38adf94eaab4",
       "packagetype": "bdist_wheel",
       "python_version": "cp34",
-      "size": 48549019,
-      "upload_time": "2017-08-21T16:19:12",
-      "url": "https://files.pythonhosted.org/packages/5c/6a/af6fd15526cd324567b0d3723739f5bac4183b32fafa709e3d8db6e1e0d5/Fiona-1.7.9.post1-cp34-cp34m-manylinux1_x86_64.whl"
+      "size": 51073131,
+      "upload_time": "2017-10-27T03:29:41",
+      "url": "https://files.pythonhosted.org/packages/77/38/41ca3e56a226b42049edf405cdb9c48463fc5fafedaf967a0a31dd5c3caf/Fiona-1.7.10-cp34-cp34m-manylinux1_x86_64.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "8e7f05496a521b81baa9657d4b1b09ec",
-        "sha256": "8e70ea3e6556ab88f75ee87bb82ad8b8fc4f4ac72d28e345674b97ae73edb3db"
+        "md5": "b1614b8081301ef10883bd800b38cdb3",
+        "sha256": "887d91733c80745c57bde79b3100ca5f080f8b1d45fd7a990d68163b3ce30561"
       },
-      "downloads": 0,
-      "filename": "Fiona-1.7.9.post1-cp35-cp35m-macosx_10_6_intel.whl",
+      "downloads": -1,
+      "filename": "Fiona-1.7.10-cp35-cp35m-macosx_10_6_intel.whl",
       "has_sig": false,
-      "md5_digest": "8e7f05496a521b81baa9657d4b1b09ec",
+      "md5_digest": "b1614b8081301ef10883bd800b38cdb3",
       "packagetype": "bdist_wheel",
       "python_version": "cp35",
-      "size": 20898654,
-      "upload_time": "2017-08-21T16:20:37",
-      "url": "https://files.pythonhosted.org/packages/72/35/849f19fb9b1ed636f84034c8ebcd65cc917c4cad106a7b8bd75c9254717a/Fiona-1.7.9.post1-cp35-cp35m-macosx_10_6_intel.whl"
+      "size": 24933358,
+      "upload_time": "2017-10-27T03:31:25",
+      "url": "https://files.pythonhosted.org/packages/45/87/3de7988a16e5239001984713fc3c7ec18446b1b99addf9b59c50b6e4b49f/Fiona-1.7.10-cp35-cp35m-macosx_10_6_intel.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "9f63564ec581cf8cf6917d945e9bb92c",
-        "sha256": "87da16b430b41bfa808bd681b6e039e8392e6cc53beb9e9d4be6207c3a0f7c77"
+        "md5": "3311e604a21c67b6e1d358d191d000e6",
+        "sha256": "1937780f97e4cdd5b8451b26f37d650c3b18060d63d57ed2a7f8adc7c6d370e0"
       },
-      "downloads": 0,
-      "filename": "Fiona-1.7.9.post1-cp35-cp35m-manylinux1_x86_64.whl",
+      "downloads": -1,
+      "filename": "Fiona-1.7.10-cp35-cp35m-manylinux1_x86_64.whl",
       "has_sig": false,
-      "md5_digest": "9f63564ec581cf8cf6917d945e9bb92c",
+      "md5_digest": "3311e604a21c67b6e1d358d191d000e6",
       "packagetype": "bdist_wheel",
       "python_version": "cp35",
-      "size": 48512931,
-      "upload_time": "2017-08-21T16:23:37",
-      "url": "https://files.pythonhosted.org/packages/0a/fd/3696e82bfa98518cddb08774751e60b682543adf53b501544d5d9b297d58/Fiona-1.7.9.post1-cp35-cp35m-manylinux1_x86_64.whl"
+      "size": 51052389,
+      "upload_time": "2017-10-27T03:34:42",
+      "url": "https://files.pythonhosted.org/packages/72/4f/75c90982c06a4bcd6f49704c28eaff8340e67d207c34d7398c158a566dd9/Fiona-1.7.10-cp35-cp35m-manylinux1_x86_64.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "3ac0207b3acd687d02ec9062f3bfe168",
-        "sha256": "f4e3e7b35b82eaf9e788b699bac09b6be565426d72b36da0a2660d4bcd3cfa9c"
+        "md5": "b4ec93a741f23d0c4526cc0168b765e5",
+        "sha256": "b9dcf71bfbf0e6fb75450d84247bae71eb18cf0ede7887949c32e62ef9dc8e37"
       },
-      "downloads": 0,
-      "filename": "Fiona-1.7.9.post1-cp36-cp36m-macosx_10_6_intel.whl",
+      "downloads": -1,
+      "filename": "Fiona-1.7.10-cp36-cp36m-macosx_10_6_intel.whl",
       "has_sig": false,
-      "md5_digest": "3ac0207b3acd687d02ec9062f3bfe168",
+      "md5_digest": "b4ec93a741f23d0c4526cc0168b765e5",
       "packagetype": "bdist_wheel",
       "python_version": "cp36",
-      "size": 20899501,
-      "upload_time": "2017-08-21T16:24:57",
-      "url": "https://files.pythonhosted.org/packages/49/05/335a18b83b57289800653140d15a120c498c9e6315b2a19161c1f860e54d/Fiona-1.7.9.post1-cp36-cp36m-macosx_10_6_intel.whl"
+      "size": 24934213,
+      "upload_time": "2017-10-27T03:36:32",
+      "url": "https://files.pythonhosted.org/packages/1c/10/4824f3bf26aaecf00d79c5cd0b0fd2c590105441f15eb52c1173d9472310/Fiona-1.7.10-cp36-cp36m-macosx_10_6_intel.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "28586f84f27e05cf015d28f24b840c88",
-        "sha256": "ff1dca503c0fd6f4013800a0772bf748f08f8e88101485cc65c62c5ec45cdeb8"
+        "md5": "133b3e975a932337c77bc6167e6c308e",
+        "sha256": "92ea0020e9db94a5e961bdffd9bb66c5ee49c597a6ac8f8e2ea56c7c476a0d96"
       },
-      "downloads": 0,
-      "filename": "Fiona-1.7.9.post1-cp36-cp36m-manylinux1_x86_64.whl",
+      "downloads": -1,
+      "filename": "Fiona-1.7.10-cp36-cp36m-manylinux1_x86_64.whl",
       "has_sig": false,
-      "md5_digest": "28586f84f27e05cf015d28f24b840c88",
+      "md5_digest": "133b3e975a932337c77bc6167e6c308e",
       "packagetype": "bdist_wheel",
       "python_version": "cp36",
-      "size": 48562150,
-      "upload_time": "2017-08-21T16:27:54",
-      "url": "https://files.pythonhosted.org/packages/7c/52/18eb73b638b48816556905793c545a0ba80b8c1b90d3b25bb7ec63fe36aa/Fiona-1.7.9.post1-cp36-cp36m-manylinux1_x86_64.whl"
+      "size": 51101037,
+      "upload_time": "2017-10-27T03:39:45",
+      "url": "https://files.pythonhosted.org/packages/cb/f2/6dcf13a865200434f51cdfbbc8af43dcfe6b6337632243afa2071edff62d/Fiona-1.7.10-cp36-cp36m-manylinux1_x86_64.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "9f3074c2f27c59cdb4081410e569abec",
-        "sha256": "68e8a925b23e3987845c11b0fdd6378fdec4316fe8ba767a935151b6ee1fc607"
+        "md5": "3ba502299c5b75a31fb4a9ce4c9283b5",
+        "sha256": "564d2f3485547a6b45e3e322249f02c1cc5a651890a27b3b5bab596a64ae0b67"
       },
-      "downloads": 0,
-      "filename": "Fiona-1.7.9.post1.tar.gz",
+      "downloads": -1,
+      "filename": "Fiona-1.7.10.tar.gz",
       "has_sig": false,
-      "md5_digest": "9f3074c2f27c59cdb4081410e569abec",
+      "md5_digest": "3ba502299c5b75a31fb4a9ce4c9283b5",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 682435,
-      "upload_time": "2017-08-21T16:28:11",
-      "url": "https://files.pythonhosted.org/packages/f9/24/940835924e214074f172aae4baa0d906ae85b602b9315b2ccaeda269b59d/Fiona-1.7.9.post1.tar.gz"
+      "size": 702548,
+      "upload_time": "2017-10-27T03:40:06",
+      "url": "https://files.pythonhosted.org/packages/8a/d2/c0315cbe7cc4994bd2ba2d8e26439e0362fe089686ccd06b9772ca2813ba/Fiona-1.7.10.tar.gz"
     }
   ]
 }
