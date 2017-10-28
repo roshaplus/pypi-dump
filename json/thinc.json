@@ -21,7 +21,7 @@
       "Programming Language :: Python :: 3.6",
       "Topic :: Scientific/Engineering"
     ],
-    "description": "Thinc: Practical Machine Learning for NLP in Python\n***************************************************\n\n**Thinc** is the machine learning library powering `spaCy <https://spacy.io>`_.\nIt features a battle-tested linear model designed for large sparse learning\nproblems, and a flexible neural network model under development for\n`spaCy v2.0 <https://github.com/explosion/spaCy/projects/3>`_.\n\nThinc is a practical toolkit for implementing models that follow the\n`\"Embed, encode, attend, predict\" <https://explosion.ai/blog/deep-learning-formula-nlp>`_\narchitecture. It's designed to be easy to install, efficient for CPU usage and\noptimised for NLP and deep learning with text \u2013 in particular, hierarchically\nstructured input and variable-length sequences.\n\n\ud83d\udd2e **Version 6.8 out now!** `Read the release notes here. <https://github.com/explosion/thinc/releases/>`_\n\n.. image:: https://img.shields.io/travis/explosion/thinc/master.svg?style=flat-square\n    :target: https://travis-ci.org/explosion/thinc\n    :alt: Build Status\n    \n.. image:: https://img.shields.io/appveyor/ci/explosion/thinc/master.svg?style=flat-square\n    :target: https://ci.appveyor.com/project/explosion/thinc\n    :alt: Appveyor Build Status\n\n.. image:: https://img.shields.io/coveralls/explosion/thinc.svg?style=flat-square\n    :target: https://coveralls.io/github/explosion/thinc\n    :alt: Test Coverage\n\n.. image:: https://img.shields.io/github/release/explosion/thinc.svg?style=flat-square\n    :target: https://github.com/explosion/thinc/releases\n    :alt: Current Release Version\n\n.. image:: https://img.shields.io/pypi/v/thinc.svg?style=flat-square\n    :target: https://pypi.python.org/pypi/thinc\n    :alt: pypi Version\n\n.. image:: https://anaconda.org/conda-forge/thinc/badges/version.svg\n    :target: https://anaconda.org/conda-forge/thinc\n    :alt: conda Version\n\n.. image:: https://img.shields.io/badge/gitter-join%20chat%20%E2%86%92-7676d1.svg?style=flat-square\n    :target: https://gitter.im/explosion/thinc\n    :alt: Thinc on Gitter\n\n.. image:: https://img.shields.io/twitter/follow/explosion_ai.svg?style=social&label=Follow\n    :target: https://twitter.com/explosion_ai\n    :alt: Follow us on Twitter\n\nWhat's where (as of v6.9.0)\n===========================\n\n======================== ===\n``thinc.v2v.Model``      Base class.\n``thinc.v2v``            Layers transforming vectors to vectors.\n``thinc.i2v``            Layers embedding IDs to vectors.\n``thinc.t2v``            Layers pooling tensors to vectors.\n``thinc.t2t``            Layers transforming tensors to tensors (e.g. CNN, LSTM).\n``thinc.api``            Higher-order functions, for building networks. Will be renamed.\n``thinc.extra``          Datasets and utilities.\n``thinc.neural.ops``     Container classes for mathematical operations. Will be reorganized.\n``thinc.linear.avgtron`` Legacy efficient Averaged Perceptron implementation.\n======================== ===\n\nDevelopment status\n==================\n\nThinc's deep learning functionality is still under active development: APIs are\nunstable, and we're not yet ready to provide usage support. However, if you're\nalready quite familiar with neural networks, there's a lot here you might find\ninteresting. Thinc's conceptual model is quite different from TensorFlow's.\nThinc also implements some novel features, such as a small DSL for concisely\nwiring up models, embedding tables that support pre-computation and the\nhashing trick, dynamic batch sizes, a concatenation-based approach to\nvariable-length sequences, and support for model averaging for the\nAdam solver (which performs very well).\n\nNo computational graph \u2013 just higher order functions\n======================================================\n\nThe central problem for a neural network implementation is this: during the\nforward pass, you compute results that will later be useful during the backward\npass. How do you keep track of this arbitrary state, while making sure that\nlayers can be cleanly composed?\n\nMost libraries solve this problem by having you declare the forward\ncomputations, which are then compiled into a graph somewhere behind the scenes.\nThinc doesn't have a \"computational graph\". Instead, we just use the stack,\nbecause we put the state from the forward pass into callbacks.\n\nAll nodes in the network have a simple signature:\n\n.. code:: none\n\n    f(inputs) -> {outputs, f(d_outputs)->d_inputs}\n\nTo make this less abstract, here's a ReLu activation, following this signature:\n\n.. code:: python\n\n    def relu(inputs):\n        mask = inputs > 0\n        def backprop_relu(d_outputs, optimizer):\n            return d_outputs * mask\n        return inputs * mask, backprop_relu\n\nWhen you call the ``relu`` function, you get back an output variable, and a\ncallback. This lets you calculate a gradient using the output, and then pass it\ninto the callback to perform the backward pass.\n\nThis signature makes it easy to build a complex network out of smaller pieces,\nusing arbitrary higher-order functions you can write yourself. To make this\nclearer, we need a function for a weights layer. Usually this will be\nimplemented as a class \u2014 but let's continue using closures, to keep things\nconcise, and to keep the simplicity of the interface explicit:\n\n.. code:: python\n\n    import numpy\n\n    def create_linear_layer(n_out, n_in):\n        W = numpy.zeros((n_out, n_in))\n        b = numpy.zeros((n_out, 1))\n\n        def forward(X):\n            Y = W @ X + b\n            def backward(dY, optimizer):\n                dX = W.T @ dY\n                dW = numpy.einsum('ik,jk->ij', dY, X)\n                db = dY.sum(axis=0)\n\n                optimizer(W, dW)\n                optimizer(b, db)\n\n                return dX\n            return Y, backward\n        return forward\n\nIf we call ``Wb = create_linear_layer(5, 4)``, the variable ``Wb`` will be the\n``forward()`` function, implemented inside the body of ``create_linear_layer()``.\nThe `Wb` instance will have access to the ``W`` and ``b`` variable defined in its\nouter scope. If we invoke ``create_linear_layer()`` again, we get a new instance,\nwith its own internal state.\n\nThe ``Wb`` instance and the ``relu`` function have exactly the same signature. This\nmakes it easy to write higher order functions to compose them. The most obvious\nthing to do is chain them together:\n\n.. code:: python\n\n    def chain(*layers):\n        def forward(X):\n            backprops = []\n            Y = X\n            for layer in layers:\n                Y, backprop = layer(Y)\n                backprops.append(backprop)\n            def backward(dY, optimizer):\n                for backprop in reversed(backprops):\n                    dY = backprop(dY, optimizer)\n                return dY\n            return Y, backward\n        return forward\n\nWe could now chain our linear layer together with the ``relu`` activation, to\ncreate a simple feed-forward network:\n\n.. code:: python\n\n    Wb1 = create_linear_layer(10, 5)\n    Wb2 = create_linear_layer(3, 10)\n\n    model = chain(Wb1, relu, Wb2)\n\n    X = numpy.random.uniform(size=(5, 4))\n\n    y, bp_y = model(X)\n\n    dY = y - truth\n    dX = bp_y(dY, optimizer)\n\nThis conceptual model makes Thinc very flexible. The trade-off is that Thinc is\nless convenient and efficient at workloads that fit exactly into what\n`Tensorflow <https://www.tensorflow.org/>`_ etc. are designed for. If your graph\nreally is static, and your inputs are homogenous in size and shape,\n`Keras <https://keras.io/>`_ will likely be faster and simpler. But if you want\nto pass normal Python objects through your network, or handle sequences and recursions\nof arbitrary length or complexity, you might find Thinc's design a better fit for\nyour problem.\n\nQuickstart\n==========\n\nThinc should install cleanly with both `pip <http://pypi.python.org/pypi/thinc>`_ and\n`conda <https://anaconda.org/conda-forge/thinc>`_, for **Pythons 2.7+ and 3.5+**, on\n**Linux**, **macOS / OSX** and **Windows**.  Its only system dependency is a compiler\ntool-chain (e.g. ``build-essential``) and the  Python development headers (e.g.\n``python-dev``).\n\n.. code:: bash\n\n    pip install thinc\n\nFor GPU support, we're grateful to use the work of Chainer's cupy module, which provides a numpy-compatible interface for GPU arrays. However, installing Chainer when no GPU is available currently causes an error. We therefore do not list Chainer as an explicit dependency --- so building ``Thinc`` for GPU requires some extra steps:\n\n.. code:: bash\n\n    export CUDA_HOME=/usr/local/cuda-8.0 # Or wherever your CUDA is\n    export PATH=$PATH:$CUDA_HOME/bin\n    pip install chainer\n    python -c \"import cupy; assert cupy\" # Check it installed\n    pip install thinc\n    python -c \"import thinc.neural.gpu_ops\" # Check the GPU ops were built\n\nThe rest of this section describes how to build Thinc from source. If you have\n`Fabric <http://www.fabfile.org>`_ installed, you can use the shortcut:\n\n.. code:: bash\n\n   git clone https://github.com/explosion/thinc\n   cd thinc\n   fab clean env make test\n\nYou can then run the examples as follows:\n\n.. code:: bash\n\n   fab eg.mnist\n   fab eg.basic_tagger\n   fab eg.cnn_tagger\n\nOtherwise, you can build and test explicitly with:\n\n.. code:: bash\n\n   git clone https://github.com/explosion/thinc\n   cd thinc\n\n   virtualenv .env\n   source .env/bin/activate\n\n   pip install -r requirements.txt\n   python setup.py build_ext --inplace\n   py.test thinc/\n\nAnd then run the examples as follows:\n\n.. code:: bash\n\n   python examples/mnist.py\n   python examples/basic_tagger.py\n   python examples/cnn_tagger.py\n\n\nUsage\n=====\n\nThe Neural Network API is still subject to change, even within minor versions.\nYou can get a feel for the current API by checking out the examples. Here are\na few quick highlights.\n\n1. Shape inference\n------------------\n\nModels can be created with some dimensions unspecified. Missing dimensions are\ninferred when pre-trained weights are loaded or when training begins. This\neliminates a common source of programmer error:\n\n.. code:: python\n\n    # Invalid network \u2014 shape mismatch\n    model = chain(ReLu(512, 748), ReLu(512, 784), Softmax(10))\n\n    # Leave the dimensions unspecified, and you can't be wrong.\n    model = chain(ReLu(512), ReLu(512), Softmax())\n\n2. Operator overloading\n-----------------------\n\nThe ``Model.define_operators()`` classmethod allows you to bind arbitrary\nbinary functions to Python operators, for use in any ``Model`` instance. The\nmethod can (and should) be used as a context-manager, so that the overloading\nis limited to the immediate block. This allows concise and expressive model\ndefinition:\n\n.. code:: python\n\n    with Model.define_operators({'>>': chain}):\n        model = ReLu(512) >> ReLu(512) >> Softmax()\n\nThe overloading is cleaned up at the end of the block. A fairly arbitrary zoo\nof functions are currently implemented. Some of the most useful:\n\n* ``chain(model1, model2)``: Compose two models ``f(x)`` and ``g(x)`` into a single model computing ``g(f(x))``.\n\n* ``clone(model1, int)``: Create ``n`` copies of a model, each with distinct weights, and chain them together.\n\n* ``concatenate(model1, model2)``: Given two models with output dimensions ``(n,)`` and ``(m,)``, construct a model with output dimensions ``(m+n,)``.\n\n* ``add(model1, model2)``: ``add(f(x), g(x)) = f(x)+g(x)``\n\n* ``make_tuple(model1, model2)``: Construct tuples of the outputs of two models, at the batch level. The backward pass expects to receive a tuple of gradients, which are routed through the appropriate model, and summed.\n\nPutting these things together, here's the sort of tagging model that Thinc is\ndesigned to make easy.\n\n.. code:: python\n\n    with Model.define_operators({'>>': chain, '**': clone, '|': concatenate}):\n        model = (\n            add_eol_markers('EOL')\n            >> flatten\n            >> memoize(\n                CharLSTM(char_width)\n                | (normalize >> str2int >> Embed(word_width)))\n            >> ExtractWindow(nW=2)\n            >> BatchNorm(ReLu(hidden_width)) ** 3\n            >> Softmax()\n        )\n\nNot all of these pieces are implemented yet, but hopefully this shows where\nwe're going. The ``memoize`` function will be particularly important: in any\nbatch of text, the common words will be very common. It's therefore important\nto evaluate models such as the ``CharLSTM`` once per word type per minibatch,\nrather than once per token.\n\n3. Callback-based backpropagation\n---------------------------------\n\nMost neural network libraries use a computational graph abstraction. This takes\nthe execution away from you, so that gradients can be computed automatically.\nThinc follows a style more like the ``autograd`` library, but with larger\noperations. Usage is as follows:\n\n.. code:: python\n\n    def explicit_sgd_update(X, y):\n        sgd = lambda weights, gradient: weights - gradient * 0.001\n        yh, finish_update = model.begin_update(X, drop=0.2)\n        finish_update(y-yh, sgd)\n\nSeparating the backpropagation into three parts like this has many advantages.\nThe interface to all models is completely uniform \u2014 there is no distinction\nbetween the top-level model you use as a predictor and the internal models for\nthe layers. We also make concurrency simple, by making the ``begin_update()``\nstep a pure function, and separating the accumulation of the gradient from the\naction of the optimizer.\n\n4. Class annotations\n--------------------\n\nTo keep the class hierarchy shallow, Thinc uses class decorators to reuse code\nfor layer definitions. Specifically, the following decorators are available:\n\n* ``describe.attributes()``: Allows attributes to be specified by keyword argument. Used especially for dimensions and parameters.\n\n* ``describe.on_init()``: Allows callbacks to be specified, which will be called at the end of the ``__init__.py``.\n\n* ``describe.on_data()``: Allows callbacks to be specified, which will be called on ``Model.begin_training()``.\n\n\ud83d\udee0 Changelog\n============\n\n=========== ============== ===========\nVersion     Date           Description\n=========== ============== ===========\n`v6.8.1`_   ``2017-08-23`` Fix Windows support\n`v6.8.0`_   ``2017-07-25`` SELU layer, attention, improved GPU/CPU compatibility\n`v6.7.3`_   ``2017-06-05`` Fix convolution on GPU\n`v6.7.2`_   ``2017-06-02`` Bug fixes to serialization\n`v6.7.1`_   ``2017-06-02`` Improve serialization\n`v6.7.0`_   ``2017-06-01`` Fixes to serialization, hash embeddings and flatten ops\n`v6.6.0`_   ``2017-05-14`` Improved GPU usage and examples\n v6.5.2     ``2017-03-20`` *n/a*\n`v6.5.1`_   ``2017-03-20`` Improved linear class and Windows fix\n`v6.5.0`_   ``2017-03-11`` Supervised similarity, fancier embedding and improvements to linear model\n v6.4.0     ``2017-02-15`` *n/a*\n`v6.3.0`_   ``2017-01-25`` Efficiency improvements, argument checking and error messaging\n`v6.2.0`_   ``2017-01-15`` Improve API and introduce overloaded operators\n`v6.1.3`_   ``2017-01-10`` More neural network functions and training continuation\n v6.1.3     ``2017-01-09`` *n/a*\n v6.1.2     ``2017-01-09`` *n/a*\n v6.1.1     ``2017-01-09`` *n/a*\n v6.1.0     ``2017-01-09`` *n/a*\n`v6.0.0`_   ``2016-12-31`` Add ``thinc.neural`` for NLP-oriented deep learning\n=========== ============== ===========\n\n.. _v6.8.1: https://github.com/explosion/thinc/releases/tag/v6.8.1\n.. _v6.8.0: https://github.com/explosion/thinc/releases/tag/v6.8.0\n.. _v6.7.3: https://github.com/explosion/thinc/releases/tag/v6.7.3\n.. _v6.7.2: https://github.com/explosion/thinc/releases/tag/v6.7.2\n.. _v6.7.1: https://github.com/explosion/thinc/releases/tag/v6.7.1\n.. _v6.7.0: https://github.com/explosion/thinc/releases/tag/v6.7.0\n.. _v6.6.0: https://github.com/explosion/thinc/releases/tag/v6.6.0\n.. _v6.5.1: https://github.com/explosion/thinc/releases/tag/v6.5.1\n.. _v6.5.0: https://github.com/explosion/thinc/releases/tag/v6.5.0\n.. _v6.3.0: https://github.com/explosion/thinc/releases/tag/v6.3.0\n.. _v6.2.0: https://github.com/explosion/thinc/releases/tag/v6.2.0\n.. _v6.1.3: https://github.com/explosion/thinc/releases/tag/v6.1.3\n.. _v6.0.0: https://github.com/explosion/thinc/releases/tag/v6.0.0",
+    "description": "Thinc: Practical Machine Learning for NLP in Python\n***************************************************\n\n**Thinc** is the machine learning library powering `spaCy <https://spacy.io>`_.\nIt features a battle-tested linear model designed for large sparse learning\nproblems, and a flexible neural network model under development for\n`spaCy v2.0 <https://github.com/explosion/spaCy/projects/3>`_.\n\nThinc is a practical toolkit for implementing models that follow the\n`\"Embed, encode, attend, predict\" <https://explosion.ai/blog/deep-learning-formula-nlp>`_\narchitecture. It's designed to be easy to install, efficient for CPU usage and\noptimised for NLP and deep learning with text \u2013 in particular, hierarchically\nstructured input and variable-length sequences.\n\n\ud83d\udd2e **Version 6.9 out now!** `Read the release notes here. <https://github.com/explosion/thinc/releases/>`_\n\n.. image:: https://img.shields.io/travis/explosion/thinc/master.svg?style=flat-square\n    :target: https://travis-ci.org/explosion/thinc\n    :alt: Build Status\n    \n.. image:: https://img.shields.io/appveyor/ci/explosion/thinc/master.svg?style=flat-square\n    :target: https://ci.appveyor.com/project/explosion/thinc\n    :alt: Appveyor Build Status\n\n.. image:: https://img.shields.io/coveralls/explosion/thinc.svg?style=flat-square\n    :target: https://coveralls.io/github/explosion/thinc\n    :alt: Test Coverage\n\n.. image:: https://img.shields.io/github/release/explosion/thinc.svg?style=flat-square\n    :target: https://github.com/explosion/thinc/releases\n    :alt: Current Release Version\n\n.. image:: https://img.shields.io/pypi/v/thinc.svg?style=flat-square\n    :target: https://pypi.python.org/pypi/thinc\n    :alt: pypi Version\n\n.. image:: https://anaconda.org/conda-forge/thinc/badges/version.svg\n    :target: https://anaconda.org/conda-forge/thinc\n    :alt: conda Version\n\n.. image:: https://img.shields.io/badge/gitter-join%20chat%20%E2%86%92-7676d1.svg?style=flat-square\n    :target: https://gitter.im/explosion/thinc\n    :alt: Thinc on Gitter\n\n.. image:: https://img.shields.io/twitter/follow/explosion_ai.svg?style=social&label=Follow\n    :target: https://twitter.com/explosion_ai\n    :alt: Follow us on Twitter\n\nWhat's where (as of v6.9.0)\n===========================\n\n======================== ===\n``thinc.v2v.Model``      Base class.\n``thinc.v2v``            Layers transforming vectors to vectors.\n``thinc.i2v``            Layers embedding IDs to vectors.\n``thinc.t2v``            Layers pooling tensors to vectors.\n``thinc.t2t``            Layers transforming tensors to tensors (e.g. CNN, LSTM).\n``thinc.api``            Higher-order functions, for building networks. Will be renamed.\n``thinc.extra``          Datasets and utilities.\n``thinc.neural.ops``     Container classes for mathematical operations. Will be reorganized.\n``thinc.linear.avgtron`` Legacy efficient Averaged Perceptron implementation.\n======================== ===\n\nDevelopment status\n==================\n\nThinc's deep learning functionality is still under active development: APIs are\nunstable, and we're not yet ready to provide usage support. However, if you're\nalready quite familiar with neural networks, there's a lot here you might find\ninteresting. Thinc's conceptual model is quite different from TensorFlow's.\nThinc also implements some novel features, such as a small DSL for concisely\nwiring up models, embedding tables that support pre-computation and the\nhashing trick, dynamic batch sizes, a concatenation-based approach to\nvariable-length sequences, and support for model averaging for the\nAdam solver (which performs very well).\n\nNo computational graph \u2013 just higher order functions\n======================================================\n\nThe central problem for a neural network implementation is this: during the\nforward pass, you compute results that will later be useful during the backward\npass. How do you keep track of this arbitrary state, while making sure that\nlayers can be cleanly composed?\n\nMost libraries solve this problem by having you declare the forward\ncomputations, which are then compiled into a graph somewhere behind the scenes.\nThinc doesn't have a \"computational graph\". Instead, we just use the stack,\nbecause we put the state from the forward pass into callbacks.\n\nAll nodes in the network have a simple signature:\n\n.. code:: none\n\n    f(inputs) -> {outputs, f(d_outputs)->d_inputs}\n\nTo make this less abstract, here's a ReLu activation, following this signature:\n\n.. code:: python\n\n    def relu(inputs):\n        mask = inputs > 0\n        def backprop_relu(d_outputs, optimizer):\n            return d_outputs * mask\n        return inputs * mask, backprop_relu\n\nWhen you call the ``relu`` function, you get back an output variable, and a\ncallback. This lets you calculate a gradient using the output, and then pass it\ninto the callback to perform the backward pass.\n\nThis signature makes it easy to build a complex network out of smaller pieces,\nusing arbitrary higher-order functions you can write yourself. To make this\nclearer, we need a function for a weights layer. Usually this will be\nimplemented as a class \u2014 but let's continue using closures, to keep things\nconcise, and to keep the simplicity of the interface explicit:\n\n.. code:: python\n\n    import numpy\n\n    def create_linear_layer(n_out, n_in):\n        W = numpy.zeros((n_out, n_in))\n        b = numpy.zeros((n_out, 1))\n\n        def forward(X):\n            Y = W @ X + b\n            def backward(dY, optimizer):\n                dX = W.T @ dY\n                dW = numpy.einsum('ik,jk->ij', dY, X)\n                db = dY.sum(axis=0)\n\n                optimizer(W, dW)\n                optimizer(b, db)\n\n                return dX\n            return Y, backward\n        return forward\n\nIf we call ``Wb = create_linear_layer(5, 4)``, the variable ``Wb`` will be the\n``forward()`` function, implemented inside the body of ``create_linear_layer()``.\nThe `Wb` instance will have access to the ``W`` and ``b`` variable defined in its\nouter scope. If we invoke ``create_linear_layer()`` again, we get a new instance,\nwith its own internal state.\n\nThe ``Wb`` instance and the ``relu`` function have exactly the same signature. This\nmakes it easy to write higher order functions to compose them. The most obvious\nthing to do is chain them together:\n\n.. code:: python\n\n    def chain(*layers):\n        def forward(X):\n            backprops = []\n            Y = X\n            for layer in layers:\n                Y, backprop = layer(Y)\n                backprops.append(backprop)\n            def backward(dY, optimizer):\n                for backprop in reversed(backprops):\n                    dY = backprop(dY, optimizer)\n                return dY\n            return Y, backward\n        return forward\n\nWe could now chain our linear layer together with the ``relu`` activation, to\ncreate a simple feed-forward network:\n\n.. code:: python\n\n    Wb1 = create_linear_layer(10, 5)\n    Wb2 = create_linear_layer(3, 10)\n\n    model = chain(Wb1, relu, Wb2)\n\n    X = numpy.random.uniform(size=(5, 4))\n\n    y, bp_y = model(X)\n\n    dY = y - truth\n    dX = bp_y(dY, optimizer)\n\nThis conceptual model makes Thinc very flexible. The trade-off is that Thinc is\nless convenient and efficient at workloads that fit exactly into what\n`Tensorflow <https://www.tensorflow.org/>`_ etc. are designed for. If your graph\nreally is static, and your inputs are homogenous in size and shape,\n`Keras <https://keras.io/>`_ will likely be faster and simpler. But if you want\nto pass normal Python objects through your network, or handle sequences and recursions\nof arbitrary length or complexity, you might find Thinc's design a better fit for\nyour problem.\n\nQuickstart\n==========\n\nThinc should install cleanly with both `pip <http://pypi.python.org/pypi/thinc>`_ and\n`conda <https://anaconda.org/conda-forge/thinc>`_, for **Pythons 2.7+ and 3.5+**, on\n**Linux**, **macOS / OSX** and **Windows**.  Its only system dependency is a compiler\ntool-chain (e.g. ``build-essential``) and the  Python development headers (e.g.\n``python-dev``).\n\n.. code:: bash\n\n    pip install thinc\n\nFor GPU support, we're grateful to use the work of Chainer's cupy module, which provides a numpy-compatible interface for GPU arrays. However, installing Chainer when no GPU is available currently causes an error. We therefore do not list Chainer as an explicit dependency --- so building ``Thinc`` for GPU requires some extra steps:\n\n.. code:: bash\n\n    export CUDA_HOME=/usr/local/cuda-8.0 # Or wherever your CUDA is\n    export PATH=$PATH:$CUDA_HOME/bin\n    pip install chainer\n    python -c \"import cupy; assert cupy\" # Check it installed\n    pip install thinc\n    python -c \"import thinc.neural.gpu_ops\" # Check the GPU ops were built\n\nThe rest of this section describes how to build Thinc from source. If you have\n`Fabric <http://www.fabfile.org>`_ installed, you can use the shortcut:\n\n.. code:: bash\n\n   git clone https://github.com/explosion/thinc\n   cd thinc\n   fab clean env make test\n\nYou can then run the examples as follows:\n\n.. code:: bash\n\n   fab eg.mnist\n   fab eg.basic_tagger\n   fab eg.cnn_tagger\n\nOtherwise, you can build and test explicitly with:\n\n.. code:: bash\n\n   git clone https://github.com/explosion/thinc\n   cd thinc\n\n   virtualenv .env\n   source .env/bin/activate\n\n   pip install -r requirements.txt\n   python setup.py build_ext --inplace\n   py.test thinc/\n\nAnd then run the examples as follows:\n\n.. code:: bash\n\n   python examples/mnist.py\n   python examples/basic_tagger.py\n   python examples/cnn_tagger.py\n\n\nUsage\n=====\n\nThe Neural Network API is still subject to change, even within minor versions.\nYou can get a feel for the current API by checking out the examples. Here are\na few quick highlights.\n\n1. Shape inference\n------------------\n\nModels can be created with some dimensions unspecified. Missing dimensions are\ninferred when pre-trained weights are loaded or when training begins. This\neliminates a common source of programmer error:\n\n.. code:: python\n\n    # Invalid network \u2014 shape mismatch\n    model = chain(ReLu(512, 748), ReLu(512, 784), Softmax(10))\n\n    # Leave the dimensions unspecified, and you can't be wrong.\n    model = chain(ReLu(512), ReLu(512), Softmax())\n\n2. Operator overloading\n-----------------------\n\nThe ``Model.define_operators()`` classmethod allows you to bind arbitrary\nbinary functions to Python operators, for use in any ``Model`` instance. The\nmethod can (and should) be used as a context-manager, so that the overloading\nis limited to the immediate block. This allows concise and expressive model\ndefinition:\n\n.. code:: python\n\n    with Model.define_operators({'>>': chain}):\n        model = ReLu(512) >> ReLu(512) >> Softmax()\n\nThe overloading is cleaned up at the end of the block. A fairly arbitrary zoo\nof functions are currently implemented. Some of the most useful:\n\n* ``chain(model1, model2)``: Compose two models ``f(x)`` and ``g(x)`` into a single model computing ``g(f(x))``.\n\n* ``clone(model1, int)``: Create ``n`` copies of a model, each with distinct weights, and chain them together.\n\n* ``concatenate(model1, model2)``: Given two models with output dimensions ``(n,)`` and ``(m,)``, construct a model with output dimensions ``(m+n,)``.\n\n* ``add(model1, model2)``: ``add(f(x), g(x)) = f(x)+g(x)``\n\n* ``make_tuple(model1, model2)``: Construct tuples of the outputs of two models, at the batch level. The backward pass expects to receive a tuple of gradients, which are routed through the appropriate model, and summed.\n\nPutting these things together, here's the sort of tagging model that Thinc is\ndesigned to make easy.\n\n.. code:: python\n\n    with Model.define_operators({'>>': chain, '**': clone, '|': concatenate}):\n        model = (\n            add_eol_markers('EOL')\n            >> flatten\n            >> memoize(\n                CharLSTM(char_width)\n                | (normalize >> str2int >> Embed(word_width)))\n            >> ExtractWindow(nW=2)\n            >> BatchNorm(ReLu(hidden_width)) ** 3\n            >> Softmax()\n        )\n\nNot all of these pieces are implemented yet, but hopefully this shows where\nwe're going. The ``memoize`` function will be particularly important: in any\nbatch of text, the common words will be very common. It's therefore important\nto evaluate models such as the ``CharLSTM`` once per word type per minibatch,\nrather than once per token.\n\n3. Callback-based backpropagation\n---------------------------------\n\nMost neural network libraries use a computational graph abstraction. This takes\nthe execution away from you, so that gradients can be computed automatically.\nThinc follows a style more like the ``autograd`` library, but with larger\noperations. Usage is as follows:\n\n.. code:: python\n\n    def explicit_sgd_update(X, y):\n        sgd = lambda weights, gradient: weights - gradient * 0.001\n        yh, finish_update = model.begin_update(X, drop=0.2)\n        finish_update(y-yh, sgd)\n\nSeparating the backpropagation into three parts like this has many advantages.\nThe interface to all models is completely uniform \u2014 there is no distinction\nbetween the top-level model you use as a predictor and the internal models for\nthe layers. We also make concurrency simple, by making the ``begin_update()``\nstep a pure function, and separating the accumulation of the gradient from the\naction of the optimizer.\n\n4. Class annotations\n--------------------\n\nTo keep the class hierarchy shallow, Thinc uses class decorators to reuse code\nfor layer definitions. Specifically, the following decorators are available:\n\n* ``describe.attributes()``: Allows attributes to be specified by keyword argument. Used especially for dimensions and parameters.\n\n* ``describe.on_init()``: Allows callbacks to be specified, which will be called at the end of the ``__init__.py``.\n\n* ``describe.on_data()``: Allows callbacks to be specified, which will be called on ``Model.begin_training()``.\n\n\ud83d\udee0 Changelog\n============\n\n=========== ============== ===========\nVersion     Date           Description\n=========== ============== ===========\n`v6.9.0`_   ``2017-10-03`` Reorganize layers, bug fix to Layer Normalization\n`v6.8.2`_ \u00a0 ``2017-09-26`` Fix packaging of `gpu_ops`\n`v6.8.1`_ \u00a0 ``2017-08-23`` Fix Windows support\n`v6.8.0`_   ``2017-07-25`` SELU layer, attention, improved GPU/CPU compatibility\n`v6.7.3`_   ``2017-06-05`` Fix convolution on GPU\n`v6.7.2`_   ``2017-06-02`` Bug fixes to serialization\n`v6.7.1`_   ``2017-06-02`` Improve serialization\n`v6.7.0`_   ``2017-06-01`` Fixes to serialization, hash embeddings and flatten ops\n`v6.6.0`_   ``2017-05-14`` Improved GPU usage and examples\n v6.5.2     ``2017-03-20`` *n/a*\n`v6.5.1`_   ``2017-03-20`` Improved linear class and Windows fix\n`v6.5.0`_   ``2017-03-11`` Supervised similarity, fancier embedding and improvements to linear model\n v6.4.0     ``2017-02-15`` *n/a*\n`v6.3.0`_   ``2017-01-25`` Efficiency improvements, argument checking and error messaging\n`v6.2.0`_   ``2017-01-15`` Improve API and introduce overloaded operators\n`v6.1.3`_   ``2017-01-10`` More neural network functions and training continuation\n v6.1.3     ``2017-01-09`` *n/a*\n v6.1.2     ``2017-01-09`` *n/a*\n v6.1.1     ``2017-01-09`` *n/a*\n v6.1.0     ``2017-01-09`` *n/a*\n`v6.0.0`_   ``2016-12-31`` Add ``thinc.neural`` for NLP-oriented deep learning\n=========== ============== ===========\n\n.. _v6.9.0: https://github.com/explosion/thinc/releases/tag/v6.9.0\n.. _v6.8.2: https://github.com/explosion/thinc/releases/tag/v6.8.2\n.. _v6.8.1: https://github.com/explosion/thinc/releases/tag/v6.8.1\n.. _v6.8.0: https://github.com/explosion/thinc/releases/tag/v6.8.0\n.. _v6.7.3: https://github.com/explosion/thinc/releases/tag/v6.7.3\n.. _v6.7.2: https://github.com/explosion/thinc/releases/tag/v6.7.2\n.. _v6.7.1: https://github.com/explosion/thinc/releases/tag/v6.7.1\n.. _v6.7.0: https://github.com/explosion/thinc/releases/tag/v6.7.0\n.. _v6.6.0: https://github.com/explosion/thinc/releases/tag/v6.6.0\n.. _v6.5.1: https://github.com/explosion/thinc/releases/tag/v6.5.1\n.. _v6.5.0: https://github.com/explosion/thinc/releases/tag/v6.5.0\n.. _v6.3.0: https://github.com/explosion/thinc/releases/tag/v6.3.0\n.. _v6.2.0: https://github.com/explosion/thinc/releases/tag/v6.2.0\n.. _v6.1.3: https://github.com/explosion/thinc/releases/tag/v6.1.3\n.. _v6.0.0: https://github.com/explosion/thinc/releases/tag/v6.0.0",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -37,11 +37,11 @@
     "name": "thinc",
     "platform": "",
     "project_url": "https://pypi.org/project/thinc/",
-    "release_url": "https://pypi.org/project/thinc/6.9.0/",
+    "release_url": "https://pypi.org/project/thinc/6.10.0/",
     "requires_dist": [],
     "requires_python": "",
     "summary": "Practical Machine Learning for NLP",
-    "version": "6.9.0"
+    "version": "6.10.0"
   },
   "releases": {
     "1.0": [
@@ -51,7 +51,7 @@
           "md5": "8355e92d8caeecefffb29c515ef928da",
           "sha256": "8aea78deac11eff82033190f94890d3a66c4c0393f0380393967570a42887f49"
         },
-        "downloads": 1444,
+        "downloads": -1,
         "filename": "thinc-1.0.tar.gz",
         "has_sig": false,
         "md5_digest": "8355e92d8caeecefffb29c515ef928da",
@@ -69,7 +69,7 @@
           "md5": "7855e7291e562cd25f6f03b0c7d48b87",
           "sha256": "5bdd34cafdf5b575f6f39c4c24f96c4183f6c5f3ef5b0e64ae5833a266583450"
         },
-        "downloads": 1414,
+        "downloads": -1,
         "filename": "thinc-1.1.tar.gz",
         "has_sig": false,
         "md5_digest": "7855e7291e562cd25f6f03b0c7d48b87",
@@ -87,7 +87,7 @@
           "md5": "741bb684c6bc738d485422d2dec032cc",
           "sha256": "8b2b7209bbc369fc27a73c34f2b2fef56f987936218d42ab2971a83f1b8d6976"
         },
-        "downloads": 1417,
+        "downloads": -1,
         "filename": "thinc-1.2.tar.gz",
         "has_sig": false,
         "md5_digest": "741bb684c6bc738d485422d2dec032cc",
@@ -105,7 +105,7 @@
           "md5": "839bccc9254ff63a593c51e7aae81323",
           "sha256": "238bb8474de0b552efa5bc5b46888166d020974097e5a88f636e08fae152a4c1"
         },
-        "downloads": 1286,
+        "downloads": -1,
         "filename": "thinc-1.3.tar.gz",
         "has_sig": false,
         "md5_digest": "839bccc9254ff63a593c51e7aae81323",
@@ -123,7 +123,7 @@
           "md5": "d37ab9cf2298fa6a03ec68c2846fad00",
           "sha256": "f7c4440265beeb08fa06f2319506f60e8b4066ca6c0ea06c89c4f9d9f5904616"
         },
-        "downloads": 1654,
+        "downloads": -1,
         "filename": "thinc-1.4.tar.gz",
         "has_sig": false,
         "md5_digest": "d37ab9cf2298fa6a03ec68c2846fad00",
@@ -141,7 +141,7 @@
           "md5": "2a6163a9be31f0342752af671247cbe6",
           "sha256": "38ef475065224e55c1ece111d6aac88d40c66caec1b5d7d721801744ab23d898"
         },
-        "downloads": 872,
+        "downloads": -1,
         "filename": "thinc-1.41.tar.gz",
         "has_sig": false,
         "md5_digest": "2a6163a9be31f0342752af671247cbe6",
@@ -159,7 +159,7 @@
           "md5": "74de1875a4ae6b919b8aff01ee7703b1",
           "sha256": "107960c6cfdbaff610e195ebb30b80561dc2e139ff3be8419511902ef5f8de6c"
         },
-        "downloads": 872,
+        "downloads": -1,
         "filename": "thinc-1.42.tar.gz",
         "has_sig": false,
         "md5_digest": "74de1875a4ae6b919b8aff01ee7703b1",
@@ -177,7 +177,7 @@
           "md5": "361c0bc28879c8bc9ba851b5ad909def",
           "sha256": "8a610feb740ea4bcac5cc99e93c9a6c60497441f81ee49f1eac1f1e3082e0034"
         },
-        "downloads": 1325,
+        "downloads": -1,
         "filename": "thinc-1.5.tar.gz",
         "has_sig": false,
         "md5_digest": "361c0bc28879c8bc9ba851b5ad909def",
@@ -195,7 +195,7 @@
           "md5": "e6376f9f7f886502fd83ece028939b4e",
           "sha256": "ea454272f497f78a7ae7cc8f7f993f7403cdb48f669468ace3a7e0c3d006cd1a"
         },
-        "downloads": 1101,
+        "downloads": -1,
         "filename": "thinc-1.60.tar.gz",
         "has_sig": false,
         "md5_digest": "e6376f9f7f886502fd83ece028939b4e",
@@ -213,7 +213,7 @@
           "md5": "3d53f790722d5f907ed1359b1b5430ff",
           "sha256": "aed5fc764099caca3626b0747cb02ef5f27e88ae90d0fd7d51f6bab41044079d"
         },
-        "downloads": 1082,
+        "downloads": -1,
         "filename": "thinc-1.61.tar.gz",
         "has_sig": false,
         "md5_digest": "3d53f790722d5f907ed1359b1b5430ff",
@@ -231,7 +231,7 @@
           "md5": "c53750546011cb0ecaaa05ef8371826d",
           "sha256": "7d29930de56d65b28f59fce29924509ce4064512310f5032cfe04b2119691592"
         },
-        "downloads": 1094,
+        "downloads": -1,
         "filename": "thinc-1.62.tar.gz",
         "has_sig": false,
         "md5_digest": "c53750546011cb0ecaaa05ef8371826d",
@@ -249,7 +249,7 @@
           "md5": "e4465685a4fb8b335b23a62a7c0e3f69",
           "sha256": "f46e2bd7b235c4d01abd9462a03879e7790073124698fedc07c6f144fdd62c97"
         },
-        "downloads": 1081,
+        "downloads": -1,
         "filename": "thinc-1.63.tar.gz",
         "has_sig": false,
         "md5_digest": "e4465685a4fb8b335b23a62a7c0e3f69",
@@ -267,7 +267,7 @@
           "md5": "07b40c62fde362531abba19d52b2f3d1",
           "sha256": "d0e705a9cda37863faa69977c52580c6a35e94cc4c0cc031b1acf6752b15c651"
         },
-        "downloads": 1099,
+        "downloads": -1,
         "filename": "thinc-1.64.tar.gz",
         "has_sig": false,
         "md5_digest": "07b40c62fde362531abba19d52b2f3d1",
@@ -285,7 +285,7 @@
           "md5": "e02ab29e36949e1fbc7880d6e46dad1b",
           "sha256": "77b73314112b8230902f7e403e8803a8ff86689af72892856be8feee2969d3c0"
         },
-        "downloads": 1072,
+        "downloads": -1,
         "filename": "thinc-1.65.tar.gz",
         "has_sig": false,
         "md5_digest": "e02ab29e36949e1fbc7880d6e46dad1b",
@@ -303,7 +303,7 @@
           "md5": "c9ed5f70a1feb9bd3055daf520963f20",
           "sha256": "f1838eb27d03e48df9bcc8a38ccffce83ff00c255fcef758a1873a56d382bfb0"
         },
-        "downloads": 1104,
+        "downloads": -1,
         "filename": "thinc-1.66.tar.gz",
         "has_sig": false,
         "md5_digest": "c9ed5f70a1feb9bd3055daf520963f20",
@@ -321,7 +321,7 @@
           "md5": "3850befbf58ca3a8c1ee9a4b8f2eb8d9",
           "sha256": "8c16c144f038860b3cc61e2e7d8d3da604dd8efc8a36da8d9da8a9b5d49f13ef"
         },
-        "downloads": 1094,
+        "downloads": -1,
         "filename": "thinc-1.67.tar.gz",
         "has_sig": false,
         "md5_digest": "3850befbf58ca3a8c1ee9a4b8f2eb8d9",
@@ -339,7 +339,7 @@
           "md5": "7d588ddf118cd503f02246263afb607b",
           "sha256": "80d992f2bebb3fb98e9c61f79e99e226b45823da2ca5ca91f8e2e80fa930b440"
         },
-        "downloads": 1082,
+        "downloads": -1,
         "filename": "thinc-1.68.tar.gz",
         "has_sig": false,
         "md5_digest": "7d588ddf118cd503f02246263afb607b",
@@ -357,7 +357,7 @@
           "md5": "81a6bbed02ab76eb9bd0095ede144392",
           "sha256": "9bbaf7910fe63ad044a9b4786b1b7d064f839d4b90c1609d663eef6947106c8e"
         },
-        "downloads": 1059,
+        "downloads": -1,
         "filename": "thinc-1.69.tar.gz",
         "has_sig": false,
         "md5_digest": "81a6bbed02ab76eb9bd0095ede144392",
@@ -375,7 +375,7 @@
           "md5": "3f3e244a5999d3983cfca75992f0aeed",
           "sha256": "345cacfc1182e25e946f882a8500db531eb88b5af5a5f58f1b87f7fb17407307"
         },
-        "downloads": 1084,
+        "downloads": -1,
         "filename": "thinc-1.70.tar.gz",
         "has_sig": false,
         "md5_digest": "3f3e244a5999d3983cfca75992f0aeed",
@@ -393,7 +393,7 @@
           "md5": "680be0d65bf1133216713da6efa822e6",
           "sha256": "db72a17a036d9c47aa7a2cec93b401f6695ebadf44be73c20a1dfff67ff04f7f"
         },
-        "downloads": 1186,
+        "downloads": -1,
         "filename": "thinc-1.71.tar.gz",
         "has_sig": false,
         "md5_digest": "680be0d65bf1133216713da6efa822e6",
@@ -411,7 +411,7 @@
           "md5": "3f6112c4dc670c72d05674d9b114828b",
           "sha256": "6540cd0f33c6c018d5cde1e46fc72863158708ac34b204469dd3540ff1d1a11f"
         },
-        "downloads": 1045,
+        "downloads": -1,
         "filename": "thinc-1.72.tar.gz",
         "has_sig": false,
         "md5_digest": "3f6112c4dc670c72d05674d9b114828b",
@@ -429,7 +429,7 @@
           "md5": "f0791ff73cb8697af7bed547714761f0",
           "sha256": "80dde712079edafa231d4524831799c4413821dd6cfe219b02c53d6c9586d55a"
         },
-        "downloads": 1615,
+        "downloads": -1,
         "filename": "thinc-1.73.tar.gz",
         "has_sig": false,
         "md5_digest": "f0791ff73cb8697af7bed547714761f0",
@@ -447,7 +447,7 @@
           "md5": "96998f75a7d60a768b56dfc7f9229aea",
           "sha256": "6c7f48abd963354c70e18018970d0667e090117f436b41e68a460cc518cc0ec7"
         },
-        "downloads": 1139,
+        "downloads": -1,
         "filename": "thinc-1.74.tar.gz",
         "has_sig": false,
         "md5_digest": "96998f75a7d60a768b56dfc7f9229aea",
@@ -465,7 +465,7 @@
           "md5": "322f24e5d5796397acb893feee573e31",
           "sha256": "c59acd82bded6707bb85d053ec2ea874a4716bf60450bbff3f19ae75079d3bd5"
         },
-        "downloads": 2463,
+        "downloads": -1,
         "filename": "thinc-1.75.tar.gz",
         "has_sig": false,
         "md5_digest": "322f24e5d5796397acb893feee573e31",
@@ -483,7 +483,7 @@
           "md5": "ca4fac6b6c138f19f2cb79eecdfa6db9",
           "sha256": "84030978fa91b3142d15d0016fe7cfe50e65ccc9137b46412702ba7da7a93fdc"
         },
-        "downloads": 1901,
+        "downloads": -1,
         "filename": "thinc-1.76.tar.gz",
         "has_sig": false,
         "md5_digest": "ca4fac6b6c138f19f2cb79eecdfa6db9",
@@ -501,7 +501,7 @@
           "md5": "eb65ee9ecdc2ab470db1dd2414059ccf",
           "sha256": "d06cf116c602deeb505e5b79065728af95b0129072f963051181a9b043dd6f05"
         },
-        "downloads": 1363,
+        "downloads": -1,
         "filename": "thinc-2.0.tar.gz",
         "has_sig": false,
         "md5_digest": "eb65ee9ecdc2ab470db1dd2414059ccf",
@@ -519,7 +519,7 @@
           "md5": "a35d3e54cb8eb4de5d9ae172c8753cf5",
           "sha256": "b5f67242db5b6ed063a76d1b5f9490c86bed335bb5fd361dbbd6f347bd8c9e47"
         },
-        "downloads": 848,
+        "downloads": -1,
         "filename": "thinc-3.0.tar.gz",
         "has_sig": false,
         "md5_digest": "a35d3e54cb8eb4de5d9ae172c8753cf5",
@@ -537,7 +537,7 @@
           "md5": "bb5c977b226b149942580eae0b73f3e0",
           "sha256": "3c7558088216947ea7699b999389f61e82126a9a421f718f9e8f99eedcf78c5e"
         },
-        "downloads": 806,
+        "downloads": -1,
         "filename": "thinc-3.1.tar.gz",
         "has_sig": false,
         "md5_digest": "bb5c977b226b149942580eae0b73f3e0",
@@ -555,7 +555,7 @@
           "md5": "4122c49fc85c0394401607c5fa78269b",
           "sha256": "dc2c15100fe68b0a6b6a37bb10daaee66b38d7564a2fba2fdba272e25b95e2f6"
         },
-        "downloads": 3678,
+        "downloads": -1,
         "filename": "thinc-3.2.tar.gz",
         "has_sig": false,
         "md5_digest": "4122c49fc85c0394401607c5fa78269b",
@@ -573,7 +573,7 @@
           "md5": "cc2ae3eb739a46b5036d4208e424329f",
           "sha256": "61c82ecaac64753812259a876b96c68f1e23895f5a5157358cb52c0842da7585"
         },
-        "downloads": 4553,
+        "downloads": -1,
         "filename": "thinc-3.3.tar.gz",
         "has_sig": false,
         "md5_digest": "cc2ae3eb739a46b5036d4208e424329f",
@@ -591,7 +591,7 @@
           "md5": "834a38730a52d3212d38ed2a57d2115c",
           "sha256": "705494cb33ae2096fe185807d96526fd0037f88464d9c3228ac126d225d5bbb3"
         },
-        "downloads": 1020,
+        "downloads": -1,
         "filename": "thinc-3.4.1.tar.gz",
         "has_sig": false,
         "md5_digest": "834a38730a52d3212d38ed2a57d2115c",
@@ -609,7 +609,7 @@
           "md5": "65a91d5b13ae8b6188d7d22fe5250f18",
           "sha256": "2dcb8bb408108fbc8c783f204a64b1493cd64a9fe90b3acf8943e0298b314b15"
         },
-        "downloads": 4336,
+        "downloads": -1,
         "filename": "thinc-4.0.0.tar.gz",
         "has_sig": false,
         "md5_digest": "65a91d5b13ae8b6188d7d22fe5250f18",
@@ -627,7 +627,7 @@
           "md5": "c522e7fcbc9cae3088d1c4a53a47691f",
           "sha256": "ace32e5bd7cdcb880d7d81483df2f587f088684c5d458af1bd9fa126d6a71474"
         },
-        "downloads": 816,
+        "downloads": -1,
         "filename": "thinc-4.1.0.tar.gz",
         "has_sig": false,
         "md5_digest": "c522e7fcbc9cae3088d1c4a53a47691f",
@@ -645,7 +645,7 @@
           "md5": "efcdea7f2cd485b2619ec0f9af42f4bc",
           "sha256": "44c47d23cd69425b945e6df67b84ce0665b145305e2227290602021854973f26"
         },
-        "downloads": 2328,
+        "downloads": -1,
         "filename": "thinc-4.2.0.tar.gz",
         "has_sig": false,
         "md5_digest": "efcdea7f2cd485b2619ec0f9af42f4bc",
@@ -663,7 +663,7 @@
           "md5": "c7f4a3d1751f63c62b7f0af817e7ec57",
           "sha256": "e832a50eb46f5f881c8740afc5b135f20ebd34d2bdc97538c173ce8a3a20f571"
         },
-        "downloads": 112,
+        "downloads": -1,
         "filename": "thinc-5.0.0.tar.gz",
         "has_sig": false,
         "md5_digest": "c7f4a3d1751f63c62b7f0af817e7ec57",
@@ -681,7 +681,7 @@
           "md5": "cfc907da57e77b84b9b1997d9c4e8b83",
           "sha256": "88cdf21099d2bdd7cd65e776a80e5c8a7929f7ad60848ff38c1574d4408fe510"
         },
-        "downloads": 97,
+        "downloads": -1,
         "filename": "thinc-5.0.1.tar.gz",
         "has_sig": false,
         "md5_digest": "cfc907da57e77b84b9b1997d9c4e8b83",
@@ -699,7 +699,7 @@
           "md5": "c30f61c151692e8d003c46dc286c1229",
           "sha256": "082d71c04d9da27cf76aa1c228a838c79d57acfe25050cf23b86e801ff11e4d1"
         },
-        "downloads": 97,
+        "downloads": -1,
         "filename": "thinc-5.0.2.tar.gz",
         "has_sig": false,
         "md5_digest": "c30f61c151692e8d003c46dc286c1229",
@@ -717,7 +717,7 @@
           "md5": "805d53496a3626778ab0fe82056fa9b3",
           "sha256": "d27a290997f93fe3dab65a5e20f8a9e4e069a55244776dd16ac856c0bb7937c4"
         },
-        "downloads": 97,
+        "downloads": -1,
         "filename": "thinc-5.0.3.tar.gz",
         "has_sig": false,
         "md5_digest": "805d53496a3626778ab0fe82056fa9b3",
@@ -735,7 +735,7 @@
           "md5": "096ddbc9e7852f8d7af00970b17300cb",
           "sha256": "43629c76b82ec04493cf1eafccb029f2e1e6a963c080fd8d1a7e36663da8e27e"
         },
-        "downloads": 100,
+        "downloads": -1,
         "filename": "thinc-5.0.4.tar.gz",
         "has_sig": false,
         "md5_digest": "096ddbc9e7852f8d7af00970b17300cb",
@@ -753,7 +753,7 @@
           "md5": "09f07145c260313f67fbfc8ca625bf74",
           "sha256": "0c7bd99ba2484bb9d83283c1321f3923eb4a0e8b17238a0ce103fa4780337c55"
         },
-        "downloads": 97,
+        "downloads": -1,
         "filename": "thinc-5.0.5.tar.gz",
         "has_sig": false,
         "md5_digest": "09f07145c260313f67fbfc8ca625bf74",
@@ -771,7 +771,7 @@
           "md5": "bceb8627e30f82f7b28c47de77939edc",
           "sha256": "af85c5b0dbac759c6760d8da317e59af5805399917e616990f315174621f5b47"
         },
-        "downloads": 100,
+        "downloads": -1,
         "filename": "thinc-5.0.6-cp27-cp27m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "bceb8627e30f82f7b28c47de77939edc",
@@ -787,7 +787,7 @@
           "md5": "0b4bd65ecc33dcbd8569911389aa23d8",
           "sha256": "988f2483b1f76527d971d5aea2a6e7b18c0e675ca5dcd7bfcfe163f0d831abeb"
         },
-        "downloads": 102,
+        "downloads": -1,
         "filename": "thinc-5.0.6-cp27-none-win_amd64.whl",
         "has_sig": false,
         "md5_digest": "0b4bd65ecc33dcbd8569911389aa23d8",
@@ -803,7 +803,7 @@
           "md5": "289638da9eee3d2c0ae03ab3c09d4a22",
           "sha256": "4268a5dbb71bba5378bcd33556937c74c663c9dc568ba2289c5ae26df899d21f"
         },
-        "downloads": 96,
+        "downloads": -1,
         "filename": "thinc-5.0.6-cp34-cp34m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "289638da9eee3d2c0ae03ab3c09d4a22",
@@ -819,7 +819,7 @@
           "md5": "fcefc4764892b35d9edb2298ba21c5c6",
           "sha256": "61cfff8b6a5fc8c122385e765f36208f2b6915879cd910a8fcee34a1014f97b2"
         },
-        "downloads": 97,
+        "downloads": -1,
         "filename": "thinc-5.0.6-cp34-none-win_amd64.whl",
         "has_sig": false,
         "md5_digest": "fcefc4764892b35d9edb2298ba21c5c6",
@@ -835,7 +835,7 @@
           "md5": "a0d30f563ed2a40ffd489eadf5e8a213",
           "sha256": "05ad6b18b46266865236b280ffabe0f88f839205cccc20eca02f91c81a26e36f"
         },
-        "downloads": 99,
+        "downloads": -1,
         "filename": "thinc-5.0.6-cp35-cp35m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "a0d30f563ed2a40ffd489eadf5e8a213",
@@ -851,7 +851,7 @@
           "md5": "51011066317ee3a063956255df7609c4",
           "sha256": "e77103edb5dd51109e1630f305e91d8abb21ffce2d854b57049cb17d6db9d275"
         },
-        "downloads": 112,
+        "downloads": -1,
         "filename": "thinc-5.0.6-cp35-none-win_amd64.whl",
         "has_sig": false,
         "md5_digest": "51011066317ee3a063956255df7609c4",
@@ -867,7 +867,7 @@
           "md5": "22177b1e53e8d0c972e242dfb30e65dd",
           "sha256": "1b92a8cde12200706be1329b8593849002c5bbbb26104f18802d3addeabb167f"
         },
-        "downloads": 123,
+        "downloads": -1,
         "filename": "thinc-5.0.6.tar.gz",
         "has_sig": false,
         "md5_digest": "22177b1e53e8d0c972e242dfb30e65dd",
@@ -885,7 +885,7 @@
           "md5": "e172299900df33295554c99aff08381b",
           "sha256": "7fb1dacd9305d5b91f900f1651574f5afe5ab861cf8d90184da781e53e6a5095"
         },
-        "downloads": 107,
+        "downloads": -1,
         "filename": "thinc-5.0.7-cp27-cp27m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "e172299900df33295554c99aff08381b",
@@ -901,7 +901,7 @@
           "md5": "963e0819530d54c0d02eafdf56a07571",
           "sha256": "01bdd9763aaff0ffcc9ea2f5be1caec316aabb7d5a439f02a87cc748aa80693f"
         },
-        "downloads": 101,
+        "downloads": -1,
         "filename": "thinc-5.0.7-cp27-cp27m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "963e0819530d54c0d02eafdf56a07571",
@@ -917,7 +917,7 @@
           "md5": "43a48da7668b4b40de294c8004ef286d",
           "sha256": "0586d021bbfd85db715231bb4e5f841ed036fa35b3dbf7139ac99b629d1616ba"
         },
-        "downloads": 125,
+        "downloads": -1,
         "filename": "thinc-5.0.7-cp27-cp27mu-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "43a48da7668b4b40de294c8004ef286d",
@@ -933,7 +933,7 @@
           "md5": "6b86037cdaee8714748690e890815850",
           "sha256": "b550d709d622a3c9f5b69d8159bb39df38de1ea529bb0170c11ccfae2e19f5a1"
         },
-        "downloads": 104,
+        "downloads": -1,
         "filename": "thinc-5.0.7-cp27-none-win_amd64.whl",
         "has_sig": false,
         "md5_digest": "6b86037cdaee8714748690e890815850",
@@ -949,7 +949,7 @@
           "md5": "7497aad96de125f90530b121500afd47",
           "sha256": "4d3638e732a52d297bafb9ac6db4a881ad80ac660c58c8296a68c3ae9c7c76f9"
         },
-        "downloads": 97,
+        "downloads": -1,
         "filename": "thinc-5.0.7-cp34-cp34m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "7497aad96de125f90530b121500afd47",
@@ -965,7 +965,7 @@
           "md5": "7d191d8c776a3bcbe3626a048b061939",
           "sha256": "d06655ee2c0ea7ff0949997eb2cd92deefa71b564fb63985e76f2768e6aa79aa"
         },
-        "downloads": 134,
+        "downloads": -1,
         "filename": "thinc-5.0.7-cp34-cp34m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "7d191d8c776a3bcbe3626a048b061939",
@@ -981,7 +981,7 @@
           "md5": "13cd282818475f1faef245c6bd8f77b0",
           "sha256": "9094ead48f821c5c62fd2dccf439c3c3e9959f2c7b7ef9f1f05b347a2ff4e697"
         },
-        "downloads": 102,
+        "downloads": -1,
         "filename": "thinc-5.0.7-cp34-none-win_amd64.whl",
         "has_sig": false,
         "md5_digest": "13cd282818475f1faef245c6bd8f77b0",
@@ -997,7 +997,7 @@
           "md5": "889f67e1be334ef20cc876d1cae4f2d0",
           "sha256": "f9e57d8cb2226e18b1d7a9c3ffed7a07c25a560f427fd924e5a0d09aac51244d"
         },
-        "downloads": 102,
+        "downloads": -1,
         "filename": "thinc-5.0.7-cp35-cp35m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "889f67e1be334ef20cc876d1cae4f2d0",
@@ -1013,7 +1013,7 @@
           "md5": "627783962d5f0bee83065eea0fe35f8e",
           "sha256": "5286613b2fa94c0a7bad4175d349e8a6fe44cfd614a18094866089875958317a"
         },
-        "downloads": 107,
+        "downloads": -1,
         "filename": "thinc-5.0.7-cp35-cp35m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "627783962d5f0bee83065eea0fe35f8e",
@@ -1029,7 +1029,7 @@
           "md5": "6b59a464a5775a6e43b17f3075780867",
           "sha256": "b0c82f3b94d47a936efec09b04cebc99fc76d2e3dbedb82e2b4282c2a5396697"
         },
-        "downloads": 97,
+        "downloads": -1,
         "filename": "thinc-5.0.7-cp35-none-win_amd64.whl",
         "has_sig": false,
         "md5_digest": "6b59a464a5775a6e43b17f3075780867",
@@ -1045,7 +1045,7 @@
           "md5": "0f5c121641832394c6f54a625f0527b8",
           "sha256": "11143b9ece5d3f71341c543e671355fe9673532ab698f9dbed6ad44ea7b0cde8"
         },
-        "downloads": 123,
+        "downloads": -1,
         "filename": "thinc-5.0.7.tar.gz",
         "has_sig": false,
         "md5_digest": "0f5c121641832394c6f54a625f0527b8",
@@ -1063,7 +1063,7 @@
           "md5": "83d21cb2e5c91c006e611eb4e4d74911",
           "sha256": "43db9dccd6d456db8e453a22363e54352bab8bd6d3c3a479f0df43586d8bff74"
         },
-        "downloads": 1054,
+        "downloads": -1,
         "filename": "thinc-5.0.8-cp27-cp27m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "83d21cb2e5c91c006e611eb4e4d74911",
@@ -1079,7 +1079,7 @@
           "md5": "217d545fc14f3dfeda5b2b42a58c289b",
           "sha256": "af1ad7f841022fd9a0e3d84e9fe1a780276a99f9b71e0501dcb8a2093816ea9d"
         },
-        "downloads": 241,
+        "downloads": -1,
         "filename": "thinc-5.0.8-cp27-cp27m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "217d545fc14f3dfeda5b2b42a58c289b",
@@ -1095,7 +1095,7 @@
           "md5": "fa3fc65ddd3f79f9a8d907463fe7e5ad",
           "sha256": "fd0397b231102362c85cc40765be6a76a6c25b2faa8aabdb3ba43a9b29d5945d"
         },
-        "downloads": 5312,
+        "downloads": -1,
         "filename": "thinc-5.0.8-cp27-cp27mu-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "fa3fc65ddd3f79f9a8d907463fe7e5ad",
@@ -1111,7 +1111,7 @@
           "md5": "71ad203ff8e24afb361b87b3b77b333c",
           "sha256": "3bd4bff40d8c7bc021c517c463b94568f54874b8e265b72a9ac5c47d285b5962"
         },
-        "downloads": 415,
+        "downloads": -1,
         "filename": "thinc-5.0.8-cp27-none-win_amd64.whl",
         "has_sig": false,
         "md5_digest": "71ad203ff8e24afb361b87b3b77b333c",
@@ -1127,7 +1127,7 @@
           "md5": "629814e4a703541b4209a5930b305a16",
           "sha256": "767aee351341b9166a32b869be4150ed4d2ab6d31390b47e3a1bfbe8a575892d"
         },
-        "downloads": 166,
+        "downloads": -1,
         "filename": "thinc-5.0.8-cp34-cp34m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "629814e4a703541b4209a5930b305a16",
@@ -1143,7 +1143,7 @@
           "md5": "3d9a83580cd66a6dafa83cb491a6787c",
           "sha256": "bd0993ba2f01ed023bc86e7ea3a860cd11872f1f5dca29bbf738518c333c38d3"
         },
-        "downloads": 709,
+        "downloads": -1,
         "filename": "thinc-5.0.8-cp34-cp34m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "3d9a83580cd66a6dafa83cb491a6787c",
@@ -1159,7 +1159,7 @@
           "md5": "e9ed48c14ae66d26efb146903a0febe8",
           "sha256": "254774b165ff817b02a5a3eafde7774d7d94d88265433d169e022af47c7bc74c"
         },
-        "downloads": 155,
+        "downloads": -1,
         "filename": "thinc-5.0.8-cp34-none-win_amd64.whl",
         "has_sig": false,
         "md5_digest": "e9ed48c14ae66d26efb146903a0febe8",
@@ -1175,7 +1175,7 @@
           "md5": "1ff212802060be9bd62780040371a456",
           "sha256": "883d98ba21d969bc1ca4ce0ba09cd2b0070f65616ad812b5b2be8c4d13d066dc"
         },
-        "downloads": 523,
+        "downloads": -1,
         "filename": "thinc-5.0.8-cp35-cp35m-macosx_10_6_intel.whl",
         "has_sig": false,
         "md5_digest": "1ff212802060be9bd62780040371a456",
@@ -1191,7 +1191,7 @@
           "md5": "49fdf061b6d22a0cc0e35b7ae6af6a33",
           "sha256": "503b550f48e908cff418e5967e3e005a9a6b247d75dcb7694d7b12ead3911be3"
         },
-        "downloads": 2548,
+        "downloads": -1,
         "filename": "thinc-5.0.8-cp35-cp35m-manylinux1_x86_64.whl",
         "has_sig": false,
         "md5_digest": "49fdf061b6d22a0cc0e35b7ae6af6a33",
@@ -1207,7 +1207,7 @@
           "md5": "cd5d686a70a2ab57bd9c4dd2b1423611",
           "sha256": "e95930a87061f2083998d45abf1e3c9b677da2423e04c0b031881c921d883909"
         },
-        "downloads": 378,
+        "downloads": -1,
         "filename": "thinc-5.0.8-cp35-none-win_amd64.whl",
         "has_sig": false,
         "md5_digest": "cd5d686a70a2ab57bd9c4dd2b1423611",
@@ -1223,7 +1223,7 @@
           "md5": "df1a9231b7849336496a91afb56aff26",
           "sha256": "993a12ab10c0af52c1db814fdabeecc591163e76c1fff50857ca9785c7a1841c"
         },
-        "downloads": 3700,
+        "downloads": -1,
         "filename": "thinc-5.0.8.tar.gz",
         "has_sig": false,
         "md5_digest": "df1a9231b7849336496a91afb56aff26",
@@ -1241,7 +1241,7 @@
           "md5": "04fee74fbba97d684d8281ba2b2e35a2",
           "sha256": "3f7d85ced0deb286757545552f93d6b81fa88ba2197d59757c2f6fb2a50e3390"
         },
-        "downloads": 63,
+        "downloads": -1,
         "filename": "thinc-6.0.0.tar.gz",
         "has_sig": false,
         "md5_digest": "04fee74fbba97d684d8281ba2b2e35a2",
@@ -1259,7 +1259,7 @@
           "md5": "8c64a3779ae796428622ae94fff29dca",
           "sha256": "9b716f2a220c5722deda14c3e572e342d73422b3e689d5b86404bee3bea8b178"
         },
-        "downloads": 8,
+        "downloads": -1,
         "filename": "thinc-6.1.0.tar.gz",
         "has_sig": false,
         "md5_digest": "8c64a3779ae796428622ae94fff29dca",
@@ -1277,7 +1277,7 @@
           "md5": "e0e8b6653d84fa07936e4f2abad600ce",
           "sha256": "2f222818c5ab37f50f446a6872314a385e77548f255fed30c9ab22383a79e528"
         },
-        "downloads": 8,
+        "downloads": -1,
         "filename": "thinc-6.1.1.tar.gz",
         "has_sig": false,
         "md5_digest": "e0e8b6653d84fa07936e4f2abad600ce",
@@ -1295,7 +1295,7 @@
           "md5": "8e25d15ff989d55acca36a672e385556",
           "sha256": "18a2fc54ef0a51fa49054af22dd9a04accce4a49f4f671bd6512cd9092c59973"
         },
-        "downloads": 10,
+        "downloads": -1,
         "filename": "thinc-6.1.2.tar.gz",
         "has_sig": false,
         "md5_digest": "8e25d15ff989d55acca36a672e385556",
@@ -1313,7 +1313,7 @@
           "md5": "d23687526acb03a0871dd08ff3d20b51",
           "sha256": "63e96326e5eb899eabc20bfc5d9e1c76e7f0df6c03f09f47d1247a197a6835cc"
         },
-        "downloads": 10,
+        "downloads": -1,
         "filename": "thinc-6.1.3.tar.gz",
         "has_sig": false,
         "md5_digest": "d23687526acb03a0871dd08ff3d20b51",
@@ -1324,6 +1324,24 @@
         "url": "https://files.pythonhosted.org/packages/0f/7b/b12e77aeb449dbe291880d4e89488db7c939903d8e0b3ffd9fe16e526aa7/thinc-6.1.3.tar.gz"
       }
     ],
+    "6.10.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1d617796a08e4c31db9626ee83f86564",
+          "sha256": "8615dffa31409d2fac85d4806674d914a554aac297f867a03e6dcd84cb6cc99a"
+        },
+        "downloads": -1,
+        "filename": "thinc-6.10.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1d617796a08e4c31db9626ee83f86564",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 1192111,
+        "upload_time": "2017-10-28T17:00:58",
+        "url": "https://files.pythonhosted.org/packages/28/75/f9ea4468140190eff3e86a90cd6741225816065b042a107c6f7639cfae1f/thinc-6.10.0.tar.gz"
+      }
+    ],
     "6.2.0": [
       {
         "comment_text": "",
@@ -1331,7 +1349,7 @@
           "md5": "46861449652d4dc3b9b4fba0f07c9f54",
           "sha256": "10899e88471aa854bf6fbcbad79996432ac8c1952e20ad7d7ad465e9c1919b63"
         },
-        "downloads": 516,
+        "downloads": -1,
         "filename": "thinc-6.2.0.tar.gz",
         "has_sig": false,
         "md5_digest": "46861449652d4dc3b9b4fba0f07c9f54",
@@ -1349,7 +1367,7 @@
           "md5": "d9eafa6d1e377218fa1a93d8f056a056",
           "sha256": "092809c769ee4f698f82b809f7d5c91b4fc149be639f5050499d5652238be29c"
         },
-        "downloads": 72,
+        "downloads": -1,
         "filename": "thinc-6.3.0.tar.gz",
         "has_sig": false,
         "md5_digest": "d9eafa6d1e377218fa1a93d8f056a056",
@@ -1367,7 +1385,7 @@
           "md5": "96e29c634c94d80508c0ada802ddcc9e",
           "sha256": "911fb27a4c61daeb4fa3cf27a807b33fac93cfd5fe9db85d471be8c6ff0f6a63"
         },
-        "downloads": 20,
+        "downloads": -1,
         "filename": "thinc-6.4.0.tar.gz",
         "has_sig": false,
         "md5_digest": "96e29c634c94d80508c0ada802ddcc9e",
@@ -1385,7 +1403,7 @@
           "md5": "a2cf690cfa8651c25135f87093dd4576",
           "sha256": "5ccb14fb2dc5165705ca19cdb611feca928c97673419fe89cad1ebc0ecff5cc5"
         },
-        "downloads": 562,
+        "downloads": -1,
         "filename": "thinc-6.5.0.tar.gz",
         "has_sig": false,
         "md5_digest": "a2cf690cfa8651c25135f87093dd4576",
@@ -1403,7 +1421,7 @@
           "md5": "6424d805ec572c881135cd634af59a7e",
           "sha256": "e409b444a4a03b38dbca62b85bef917cec7261d3069e93924b843a851d3ed368"
         },
-        "downloads": 1496,
+        "downloads": -1,
         "filename": "thinc-6.5.2.tar.gz",
         "has_sig": false,
         "md5_digest": "6424d805ec572c881135cd634af59a7e",
@@ -1421,7 +1439,7 @@
           "md5": "516e52cb05692209bc2709a7d1c32c64",
           "sha256": "aa68def9f07547d33182bcf983d9bd133320387d1ab00d741aabc44a6993c72c"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "thinc-6.6.0.tar.gz",
         "has_sig": false,
         "md5_digest": "516e52cb05692209bc2709a7d1c32c64",
@@ -1439,7 +1457,7 @@
           "md5": "42da4ce946c5866c1fa2d6312b0809c6",
           "sha256": "3b1f2f7efd63d09c4ff8eb1985d898ef7b2c0a09f683338274f63c880d708dc0"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "thinc-6.7.0.tar.gz",
         "has_sig": false,
         "md5_digest": "42da4ce946c5866c1fa2d6312b0809c6",
@@ -1457,7 +1475,7 @@
           "md5": "214a34aa26ea3d22b045489bd22c9140",
           "sha256": "d0358c199e7cb4e29ab9ba58d2620b5effae126f13fc959b1f5813096f142f65"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "thinc-6.7.1.tar.gz",
         "has_sig": false,
         "md5_digest": "214a34aa26ea3d22b045489bd22c9140",
@@ -1475,7 +1493,7 @@
           "md5": "d4e868c760c058e9f875c9c912b56032",
           "sha256": "8401c031af73398e705e3fea694ae7a1614aef98f6bd4f1a6de7b38ed8d90377"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "thinc-6.7.2.tar.gz",
         "has_sig": false,
         "md5_digest": "d4e868c760c058e9f875c9c912b56032",
@@ -1493,7 +1511,7 @@
           "md5": "549ecb152330d96a679e03a744eda5a3",
           "sha256": "be479860f2f7d19f11d21a7fe6549df3b4ca85e320712cf008ac58ccc544f98c"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "thinc-6.7.3.tar.gz",
         "has_sig": false,
         "md5_digest": "549ecb152330d96a679e03a744eda5a3",
@@ -1511,7 +1529,7 @@
           "md5": "22784e1e6e326f6d51dc0d2362d3915d",
           "sha256": "102fcdf906a1af6e67682396062555a4d414d208e121ae483f0694246e015c1e"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "thinc-6.8.0.tar.gz",
         "has_sig": false,
         "md5_digest": "22784e1e6e326f6d51dc0d2362d3915d",
@@ -1529,7 +1547,7 @@
           "md5": "d725a1c5ca18bf57336843df13993a79",
           "sha256": "4acba1e7ad783ecad9a9364fb9768158165f2810986b18d37e905b85048d1e38"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "thinc-6.8.1.tar.gz",
         "has_sig": false,
         "md5_digest": "d725a1c5ca18bf57336843df13993a79",
@@ -1547,7 +1565,7 @@
           "md5": "e17079a71e88ece99cf0185fca29cc78",
           "sha256": "e19d6b953ed91aa05c915bd36c9c1994656173363b3a40440930af994e45b8d1"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "thinc-6.8.2.tar.gz",
         "has_sig": false,
         "md5_digest": "e17079a71e88ece99cf0185fca29cc78",
@@ -1565,7 +1583,7 @@
           "md5": "fa81688ddd2dc87957c844652e9f46e2",
           "sha256": "88f858c89b36083cfd0b4d108b80de0870047031e99388b18861ad0bef3f9224"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "thinc-6.9.0.tar.gz",
         "has_sig": false,
         "md5_digest": "fa81688ddd2dc87957c844652e9f46e2",
@@ -1581,18 +1599,18 @@
     {
       "comment_text": "",
       "digests": {
-        "md5": "fa81688ddd2dc87957c844652e9f46e2",
-        "sha256": "88f858c89b36083cfd0b4d108b80de0870047031e99388b18861ad0bef3f9224"
+        "md5": "1d617796a08e4c31db9626ee83f86564",
+        "sha256": "8615dffa31409d2fac85d4806674d914a554aac297f867a03e6dcd84cb6cc99a"
       },
-      "downloads": 0,
-      "filename": "thinc-6.9.0.tar.gz",
+      "downloads": -1,
+      "filename": "thinc-6.10.0.tar.gz",
       "has_sig": false,
-      "md5_digest": "fa81688ddd2dc87957c844652e9f46e2",
+      "md5_digest": "1d617796a08e4c31db9626ee83f86564",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 1201135,
-      "upload_time": "2017-10-03T19:05:33",
-      "url": "https://files.pythonhosted.org/packages/4c/11/305592566259e8bd4c8df2d83734c49d44e7772c37c587df86580761939b/thinc-6.9.0.tar.gz"
+      "size": 1192111,
+      "upload_time": "2017-10-28T17:00:58",
+      "url": "https://files.pythonhosted.org/packages/28/75/f9ea4468140190eff3e86a90cd6741225816065b042a107c6f7639cfae1f/thinc-6.10.0.tar.gz"
     }
   ]
 }

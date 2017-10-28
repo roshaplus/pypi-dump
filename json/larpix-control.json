@@ -9,7 +9,7 @@
       "Programming Language :: Python :: 2",
       "Programming Language :: Python :: 3"
     ],
-    "description": "# larpix-control\n\nControl the LArPix chip\n\n## Setup and installation\n\nThis code is intended to work on both Python 2.7+ and Python 3.6+,\nbut it was designed in Python 3 and is not guaranteed to work in\nPython 2.\n\nDownload this repository. From the root directory, run\n\n```\npip install -e .\n```\n\nto download the dependencies and install the `larpix` package in your\nPython namespace. To return your namespace to the pre-larpix state, just\nrun `pip uninstall larpix-control`.\n\n### Tests\n\nYou can run tests to convince yourself that the software works as\nexpected. After `pip install`ing this package, you can run the tests\nwith the simple command `pytest`.\n\nYou can read the tests to see examples of how to call all of the common\nfunctions. I imagine they will also come in handy when you're confused\nabout the bit order. (Also see the section on endian-ness below.)\n\n## Tutorial\n\nThis tutorial runs through how to use all of the main functionality of\nlarpix-control.\n\nTo access the package contents, use one of the two following `import`\nstatements:\n\n```python\nimport larpix.larpix as larpix  # use the larpix namespace\n# or ...\nfrom larpix.larpix import *  # import all larpix classes into the current namespace\n```\n\n### Endian-ness\n\nWe use the convention that the LSB is sent out first and read in first.\nThe location of the LSB in arrays and lists changes from object to\nobject based on the conventions of the other packages we interact with.\n\nIn particular, pyserial sends out index 0 first, so for `bytes` objects,\nindex 0 will generally have the LSB. On the other hand, bitstrings\ntreats the _last_ index as the LSB, which is also how numbers are\nusually displayed on screen, e.g. `0100` in binary means 4 not 2. So for\n`BitArray` and `Bits` objects, the LSB will generally be last.\n\nNote that this combination leads to the slightly awkward convention that\nthe least significant bit of a bytestring is the *last bit* of the\n*first byte*. For example, if bits[15:0] of a packet are\n`0000 0010 0000 0001` ( = 0x0201 = 513), then the bytes will be sent out as\n`b'\\x01\\x02'`.\n\n### Creating a LArPix Chip\n\nThe `Chip` object represents a single LArPix chip and knows about\neverything happening on the chip regarding configuration, data sent in,\nand data read out. To create a Chip, just provide the chip ID number\n(hard-wired into the PCB) and the index for the IO Chain (daisy chain)\nthat the chip is part of:\n\n```python\nmyChip = Chip(100, 0)\n```\n\nThe Chip object uses these ID values when it creates data packets to\nensure that the packet reaches the correct chip. And other objects use\nthe ID values to ensure that received data from the physical chip makes\nits way to the right Chip object.\n\nThe chip's configuration register is represented by the `myChip.config`\nattribute, which is an instance of the `Configuration` object.\n\n### The Configuration object\n\nThe `Configuration` object represents all of the options in the LArPix\nconfiguration register. Each row in the configuration table in the LArPix datasheet\nhas a corresponding attribute in the `Configuration` object. Per-channel\nattributes are stored in a list, and all other attributes are stored as\na simple integer. (This includes everything from single bits to values\nsuch as \"reset cycles,\" which spans 3 bytes.) **Warning**: there is\ncurrently no type checking or range checking on these values. Using\nvalues outside the expected range will lead to undefined behavior,\nincluding the possibility that Python will crash _or_ that LArPix will\nbe sent bad commands.\n\n`Configuration` objects also have some helper methods for enabling and\ndisabling per-channel settings (such as `csa_testpulse_enable` or\n`channel_mask`). The relevant methods are listed here and should be\nprefixed with either `enable_` or `disable_`:\n\n - `channels` enables/disables the `channel_mask` register\n - `external_trigger` enables/disables the `external_trigger_mask`\n    register\n - `testpulse` enables/disables the `csa_testpulse_enable` register\n - `analog_monitor` enables/disables the `csa_monitor_select` register\n\nMost of these methods accept an optional list of channels to enable or\ndisable (and with no list specified acts on all channels). The exception\nis `enable_analog_monitor` (and its `disable` counterpart): the `enable`\nmethod requires a particular channel to be specified, and the `disable`\nmethod does not require any argument at all. This is because at most one\nchannel is allowed to have the analog monitor enabled.\n\nThe machinery of the `Configuration` object ensures that each value is\nconverted to the appropriate set of bits when it comes time to send\nactual commands to the physical chip. Although this is not transparent\nto you as a user of this library, you might want to know that two sets of\nconfiguration options are always sent together in the same configuration\npacket:\n\n - `csa_gain`, `csa_bypass`, and `internal_bypass` are combined into a\n   single byte, so even though they have their own attributes, they must\n   be written to the physical chip together\n\n - `test_mode`, `cross_trigger_mode`, `periodic_reset`, and\n   `fifo_diagnostic` work the same way\n\nSimilarly, all of the per-channel options (except for the pixel trim\nthresholds) are sent in 4 groups of 8 channels.\n\nOnce the Chip object has been configured, the configuration must be sent\nto the physical chip. This is accomplished with the `Controller` object,\nwhich we'll discuss next.\n\n### Communicating with the physical LArPix chip\n\nCommunication between the computer and the physical LArPix chip is\nhandled by the `Controller` object and uses a Serial interface. (The\ninterface specification is given in the fpga\\_interface.txt file. It's\nbased on RS-232 8N1.) To initialize a Controller object, simply provide\nthe port you'd like to communicate over. For the envisioned normal\napplication (with an FTDI chip as USB-serial bridge), this will likely\nbe something like `/dev/ttyUSB0`.\n\n```python\ncontroller = Controller('/dev/ttyUSB0')\n```\n\nYou might want to change the following\nattributes at some point, but their defaults should work in most cases:\n\n - `baudrate`: default = 1000000 baud. Controls the number of bits per\n   second, including RS-232 start and stop bits.\n - `timeout`: default = 1 second. Controls how long to wait before\n   ending a read command\n - `max_write`: default = 8192 bytes. Controls the maximum number of\n   bytes to send with a single write command. The limit is entirely due\n   to the buffer capacity of the FTDI chip.\n\n#### Sending data\n\nThe only data that LArPix can receive is configuration data. To send all\nof the configuration packets in write mode, simply call\n\n```python\nmyChip = Chip(chip_id, io_chain)\n# Edit the configuration\n# ...\nmyController = Controller('/dev/ttyUSB0')\nmyController.write_configuration(myChip)\n```\n\nTo send only a particular configuration register or list of\nconfiguration registers, pass the register or list of registers to the\nfunction:\n\n```python\nregister_to_update = 51\nmyController.write_configuration(myChip, register_to_update)\n# or pass a list ...\nregisters_to_update = [0, 5, 42]\nmyController.write_configuration(myChip, registers_to_update)\n```\n\nThere is currently not a way to specify which register to update by\npassing a string or other way of identifying the register by name.\n\nSimilar functionality exists to read the configuration data. This\nrequires both sending data to and receiving data from the LArPix chip.\nTo send the \"read configuration\" commands, call `read_configuration`\nexactly the same way you would call `write_configuration`.\n\n#### Receiving data\n\nThere are 3 reasons to receive data from LArPix: because it's real data\n(ADC counts, etc.), because it's configuration data that has been\nrequested, or because it's test data from either the UART test or the\nFIFO test.\n\n\n",
+    "description": "# larpix-control\n\nControl the LArPix chip\n\n[![Documentation Status](https://readthedocs.org/projects/larpix-control/badge/?version=latest)](http://larpix-control.readthedocs.io/en/latest/?badge=latest)\n\n## Setup and installation\n\nThis code is intended to work on both Python 2.7+ and Python 3.6+,\nbut it was designed in Python 3 and is not guaranteed to work in\nPython 2.\n\nInstall larpix-control from pip with\n\n```\npip install larpix-control\n```\n\nTo return your namespace to the pre-larpix state, just\nrun `pip uninstall larpix-control`. If you'd prefer to download the code\nyourself, you can. Just run `pip install .` from the root directory of\nthe repository.\n\n### Tests\n\nYou can run tests to convince yourself that the software works as\nexpected. After `pip install`ing this package, you can run the tests\nfrom the repository root directory with the simple command `pytest`.\n\nYou can read the tests to see examples of how to call all of the common\nfunctions. I imagine they will also come in handy when you're confused\nabout the bit order. (Also see the section on endian-ness below.)\n\n## Tutorial\n\nThis tutorial runs through how to use all of the main functionality of\nlarpix-control.\n\nTo access the package contents, use one of the two following `import`\nstatements:\n\n```python\nimport larpix.larpix as larpix  # use the larpix namespace\n# or ...\nfrom larpix.larpix import *  # import all larpix classes into the current namespace\n```\n\n### Endian-ness\n\nWe use the convention that the LSB is sent out first and read in first.\nThe location of the LSB in arrays and lists changes from object to\nobject based on the conventions of the other packages we interact with.\n\nIn particular, pyserial sends out index 0 first, so for `bytes` objects,\nindex 0 will generally have the LSB. On the other hand, bitstrings\ntreats the _last_ index as the LSB, which is also how numbers are\nusually displayed on screen, e.g. `0100` in binary means 4 not 2. So for\n`BitArray` and `Bits` objects, the LSB will generally be last.\n\nNote that this combination leads to the slightly awkward convention that\nthe least significant bit of a bytestring is the *last bit* of the\n*first byte*. For example, if bits[15:0] of a packet are\n`0000 0010 0000 0001` ( = 0x0201 = 513), then the bytes will be sent out as\n`b'\\x01\\x02'`.\n\n### Creating a LArPix Chip\n\nThe `Chip` object represents a single LArPix chip and knows about\neverything happening on the chip regarding configuration, data sent in,\nand data read out. To create a Chip, just provide the chip ID number\n(hard-wired into the PCB) and the index for the IO Chain (daisy chain)\nthat the chip is part of:\n\n```python\nmyChip = Chip(100, 0)\n```\n\nThe Chip object uses these ID values when it creates data packets to\nensure that the packet reaches the correct chip. And other objects use\nthe ID values to ensure that received data from the physical chip makes\nits way to the right Chip object.\n\nThe chip's configuration register is represented by the `myChip.config`\nattribute, which is an instance of the `Configuration` object.\n\n### The Configuration object\n\nThe `Configuration` object represents all of the options in the LArPix\nconfiguration register. Each row in the configuration table in the LArPix datasheet\nhas a corresponding attribute in the `Configuration` object. Per-channel\nattributes are stored in a list, and all other attributes are stored as\na simple integer. (This includes everything from single bits to values\nsuch as \"reset cycles,\" which spans 3 bytes.) **Warning**: there is\ncurrently no type checking or range checking on these values. Using\nvalues outside the expected range will lead to undefined behavior,\nincluding the possibility that Python will crash _or_ that LArPix will\nbe sent bad commands.\n\n`Configuration` objects also have some helper methods for enabling and\ndisabling per-channel settings (such as `csa_testpulse_enable` or\n`channel_mask`). The relevant methods are listed here and should be\nprefixed with either `enable_` or `disable_`:\n\n - `channels` enables/disables the `channel_mask` register\n - `external_trigger` enables/disables the `external_trigger_mask`\n    register\n - `testpulse` enables/disables the `csa_testpulse_enable` register\n - `analog_monitor` enables/disables the `csa_monitor_select` register\n\nMost of these methods accept an optional list of channels to enable or\ndisable (and with no list specified acts on all channels). The exception\nis `enable_analog_monitor` (and its `disable` counterpart): the `enable`\nmethod requires a particular channel to be specified, and the `disable`\nmethod does not require any argument at all. This is because at most one\nchannel is allowed to have the analog monitor enabled.\n\nThe machinery of the `Configuration` object ensures that each value is\nconverted to the appropriate set of bits when it comes time to send\nactual commands to the physical chip. Although this is not transparent\nto you as a user of this library, you might want to know that two sets of\nconfiguration options are always sent together in the same configuration\npacket:\n\n - `csa_gain`, `csa_bypass`, and `internal_bypass` are combined into a\n   single byte, so even though they have their own attributes, they must\n   be written to the physical chip together\n\n - `test_mode`, `cross_trigger_mode`, `periodic_reset`, and\n   `fifo_diagnostic` work the same way\n\nSimilarly, all of the per-channel options (except for the pixel trim\nthresholds) are sent in 4 groups of 8 channels.\n\nOnce the Chip object has been configured, the configuration must be sent\nto the physical chip. This is accomplished with the `Controller` object,\nwhich we'll discuss next.\n\n### Communicating with the physical LArPix chip\n\nCommunication between the computer and the physical LArPix chip is\nhandled by the `Controller` object and uses a Serial interface. (The\ninterface specification is given in the fpga\\_interface.txt file. It's\nbased on RS-232 8N1.) To initialize a Controller object, simply provide\nthe port you'd like to communicate over. For the envisioned normal\napplication (with an FTDI chip as USB-serial bridge), this will likely\nbe something like `/dev/ttyUSB0`.\n\n```python\ncontroller = Controller('/dev/ttyUSB0')\n```\n\nAn important attribute of the Controller object is `chips`, which is a\nlist of Chip objects controlled by the particular Controller. Add a\nsingle Chip object to the list with `controller.chips.append(myChip)`,\nor add a whole list with `controller.chips.extend(list_of_chips)`.\n\nYou might want to change the following\nattributes at some point, but their defaults should work in most cases:\n\n - `baudrate`: default = 1000000 baud. Controls the number of bits per\n   second, including RS-232 start and stop bits.\n - `timeout`: default = 1 second. Controls how long to wait before\n   ending a read command\n - `max_write`: default = 8192 bytes. Controls the maximum number of\n   bytes to send with a single write command. The limit is entirely due\n   to the buffer capacity of the FTDI chip.\n\n#### Sending data\n\nThe only data that LArPix can receive is configuration data. To send all\nof the configuration packets in write mode, simply call\n\n```python\nmyChip = Chip(chip_id, io_chain)\n# Edit the configuration\n# ...\nmyController = Controller('/dev/ttyUSB0')\nmyController.write_configuration(myChip)\n```\n\nTo send only a particular configuration register or list of\nconfiguration registers, pass the register or list of registers to the\nfunction:\n\n```python\nregister_to_update = 51\nmyController.write_configuration(myChip, register_to_update)\n# or pass a list ...\nregisters_to_update = [0, 5, 42]\nmyController.write_configuration(myChip, registers_to_update)\n```\n\nThere is currently not a way to specify which register to update by\npassing a string or other way of identifying the register by name.\n\nSimilar functionality exists to read the configuration data. This\nrequires both sending data to and receiving data from the LArPix chip.\nTo send the \"read configuration\" commands, call `read_configuration`\nexactly the same way you would call `write_configuration`. Read on to\nlearn about receiving data from LArPix in more detail.\n\n#### Receiving data\n\nThere are 3 reasons to receive data from LArPix: because it's real data\n(ADC counts, etc.), because it's configuration data that has been\nrequested, or because it's test data from either the UART test or the\nFIFO test.\n\nThe simplest way to receive data from LArPix is to just listen for a\ncertain amount of time and save all the packets received. This is\naccomplished with the `run` method:\n\n```python\nmyController.run(10)  # listens for 10 seconds\n```\n\nThis method makes sense for physics runs or any special runs that aren't\nprovided by the following other methods.\n\nTo read configuration data, call `read_configuration`, as mentioned\nearlier.\n\nTo make it easy to run tests, the following methods will configure the\nchip, run the test, and record the data received: `run_testpulse`,\n`run_fifo_test`, and `run_analog_monitor_test`.\n\n#### Accessing received data\n\nEvery method that reads data processes the data from a bytestream into a\nPacket object. The Packet objects are appended to the list stored in the\n`reads` attribute of the correct Chip object, as defined by the `chipid`\nreturned by the Packet. It's worth noting here that the Controller\nobject is only aware of Chip objects listed in the `controller.chips`\nattribute.\n\n\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -25,7 +25,7 @@
     "name": "larpix-control",
     "platform": "",
     "project_url": "https://pypi.org/project/larpix-control/",
-    "release_url": "https://pypi.org/project/larpix-control/0.3.1.dev0/",
+    "release_url": "https://pypi.org/project/larpix-control/0.4.1.dev2/",
     "requires_dist": [
       "pytest",
       "pyserial",
@@ -33,7 +33,7 @@
     ],
     "requires_python": "",
     "summary": "Control the LArPix chip",
-    "version": "0.3.1.dev0"
+    "version": "0.4.1.dev2"
   },
   "releases": {
     "0.3.0.dev0": [
@@ -103,40 +103,108 @@
         "upload_time": "2017-10-19T07:34:53",
         "url": "https://files.pythonhosted.org/packages/36/67/3369e299914c57610162497063b784f7a7b67c4537f97a9b8f10913068ba/larpix-control-0.3.1.dev0.tar.gz"
       }
+    ],
+    "0.4.1.dev1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "10b0717dbf265745ae69c4ca71434448",
+          "sha256": "6c950deadf4223a9949cc63b9ac93c84990790f058b806737e830c44ce1c1277"
+        },
+        "downloads": -1,
+        "filename": "larpix_control-0.4.1.dev1-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "10b0717dbf265745ae69c4ca71434448",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 21257,
+        "upload_time": "2017-10-27T23:49:23",
+        "url": "https://files.pythonhosted.org/packages/21/06/1ad0ac0602b69407d33321c0882850b649504ee849c975d88cd007e73539/larpix_control-0.4.1.dev1-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7762464be777f8f6cda41b41996c56cb",
+          "sha256": "db0d73600bf89d92139a92e9c58b3fad66df4bd56c93a2944c630b8a1ccfb4cd"
+        },
+        "downloads": -1,
+        "filename": "larpix-control-0.4.1.dev1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7762464be777f8f6cda41b41996c56cb",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 23684,
+        "upload_time": "2017-10-27T23:49:26",
+        "url": "https://files.pythonhosted.org/packages/f6/40/baf15118f2b514e1aba29d01f0fc22d42c8e04b212579555476c1126879f/larpix-control-0.4.1.dev1.tar.gz"
+      }
+    ],
+    "0.4.1.dev2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8bd942869bedb52489f885c3517a7672",
+          "sha256": "a2c2d7a90d2d5965c9139b6738b91f4badb25474bcd3b02ce0d9d9e8da298dbb"
+        },
+        "downloads": -1,
+        "filename": "larpix_control-0.4.1.dev2-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "8bd942869bedb52489f885c3517a7672",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 21300,
+        "upload_time": "2017-10-28T00:20:57",
+        "url": "https://files.pythonhosted.org/packages/df/d6/a07a22dc9763eff5a436bd0b29cb01cf1f00cc1da19492763b1ad3c2790b/larpix_control-0.4.1.dev2-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "48023698ecc9cd8f1d19e570ce2b4f70",
+          "sha256": "d751cbfb01af198d813affe189151df9f590c7de3e3696d5f049d71d3689900c"
+        },
+        "downloads": -1,
+        "filename": "larpix-control-0.4.1.dev2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "48023698ecc9cd8f1d19e570ce2b4f70",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 23733,
+        "upload_time": "2017-10-28T00:21:00",
+        "url": "https://files.pythonhosted.org/packages/32/82/4a4111759bfb2309d186dec1b8a61d8a844df67d5b0036e46e63b32265d7/larpix-control-0.4.1.dev2.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "94288c6b238caac10a958bd92476f627",
-        "sha256": "5c25657aa65e6624c7f5020b09409e860da8334853508dcf16f007d3cdeed5d6"
+        "md5": "8bd942869bedb52489f885c3517a7672",
+        "sha256": "a2c2d7a90d2d5965c9139b6738b91f4badb25474bcd3b02ce0d9d9e8da298dbb"
       },
       "downloads": -1,
-      "filename": "larpix_control-0.3.1.dev0-py2.py3-none-any.whl",
+      "filename": "larpix_control-0.4.1.dev2-py2.py3-none-any.whl",
       "has_sig": false,
-      "md5_digest": "94288c6b238caac10a958bd92476f627",
+      "md5_digest": "8bd942869bedb52489f885c3517a7672",
       "packagetype": "bdist_wheel",
       "python_version": "py2.py3",
-      "size": 16352,
-      "upload_time": "2017-10-19T07:34:50",
-      "url": "https://files.pythonhosted.org/packages/d3/4b/038afcaaf4e56932daed54d02228917ac1eae6385d1fdb2bc454eb22b00d/larpix_control-0.3.1.dev0-py2.py3-none-any.whl"
+      "size": 21300,
+      "upload_time": "2017-10-28T00:20:57",
+      "url": "https://files.pythonhosted.org/packages/df/d6/a07a22dc9763eff5a436bd0b29cb01cf1f00cc1da19492763b1ad3c2790b/larpix_control-0.4.1.dev2-py2.py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "90f4ef4e9ff3f1a180f5ebe5eb58ac7b",
-        "sha256": "0bb6a5a740f451d1752e21dbe9efc8a946f46a4a2bfb162459341f03d9a3aac2"
+        "md5": "48023698ecc9cd8f1d19e570ce2b4f70",
+        "sha256": "d751cbfb01af198d813affe189151df9f590c7de3e3696d5f049d71d3689900c"
       },
       "downloads": -1,
-      "filename": "larpix-control-0.3.1.dev0.tar.gz",
+      "filename": "larpix-control-0.4.1.dev2.tar.gz",
       "has_sig": false,
-      "md5_digest": "90f4ef4e9ff3f1a180f5ebe5eb58ac7b",
+      "md5_digest": "48023698ecc9cd8f1d19e570ce2b4f70",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 17086,
-      "upload_time": "2017-10-19T07:34:53",
-      "url": "https://files.pythonhosted.org/packages/36/67/3369e299914c57610162497063b784f7a7b67c4537f97a9b8f10913068ba/larpix-control-0.3.1.dev0.tar.gz"
+      "size": 23733,
+      "upload_time": "2017-10-28T00:21:00",
+      "url": "https://files.pythonhosted.org/packages/32/82/4a4111759bfb2309d186dec1b8a61d8a844df67d5b0036e46e63b32265d7/larpix-control-0.4.1.dev2.tar.gz"
     }
   ]
 }
