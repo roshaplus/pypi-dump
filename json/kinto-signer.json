@@ -9,7 +9,7 @@
       "Topic :: Internet :: WWW/HTTP",
       "Topic :: Internet :: WWW/HTTP :: WSGI :: Application"
     ],
-    "description": "Kinto signer\n############\n\n|travis| |coveralls|\n\n.. |travis| image:: https://travis-ci.org/Kinto/kinto-signer.svg?branch=master\n    :target: https://travis-ci.org/Kinto/kinto-signer\n\n.. |coveralls| image:: https://coveralls.io/repos/github/Kinto/kinto-signer/badge.svg?branch=master\n    :target: https://coveralls.io/github/Kinto/kinto-signer?branch=master\n\n**Kinto signer** is a `Kinto <https://kinto.readthedocs.io>`_ plugin\nthat signs records with a `content signature <https://github.com/mozilla-services/autograph/blob/e7c33d6/signer/contentsignature/README.rst>`_\nto guarantee their integrity and authenticity.\n\n\nHow does it work?\n=================\n\n**Kinto signer** uses two collections:\n\n* The *source*, where the authors create/update/delete records.\n* The *destination*, where the clients obtain the records and their signature.\n\nWhen the *source* collection metadata ``status`` is set to ``\"to-sign\"``, it will:\n\n#. grab the whole list of records in this *source* collection\n#. update the *destination* collection records with the recent changes\n#. serialize the result in a Canonical JSON form (*see below*)\n#. compute a signature using the configured backend\n#. update the *destination* collection metadata ``signature`` with the information\n   obtain form the signature backend\n#. set the *source* metadata ``status`` to ``\"signed\"``.\n\nA publishing workflow can be enabled (see below).\n\n.. warning::\n\n    The current implementation assumes the destination collection will be\n    readable anonymously and won't be writable by anyone.\n    (See `Kinto/kinto-signer#55 <https://github.com/Kinto/kinto-signer/issues/55>`_)\n\n\nContent-Signature protocol\n--------------------------\n\nKinto-signer produces signatures for the content of Kinto collections using\n`ECDSA <https://fr.wikipedia.org/wiki/Elliptic_curve_digital_signature_algorithm>`_\nwith the P-384 strength.\n\n* The content is prepended with ``Content-Signature:\\x00`` prior to signing.\n* The signature is produced with ECDSA on P-384 using SHA-384.\n* The signature is returned as encoded using URL-safe variant of base-64.\n\nSee `Content Signature <https://github.com/mozilla-services/autograph/blob/e7c33d6/signer/contentsignature/README.rst>`_\n\nThe content signature is validated in Firefox using the `Personal Security Manager <https://developer.mozilla.org/en/docs/Mozilla/Projects/PSM>`_.\n\n\nNotes on canonical JSON\n-----------------------\n\nSpecific to Kinto:\n\n* The payload to be signed has two attributes: ``last_modified`` with the\n  current timestamp as a string, ``data`` with the array of records.\n* Records are sorted by ascending ``id``\n* Records with ``deleted: true`` are omitted\n\nStandard canonical JSON:\n\n* Object keys are sorted alphabetically\n* No extra spaces in serialized content\n* Double quotes are used\n* Hexadecimal character escape sequences are used\n* The alphabetical hexadecimal digits are lowercase\n* Duplicate or empty properties are omitted\n\n.. code-block:: python\n\n    >>> canonical_json([{'id': '4', 'a': '\"quoted\"', 'b': 'Ich \u2665 B\u00fccher'},\n                        {'id': '1', 'deleted': true},\n                        {'id': '26', 'a': ''}])\n\n    '[{\"a\":\"\",\"id\":\"26\"},{\"a\":\"\\\\\"quoted\\\\\"\",\"b\":\"Ich \\\\u2665 B\\\\u00fccher\",\"id\":\"4\"}]'\n\n\n* See `Internet-Draft Predictable Serialization for JSON Tools <http://webpki.org/ietf/draft-rundgren-predictable-serialization-for-json-tools-00.html>`_\n* See `jsesc <https://github.com/mathiasbynens/jsesc>`_ to obtain similar output\n  for escape sequences in JavaScript.\n\n\nSetup\n=====\n\nTo install this plugin in a Kinto server, a few configuration variables need\nto be set.\n\nHere is an example of what a configuration could look like:\n\n.. code-block:: ini\n\n  kinto.includes = kinto_signer\n\n  kinto.signer.resources =\n      /buckets/source/collections/collection1;/buckets/destination/collections/collection1\n      /buckets/source/collections/collection2;/buckets/destination/collections/collection2\n\n+---------------------------------+--------------------------------------------------------------------------+\n| Setting name                    | What does it do?                                                         |\n+=================================+==========================================================================+\n| kinto.signer.resources          | The source collections URIs on which signatures should be triggered      |\n|                                 | and the destination collection where the data and the signatures will    |\n|                                 | end-up.                                                                  |\n+---------------------------------+--------------------------------------------------------------------------+\n| kinto.signer.signer_backend     | The python dotted location to the signer to use. By default, a local     |\n|                                 | ECDSA signer will be used. Choices are either                            |\n|                                 | ``kinto.signer.signer.local_ecdsa`` or ``kinto.signer.signer.autograph`` |\n|                                 | Have a look at the sections below for more information.                  |\n+---------------------------------+--------------------------------------------------------------------------+\n\nConfiguration for the (default) ECDSA local signer\n--------------------------------------------------\n\n+---------------------------------+--------------------------------------------------------------------------+\n| Setting name                    | What does it do?                                                         |\n+=================================+==========================================================================+\n| kinto.signer.ecdsa.private_key  | Absolute path to the ECDSA private key to use to apply the signatures    |\n+---------------------------------+--------------------------------------------------------------------------+\n| kinto.signer.ecdsa.public_key   | Absolute path to the ECDSA private key to use to verify the signature    |\n|                                 | (useful if you just want to use the signer as a verifier)                |\n+---------------------------------+--------------------------------------------------------------------------+\n\n\nConfiguration for the Autograph signer\n--------------------------------------\n\nKinto signer can integrate with the\n`Autograph <https://github.com/mozilla-services/autograph>`_ server version 2.\nTo do so, use the following settings:\n\n+------------------------------------+--------------------------------------------------------------------------+\n| Setting name                       | What does it do?                                                         |\n+====================================+==========================================================================+\n| kinto.signer.autograph.server_url  | The autograph server URL                                                 |\n+------------------------------------+--------------------------------------------------------------------------+\n| kinto.signer.autograph.hawk_id     | The hawk identifier used to issue the requests.                          |\n+------------------------------------+--------------------------------------------------------------------------+\n| kinto.signer.autograph.hawk_secret | The hawk secret used to issue the requests.                              |\n+------------------------------------+--------------------------------------------------------------------------+\n\n\nWorkflows\n---------\n\nA workflow can be enabled on the source collection ``status``.\n\nThe workflow is basically ``work-in-progress`` \u2192 ``to-review`` \u2192 ``to-sign`` \u2192 ``signed`` and\nmakes sure that:\n\n* the collection is reviewed before being signed\n* the user asking for review is the not the one approving the review\n* the user asking for review belongs to a group ``editors`` and\n  the one approving the review belongs to ``reviewers``.\n\n+----------------------------------+---------------+--------------------------------------------------------------------------+\n| Setting name                     | Default       | What does it do?                                                         |\n+==================================+===============+==========================================================================+\n| kinto.signer.to_review_enabled   | ``false``     | If ``true``, the collection ``status`` must be set to ``to-review`` by a |\n|                                  |               | different user before being set to ``to-sign``.                          |\n+----------------------------------+---------------+--------------------------------------------------------------------------+\n| kinto.signer.group_check_enabled | ``false``     | If ``true``, the user setting to ``to-review`` must belong to the        |\n|                                  |               | ``editors`` group in the source bucket, and the one setting to           |\n|                                  |               | ``to-sign`` must belong to ``reviewers``.                                |\n+----------------------------------+---------------+--------------------------------------------------------------------------+\n| kinto.signer.editors_group       | ``editors``   | The group id that is required for changing status to ``to-review``       |\n+----------------------------------+---------------+--------------------------------------------------------------------------+\n| kinto.signer.reviewers_group     | ``reviewers`` | The group id that is required for changing status to ``to-sign``         |\n+----------------------------------+---------------+--------------------------------------------------------------------------+\n\n.. warning::\n\n    The ``editors`` and ``reviewers`` groups are defined in the **source bucket**\n    (e.g. ``/buckets/staging/groups/editors``).\n\nSee `Kinto groups API <http://kinto.readthedocs.io/en/stable/api/1.x/groups.html>`_ for more details about how to define groups.\n\nThe above settings can be set or overriden by collection using the ``<bucket_id>_<collection_id>_`` prefix.\nFor example:\n\n.. code-block:: ini\n\n    kinto.signer.staging_certificates.group_check_enabled = true\n    kinto.signer.staging_certificates.to_review_enabled = true\n    kinto.signer.staging_certificates.editors_group = certificates-editors\n    kinto.signer.staging_certificates.reviewers_group = certificates-reviewers\n\nIf the review process is enabled, it is possible to configure a *preview*\ncollection, that will be updated and signed when the status is set to ``to-review``.\nThis *preview* collection can be used by clients to test and validate the changes\nbefore approving them.\n\nIf a resources entry contains a semi-column separated **triplet**, then a preview\ncollection will be enabled.\n\n.. code-block:: ini\n\n  kinto.signer.resources =\n      /buckets/staging/collections/articles;/buckets/preview/collections/articles;/buckets/blog/collections/articles\n\n\n.. image:: workflow.png\n\n\nMultiple certificates\n---------------------\n\nUsing above settings, every collections is signed with the same key.\nBut it is also possible to define multiple signers, per bucket or per collection.\n\nSettings can be prefixed with bucket id:\n\n.. code-block:: ini\n\n    kinto.signer.<bucket-id>.signer_backend = kinto_signer.signer.autograph\n    kinto.signer.<bucket-id>.autograph.server_url = http://172.11.20.1:8888\n    kinto.signer.<bucket-id>.autograph.hawk_id = bob\n    kinto.signer.<bucket-id>.autograph.hawk_secret = a-secret\n\n\nOr prefixed with bucket and collection:\n\n.. code-block:: ini\n\n    kinto.signer.<bucket-id>_<collection-id>.signer_backend = kinto_signer.signer.local_ecdsa\n    kinto.signer.<bucket-id>_<collection-id>.ecdsa.private_key = /path/to/private.pem\n    kinto.signer.<bucket-id>_<collection-id>.ecdsa.public_key = /path/to/public.pem\n\n\nUsage\n=====\n\nSuppose we defined the following resources in the configuration:\n\n.. code-block:: ini\n\n    kinto.signer.resources = /buckets/source/collections/collection1;/buckets/destination/collections/collection1\n\nFirst, if necessary, we create the appropriate Kinto objects, for example, with ``httpie``:\n\n.. code-block:: bash\n\n    $ http PUT http://0.0.0.0:8888/v1/buckets/source --auth user:pass\n    $ http PUT http://0.0.0.0:8888/v1/buckets/source/collections/collection1 --auth user:pass\n    $ http PUT http://0.0.0.0:8888/v1/buckets/destination --auth user:pass\n    $ http PUT http://0.0.0.0:8888/v1/buckets/destination/collections/collection1 --auth user:pass\n\nCreate some records in the *source* collection.\n\n.. code-block:: bash\n\n    $ echo '{\"data\": {\"article\": \"title 1\"}}' | http POST http://0.0.0.0:8888/v1/buckets/source/collections/collection1/records --auth user:pass\n    $ echo '{\"data\": {\"article\": \"title 2\"}}' | http POST http://0.0.0.0:8888/v1/buckets/source/collections/collection1/records --auth user:pass\n\n\nTrigger a signature operation, set the ``status`` field on the *source* collection metadata to ``\"to-sign\"``.\n\n.. code-block:: bash\n\n    echo '{\"data\": {\"status\": \"to-sign\"}}' | http PATCH http://0.0.0.0:8888/v1/buckets/source/collections/collection1 --auth user:pass\n\nThe *destination* collection should now contain the new records:\n\n.. code-block:: bash\n\n    $ http GET http://0.0.0.0:8888/v1/buckets/destination/collections/collection1/records --auth user:pass\n\n.. code-block:: javascript\n\n    {\n        \"data\": [\n            {\n                \"article\": \"title 2\",\n                \"id\": \"a45c74a4-18c9-4bc2-bf0c-29d96badb9e6\",\n                \"last_modified\": 1460558489816\n            },\n            {\n                \"article\": \"title 1\",\n                \"id\": \"f056f42b-3792-49f3-841d-0f637c7c6683\",\n                \"last_modified\": 1460558483981\n            }\n        ]\n    }\n\nThe *destination* collection metadata now contains the signature:\n\n.. code-block:: bash\n\n   $ http GET http://0.0.0.0:8888/v1/buckets/destination/collections/collection1 --auth user:pass\n\n.. code-block:: javascript\n\n   {\n       \"data\": {\n           \"id\": \"collection1\",\n           \"last_modified\": 1460558496510,\n           \"signature\": {\n               \"mode\": \"p384ecdsa\",\n               \"x5u\": \"https://bucket.example.net/appkey1.pem\",\n               \"signature\": \"Nv-EJ1D0fanElBGP4ZZmV6zu_b4DuCP3H7xawlLrcR7to3aKzqfZknVXOi94G_w8-wdKlysVWmhuDMqJqPcJV7ZudbhypJpj7kllWdPvMRZkoWXSfYLaoLMc8VQEqZcb\"\n           }\n       },\n       \"permissions\": {\n           \"read\": [\n               \"system.Everyone\"\n           ]\n       }\n   }\n\n\nEvents\n======\n\nPyramid events are sent for each review step of the validation workflow.\n\nEvents have the following attributes:\n\n* ``request``: current Pyramid request object\n* ``payload``: same as ``kinto.core.events.ResourceChanged``\n* ``impacted_records``: same as ``kinto.core.events.ResourceChanged``\n* ``resource``: dict with details about source, preview and destination collection\n                (as in capability).\n* ``original_event``: original ``ResourceChanged`` event that was caught to\n                      detect step change in review workflow.\n\nThe following events are thrown:\n\n* ``kinto_signer.events.ReviewRequested``\n* ``kinto_signer.events.ReviewRejected``\n* ``kinto_signer.events.ReviewApproved``\n\n.. important::\n\n    The events are sent within the request's transaction. In other words, any\n    database change that occurs in subscribers will be committed or rolledback\n    depending of the overall response status.\n\n\nValidating the signature\n========================\n\nWith `kinto.js <https://github.com/Kinto/kinto.js/>`_, it is possible to define\nincoming hooks that are executed when the data is retrieved from the server.\n\n.. code-block:: javascript\n\n    const kinto = new Kinto({\n      remote: \"https://mykinto.com/v1\",\n      bucket: \"a-bucket\"\n    });\n    const collection = kinto.collection(\"a-collection\", {\n      hooks: {\n        \"incoming-changes\": [validateCollectionSignature]\n      }});\n\n.. code-block:: javascript\n\n    function validateCollectionSignature(payload, collection) {\n      // 1 - Fetch signature from collection endpoint\n      // 2 - Fetch public key certificate\n      // 3 - Merge incoming changes with local records\n      // 4 - Serialize as canonical JSON\n      // 5 - Verify the signature against the content with the public key\n      // 6 - Return `payload` if valid, throw error otherwise.\n    }\n\nThe content of the ``demo/`` folder implements the signature verification with\nkinto.js and the WebCrypto API. It is `published online <https://kinto.github.io/kinto-signer/>`_\nbut relies on a semi-public server instance.\n\nSee also `the complete integration within Firefox <https://bugzilla.mozilla.org/show_bug.cgi?id=1263602>`_\nusing the `Network Security Services <https://developer.mozilla.org/en-US/docs/Mozilla/Projects/NSS/Overview>`_.\n\n\nGenerating a keypair\n====================\n\nTo generate a new keypair, you can use the following command::\n\n  $ python -m kinto_signer.generate_keypair private.pem public.pem\n\n\nRunning the tests\n=================\n\nIn order to contribute and run the full functional test suite locally you need\nto have the Go language executables (e.g. `sudo apt-get install golang`)\nand a ``testdb`` PostgreSQL database like for the Kinto server.\n\nThe rest of installation and setup process is taken care of automatically.\n\nTo run the unit tests::\n\n  $ make tests\n\nFor the functional tests, run these two services in separate terminals:\n\n::\n\n  $ make run-kinto\n\n::\n\n  $ make run-autograph\n\nAnd start the test suite::\n\n  $ make functional",
+    "description": "Kinto signer\n############\n\n|travis| |coveralls|\n\n.. |travis| image:: https://travis-ci.org/Kinto/kinto-signer.svg?branch=master\n    :target: https://travis-ci.org/Kinto/kinto-signer\n\n.. |coveralls| image:: https://coveralls.io/repos/github/Kinto/kinto-signer/badge.svg?branch=master\n    :target: https://coveralls.io/github/Kinto/kinto-signer?branch=master\n\n**Kinto signer** is a `Kinto <https://kinto.readthedocs.io>`_ plugin\nthat signs records with a `content signature <https://github.com/mozilla-services/autograph/blob/e7c33d6/signer/contentsignature/README.rst>`_\nto guarantee their integrity and authenticity.\n\n\nHow does it work?\n=================\n\n**Kinto signer** uses two collections:\n\n* The *source*, where the authors create/update/delete records.\n* The *destination*, where the clients obtain the records and their signature.\n\nWhen the *source* collection metadata ``status`` is set to ``\"to-sign\"``, it will:\n\n#. grab the whole list of records in this *source* collection\n#. update the *destination* collection records with the recent changes\n#. serialize the result in a Canonical JSON form (*see below*)\n#. compute a signature using the configured backend\n#. update the *destination* collection metadata ``signature`` with the information\n   obtain form the signature backend\n#. set the *source* metadata ``status`` to ``\"signed\"``.\n\nA publishing workflow can be enabled (see below).\n\n.. warning::\n\n    The current implementation assumes the destination collection will be\n    readable anonymously and won't be writable by anyone.\n    (See `Kinto/kinto-signer#55 <https://github.com/Kinto/kinto-signer/issues/55>`_)\n\n\nContent-Signature protocol\n--------------------------\n\nKinto-signer produces signatures for the content of Kinto collections using\n`ECDSA <https://fr.wikipedia.org/wiki/Elliptic_curve_digital_signature_algorithm>`_\nwith the P-384 strength.\n\n* The content is prepended with ``Content-Signature:\\x00`` prior to signing.\n* The signature is produced with ECDSA on P-384 using SHA-384.\n* The signature is returned as encoded using URL-safe variant of base-64.\n\nSee `Content Signature <https://github.com/mozilla-services/autograph/blob/e7c33d6/signer/contentsignature/README.rst>`_\n\nThe content signature is validated in Firefox using the `Personal Security Manager <https://developer.mozilla.org/en/docs/Mozilla/Projects/PSM>`_.\n\n\nNotes on canonical JSON\n-----------------------\n\nSpecific to Kinto:\n\n* The payload to be signed has two attributes: ``last_modified`` with the\n  current timestamp as a string, ``data`` with the array of records.\n* Records are sorted by ascending ``id``\n* Records with ``deleted: true`` are omitted\n\nStandard canonical JSON:\n\n* Object keys are sorted alphabetically\n* No extra spaces in serialized content\n* Double quotes are used\n* Hexadecimal character escape sequences are used\n* The alphabetical hexadecimal digits are lowercase\n* Duplicate or empty properties are omitted\n\n.. code-block:: python\n\n    >>> canonical_json([{'id': '4', 'a': '\"quoted\"', 'b': 'Ich \u2665 B\u00fccher'},\n                        {'id': '1', 'deleted': true},\n                        {'id': '26', 'a': ''}])\n\n    '[{\"a\":\"\",\"id\":\"26\"},{\"a\":\"\\\\\"quoted\\\\\"\",\"b\":\"Ich \\\\u2665 B\\\\u00fccher\",\"id\":\"4\"}]'\n\n\n* See `Internet-Draft Predictable Serialization for JSON Tools <http://webpki.org/ietf/draft-rundgren-predictable-serialization-for-json-tools-00.html>`_\n* See `jsesc <https://github.com/mathiasbynens/jsesc>`_ to obtain similar output\n  for escape sequences in JavaScript.\n\n\nSetup\n=====\n\nTo install this plugin in a Kinto server, a few configuration variables need\nto be set.\n\nHere is an example of what a configuration could look like:\n\n.. code-block:: ini\n\n  kinto.includes = kinto_signer\n\n  kinto.signer.resources =\n      /buckets/source/collections/collection1;/buckets/destination/collections/collection1\n      /buckets/source/collections/collection2;/buckets/destination/collections/collection2\n\n+---------------------------------+--------------------------------------------------------------------------+\n| Setting name                    | What does it do?                                                         |\n+=================================+==========================================================================+\n| kinto.signer.resources          | The source collections URIs on which signatures should be triggered      |\n|                                 | and the destination collection where the data and the signatures will    |\n|                                 | end-up.                                                                  |\n+---------------------------------+--------------------------------------------------------------------------+\n| kinto.signer.signer_backend     | The python dotted location to the signer to use. By default, a local     |\n|                                 | ECDSA signer will be used. Choices are either                            |\n|                                 | ``kinto.signer.signer.local_ecdsa`` or ``kinto.signer.signer.autograph`` |\n|                                 | Have a look at the sections below for more information.                  |\n+---------------------------------+--------------------------------------------------------------------------+\n\nConfiguration for the (default) ECDSA local signer\n--------------------------------------------------\n\n+---------------------------------+--------------------------------------------------------------------------+\n| Setting name                    | What does it do?                                                         |\n+=================================+==========================================================================+\n| kinto.signer.ecdsa.private_key  | Absolute path to the ECDSA private key to use to apply the signatures    |\n+---------------------------------+--------------------------------------------------------------------------+\n| kinto.signer.ecdsa.public_key   | Absolute path to the ECDSA private key to use to verify the signature    |\n|                                 | (useful if you just want to use the signer as a verifier)                |\n+---------------------------------+--------------------------------------------------------------------------+\n\n\nConfiguration for the Autograph signer\n--------------------------------------\n\nKinto signer can integrate with the\n`Autograph <https://github.com/mozilla-services/autograph>`_ server version 2.\nTo do so, use the following settings:\n\n+------------------------------------+--------------------------------------------------------------------------+\n| Setting name                       | What does it do?                                                         |\n+====================================+==========================================================================+\n| kinto.signer.autograph.server_url  | The autograph server URL                                                 |\n+------------------------------------+--------------------------------------------------------------------------+\n| kinto.signer.autograph.hawk_id     | The hawk identifier used to issue the requests.                          |\n+------------------------------------+--------------------------------------------------------------------------+\n| kinto.signer.autograph.hawk_secret | The hawk secret used to issue the requests.                              |\n+------------------------------------+--------------------------------------------------------------------------+\n\n\nWorkflows\n---------\n\nA workflow can be enabled on the source collection ``status``.\n\nThe workflow is basically ``work-in-progress`` \u2192 ``to-review`` \u2192 ``to-sign`` \u2192 ``signed`` and\nmakes sure that:\n\n* the collection is reviewed before being signed\n* the user asking for review is the not the one approving the review\n* the user asking for review belongs to a group ``editors`` and\n  the one approving the review belongs to ``reviewers``.\n\n+----------------------------------+---------------+--------------------------------------------------------------------------+\n| Setting name                     | Default       | What does it do?                                                         |\n+==================================+===============+==========================================================================+\n| kinto.signer.to_review_enabled   | ``false``     | If ``true``, the collection ``status`` must be set to ``to-review`` by a |\n|                                  |               | different user before being set to ``to-sign``.                          |\n+----------------------------------+---------------+--------------------------------------------------------------------------+\n| kinto.signer.group_check_enabled | ``false``     | If ``true``, the user setting to ``to-review`` must belong to the        |\n|                                  |               | ``editors`` group in the source bucket, and the one setting to           |\n|                                  |               | ``to-sign`` must belong to ``reviewers``.                                |\n+----------------------------------+---------------+--------------------------------------------------------------------------+\n| kinto.signer.editors_group       | ``editors``   | The group id that is required for changing status to ``to-review``       |\n+----------------------------------+---------------+--------------------------------------------------------------------------+\n| kinto.signer.reviewers_group     | ``reviewers`` | The group id that is required for changing status to ``to-sign``         |\n+----------------------------------+---------------+--------------------------------------------------------------------------+\n\n.. warning::\n\n    The ``editors`` and ``reviewers`` groups are defined in the **source bucket**\n    (e.g. ``/buckets/staging/groups/editors``).\n\nSee `Kinto groups API <http://kinto.readthedocs.io/en/stable/api/1.x/groups.html>`_ for more details about how to define groups.\n\nThe above settings can be set or overriden by collection using the ``<bucket_id>_<collection_id>_`` prefix.\nFor example:\n\n.. code-block:: ini\n\n    kinto.signer.staging_certificates.group_check_enabled = true\n    kinto.signer.staging_certificates.to_review_enabled = true\n    kinto.signer.staging_certificates.editors_group = certificates-editors\n    kinto.signer.staging_certificates.reviewers_group = certificates-reviewers\n\nIf the review process is enabled, it is possible to configure a *preview*\ncollection, that will be updated and signed when the status is set to ``to-review``.\nThis *preview* collection can be used by clients to test and validate the changes\nbefore approving them.\n\nIf a resources entry contains a semi-column separated **triplet**, then a preview\ncollection will be enabled.\n\n.. code-block:: ini\n\n  kinto.signer.resources =\n      /buckets/staging/collections/articles;/buckets/preview/collections/articles;/buckets/blog/collections/articles\n\n\n.. image:: workflow.png\n\n\nMultiple certificates\n---------------------\n\nUsing above settings, every collections is signed with the same key.\nBut it is also possible to define multiple signers, per bucket or per collection.\n\nSettings can be prefixed with bucket id:\n\n.. code-block:: ini\n\n    kinto.signer.<bucket-id>.signer_backend = kinto_signer.signer.autograph\n    kinto.signer.<bucket-id>.autograph.server_url = http://172.11.20.1:8888\n    kinto.signer.<bucket-id>.autograph.hawk_id = bob\n    kinto.signer.<bucket-id>.autograph.hawk_secret = a-secret\n\n\nOr prefixed with bucket and collection:\n\n.. code-block:: ini\n\n    kinto.signer.<bucket-id>_<collection-id>.signer_backend = kinto_signer.signer.local_ecdsa\n    kinto.signer.<bucket-id>_<collection-id>.ecdsa.private_key = /path/to/private.pem\n    kinto.signer.<bucket-id>_<collection-id>.ecdsa.public_key = /path/to/public.pem\n\n\nUsage\n=====\n\nSuppose we defined the following resources in the configuration:\n\n.. code-block:: ini\n\n    kinto.signer.resources = /buckets/source/collections/collection1;/buckets/destination/collections/collection1\n\nFirst, if necessary, we create the appropriate Kinto objects, for example, with ``httpie``:\n\n.. code-block:: bash\n\n    $ http PUT http://0.0.0.0:8888/v1/buckets/source --auth user:pass\n    $ http PUT http://0.0.0.0:8888/v1/buckets/source/collections/collection1 --auth user:pass\n    $ http PUT http://0.0.0.0:8888/v1/buckets/destination --auth user:pass\n    $ http PUT http://0.0.0.0:8888/v1/buckets/destination/collections/collection1 --auth user:pass\n\nCreate some records in the *source* collection.\n\n.. code-block:: bash\n\n    $ echo '{\"data\": {\"article\": \"title 1\"}}' | http POST http://0.0.0.0:8888/v1/buckets/source/collections/collection1/records --auth user:pass\n    $ echo '{\"data\": {\"article\": \"title 2\"}}' | http POST http://0.0.0.0:8888/v1/buckets/source/collections/collection1/records --auth user:pass\n\n\nTrigger a signature operation, set the ``status`` field on the *source* collection metadata to ``\"to-sign\"``.\n\n.. code-block:: bash\n\n    echo '{\"data\": {\"status\": \"to-sign\"}}' | http PATCH http://0.0.0.0:8888/v1/buckets/source/collections/collection1 --auth user:pass\n\nThe *destination* collection should now contain the new records:\n\n.. code-block:: bash\n\n    $ http GET http://0.0.0.0:8888/v1/buckets/destination/collections/collection1/records --auth user:pass\n\n.. code-block:: javascript\n\n    {\n        \"data\": [\n            {\n                \"article\": \"title 2\",\n                \"id\": \"a45c74a4-18c9-4bc2-bf0c-29d96badb9e6\",\n                \"last_modified\": 1460558489816\n            },\n            {\n                \"article\": \"title 1\",\n                \"id\": \"f056f42b-3792-49f3-841d-0f637c7c6683\",\n                \"last_modified\": 1460558483981\n            }\n        ]\n    }\n\nThe *destination* collection metadata now contains the signature:\n\n.. code-block:: bash\n\n   $ http GET http://0.0.0.0:8888/v1/buckets/destination/collections/collection1 --auth user:pass\n\n.. code-block:: javascript\n\n   {\n       \"data\": {\n           \"id\": \"collection1\",\n           \"last_modified\": 1460558496510,\n           \"signature\": {\n               \"mode\": \"p384ecdsa\",\n               \"x5u\": \"https://bucket.example.net/appkey1.pem\",\n               \"signature\": \"Nv-EJ1D0fanElBGP4ZZmV6zu_b4DuCP3H7xawlLrcR7to3aKzqfZknVXOi94G_w8-wdKlysVWmhuDMqJqPcJV7ZudbhypJpj7kllWdPvMRZkoWXSfYLaoLMc8VQEqZcb\"\n           }\n       },\n       \"permissions\": {\n           \"read\": [\n               \"system.Everyone\"\n           ]\n       }\n   }\n\n\nEvents\n======\n\nPyramid events are sent for each review step of the validation workflow.\n\nEvents have the following attributes:\n\n* ``request``: current Pyramid request object\n* ``payload``: same as ``kinto.core.events.ResourceChanged``\n* ``impacted_records``: same as ``kinto.core.events.ResourceChanged``\n* ``resource``: dict with details about source, preview and destination collection\n                (as in capability).\n* ``original_event``: original ``ResourceChanged`` event that was caught to\n                      detect step change in review workflow.\n\nThe following events are thrown:\n\n* ``kinto_signer.events.ReviewRequested``\n* ``kinto_signer.events.ReviewRejected``\n* ``kinto_signer.events.ReviewApproved``\n\n.. important::\n\n    The events are sent within the request's transaction. In other words, any\n    database change that occurs in subscribers will be committed or rolledback\n    depending of the overall response status.\n\n\nValidating the signature\n========================\n\nWith `kinto.js <https://github.com/Kinto/kinto.js/>`_, it is possible to define\nincoming hooks that are executed when the data is retrieved from the server.\n\n.. code-block:: javascript\n\n    const kinto = new Kinto({\n      remote: \"https://mykinto.com/v1\",\n      bucket: \"a-bucket\"\n    });\n    const collection = kinto.collection(\"a-collection\", {\n      hooks: {\n        \"incoming-changes\": [validateCollectionSignature]\n      }});\n\n.. code-block:: javascript\n\n    function validateCollectionSignature(payload, collection) {\n      // 1 - Fetch signature from collection endpoint\n      // 2 - Fetch public key certificate\n      // 3 - Merge incoming changes with local records\n      // 4 - Serialize as canonical JSON\n      // 5 - Verify the signature against the content with the public key\n      // 6 - Return `payload` if valid, throw error otherwise.\n    }\n\nThe content of the ``demo/`` folder implements the signature verification with\nkinto.js and the WebCrypto API. It is `published online <https://kinto.github.io/kinto-signer/>`_\nbut relies on a semi-public server instance.\n\nSee also `the complete integration within Firefox <https://bugzilla.mozilla.org/show_bug.cgi?id=1263602>`_\nusing the `Network Security Services <https://developer.mozilla.org/en-US/docs/Mozilla/Projects/NSS/Overview>`_.\n\n\nGenerating a keypair\n====================\n\nTo generate a new keypair, you can use the following command::\n\n  $ python -m kinto_signer.generate_keypair private.pem public.pem\n\n\nRunning the tests\n=================\n\nIn order to contribute and run the full functional test suite locally you need\nto have the Go language executables (e.g. `sudo apt-get install golang`)\nand a ``testdb`` PostgreSQL database like for the Kinto server.\n\nThe rest of installation and setup process is taken care of automatically.\n\nTo run the unit tests::\n\n  $ make tests\n\nFor the functional tests, run these two services in separate terminals:\n\n::\n\n  $ make run-kinto\n\n::\n\n  $ make run-autograph\n\nAnd start the test suite::\n\n  $ make functional\n\n\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -25,11 +25,17 @@
     "name": "kinto-signer",
     "platform": "",
     "project_url": "https://pypi.org/project/kinto-signer/",
-    "release_url": "https://pypi.org/project/kinto-signer/2.1.0/",
-    "requires_dist": [],
+    "release_url": "https://pypi.org/project/kinto-signer/2.1.1/",
+    "requires_dist": [
+      "requests-hawk",
+      "kinto (>=7.1.0)",
+      "enum34",
+      "ecdsa",
+      "boto3"
+    ],
     "requires_python": "",
     "summary": "Kinto signer",
-    "version": "2.1.0"
+    "version": "2.1.1"
   },
   "releases": {
     "0.1.0": [
@@ -39,7 +45,7 @@
           "md5": "4aaee75ef23722a4bf422ad8060db593",
           "sha256": "dd148d526c6bfb7556ea2e3f552693e471fcb71522c8066def44e48f5872a230"
         },
-        "downloads": 115,
+        "downloads": -1,
         "filename": "kinto-signer-0.1.0.tar.gz",
         "has_sig": false,
         "md5_digest": "4aaee75ef23722a4bf422ad8060db593",
@@ -57,7 +63,7 @@
           "md5": "1159c0d94e8219273ba986771485e191",
           "sha256": "b6d091d7b35b2a8788b06051d4bd05799c962d5ba0843e8d458844d1c4eb1b9c"
         },
-        "downloads": 120,
+        "downloads": -1,
         "filename": "kinto-signer-0.2.0.tar.gz",
         "has_sig": false,
         "md5_digest": "1159c0d94e8219273ba986771485e191",
@@ -75,7 +81,7 @@
           "md5": "729d67b7056d8246404bd090ef945b26",
           "sha256": "aa89e56fc43bbf84eed07c3081de3934750e2397443454a642098a0536a54287"
         },
-        "downloads": 217,
+        "downloads": -1,
         "filename": "kinto-signer-0.3.0.zip",
         "has_sig": false,
         "md5_digest": "729d67b7056d8246404bd090ef945b26",
@@ -93,7 +99,7 @@
           "md5": "6302138bf09a74c76b94ed5b0539798c",
           "sha256": "bcc9110e640c56f3de998475b1071f1805fd2d924cdc0a56c071e1813bd8d2c8"
         },
-        "downloads": 120,
+        "downloads": -1,
         "filename": "kinto-signer-0.4.0.zip",
         "has_sig": false,
         "md5_digest": "6302138bf09a74c76b94ed5b0539798c",
@@ -111,7 +117,7 @@
           "md5": "9e4d1aa7803f94928b3cf253f1cbe8c8",
           "sha256": "369c2cce06b044cd49fd66a614f88f9d5d473906c9f41b325c68710f96d10553"
         },
-        "downloads": 124,
+        "downloads": -1,
         "filename": "kinto_signer-0.5.0-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "9e4d1aa7803f94928b3cf253f1cbe8c8",
@@ -127,7 +133,7 @@
           "md5": "29464040570fc22ecc71477fb1c59f83",
           "sha256": "40f5d70db5a41bbf7fbd58fe48b19cd3d4fc61d49346c982f17328af025ebaa3"
         },
-        "downloads": 120,
+        "downloads": -1,
         "filename": "kinto-signer-0.5.0.tar.gz",
         "has_sig": false,
         "md5_digest": "29464040570fc22ecc71477fb1c59f83",
@@ -145,7 +151,7 @@
           "md5": "2b056f037cf29948386c769da74d505a",
           "sha256": "b784d02cc604667d13fcdc24fcfa9e927ed39f2344e48850ce2c435af3012344"
         },
-        "downloads": 123,
+        "downloads": -1,
         "filename": "kinto-signer-0.6.0.zip",
         "has_sig": false,
         "md5_digest": "2b056f037cf29948386c769da74d505a",
@@ -163,7 +169,7 @@
           "md5": "dda24cc8510e9e41891bf89e3c1e571f",
           "sha256": "8038d21778b0f73ebd855aecebfece82eca05fc12fb0650da6ff4e1a2d9fa07d"
         },
-        "downloads": 144,
+        "downloads": -1,
         "filename": "kinto-signer-0.7.0.zip",
         "has_sig": false,
         "md5_digest": "dda24cc8510e9e41891bf89e3c1e571f",
@@ -181,7 +187,7 @@
           "md5": "32634d94c770df876b6b13dc896f44cf",
           "sha256": "64d6fea3fddd7bb35577c093252923593c661f421693fac26f75dc3fc0804118"
         },
-        "downloads": 106,
+        "downloads": -1,
         "filename": "kinto-signer-0.7.1.zip",
         "has_sig": false,
         "md5_digest": "32634d94c770df876b6b13dc896f44cf",
@@ -199,7 +205,7 @@
           "md5": "6c4cb27ac91d2b1fb2bedea71a544b66",
           "sha256": "ad280a6b0483c69e00bf2919aebc404cd3d576608098e03c3edc14a2a60a89ac"
         },
-        "downloads": 114,
+        "downloads": -1,
         "filename": "kinto-signer-0.7.2.zip",
         "has_sig": false,
         "md5_digest": "6c4cb27ac91d2b1fb2bedea71a544b66",
@@ -217,7 +223,7 @@
           "md5": "6067e8e17c02be470ad3fecdadc614d2",
           "sha256": "e456bd63d6fcbe6bc8bbbf67fce3210681d5f90d9a3295b7e9ad0725aaf17c32"
         },
-        "downloads": 338,
+        "downloads": -1,
         "filename": "kinto-signer-0.7.3.zip",
         "has_sig": false,
         "md5_digest": "6067e8e17c02be470ad3fecdadc614d2",
@@ -235,7 +241,7 @@
           "md5": "9acee5e323fcd7f0584e4d9a0677f456",
           "sha256": "238ecf83f6258468ff93e6f79a959305c1cb81fa8f934966f0a1d63647c3a209"
         },
-        "downloads": 236,
+        "downloads": -1,
         "filename": "kinto-signer-0.8.0.zip",
         "has_sig": false,
         "md5_digest": "9acee5e323fcd7f0584e4d9a0677f456",
@@ -253,7 +259,7 @@
           "md5": "069410e50233b41911a62b63817a097b",
           "sha256": "d3685d492fc362e1337ffe31163a5168bab88816d552b4f977b9975b90fec92a"
         },
-        "downloads": 344,
+        "downloads": -1,
         "filename": "kinto_signer-0.8.1-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "069410e50233b41911a62b63817a097b",
@@ -269,7 +275,7 @@
           "md5": "fd2cf09fed506aadd6daa72c4fc7db21",
           "sha256": "669ae89ee670ff69ad4b5bcc0dc85758f475e58deccddf2a173b23ddf508aec5"
         },
-        "downloads": 334,
+        "downloads": -1,
         "filename": "kinto-signer-0.8.1.tar.gz",
         "has_sig": false,
         "md5_digest": "fd2cf09fed506aadd6daa72c4fc7db21",
@@ -287,7 +293,7 @@
           "md5": "83e22898bf47b59020ebf8321237bf19",
           "sha256": "1c88f4592f080bacba0afdfcd182be5293017943df6c207c465cf9ae88210dfc"
         },
-        "downloads": 143,
+        "downloads": -1,
         "filename": "kinto-signer-0.9.0.zip",
         "has_sig": false,
         "md5_digest": "83e22898bf47b59020ebf8321237bf19",
@@ -305,7 +311,7 @@
           "md5": "18a34af8c87234e5975335ce0cd18b3e",
           "sha256": "b6cb46ac96edceb7075765804b87371276a82859eef04eda23707ec82ec01c5a"
         },
-        "downloads": 256,
+        "downloads": -1,
         "filename": "kinto-signer-0.9.1.zip",
         "has_sig": false,
         "md5_digest": "18a34af8c87234e5975335ce0cd18b3e",
@@ -323,7 +329,7 @@
           "md5": "a8ff3c98634ce4333cb5b3a42848237b",
           "sha256": "8023f52494b9d345e7eae302b9ed45141e5d217bf8a72a6e64e32b900879a727"
         },
-        "downloads": 231,
+        "downloads": -1,
         "filename": "kinto-signer-0.9.2.zip",
         "has_sig": false,
         "md5_digest": "a8ff3c98634ce4333cb5b3a42848237b",
@@ -341,7 +347,7 @@
           "md5": "0a64bb6db7550580cc88d64fe74f22ab",
           "sha256": "19be7986d4d96872193ad429292608c5aa88df243fac611f30599f32387a9982"
         },
-        "downloads": 190,
+        "downloads": -1,
         "filename": "kinto-signer-1.0.0.zip",
         "has_sig": false,
         "md5_digest": "0a64bb6db7550580cc88d64fe74f22ab",
@@ -359,7 +365,7 @@
           "md5": "0fac982ca41e3a868be11f8603d0ac07",
           "sha256": "59a9f18fdbe453f20b83f3069bc343c91d71342024ab42732406eaced1b280a5"
         },
-        "downloads": 19,
+        "downloads": -1,
         "filename": "kinto-signer-1.1.1.tar.gz",
         "has_sig": false,
         "md5_digest": "0fac982ca41e3a868be11f8603d0ac07",
@@ -377,7 +383,7 @@
           "md5": "01f239d312150161ccb3d175608e3cce",
           "sha256": "8178dfddc5b569a9bcb4ae192500d8920e023fe32fd84b6e25841fd6c06bd093"
         },
-        "downloads": 16,
+        "downloads": -1,
         "filename": "kinto-signer-1.2.0.tar.gz",
         "has_sig": false,
         "md5_digest": "01f239d312150161ccb3d175608e3cce",
@@ -395,7 +401,7 @@
           "md5": "089e6842c0fd11713bee28ad64eeb0f5",
           "sha256": "ba87468f5a798df46a74dea5613847e163bb7f0749971d2a6b67ec8f4ef81977"
         },
-        "downloads": 21,
+        "downloads": -1,
         "filename": "kinto-signer-1.3.0.tar.gz",
         "has_sig": false,
         "md5_digest": "089e6842c0fd11713bee28ad64eeb0f5",
@@ -413,7 +419,7 @@
           "md5": "d85d8388af181275ee952458edf3c76d",
           "sha256": "e80f4e9c7c6d21401649d52876570c31dd91415e4a907e49ea611ca0024acaf3"
         },
-        "downloads": 194,
+        "downloads": -1,
         "filename": "kinto-signer-1.3.1.tar.gz",
         "has_sig": false,
         "md5_digest": "d85d8388af181275ee952458edf3c76d",
@@ -431,7 +437,7 @@
           "md5": "1e4dba16991db101ad8e0632bd574816",
           "sha256": "4359a4f6853261b92bf9afe5b6c6ba90628ddcb824a3399142203a2b9164b50b"
         },
-        "downloads": 11,
+        "downloads": -1,
         "filename": "kinto-signer-1.3.2.tar.gz",
         "has_sig": false,
         "md5_digest": "1e4dba16991db101ad8e0632bd574816",
@@ -449,7 +455,7 @@
           "md5": "2819475905c529cccc9d807382ed9ce7",
           "sha256": "5157574ebd2490592009fb9f565127582931d10803a86bc30cd4e73beaf67809"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "kinto-signer-1.3.3.tar.gz",
         "has_sig": false,
         "md5_digest": "2819475905c529cccc9d807382ed9ce7",
@@ -467,7 +473,7 @@
           "md5": "0f4bddfdf122f0d8f406ccb4b4d50a58",
           "sha256": "cb5d8cb451f989c761e963d20b5c29b598896bd809b73d0ccba15febaf45853d"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "kinto_signer-1.4.0-py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "0f4bddfdf122f0d8f406ccb4b4d50a58",
@@ -483,7 +489,7 @@
           "md5": "8a1a83c8b9bb7ff65665b68476f4ef2d",
           "sha256": "b31140c6e738e0d7b09b287c1bdaa9a2d792d78640efd224423f13bb55c5a15a"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "kinto-signer-1.4.0.tar.gz",
         "has_sig": false,
         "md5_digest": "8a1a83c8b9bb7ff65665b68476f4ef2d",
@@ -501,7 +507,7 @@
           "md5": "48e8e66d61a3c5b7ed38825f1a18870c",
           "sha256": "6d904be2f4e552c651b86cb32cad50c1bfdc9ca3b2a2949ab144b27f0e1948df"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "kinto_signer-1.5.0-py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "48e8e66d61a3c5b7ed38825f1a18870c",
@@ -517,7 +523,7 @@
           "md5": "e8652b93f1a301605b40d6cf62db506f",
           "sha256": "02c3fa41617d98702d2968b497ba9e6be6b87b88b62c7fb405ec84611c2c10fb"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "kinto-signer-1.5.0.tar.gz",
         "has_sig": false,
         "md5_digest": "e8652b93f1a301605b40d6cf62db506f",
@@ -535,7 +541,7 @@
           "md5": "1418f459448b7f69f748db01fd1dc557",
           "sha256": "f0bb477a5f48699fb6e2063bda372c4f7a1338de43a8b726db8824df2db77d50"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "kinto_signer-1.5.1-py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "1418f459448b7f69f748db01fd1dc557",
@@ -551,7 +557,7 @@
           "md5": "f23e941c9ccdb3be320f928bdcfbec79",
           "sha256": "adfa4312ac1e4d992c6472daadaf79d3d6aeba6bd093e9435a4ddb8ee1d3aaf5"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "kinto-signer-1.5.1.tar.gz",
         "has_sig": false,
         "md5_digest": "f23e941c9ccdb3be320f928bdcfbec79",
@@ -569,7 +575,7 @@
           "md5": "884c7acd04a6de351e026584d691931b",
           "sha256": "15ae976c87f8f98893bc8d1a33cc993c0b3c0d85d25ab832dd1433d7ebfc4935"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "kinto_signer-1.5.2-py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "884c7acd04a6de351e026584d691931b",
@@ -585,7 +591,7 @@
           "md5": "20f70686da9829d730bb7467b2af6597",
           "sha256": "44fbfc71dbe4d03f62b61c0b8a9bb8aeb01349f26fdd146799aecea56fbccb29"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "kinto-signer-1.5.2.tar.gz",
         "has_sig": false,
         "md5_digest": "20f70686da9829d730bb7467b2af6597",
@@ -603,7 +609,7 @@
           "md5": "1cf91edd8da23232c0017fb6e8090a01",
           "sha256": "152b0c28eea4835674b85b9474a47fd35a7e5ae3f7be7c5cc00653c3792b22bc"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "kinto_signer-1.5.3-py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "1cf91edd8da23232c0017fb6e8090a01",
@@ -619,7 +625,7 @@
           "md5": "9b1e61c0548cdb3312b1e4a98764708b",
           "sha256": "f75d51e2176b048a749958dd32b724162e4fa9fa6c1fb0c77984b4ee9547bb74"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "kinto-signer-1.5.3.tar.gz",
         "has_sig": false,
         "md5_digest": "9b1e61c0548cdb3312b1e4a98764708b",
@@ -637,7 +643,7 @@
           "md5": "7b77809630478da22ced6f40eddd701a",
           "sha256": "599c7f7290a9423241fa8fd84b87edb7a38ccf3df4791de2312ecc331a2c106c"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "kinto_signer-1.5.4-py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "7b77809630478da22ced6f40eddd701a",
@@ -653,7 +659,7 @@
           "md5": "c6313104c566a3463fc84346b54d48ec",
           "sha256": "5314d709f10358c67752a4e33cffcb7d1317fa74b666eb1498cbe0c6290618ec"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "kinto-signer-1.5.4.tar.gz",
         "has_sig": false,
         "md5_digest": "c6313104c566a3463fc84346b54d48ec",
@@ -671,7 +677,7 @@
           "md5": "8364af2de70d8897932e7c94491fd6a4",
           "sha256": "8d83fe6659f11d7ff3ac9542fd20a1f80acdaeb7bc0e16336c2a6b25ac992be8"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "kinto_signer-2.0.0-py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "8364af2de70d8897932e7c94491fd6a4",
@@ -687,7 +693,7 @@
           "md5": "9a66637cc814fd7d7f1c59e62fffd91d",
           "sha256": "222a14d9fb50cb4db628c1d7ba1655c014e27972ae8448a5fcbfe96089da2ae7"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "kinto-signer-2.0.0.tar.gz",
         "has_sig": false,
         "md5_digest": "9a66637cc814fd7d7f1c59e62fffd91d",
@@ -705,7 +711,7 @@
           "md5": "d3fb99baf1e8f053179f0a742757f041",
           "sha256": "c9d0dbc4116d2955da4a6798fbf25424f85d76a92697febc0a952d423465a112"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "kinto_signer-2.1.0-py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "d3fb99baf1e8f053179f0a742757f041",
@@ -721,7 +727,7 @@
           "md5": "81fbc700a2f3f946a3daff30011a3425",
           "sha256": "04b4ad4ab68b5c4362811f1576e9999ab6faeac87dd39604b02006925ceae8f9"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "kinto-signer-2.1.0.tar.gz",
         "has_sig": false,
         "md5_digest": "81fbc700a2f3f946a3daff30011a3425",
@@ -731,40 +737,74 @@
         "upload_time": "2017-08-07T17:00:04",
         "url": "https://files.pythonhosted.org/packages/78/17/1869e8039e34a10a5e99d380acfc5c36e43122eb47a843ab287dae71383f/kinto-signer-2.1.0.tar.gz"
       }
+    ],
+    "2.1.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "db4eeca1d40ea011b7c545b64853fa56",
+          "sha256": "d0482e6df61afaf8ff67108f66500035274f9d50f02cd141201601c48494cce3"
+        },
+        "downloads": -1,
+        "filename": "kinto_signer-2.1.1-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "db4eeca1d40ea011b7c545b64853fa56",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "size": 45464,
+        "upload_time": "2017-10-30T09:32:14",
+        "url": "https://files.pythonhosted.org/packages/c4/a7/aba7167f380db5c1e48a92ea79b838d416fba4b1effc60c2d9f3045ce6c7/kinto_signer-2.1.1-py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8e6df125f1ffd763185719d703b0487a",
+          "sha256": "65e4bc577c2b523a9ad24c9ce84547ed1378b628ac0f0b1240014d951ff0f8fa"
+        },
+        "downloads": -1,
+        "filename": "kinto-signer-2.1.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "8e6df125f1ffd763185719d703b0487a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 132023,
+        "upload_time": "2017-10-30T09:32:16",
+        "url": "https://files.pythonhosted.org/packages/9e/13/8d9b2ee3c2fa207f6a8cf187d37401ecf35d9854bdc812fe5d73e22b83f5/kinto-signer-2.1.1.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "d3fb99baf1e8f053179f0a742757f041",
-        "sha256": "c9d0dbc4116d2955da4a6798fbf25424f85d76a92697febc0a952d423465a112"
+        "md5": "db4eeca1d40ea011b7c545b64853fa56",
+        "sha256": "d0482e6df61afaf8ff67108f66500035274f9d50f02cd141201601c48494cce3"
       },
-      "downloads": 0,
-      "filename": "kinto_signer-2.1.0-py3-none-any.whl",
+      "downloads": -1,
+      "filename": "kinto_signer-2.1.1-py3-none-any.whl",
       "has_sig": false,
-      "md5_digest": "d3fb99baf1e8f053179f0a742757f041",
+      "md5_digest": "db4eeca1d40ea011b7c545b64853fa56",
       "packagetype": "bdist_wheel",
       "python_version": "py3",
-      "size": 45522,
-      "upload_time": "2017-08-07T17:00:06",
-      "url": "https://files.pythonhosted.org/packages/33/16/a4e570f440370b1e7836218efafcea585c2ee7824e1ef3207fc330dbcf87/kinto_signer-2.1.0-py3-none-any.whl"
+      "size": 45464,
+      "upload_time": "2017-10-30T09:32:14",
+      "url": "https://files.pythonhosted.org/packages/c4/a7/aba7167f380db5c1e48a92ea79b838d416fba4b1effc60c2d9f3045ce6c7/kinto_signer-2.1.1-py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "81fbc700a2f3f946a3daff30011a3425",
-        "sha256": "04b4ad4ab68b5c4362811f1576e9999ab6faeac87dd39604b02006925ceae8f9"
+        "md5": "8e6df125f1ffd763185719d703b0487a",
+        "sha256": "65e4bc577c2b523a9ad24c9ce84547ed1378b628ac0f0b1240014d951ff0f8fa"
       },
-      "downloads": 0,
-      "filename": "kinto-signer-2.1.0.tar.gz",
+      "downloads": -1,
+      "filename": "kinto-signer-2.1.1.tar.gz",
       "has_sig": false,
-      "md5_digest": "81fbc700a2f3f946a3daff30011a3425",
+      "md5_digest": "8e6df125f1ffd763185719d703b0487a",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 132070,
-      "upload_time": "2017-08-07T17:00:04",
-      "url": "https://files.pythonhosted.org/packages/78/17/1869e8039e34a10a5e99d380acfc5c36e43122eb47a843ab287dae71383f/kinto-signer-2.1.0.tar.gz"
+      "size": 132023,
+      "upload_time": "2017-10-30T09:32:16",
+      "url": "https://files.pythonhosted.org/packages/9e/13/8d9b2ee3c2fa207f6a8cf187d37401ecf35d9854bdc812fe5d73e22b83f5/kinto-signer-2.1.1.tar.gz"
     }
   ]
 }
