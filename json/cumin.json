@@ -18,7 +18,7 @@
       "Topic :: System :: Distributed Computing",
       "Topic :: System :: Systems Administration"
     ],
-    "description": "#################################################\nCumin - An automation and orchestration framework\n#################################################\n\n| |GitHub Release| |PyPI Release| |Build Status| |Coveralls Coverage| |Codcov Coverage| |Codacy| |Licence|\n\nSummary\n=======\n\nCumin provides a flexible and scalable automation framework to execute multiple commands on multiple hosts in parallel.\n\nIt allows to easily perform complex selections of hosts through a user-friendly query language which can\ninterface with different backend modules and combine their results for a fine grained selection. The transport layer\ncan also be selected, and can provide multiple execution strategies.\n\nIt can be used both via its command line interface (CLI) and as a Python library.\n\nMore details on the usage of Cumin in the Wikimedia Foundation are available on `Cumin's Wikitech page`_.\n\nMain components\n===============\n\nQuery language\n--------------\n\nCumin provides a user-friendly generic query language that allows to combine the results of subqueries for multiple\nbackends.\n\n- Each query part can be composed with the others using boolean operators (``and``, ``or``, ``and not``, ``xor``).\n- Multiple query parts can be grouped together with parentheses (``(``, ``)``).\n- Specific backend query (``I{backend-specific query syntax}``, where ``I`` is an identifier for the specific backend).\n- Alias replacement, according to aliases defined in the configuration file (``A:group1``).\n- The identifier ``A`` is reserved for the aliases replacement and cannot be used to identify a backend.\n- If a ``default_backend`` is set in the configuration, it will try to execute the query first directly with the\n  default backend and only if the query is not parsable with that backend it will try to execute it with the main\n  grammar.\n- A complex query example:\n  ``(D{host1 or host2} and (P{R:Class = Role::MyClass} and not A:group1)) or D{host3}``\n\n::\n\n    Backus-Naur form (BNF) of the grammar:\n            <grammar> ::= <item> | <item> <boolean> <grammar>\n               <item> ::= <backend_query> | <alias> | \"(\" <grammar> \")\"\n      <backend_query> ::= <backend> \"{\" <query> \"}\"\n              <alias> ::= A:<alias_name>\n            <boolean> ::= \"and not\" | \"and\" | \"xor\" | \"or\"\n\nGiven that the ``pyparsing`` library defines the grammar in a BNF-like style, for the details of the tokens not\nspecified above check directly the source code in ``cumin/grammar.py``.\n\nThe ``Query`` class defined in ``cumin/query.py`` is the one taking care of replacing the aliases, building and\nexecuting the query parts with their respective backends and aggregating the results. Once a query is executed, it\nreturns a `ClusterShell NodeSet`_ with the FQDN of the hosts that matches the selection.\n\nBackends\n--------\n\nAll the backends share a minimal common interface that is defined in the ``BaseQuery`` class defined in\n``cumin/backends/__init__.py`` and they are instantiated by the ``Query`` class defined in ``cumin/query.py`` when\nbuilding and executing the query. Each backend module need to define a ``query_class`` module variable that is a\npointer to the backend class for dynamic instantiation and a ``GRAMMAR_PREFIX`` constant string that is the\nidentifier to be used in the main query syntax to identify the backend. The ``GRAMMAR_PREFIX`` ``A`` is reserved by\nthe main grammar for aliases. Some backends are optional, in the sense that their dependencies are not installed\nautomatically, they are available as an ``extras_require`` when installing from ``pip`` or as ``Recommended`` in the\ndebian package.\n\nPuppetDB\n^^^^^^^^\n\nThis backend uses the PuppetDB API to perform the query. The specific query language has this features:\n\n- Each query part can be composed with the others using boolean operators (``and``, ``or``, ``not``)\n- Multiple query parts can be grouped together with parentheses (``(``, ``)``).\n- A query part can be of two different types:\n\n  - ``Hostname matching``: this is a simple string that be used to match directly the hostname of the hosts in the\n    selected backend. It allows for glob expansion (``*``) and the use of the powerful `ClusterShell NodeSet`_.\n  - ``Category matching``: an identifier composed by a category, a colon and a key, followed by a comparison operator\n    and a value, as in ``F:key = value``.\n\nThe available categories are:\n\n- ``F``: for querying facts\n- ``R``: for querying resources\n\nThe available operators are:\n\n- ``=``: equality\n- ``>=``: greater than or equal to\n- ``<=``: less than or equal to\n- ``<``: less than\n- ``>``: greater than\n- ``~``: regexp match\n\nSome query examples:\n\n- All hosts: ``*``\n- Hosts globbing: ``host10*``\n- `ClusterShell NodeSet`_ for hosts expansion: ``host10[10-42].domain``\n- Category based key-value selection:\n\n  - ``R:Resource::Name``: query all the hosts that have a resource of type ``Resource::Name``.\n  - ``R:Resource::Name = 'resource-title'``: query all the hosts that have a resource of type ``Resource::Name``\n    whose title is ``resource-title``. For example ``R:Class = MyModule::MyClass``.\n  - ``R:Resource::Name@field = 'some-value'``: query all the hosts that have a resource of type ``Resource::Name``\n    whose field ``field`` has the value ``some-value``. The valid fields are: ``tag``, ``certname``, ``type``,\n    ``title``, ``exported``, ``file``, ``line``. The previous syntax is a shortcut for this one with the field\n    ``title``.\n  - ``R:Resource::Name%param = 'some-value'``: query all the hosts that have a resource of type ``Resource::Name``\n    whose parameter ``param`` has the value ``some-value``.\n\n- Mixed facts/resources queries are not supported, but the same result can be achieved by the main grammar using\n  multiple subqueries.\n- A complex selection for facts:\n  ``host10[10-42].*.domain or (not F:key1 = value1 and host10*) or (F:key2 > value2 and F:key3 ~ '^value[0-9]+')``\n\n::\n\n    Backus-Naur form (BNF) of the grammar:\n          <grammar> ::= <item> | <item> <and_or> <grammar>\n             <item> ::= [<neg>] <query-token> | [<neg>] \"(\" <grammar> \")\"\n      <query-token> ::= <token> | <hosts>\n            <token> ::= <category>:<key> [<operator> <value>]\n\nGiven that the ``pyparsing`` library used to define the grammar uses a BNF-like style, for the details of the tokens\nnot specified above see directly the code in ``cumin/backends/puppetdb.py``.\n\nOpenStack\n^^^^^^^^^\n\nThis `optional` backend uses the OpenStack APIs to perform the query. The specific query language has this features:\n\n- Each query can specify multiple parameters to filter the hosts selection in the form ``key:value``.\n- The special ``project`` key allow to filter by the OpenStack project name: ``project:project_name``. If not\n  specified all the visible and enabled projects will be queried.\n- Any other ``key:value`` pair will be passed as is to the `OpenStack list-servers API`_. Multiple filters can be\n  added separated by space. The value can be enclosed in single or double quotes: ``name:\"host1.*\\.domain\" image:UUID``\n- By default the filters ``status:ACTIVE`` and ``vm_state:ACTIVE`` are also added, but will be overridden if specified\n  in the query.\n- To mix multiple selections the general grammar must be used with multiple subqueries:\n  ``O{project:project1} or O{project:project2}``\n- The special query ``*`` is a shortcut to select all hosts in all OpenStack projects.\n- See the example configuration in ``doc/examples/config.yaml`` for all the OpenStack-related parameters that can be\n  set.\n\n::\n\n    Backus-Naur form (BNF) of the grammar:\n            <grammar> ::= \"*\" | <items>\n              <items> ::= <item> | <item> <whitespace> <items>\n               <item> ::= <key>:<value>\n\nGiven that the ``pyparsing`` library used to define the grammar uses a BNF-like style, for the details of the tokens\nnot specified above see directly the code in ``cumin/backends/openstack.py``.\n\nDirect\n^^^^^^\n\nThe ``direct`` backend allow to use Cumin without any external dependency for the hosts selection. It allow to write\narbitrarily complex queries with subgroups and boolean operators, but each item must be either the hostname itself,\nor the using host expansion using the powerful `ClusterShell NodeSet`_ syntax.\n\nThe typical usage for the ``direct`` backend is as a reliable alternative in cases in which the primary host\nselection mechanism is not working and also for testing the transports without any external backend dependency.\n\nSome query examples:\n\n- Simple selection: ``host1.domain``\n- ClusterShell syntax for hosts expansion: ``host10[10-42].domain,host2010.other-domain``\n- A complex selection:\n  ``host100[1-5].domain or (host10[30-40].domain and (host10[10-42].domain and not host33.domain))``\n\n::\n\n    Backus-Naur form (BNF) of the grammar:\n            <grammar> ::= <item> | <item> <boolean> <grammar>\n               <item> ::= <hosts> | \"(\" <grammar> \")\"\n            <boolean> ::= \"and not\" | \"and\" | \"xor\" | \"or\"\n\nGiven that the ``pyparsing`` library used to define the grammar usesa BNF-like style, for the details of the tokens\nnot specified above check directly the source code in ``cumin/backends/direct.py``.\n\nTransports\n----------\n\nThe transport layer is the one used to convey the commands to be executed into the selected hosts. The transport\nabstraction allow to specify a mode to choose the execution plan, an event handler class and a success threshold.\nThose can be used by the chosen transport to customize the behavior of the execution plan.\n\nAll the transports share a common interface that is defined in the ``BaseWorker`` class defined in\n``cumin/transports/__init__.py`` and they are instantiated through the ``Transport`` factory class defined in\n``cumin/transport.py``. Each backend module need to define a ``worker_class`` module variable that is a pointer to\nthe transport class for dynamic instantiation.\n\nClusterShell\n^^^^^^^^^^^^\n\nThis transport uses the `ClusterShell <https://github.com/cea-hpc/clustershell>`__ Python library to connect to the\nselected hosts and execute a list of commands. This transport accept the following customizations:\n\n- ``sync`` execution mode: given a list of commands, the first one will be executed on all the hosts, then, if the\n  success ratio is reached, the second one will be executed on all hosts where the first one was successful, and so on\n- ``async`` execution mode: given a list of commands, on each hosts the commands will be executed sequentially,\n  interrupting the execution on any single host at the first command that fails. The execution on the hosts is\n  independent between each other.\n- custom execution mode: can be achieved creating a custom event handler class that extends the ``BaseEventHandler``\n  class defined in ``cumin/transports/clustershell.py``, implementing its abstract methods and setting to this class\n  object the handler to the transport.\n\nInstallation\n============\n\nFrom the Python Package Index (PyPI)::\n\n    pip install cumin\n\nOptional backends are available as ``extras_require`` and can be installed with::\n\n    pip install cumin[with-openstack]\n\nFrom the source code in the ``master`` branch::\n\n    python setup.py install\n\nIs it also possible to build a Debian package using the ``debian`` branch, for example with ``gbp buildpackage``.\n\nConfiguration\n=============\n\nThe default configuration file for ``cumin`` is expected to be found at ``/etc/cumin/config.yaml``. The path can\nbe changed in the CLI via a command-line switch, ``--config``. A commented example configuration is available in\n``doc/examples/config.yaml``.\n\nCumin will also automatically load any aliases defined in a ``aliases.yaml`` file, if present in the same directory\nof the main configuration file. An aliases example file is available in ``doc/examples/aliases.yaml``.\n\nCLI\n===\n\nUsage\n-----\n\n::\n\n    cumin [OPTIONS] HOSTS COMMAND [COMMAND ...]\n\nOPTIONS\n^^^^^^^\n\nFor the full list of available optional arguments see ``cumin --help``.\n\nMode\n''''\n\nThe ``-m/--mode`` argument is required when multiple COMMANDS are specified and defines the mode of execution:\n\n- ``sync``: execute the first command on all hosts, then proceed with the next one only if ``-s/--success-percentage``\n  is reached.\n- ``async``: execute on each host, independently from each other, the list of commands, aborting the execution on any\n  given host at the first command that fails.\n\nPositional arguments\n^^^^^^^^^^^^^^^^^^^^\n\nHOSTS\n'''''\n\nA host selection query according to a custom grammar. The hosts selection query is executed against the configured\nbackend to extract the list of hosts to use as target.\n\nCOMMAND\n'''''''\n\nA command to be executed on all the target hosts in parallel, according to the configuration and options selected.\nMultiple commands will be executed sequentially.\n\nRunning tests\n=============\n\nThe ``tox`` utility, a wrapper around virtualenv, is used to run the\ntest. To list the default environements run by tox::\n\n    tox -lv\n\nTo list all the available environments::\n\n    tox -av\n\nTo run one specific environment only::\n\n    tox -e flake8\n\nYou can pass extra arguments to the underlying command::\n\n    # Run only tests in a specific file:\n    tox -e unit -- -k test_puppetdb.py\n\n    # Run only one specific test:\n    tox -e unit -- -k test_invalid_grammars\n\nAlso integration tests are available, but not run by default by tox. They depends on a running Docker instance. To run\nthem::\n\n    tox -e integration\n\n\n.. |GitHub Release| image:: https://img.shields.io/github/release/wikimedia/cumin.svg\n   :target: https://github.com/wikimedia/cumin/releases\n.. |PyPI Release| image:: https://img.shields.io/pypi/v/cumin.svg\n   :target: https://pypi.python.org/pypi/cumin\n.. |Build Status| image:: https://travis-ci.org/wikimedia/cumin.svg?branch=master\n   :target: https://travis-ci.org/wikimedia/cumin\n.. |Coveralls Coverage| image:: https://coveralls.io/repos/github/wikimedia/cumin/badge.svg?branch=master\n   :target: https://coveralls.io/github/wikimedia/cumin\n.. |Codcov Coverage| image:: https://codecov.io/github/wikimedia/cumin/coverage.svg?branch=master\n   :target: https://codecov.io/github/wikimedia/cumin\n.. |Codacy| image:: https://api.codacy.com/project/badge/Grade/73d9a429dc7343eb935471bf05826fc0\n   :target: https://www.codacy.com/app/volans-/cumin\n.. |Licence| image:: https://img.shields.io/badge/license-GPLv3%2B-blue.svg\n   :target: https://github.com/wikimedia/cumin/blob/master/LICENSE\n\n.. _`Cumin's Wikitech page`: https://wikitech.wikimedia.org/wiki/Cumin\n.. _`ClusterShell NodeSet`: https://clustershell.readthedocs.io/en/v1.7.3/api/NodeSet.html#ClusterShell.NodeSet.NodeSet\n.. _`OpenStack list-servers API`: https://developer.openstack.org/api-ref/compute/#list-servers\n\n\n",
+    "description": "Cumin - An automation and orchestration framework\n-------------------------------------------------\n\n|GitHub Release| |PyPI Release| |Build Status| |Coveralls Coverage| |Codcov Coverage| |Codacy| |License|\n\nCumin provides a flexible and scalable automation framework to execute multiple commands on multiple hosts in parallel.\n\nIt allows to easily perform complex selections of hosts through a user-friendly query language which can interface\nwith different backend modules and combine their results for a fine grained selection. The transport layer can also be\nselected, and can provide multiple execution strategies. The executed commands outputs are automatically grouped for an\neasy-to-read result.\n\nIt can be used both via its command line interface (CLI) `cumin` and as a Python 2 library. Python 3 support will be\nadded soon, as the last dependency that was Python 2 only added support for Python 3 recently.\n\n|Cumin GIF|\n\nThe documentation is available on `Wikimedia Documentation`_ and `Read the Docs`_. The details on how Cumin it's used\nat the Wikimedia Foundation are available on `Wikitech`_.\n\n\n.. |GitHub Release| image:: https://img.shields.io/github/release/wikimedia/cumin.svg\n   :target: https://github.com/wikimedia/cumin/releases\n.. |PyPI Release| image:: https://img.shields.io/pypi/v/cumin.svg\n   :target: https://pypi.python.org/pypi/cumin\n.. |Build Status| image:: https://travis-ci.org/wikimedia/cumin.svg?branch=master\n   :target: https://travis-ci.org/wikimedia/cumin\n.. |Coveralls Coverage| image:: https://coveralls.io/repos/github/wikimedia/cumin/badge.svg?branch=master\n   :target: https://coveralls.io/github/wikimedia/cumin\n.. |Codcov Coverage| image:: https://codecov.io/github/wikimedia/cumin/coverage.svg?branch=master\n   :target: https://codecov.io/github/wikimedia/cumin\n.. |Codacy| image:: https://api.codacy.com/project/badge/Grade/73d9a429dc7343eb935471bf05826fc0\n   :target: https://www.codacy.com/app/volans-/cumin\n.. |License| image:: https://img.shields.io/badge/license-GPLv3%2B-blue.svg\n   :target: https://github.com/wikimedia/cumin/blob/master/LICENSE\n.. |Cumin GIF| image:: https://people.wikimedia.org/~volans/cumin.gif\n\n.. _`Read the Docs`: https://cumin.readthedocs.io\n.. _`Wikimedia Documentation`: https://doc.wikimedia.org/cumin\n.. _`Wikitech`: https://wikitech.wikimedia.org/wiki/Cumin\n\n\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -34,7 +34,7 @@
     "name": "cumin",
     "platform": "GNU/Linux",
     "project_url": "https://pypi.org/project/cumin/",
-    "release_url": "https://pypi.org/project/cumin/1.2.2/",
+    "release_url": "https://pypi.org/project/cumin/1.3.0/",
     "requires_dist": [
       "python-novaclient (>=3.3.1); extra == 'with-openstack'",
       "python-keystoneclient (>=2.3.1); extra == 'with-openstack'",
@@ -90,7 +90,7 @@
     ],
     "requires_python": "",
     "summary": "Automation and orchestration framework and CLI written in Python",
-    "version": "1.2.2"
+    "version": "1.3.0"
   },
   "releases": {
     "1.2.2": [
@@ -126,40 +126,74 @@
         "upload_time": "2017-10-11T22:23:34",
         "url": "https://files.pythonhosted.org/packages/24/0b/e55467d3711394ea9be533194af3fd15df15de3f5a516be682807201fb68/cumin-1.2.2.tar.gz"
       }
+    ],
+    "1.3.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2526bdbf3121756279b94029dce5fed8",
+          "sha256": "cc3ff7649707614ce6ad02187e0489472b88e72c7f97df79d714ff67114ccac6"
+        },
+        "downloads": -1,
+        "filename": "cumin-1.3.0-py2-none-any.whl",
+        "has_sig": true,
+        "md5_digest": "2526bdbf3121756279b94029dce5fed8",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2",
+        "size": 47208,
+        "upload_time": "2017-11-03T15:40:36",
+        "url": "https://files.pythonhosted.org/packages/01/bb/ce19ee86ba90462e670f6315e9d983eefe0fcd6b47756dc02e7ea13d235a/cumin-1.3.0-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "15692d8c3c193d2e5bf668790b62cfbc",
+          "sha256": "cb6ee299cbb9e1fc4df5571cd4613413b3757d6ce18eec27e754b486a4147897"
+        },
+        "downloads": -1,
+        "filename": "cumin-1.3.0.tar.gz",
+        "has_sig": true,
+        "md5_digest": "15692d8c3c193d2e5bf668790b62cfbc",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 91501,
+        "upload_time": "2017-11-03T15:40:38",
+        "url": "https://files.pythonhosted.org/packages/23/0c/972a852e17229ed38c1bbc5a86477b8fdc839c307ec095e75a4e62d660a6/cumin-1.3.0.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "d656ae8eb61fc806cad4bd1f25f878ca",
-        "sha256": "7bf72b7792eae350ba93cab3c99f4d54c1173e6217c42215349ededb4471f04b"
+        "md5": "2526bdbf3121756279b94029dce5fed8",
+        "sha256": "cc3ff7649707614ce6ad02187e0489472b88e72c7f97df79d714ff67114ccac6"
       },
       "downloads": -1,
-      "filename": "cumin-1.2.2-py2-none-any.whl",
+      "filename": "cumin-1.3.0-py2-none-any.whl",
       "has_sig": true,
-      "md5_digest": "d656ae8eb61fc806cad4bd1f25f878ca",
+      "md5_digest": "2526bdbf3121756279b94029dce5fed8",
       "packagetype": "bdist_wheel",
       "python_version": "py2",
-      "size": 53222,
-      "upload_time": "2017-10-11T22:23:32",
-      "url": "https://files.pythonhosted.org/packages/43/f0/259f4cdf4165a4f1762982735d7b39da4883250e863d1ea2e07634ae77d1/cumin-1.2.2-py2-none-any.whl"
+      "size": 47208,
+      "upload_time": "2017-11-03T15:40:36",
+      "url": "https://files.pythonhosted.org/packages/01/bb/ce19ee86ba90462e670f6315e9d983eefe0fcd6b47756dc02e7ea13d235a/cumin-1.3.0-py2-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "9e2d20fadc632b22dd074d441d359081",
-        "sha256": "06f76e31226848a29951980a84f677bfae9bfa4e5288c604450e72a84262e8fa"
+        "md5": "15692d8c3c193d2e5bf668790b62cfbc",
+        "sha256": "cb6ee299cbb9e1fc4df5571cd4613413b3757d6ce18eec27e754b486a4147897"
       },
       "downloads": -1,
-      "filename": "cumin-1.2.2.tar.gz",
+      "filename": "cumin-1.3.0.tar.gz",
       "has_sig": true,
-      "md5_digest": "9e2d20fadc632b22dd074d441d359081",
+      "md5_digest": "15692d8c3c193d2e5bf668790b62cfbc",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 92379,
-      "upload_time": "2017-10-11T22:23:34",
-      "url": "https://files.pythonhosted.org/packages/24/0b/e55467d3711394ea9be533194af3fd15df15de3f5a516be682807201fb68/cumin-1.2.2.tar.gz"
+      "size": 91501,
+      "upload_time": "2017-11-03T15:40:38",
+      "url": "https://files.pythonhosted.org/packages/23/0c/972a852e17229ed38c1bbc5a86477b8fdc839c307ec095e75a4e62d660a6/cumin-1.3.0.tar.gz"
     }
   ]
 }

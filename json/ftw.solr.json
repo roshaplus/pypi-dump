@@ -7,7 +7,7 @@
       "Framework :: Plone",
       "Programming Language :: Python"
     ],
-    "description": "Introduction\n============\n\n``ftw.solr`` provides various customizations and enhancements on top of\n``collective.solr`` which integrates the Solr search engine with Plone.\n\n.. contents:: Table of Contents\n\nFeatures\n========\n\nAtomic updates (aka partial updates)\n------------------------------------\n\nSince Solr 4.0 it's possible to update fields in a Solr document individually,\nsending only the fields that actually changed, whereas before it was necessary\nto send *all* the fields again every time something changed (and therefore ask\nPlone again to index them all, causing a massive performance penalty).\n\n``ftw.solr`` supports atomic updates for Solr version 4.1 and above.\nIn order for atomic updates to work, three things must be taken care of:\n\n- An ``<updateLog />`` must be enabled in ``solrconfig.xml``. If it's missing,\n  Solr will reject any update messages that contain atomic update instructions.\n- A ``_version_`` field must be defined in the Solr schema.\n- All fields in the Solr schema must be defined with ``stored=\"true\"``\n\nIn the stock Solr configs from 4.1 upwards ``<updateLog />`` and the\n``_version_`` field are already configured correctly. If you're using\n``collective.recipe.solrinstance``, check the generated ``solrconfig.xml``,\nit might not have been updated for the use of atomic updates yet.\n\nIf there's a field in the Solr schema that's *not* ``stored=\"true\"``,\nit will get\n**dropped** from documents in Solr on the next update to that document.\nIndexing won't fail, but that field simply won't have any content any more.\n\nApart from those prerequisites, there's nothing more to be done in order to use\natomic updates. ``ftw.solr`` will automatically perform atomic updates whenever\npossible.\n\nAlso see http://wiki.apache.org/solr/Atomic_Updates\n\nHighlighting (aka Snippets)\n---------------------------\n\nWhen displaying search results, Plone by default displays the title and the\ndescription of an item. Solr, like Google and other search engines, can return a\nsnippet of the text containing the words searched for.\n``ftw.solr`` enables this feature in Plone.\n\nLive search grouping\n--------------------\n\nSearch results in Plone's live search can be grouped by ``portal_type``.\nThis is the way search results are shown in Spotlight on Mac OS X.\n\nFacet queries\n-------------\n\nIn addition to facet fields support provided by ``collective.solr``,\n``ftw.solr`` adds support for facet queries.\nThis type of faceting offers a lot of flexibility.\nInstead of choosing a specific field to facet its values, multiple\nSolr queries can be specified, that themselves become facets.\n\nWord Cloud\n----------\n\nAssuming there is a correctly configured index ``wordCloudTerms``,\na Word Cloud\nshowing the most common terms across documents can be displayed.\n\nThe Word Cloud is implemented in a browser view that can either be displayed\nstand-alone by traversing to ``/@@wordcloud`` or rendered in a portlet.\n\nAjax-ified search form\n----------------------\n\nThe search form is fully ajax-ified which leads to faster search results when\nchanging search criteria.\n\nSolr connection configuration in ZCML\n-------------------------------------\n\nThe connections settings for Solr can be configured in ZCML and thus in\nbuildout. This makes it easier when copying databases between multiple Zope\ninstances with different Solr servers. Example::\n\n    zcml-additional =\n        <configure xmlns:solr=\"http://namespaces.plone.org/solr\">\n            <solr:connection host=\"localhost\" port=\"8983\" base=\"/solr\"/>\n       </configure>\n\n\nSolr Configuration\n==================\n\nSearch Handlers\n---------------\n\n``ftw.solr`` requires two custom search handlers that must be configured on the\nSolr server. Search handlers are configured in ``solrconfig.xml`` of your\ncollection.\n\nThe ``livesearch`` request handler is used for live search and should limit the\nreturned fields to a minimum for maximum speed. Example::\n\n    <requestHandler name=\"livesearch\" class=\"solr.SearchHandler\">\n        <lst name=\"defaults\">\n            <str name=\"echoParams\">explicit</str>\n            <int name=\"rows\">1000</int>\n        </lst>\n        <lst name=\"invariants\">\n            <str name=\"fl\">Title Description portal_type path_string getIcon</str>\n        </lst>\n    </requestHandler>\n\nThe ``hlsearch`` request handler should contain the configuration for highlighting.\nExample::\n\n    <requestHandler name=\"hlsearch\" class=\"solr.SearchHandler\">\n        <lst name=\"defaults\">\n            <str name=\"echoParams\">explicit</str>\n            <int name=\"rows\">10</int>\n            <bool name=\"hl\">true</bool>\n            <bool name=\"hl.useFastVectorHighlighter\">true</bool>\n            <str name=\"hl.fl\">snippetText</str>\n            <int name=\"hl.fragsize\">200</int>\n            <str name=\"hl.alternateField\">Description</str>\n            <int name=\"hl.maxAlternateFieldLength\">200</int>\n            <int name=\"hl.snippets\">3</int>\n        </lst>\n    </requestHandler>\n\nField types and indexes\n-----------------------\n\nHighlighting\n~~~~~~~~~~~~\n\nHighlighting requires an index named ``snippetText``\nwith its own field type which does not do too much text analysis.\nFields and indexes are configured in ``schema.xml`` of your collection.\n\nExample::\n\n    <fieldType name=\"text_snippets\" class=\"solr.TextField\" positionIncrementGap=\"100\">\n      <analyzer type=\"index\">\n          <tokenizer class=\"solr.WhitespaceTokenizerFactory\"/>\n          <filter class=\"solr.LowerCaseFilterFactory\"/>\n      </analyzer>\n      <analyzer type=\"query\">\n          <tokenizer class=\"solr.WhitespaceTokenizerFactory\"/>\n          <filter class=\"solr.LowerCaseFilterFactory\"/>\n      </analyzer>\n    </fieldType>\n\n    <field name=\"snippetText\" type=\"text_snippets\" indexed=\"true\"\n           stored=\"true\" required=\"false\" multiValued=\"false\"\n           termVectors=\"true\" termPositions=\"true\"\n           termOffsets=\"true\"/>\n\nWord Cloud\n~~~~~~~~~~\n\nThe Word Cloud feature requires an index named ``wordCloudTerms``\nwith it's own field type.\nIt's basically a copy of ``SearchableText`` but with less analysis and\nfiltering (no lowercasing, no character normalization, etc...).\n\nField type example::\n\n    <fieldType name=\"cloud_terms\" class=\"solr.TextField\" positionIncrementGap=\"100\">\n      <analyzer type=\"index\">\n          <tokenizer class=\"solr.WhitespaceTokenizerFactory\"/>\n          <filter class=\"solr.StopFilterFactory\" ignoreCase=\"true\" words=\"${buildout:directory}/german_stop.txt\" enablePositionIncrements=\"true\"/>\n          <filter class=\"solr.WordDelimiterFilterFactory\"\n                  splitOnCaseChange=\"1\"\n                  splitOnNumerics=\"1\"\n                  stemEnglishPossessive=\"1\"\n                  generateWordParts=\"0\"\n                  generateNumberParts=\"0\"\n                  catenateWords=\"0\"\n                  catenateNumbers=\"0\"\n                  catenateAll=\"0\"\n                  preserveOriginal=\"1\"/>\n          <!-- Strip punctuation characters from beginning and end of terms -->\n          <filter class=\"solr.PatternReplaceFilterFactory\" pattern=\"^(\\p{Punct}*)(.*?)(\\p{Punct}*)$\" replacement=\"$2\"/>\n          <!-- Filter everything that does not contain at least 3 regular letters -->\n          <filter class=\"solr.PatternReplaceFilterFactory\" pattern=\"^([^a-zA-Z]*)([a-zA-Z]{0,2})([^a-zA-Z]*)$\" replacement=\"\"/>\n          <!-- Filter any term shorter than 3 characters (incl. empty string) -->\n          <filter class=\"solr.LengthFilterFactory\" min=\"2\" max=\"50\"/>\n      </analyzer>\n    </fieldType>\n\nIndex example::\n\n    <field name=\"wordCloudTerms\" type=\"cloud_terms\" indexed=\"true\"\n           stored=\"true\" required=\"false\" multiValued=\"false\"\n           termVectors=\"true\" termPositions=\"true\"\n           termOffsets=\"true\"/>\n\n    <copyField source=\"SearchableText\" dest=\"wordCloudTerms\"/>\n\n\nSearch / Livesearch\n-------------------\n\n``ftw.solr`` provides a better livesearch implementation using jQuery Autocomplete widget.\nA new search and result template is also included.\n\nSuggestions\n-----------\nBy default suggestions are disabled on the advanced search input field.\nif you want autocomplete while typing you need to install the autocomplete profile of ftw.solr and...\n\n**Prerequisit (solr config)**::\n\n    <!-- Suggester for autocomplete -->\n    <searchComponent class=\"solr.SpellCheckComponent\" name=\"suggest\">\n      <lst name=\"spellchecker\">\n        <str name=\"name\">suggest</str>\n        <str name=\"classname\">org.apache.solr.spelling.suggest.Suggester</str>\n        <str name=\"lookupImpl\">org.apache.solr.spelling.suggest.fst.WFSTLookupFactory</str>\n        <str name=\"field\">SearchableText</str>\n        <float name=\"threshold\">0.0005</float>\n      </lst>\n    </searchComponent>\n    <requestHandler class=\"org.apache.solr.handler.component.SearchHandler\" name=\"/suggest\">\n      <lst name=\"defaults\">\n        <str name=\"spellcheck\">true</str>\n        <str name=\"spellcheck.dictionary\">suggest</str>\n        <str name=\"spellcheck.onlyMorePopular\">true</str>\n        <str name=\"spellcheck.count\">10</str>\n      </lst>\n      <arr name=\"components\">\n        <str>suggest</str>\n      </arr>\n    </requestHandler>\n\n\nThe portal searchbox no longer provides this feature in favor of the new livesearch autocomplete feature.\n\n\n\nInstallation\n============\n\nAdd as dependency\n-----------------\n\nInstall ``ftw.solr`` by adding it to the list of eggs in your\nbuildout or by adding it as a dependency of your policy package.\n\n.. code:: rst\n\n    [instance]\n    eggs +=\n        ftw.solr\n\nExtend your buildout\n--------------------\n\nFor production:\n\n.. code:: ini\n\n    [buildout]\n    extends =\n        https://raw.githubusercontent.com/4teamwork/ftw-buildouts/master/production.cfg\n        https://raw.githubusercontent.com/4teamwork/ftw-buildouts/master/solr.cfg\n\n    deployment-number = 05\n\nFor local development:\n\n.. code:: ini\n\n    [buildout]\n    extends =\n        https://raw.githubusercontent.com/4teamwork/ftw-buildouts/master/plone-development.cfg\n        https://raw.githubusercontent.com/4teamwork/ftw-buildouts/master/plone-development-solr.cfg\n\nUpdate medatata.xml\n-------------------\n\nAdd ``ftw.solr`` to your metadata.xml:\n\n.. code:: xml\n\n    <?xml version=\"1.0\"?>\n    <metadata>\n        <dependencies>\n            <dependency>profile-ftw.solr:default</dependency>\n        </dependencies>\n    </metadata>\n\nRun buildout\n------------\n\nIf you configured your solr, you can buildout and restart your instance.\n\n- Install the generic setup profile of ``ftw.solr``.\n\n\nLinks\n=====\n\n- Github: https://github.com/4teamwork/ftw.solr\n- Issues: https://github.com/4teamwork/ftw.solr/issues\n- Pypi: http://pypi.python.org/pypi/ftw.solr\n- Continuous integration: https://jenkins.4teamwork.ch/search?q=ftw.solr\n\n\nCopyright\n=========\n\nThis package is copyright by `4teamwork <http://www.4teamwork.ch/>`_.\n\n``ftw.solr`` is licensed under GNU General Public License, version 2.\n\nChangelog\n=========\n\n1.9.3 (2017-08-28)\n------------------\n\n- Fix position of facet closing icon.\n  [mbaechtold]\n\n\n1.9.2 (2017-08-08)\n------------------\n\n- Also prevent a invalid urls generated by the livesearch.py\n  [mathias.leimgruber]\n\n\n1.9.1 (2017-08-08)\n------------------\n\n- Prevent invalid url if the object has a get parameter in his path.\n  [lknoepfel]\n\n- Remove search viewlet submit from tabindex.\n  [lknoepfel]\n\n\n1.9.0 (2017-06-28)\n------------------\n\n- Implement first suggestion on livesearch view, if suggestions are enabled.\n  [mathias.leimgruber]\n\n\n1.8.6 (2017-06-06)\n------------------\n\n- Hide and order the viewlets for all skins and not only for the \"Sunburst Theme\"-skin\n  [elioschmutz]\n\n- Prevent invalid url if the object has a get parameter in his path.\n  [lknoepfel]\n\n\n1.8.5 (2017-04-19)\n------------------\n\n- Lower searchwords in ISearchwords indexer, since the value is always lowered in ftw.solr.\n  This applies only for DX content.\n  [mathias.leimgruber]\n\n- Fix font for livesearch results.\n  [Kevin Bieri]\n\n\n1.8.4 (2016-12-16)\n------------------\n\n- Make getting the facets more robust which caused projects having customizations\n  of selected facets to crash when displaying the search results.\n  [mbaechtold]\n\n\n1.8.3 (2016-12-15)\n------------------\n\n- Remove hidden input from tabindex.\n  [mathias.leimgruber]\n\n- Only append \"Search in current folder\" option to livesearch if not on plone root.\n  [mathias.leimgruber]\n\n\n1.8.2 (2016-11-24)\n------------------\n\n- Scan for external links after every search page refresh.\n  [mathias.leimgruber]\n\n- Do not use TALES string expressions for facet links, since it automatically transforms\n  chars into html entities.\n  The facet links were like \"&amp;amp;amp;amp;\" every time you add/remove a facet.\n  Since we have three facts by default this happened tree times on every click.\n  [mathias.leimgruber]\n\n\n1.8.1 (2016-11-04)\n------------------\n\n- Fix suggestion with umlauts by decode it to unicode.\n  [mathias.leimgruber]\n\n- Avoid AttributeError \"solr_response\" on solr errors. [jone]\n\n\n1.8.0 (2016-10-31)\n------------------\n\n- Unquote the quoted description in autocomplete search result.\n  [mathias.leimgruber]\n\n- Explicitly remove invalid characters for solr search before passing the SearchableText to the catalog.\n  Basically this means all Lucene query syntax special characters are stripped.\n  Check https://lucene.apache.org/core/2_9_4/queryparsersyntax.html\n  [mathias.leimgruber]\n\n\n1.7.1 (2016-10-13)\n------------------\n\n- Allow hyphens, commas and single quotes in simple terms and simple searches.\n  Fixes issue where a comma/hyphen/single quote in a search term causes\n  search_pattern template to be circumvented.\n  [mathias.leimgruber]\n\n\n1.7.0 (2016-07-22)\n------------------\n\n- Implement link to remove the path from the querystring on the result page.\n  [mathias.leimgruber]\n\n\n1.6.3 (2016-07-18)\n------------------\n\n- Abort livesearch init if no searchfield is available to make the script failsafe.\n  [elioschmutz]\n\n\n1.6.2 (2016-07-15)\n------------------\n\n- Prevent the result text from read out through screenreaders\n  [Kevin Bieri]\n\n- Set searchwords as a non-required field.\n  [elioschmutz]\n\n\n1.6.1 (2016-07-11)\n------------------\n\n- Style selected facettes.\n  [mathias.leimgruber]\n\n- Add icon to facets dropdown menu.\n  [Kevin Bieri]\n\n- Fix faulty upgrade step which incorrectly added the Solr index queue processor\n  utility in 1.5.0.\n  [mbaechtold]\n\n\n1.6.0 (2016-06-07)\n------------------\n\n- Add IShowInSearch and ISearchwords behaviors. [jone]\n\n- Fix html structure of search in current folder. input in a tag is not allowed.\n  [mathias.leimgruber]\n\n\n1.5.3 (2016-05-23)\n------------------\n\n- BugFix: Search for \"current folder\". Label was some kind of unclickable. :-( omg sry.\n  [mathias.leimgruber]\n\n\n1.5.2 (2016-05-20)\n------------------\n\n- BugFix: Search for \"current folder\". Checkbox was unclickable.\n  [mathias.leimgruber]\n\n- Disable special links on facets dropdown.\n  [Kevin Bieri]\n\n\n1.5.1 (2016-04-29)\n------------------\n\n- Fix faulty upgrade step which removed the Solr connection manager utility\n  in 1.5.0.\n  [mbaechtold]\n\n- Respect the facets configured in the Solr control panel.\n  [mbaechtold]\n\n\n1.5.0 (2016-03-31)\n------------------\n\n- Fix css selector of selected facest.\n  [mathias.leimgruber]\n\n- Implement accessible remove facet link.\n  [mathias.leimgruber]\n\n- Implement accessibility support for solr facets.\n  [Kevin Bieri]\n\n- Make `only in current folder section` selectable in the dropdown menu.\n  [Kevin Bieri]\n\n- Adjust stylings for the new ftw.theming.\n  [elioschmutz]\n\n- Do not reset the page title on facette search.\n  [mathias.leimgruber]\n\n- Use a different request handler for the livesearch.\n  [buchi]\n\n- Implement a new livesearch based on jquery autocomplete widget.\n  [mathias.leimgruber]\n\n- Moved atomic update feature to collective.solr.\n  [mathias.leimgruber]\n\n\n1.4.4 (2015-12-23)\n------------------\n\n- Add English, French and Italian translation of the time range facets (and\n  a selection of other message ids).\n  [mbaechtold]\n\n\n1.4.3 (2015-08-11)\n------------------\n\n- Fix display of results when the search returns Brains and not Solr flares.\n  This fixes searches which don't include searchableText.\n  [tschanzt]\n\n\n1.4.2 (2015-04-24)\n------------------\n\n- Fix quoting of searchterm url parameter in search result links.\n  [buchi]\n\n\n1.4.1 (2015-03-25)\n------------------\n\n- Allow dots in simple terms / simple searches.\n  Fixes issue where a dot in a search term causes the search_pattern template to\n  be circumvented, and therefore messing up the relevancy ranking.\n  [lgraf]\n\n\n1.4.0 (2015-02-26)\n------------------\n\n- Add support for search results from external sites. Solr flares having a\n  getRemoteUrl attribute that starts with 'http' are handled as external\n  results. External sites can be indexed with ftw.crawler.\n  [buchi]\n\n- BugFix in \"recursive_index_security\" method. Do not try to reindex the\n  security on not catalog aware objects.\n  [mathias.leimgruber]\n\n- Some work on docs (fix Pythonism, add some info, improve markup). [jean]\n\n\n1.3.1 (2014-06-12)\n------------------\n\n- Fix error in suggestions when there is no solr response.\n  [buchi]\n\n- Make sure that string attributes of a PloneFlare are always utf-8 encoded\n  byte strings to be consistent with catalog brains.\n  [buchi]\n\n\n1.3 (2013-12-19)\n----------------\n\n- Updated jquery.history.js to latest version (1.8.0b2) which fixes issues\n  with URI encoding in IE9.\n  [buchi]\n\n- Removed link to advanced search in livesearch when no results are found.\n  [buchi]\n\n- \"show all\"-link includes the path attribute.\n  [elioschmutz]\n\n- Added support for forward as well as reverse wildcard search.\n  This is done by providing two additional dynamic variables in the search pattern,\n  value_lwc and value_twc that have leading respectively trailing wildcards appended\n  to each of the search terms.\n  [lgraf]\n\n- Fix querystring of suggestions with list parameters.\n  [buchi]\n\n\n1.2.2 (2013-09-24)\n------------------\n\n- Added class around link to advanced search.\n  [Julian Infanger]\n\n\n1.2.1 (2013-09-10)\n------------------\n\n- Fixed monkey patch of mangleQuery.\n  [buchi]\n\n\n1.2 (2013-09-10)\n----------------\n\n- Improve reindexing object security performance.\n  We now walk down the children and stop walking down if the security indexes\n  of an object have not changed.\n  [jone]\n\n- Added support for atomic updates.\n  This means whenever possible, only the necessary / specified attributes get updated\n  in Solr, and more importantly, re-indexed by Plone's indexers.\n  IMPORTANT: This requires the Solr instance to have an <updateLog/> configured in\n  solrconfig.xml and the schema needs to contain a _version_ field.\n  See http://wiki.apache.org/solr/Atomic_Updates for details.\n  [lgraf]\n\n- Make sure values in search patterns are all lowercase.\n  [buchi]\n\n\n1.1.2 (2013-07-18)\n------------------\n\n- Sort facet fields in the order specified in the Solr control panel.\n  [buchi]\n\n- Fixed handling of path filter which was always removed when respect_navroot\n  is set to False.\n  [buchi]\n\n- Handle invalid facet parameters.\n  [buchi]\n\n- Monkey patch reindexObjectSecurity for both CatalogAware and CatalogMultiplex\n  so the relevant security indexes in solr also get updated.\n  [lgraf]\n\n- Only add the default search argument to the query if it's not None and if\n  Solr has a default search field defined in it's schema (which is deprecated\n  in Solr). This mainly prevents logging of 'dropping unknown search attribute'\n  warnings.\n  [buchi]\n\n- Escape forward slashes in all query values, not only in paths.\n  [buchi]\n\n- Always insert the default 'select' search handler into the query parameters if\n  no 'qt' parameter is provided. We need this because we have to disable the\n  /select search handler in the Solr configuration to be able to select other search\n  handlers by parameter.\n  [buchi]\n\n\n1.1.1 (2013-06-01)\n------------------\n\n- Also use livesearch request handler in livesearch when grouping is disabled.\n  [buchi]\n\n- Fixed \"show more\" link in live search to point to @@search view.\n  [buchi]\n\n\n1.1 (2013-05-31)\n----------------\n\n- Reorganized monkey patches.\n  Everything patch-related now lives in the patches subpackage.\n  [lgraf]\n\n- Make sure @@search view doesn't fail when called without parameters.\n  [lgraf]\n\n- Only display selected facets list if there actually are selected facets.\n  [lgraf]\n\n- Added spellchecking feature (aka \"Did you mean ...\").\n  [buchi]\n\n- Made respecting the navroot for searches configurable.\n  Only if `ISearchSettings.respect_navroot` is set searches will be constrained\n  to the navigation root (defaults to False).\n  [lgraf]\n\n- Added autocomplete support based on Solr's suggester component.\n  [buchi]\n\n\n1.0.2 (2013-05-28)\n------------------\n\n- Fixed querytarget of livesearch for Plone 4.2 and later.\n  Use our @@livesearch_reply view instead of livesearch_reply.\n  [buchi]\n\n- Include description in snippetText.\n  [buchi]\n\n- If there's a SearchableText indexer, use it for snippetText generation.\n  [buchi]\n\n- Make length of breadcrumbs shown in search results configurable.\n  [buchi]\n\n- Added option to generate breadcrumbs from path rather than calling\n  breadcrumbs_view for each item.\n  [buchi]\n\n- Added support for dexterity content types in snippetText indexer.\n  [buchi]\n\n\n1.0.1 (2013-05-21)\n------------------\n\n- Monkey patching c.solr.search.Search.buildQuery in order to escape slahes in paths.\n  [lgraf]\n\n- Overwrite search extender: Add write permissions, fixed translations and\n  allowed content types in textfield.\n  [Julian Infanger]\n\n- Added option to scale Word Cloud by a constant factor.\n  [lgraf]\n\n- Added basic portlet to display Word Cloud.\n  [lgraf]\n\n- Added basic Word Cloud browser view.\n  [lgraf]\n\n\n1.0a1 (2012-08-22)\n------------------\n\n- Initial release",
+    "description": "Introduction\n============\n\n``ftw.solr`` provides various customizations and enhancements on top of\n``collective.solr`` which integrates the Solr search engine with Plone.\n\n.. contents:: Table of Contents\n\nFeatures\n========\n\nAtomic updates (aka partial updates)\n------------------------------------\n\nSince Solr 4.0 it's possible to update fields in a Solr document individually,\nsending only the fields that actually changed, whereas before it was necessary\nto send *all* the fields again every time something changed (and therefore ask\nPlone again to index them all, causing a massive performance penalty).\n\n``ftw.solr`` supports atomic updates for Solr version 4.1 and above.\nIn order for atomic updates to work, three things must be taken care of:\n\n- An ``<updateLog />`` must be enabled in ``solrconfig.xml``. If it's missing,\n  Solr will reject any update messages that contain atomic update instructions.\n- A ``_version_`` field must be defined in the Solr schema.\n- All fields in the Solr schema must be defined with ``stored=\"true\"``\n\nIn the stock Solr configs from 4.1 upwards ``<updateLog />`` and the\n``_version_`` field are already configured correctly. If you're using\n``collective.recipe.solrinstance``, check the generated ``solrconfig.xml``,\nit might not have been updated for the use of atomic updates yet.\n\nIf there's a field in the Solr schema that's *not* ``stored=\"true\"``,\nit will get\n**dropped** from documents in Solr on the next update to that document.\nIndexing won't fail, but that field simply won't have any content any more.\n\nApart from those prerequisites, there's nothing more to be done in order to use\natomic updates. ``ftw.solr`` will automatically perform atomic updates whenever\npossible.\n\nAlso see http://wiki.apache.org/solr/Atomic_Updates\n\nHighlighting (aka Snippets)\n---------------------------\n\nWhen displaying search results, Plone by default displays the title and the\ndescription of an item. Solr, like Google and other search engines, can return a\nsnippet of the text containing the words searched for.\n``ftw.solr`` enables this feature in Plone.\n\nLive search grouping\n--------------------\n\nSearch results in Plone's live search can be grouped by ``portal_type``.\nThis is the way search results are shown in Spotlight on Mac OS X.\n\nFacet queries\n-------------\n\nIn addition to facet fields support provided by ``collective.solr``,\n``ftw.solr`` adds support for facet queries.\nThis type of faceting offers a lot of flexibility.\nInstead of choosing a specific field to facet its values, multiple\nSolr queries can be specified, that themselves become facets.\n\nWord Cloud\n----------\n\nAssuming there is a correctly configured index ``wordCloudTerms``,\na Word Cloud\nshowing the most common terms across documents can be displayed.\n\nThe Word Cloud is implemented in a browser view that can either be displayed\nstand-alone by traversing to ``/@@wordcloud`` or rendered in a portlet.\n\nAjax-ified search form\n----------------------\n\nThe search form is fully ajax-ified which leads to faster search results when\nchanging search criteria.\n\nSolr connection configuration in ZCML\n-------------------------------------\n\nThe connections settings for Solr can be configured in ZCML and thus in\nbuildout. This makes it easier when copying databases between multiple Zope\ninstances with different Solr servers. Example::\n\n    zcml-additional =\n        <configure xmlns:solr=\"http://namespaces.plone.org/solr\">\n            <solr:connection host=\"localhost\" port=\"8983\" base=\"/solr\"/>\n       </configure>\n\n\nSolr Configuration\n==================\n\nSearch Handlers\n---------------\n\n``ftw.solr`` requires two custom search handlers that must be configured on the\nSolr server. Search handlers are configured in ``solrconfig.xml`` of your\ncollection.\n\nThe ``livesearch`` request handler is used for live search and should limit the\nreturned fields to a minimum for maximum speed. Example::\n\n    <requestHandler name=\"livesearch\" class=\"solr.SearchHandler\">\n        <lst name=\"defaults\">\n            <str name=\"echoParams\">explicit</str>\n            <int name=\"rows\">1000</int>\n        </lst>\n        <lst name=\"invariants\">\n            <str name=\"fl\">Title Description portal_type path_string getIcon</str>\n        </lst>\n    </requestHandler>\n\nThe ``hlsearch`` request handler should contain the configuration for highlighting.\nExample::\n\n    <requestHandler name=\"hlsearch\" class=\"solr.SearchHandler\">\n        <lst name=\"defaults\">\n            <str name=\"echoParams\">explicit</str>\n            <int name=\"rows\">10</int>\n            <bool name=\"hl\">true</bool>\n            <bool name=\"hl.useFastVectorHighlighter\">true</bool>\n            <str name=\"hl.fl\">snippetText</str>\n            <int name=\"hl.fragsize\">200</int>\n            <str name=\"hl.alternateField\">Description</str>\n            <int name=\"hl.maxAlternateFieldLength\">200</int>\n            <int name=\"hl.snippets\">3</int>\n        </lst>\n    </requestHandler>\n\nField types and indexes\n-----------------------\n\nHighlighting\n~~~~~~~~~~~~\n\nHighlighting requires an index named ``snippetText``\nwith its own field type which does not do too much text analysis.\nFields and indexes are configured in ``schema.xml`` of your collection.\n\nExample::\n\n    <fieldType name=\"text_snippets\" class=\"solr.TextField\" positionIncrementGap=\"100\">\n      <analyzer type=\"index\">\n          <tokenizer class=\"solr.WhitespaceTokenizerFactory\"/>\n          <filter class=\"solr.LowerCaseFilterFactory\"/>\n      </analyzer>\n      <analyzer type=\"query\">\n          <tokenizer class=\"solr.WhitespaceTokenizerFactory\"/>\n          <filter class=\"solr.LowerCaseFilterFactory\"/>\n      </analyzer>\n    </fieldType>\n\n    <field name=\"snippetText\" type=\"text_snippets\" indexed=\"true\"\n           stored=\"true\" required=\"false\" multiValued=\"false\"\n           termVectors=\"true\" termPositions=\"true\"\n           termOffsets=\"true\"/>\n\nWord Cloud\n~~~~~~~~~~\n\nThe Word Cloud feature requires an index named ``wordCloudTerms``\nwith it's own field type.\nIt's basically a copy of ``SearchableText`` but with less analysis and\nfiltering (no lowercasing, no character normalization, etc...).\n\nField type example::\n\n    <fieldType name=\"cloud_terms\" class=\"solr.TextField\" positionIncrementGap=\"100\">\n      <analyzer type=\"index\">\n          <tokenizer class=\"solr.WhitespaceTokenizerFactory\"/>\n          <filter class=\"solr.StopFilterFactory\" ignoreCase=\"true\" words=\"${buildout:directory}/german_stop.txt\" enablePositionIncrements=\"true\"/>\n          <filter class=\"solr.WordDelimiterFilterFactory\"\n                  splitOnCaseChange=\"1\"\n                  splitOnNumerics=\"1\"\n                  stemEnglishPossessive=\"1\"\n                  generateWordParts=\"0\"\n                  generateNumberParts=\"0\"\n                  catenateWords=\"0\"\n                  catenateNumbers=\"0\"\n                  catenateAll=\"0\"\n                  preserveOriginal=\"1\"/>\n          <!-- Strip punctuation characters from beginning and end of terms -->\n          <filter class=\"solr.PatternReplaceFilterFactory\" pattern=\"^(\\p{Punct}*)(.*?)(\\p{Punct}*)$\" replacement=\"$2\"/>\n          <!-- Filter everything that does not contain at least 3 regular letters -->\n          <filter class=\"solr.PatternReplaceFilterFactory\" pattern=\"^([^a-zA-Z]*)([a-zA-Z]{0,2})([^a-zA-Z]*)$\" replacement=\"\"/>\n          <!-- Filter any term shorter than 3 characters (incl. empty string) -->\n          <filter class=\"solr.LengthFilterFactory\" min=\"2\" max=\"50\"/>\n      </analyzer>\n    </fieldType>\n\nIndex example::\n\n    <field name=\"wordCloudTerms\" type=\"cloud_terms\" indexed=\"true\"\n           stored=\"true\" required=\"false\" multiValued=\"false\"\n           termVectors=\"true\" termPositions=\"true\"\n           termOffsets=\"true\"/>\n\n    <copyField source=\"SearchableText\" dest=\"wordCloudTerms\"/>\n\n\nSearch / Livesearch\n-------------------\n\n``ftw.solr`` provides a better livesearch implementation using jQuery Autocomplete widget.\nA new search and result template is also included.\n\nSuggestions\n-----------\nBy default suggestions are disabled on the advanced search input field.\nif you want autocomplete while typing you need to install the autocomplete profile of ftw.solr and...\n\n**Prerequisit (solr config)**::\n\n    <!-- Suggester for autocomplete -->\n    <searchComponent class=\"solr.SpellCheckComponent\" name=\"suggest\">\n      <lst name=\"spellchecker\">\n        <str name=\"name\">suggest</str>\n        <str name=\"classname\">org.apache.solr.spelling.suggest.Suggester</str>\n        <str name=\"lookupImpl\">org.apache.solr.spelling.suggest.fst.WFSTLookupFactory</str>\n        <str name=\"field\">SearchableText</str>\n        <float name=\"threshold\">0.0005</float>\n      </lst>\n    </searchComponent>\n    <requestHandler class=\"org.apache.solr.handler.component.SearchHandler\" name=\"/suggest\">\n      <lst name=\"defaults\">\n        <str name=\"spellcheck\">true</str>\n        <str name=\"spellcheck.dictionary\">suggest</str>\n        <str name=\"spellcheck.onlyMorePopular\">true</str>\n        <str name=\"spellcheck.count\">10</str>\n      </lst>\n      <arr name=\"components\">\n        <str>suggest</str>\n      </arr>\n    </requestHandler>\n\n\nThe portal searchbox no longer provides this feature in favor of the new livesearch autocomplete feature.\n\n\n\nInstallation\n============\n\nAdd as dependency\n-----------------\n\nInstall ``ftw.solr`` by adding it to the list of eggs in your\nbuildout or by adding it as a dependency of your policy package.\n\n.. code:: rst\n\n    [instance]\n    eggs +=\n        ftw.solr\n\nExtend your buildout\n--------------------\n\nFor production:\n\n.. code:: ini\n\n    [buildout]\n    extends =\n        https://raw.githubusercontent.com/4teamwork/ftw-buildouts/master/production.cfg\n        https://raw.githubusercontent.com/4teamwork/ftw-buildouts/master/solr.cfg\n\n    deployment-number = 05\n\nFor local development:\n\n.. code:: ini\n\n    [buildout]\n    extends =\n        https://raw.githubusercontent.com/4teamwork/ftw-buildouts/master/plone-development.cfg\n        https://raw.githubusercontent.com/4teamwork/ftw-buildouts/master/plone-development-solr.cfg\n\nUpdate medatata.xml\n-------------------\n\nAdd ``ftw.solr`` to your metadata.xml:\n\n.. code:: xml\n\n    <?xml version=\"1.0\"?>\n    <metadata>\n        <dependencies>\n            <dependency>profile-ftw.solr:default</dependency>\n        </dependencies>\n    </metadata>\n\nRun buildout\n------------\n\nIf you configured your solr, you can buildout and restart your instance.\n\n- Install the generic setup profile of ``ftw.solr``.\n\n\nLinks\n=====\n\n- Github: https://github.com/4teamwork/ftw.solr\n- Issues: https://github.com/4teamwork/ftw.solr/issues\n- Pypi: http://pypi.python.org/pypi/ftw.solr\n- Continuous integration: https://jenkins.4teamwork.ch/search?q=ftw.solr\n\n\nCopyright\n=========\n\nThis package is copyright by `4teamwork <http://www.4teamwork.ch/>`_.\n\n``ftw.solr`` is licensed under GNU General Public License, version 2.\n\nChangelog\n=========\n\n1.9.5 (2017-11-03)\n------------------\n\n- Make snippet text upgrade from 1.9.4 more robust. [jone]\n\n1.9.4 (2017-11-03)\n------------------\n\n- Fix escaping issue when highlighting plaintext. [jone]\n\n- Always quote values of a list containing an operator.\n  [mathias.leimgruber]\n\n- Use searchform action as endpoint in search.js.\n  [mathias.leimgruber]\n\n\n1.9.3 (2017-08-28)\n------------------\n\n- Fix position of facet closing icon.\n  [mbaechtold]\n\n\n1.9.2 (2017-08-08)\n------------------\n\n- Also prevent a invalid urls generated by the livesearch.py\n  [mathias.leimgruber]\n\n\n1.9.1 (2017-08-08)\n------------------\n\n- Prevent invalid url if the object has a get parameter in his path.\n  [lknoepfel]\n\n- Remove search viewlet submit from tabindex.\n  [lknoepfel]\n\n\n1.9.0 (2017-06-28)\n------------------\n\n- Implement first suggestion on livesearch view, if suggestions are enabled.\n  [mathias.leimgruber]\n\n\n1.8.6 (2017-06-06)\n------------------\n\n- Hide and order the viewlets for all skins and not only for the \"Sunburst Theme\"-skin\n  [elioschmutz]\n\n- Prevent invalid url if the object has a get parameter in his path.\n  [lknoepfel]\n\n\n1.8.5 (2017-04-19)\n------------------\n\n- Lower searchwords in ISearchwords indexer, since the value is always lowered in ftw.solr.\n  This applies only for DX content.\n  [mathias.leimgruber]\n\n- Fix font for livesearch results.\n  [Kevin Bieri]\n\n\n1.8.4 (2016-12-16)\n------------------\n\n- Make getting the facets more robust which caused projects having customizations\n  of selected facets to crash when displaying the search results.\n  [mbaechtold]\n\n\n1.8.3 (2016-12-15)\n------------------\n\n- Remove hidden input from tabindex.\n  [mathias.leimgruber]\n\n- Only append \"Search in current folder\" option to livesearch if not on plone root.\n  [mathias.leimgruber]\n\n\n1.8.2 (2016-11-24)\n------------------\n\n- Scan for external links after every search page refresh.\n  [mathias.leimgruber]\n\n- Do not use TALES string expressions for facet links, since it automatically transforms\n  chars into html entities.\n  The facet links were like \"&amp;amp;amp;amp;\" every time you add/remove a facet.\n  Since we have three facts by default this happened tree times on every click.\n  [mathias.leimgruber]\n\n\n1.8.1 (2016-11-04)\n------------------\n\n- Fix suggestion with umlauts by decode it to unicode.\n  [mathias.leimgruber]\n\n- Avoid AttributeError \"solr_response\" on solr errors. [jone]\n\n\n1.8.0 (2016-10-31)\n------------------\n\n- Unquote the quoted description in autocomplete search result.\n  [mathias.leimgruber]\n\n- Explicitly remove invalid characters for solr search before passing the SearchableText to the catalog.\n  Basically this means all Lucene query syntax special characters are stripped.\n  Check https://lucene.apache.org/core/2_9_4/queryparsersyntax.html\n  [mathias.leimgruber]\n\n\n1.7.1 (2016-10-13)\n------------------\n\n- Allow hyphens, commas and single quotes in simple terms and simple searches.\n  Fixes issue where a comma/hyphen/single quote in a search term causes\n  search_pattern template to be circumvented.\n  [mathias.leimgruber]\n\n\n1.7.0 (2016-07-22)\n------------------\n\n- Implement link to remove the path from the querystring on the result page.\n  [mathias.leimgruber]\n\n\n1.6.3 (2016-07-18)\n------------------\n\n- Abort livesearch init if no searchfield is available to make the script failsafe.\n  [elioschmutz]\n\n\n1.6.2 (2016-07-15)\n------------------\n\n- Prevent the result text from read out through screenreaders\n  [Kevin Bieri]\n\n- Set searchwords as a non-required field.\n  [elioschmutz]\n\n\n1.6.1 (2016-07-11)\n------------------\n\n- Style selected facettes.\n  [mathias.leimgruber]\n\n- Add icon to facets dropdown menu.\n  [Kevin Bieri]\n\n- Fix faulty upgrade step which incorrectly added the Solr index queue processor\n  utility in 1.5.0.\n  [mbaechtold]\n\n\n1.6.0 (2016-06-07)\n------------------\n\n- Add IShowInSearch and ISearchwords behaviors. [jone]\n\n- Fix html structure of search in current folder. input in a tag is not allowed.\n  [mathias.leimgruber]\n\n\n1.5.3 (2016-05-23)\n------------------\n\n- BugFix: Search for \"current folder\". Label was some kind of unclickable. :-( omg sry.\n  [mathias.leimgruber]\n\n\n1.5.2 (2016-05-20)\n------------------\n\n- BugFix: Search for \"current folder\". Checkbox was unclickable.\n  [mathias.leimgruber]\n\n- Disable special links on facets dropdown.\n  [Kevin Bieri]\n\n\n1.5.1 (2016-04-29)\n------------------\n\n- Fix faulty upgrade step which removed the Solr connection manager utility\n  in 1.5.0.\n  [mbaechtold]\n\n- Respect the facets configured in the Solr control panel.\n  [mbaechtold]\n\n\n1.5.0 (2016-03-31)\n------------------\n\n- Fix css selector of selected facest.\n  [mathias.leimgruber]\n\n- Implement accessible remove facet link.\n  [mathias.leimgruber]\n\n- Implement accessibility support for solr facets.\n  [Kevin Bieri]\n\n- Make `only in current folder section` selectable in the dropdown menu.\n  [Kevin Bieri]\n\n- Adjust stylings for the new ftw.theming.\n  [elioschmutz]\n\n- Do not reset the page title on facette search.\n  [mathias.leimgruber]\n\n- Use a different request handler for the livesearch.\n  [buchi]\n\n- Implement a new livesearch based on jquery autocomplete widget.\n  [mathias.leimgruber]\n\n- Moved atomic update feature to collective.solr.\n  [mathias.leimgruber]\n\n\n1.4.4 (2015-12-23)\n------------------\n\n- Add English, French and Italian translation of the time range facets (and\n  a selection of other message ids).\n  [mbaechtold]\n\n\n1.4.3 (2015-08-11)\n------------------\n\n- Fix display of results when the search returns Brains and not Solr flares.\n  This fixes searches which don't include searchableText.\n  [tschanzt]\n\n\n1.4.2 (2015-04-24)\n------------------\n\n- Fix quoting of searchterm url parameter in search result links.\n  [buchi]\n\n\n1.4.1 (2015-03-25)\n------------------\n\n- Allow dots in simple terms / simple searches.\n  Fixes issue where a dot in a search term causes the search_pattern template to\n  be circumvented, and therefore messing up the relevancy ranking.\n  [lgraf]\n\n\n1.4.0 (2015-02-26)\n------------------\n\n- Add support for search results from external sites. Solr flares having a\n  getRemoteUrl attribute that starts with 'http' are handled as external\n  results. External sites can be indexed with ftw.crawler.\n  [buchi]\n\n- BugFix in \"recursive_index_security\" method. Do not try to reindex the\n  security on not catalog aware objects.\n  [mathias.leimgruber]\n\n- Some work on docs (fix Pythonism, add some info, improve markup). [jean]\n\n\n1.3.1 (2014-06-12)\n------------------\n\n- Fix error in suggestions when there is no solr response.\n  [buchi]\n\n- Make sure that string attributes of a PloneFlare are always utf-8 encoded\n  byte strings to be consistent with catalog brains.\n  [buchi]\n\n\n1.3 (2013-12-19)\n----------------\n\n- Updated jquery.history.js to latest version (1.8.0b2) which fixes issues\n  with URI encoding in IE9.\n  [buchi]\n\n- Removed link to advanced search in livesearch when no results are found.\n  [buchi]\n\n- \"show all\"-link includes the path attribute.\n  [elioschmutz]\n\n- Added support for forward as well as reverse wildcard search.\n  This is done by providing two additional dynamic variables in the search pattern,\n  value_lwc and value_twc that have leading respectively trailing wildcards appended\n  to each of the search terms.\n  [lgraf]\n\n- Fix querystring of suggestions with list parameters.\n  [buchi]\n\n\n1.2.2 (2013-09-24)\n------------------\n\n- Added class around link to advanced search.\n  [Julian Infanger]\n\n\n1.2.1 (2013-09-10)\n------------------\n\n- Fixed monkey patch of mangleQuery.\n  [buchi]\n\n\n1.2 (2013-09-10)\n----------------\n\n- Improve reindexing object security performance.\n  We now walk down the children and stop walking down if the security indexes\n  of an object have not changed.\n  [jone]\n\n- Added support for atomic updates.\n  This means whenever possible, only the necessary / specified attributes get updated\n  in Solr, and more importantly, re-indexed by Plone's indexers.\n  IMPORTANT: This requires the Solr instance to have an <updateLog/> configured in\n  solrconfig.xml and the schema needs to contain a _version_ field.\n  See http://wiki.apache.org/solr/Atomic_Updates for details.\n  [lgraf]\n\n- Make sure values in search patterns are all lowercase.\n  [buchi]\n\n\n1.1.2 (2013-07-18)\n------------------\n\n- Sort facet fields in the order specified in the Solr control panel.\n  [buchi]\n\n- Fixed handling of path filter which was always removed when respect_navroot\n  is set to False.\n  [buchi]\n\n- Handle invalid facet parameters.\n  [buchi]\n\n- Monkey patch reindexObjectSecurity for both CatalogAware and CatalogMultiplex\n  so the relevant security indexes in solr also get updated.\n  [lgraf]\n\n- Only add the default search argument to the query if it's not None and if\n  Solr has a default search field defined in it's schema (which is deprecated\n  in Solr). This mainly prevents logging of 'dropping unknown search attribute'\n  warnings.\n  [buchi]\n\n- Escape forward slashes in all query values, not only in paths.\n  [buchi]\n\n- Always insert the default 'select' search handler into the query parameters if\n  no 'qt' parameter is provided. We need this because we have to disable the\n  /select search handler in the Solr configuration to be able to select other search\n  handlers by parameter.\n  [buchi]\n\n\n1.1.1 (2013-06-01)\n------------------\n\n- Also use livesearch request handler in livesearch when grouping is disabled.\n  [buchi]\n\n- Fixed \"show more\" link in live search to point to @@search view.\n  [buchi]\n\n\n1.1 (2013-05-31)\n----------------\n\n- Reorganized monkey patches.\n  Everything patch-related now lives in the patches subpackage.\n  [lgraf]\n\n- Make sure @@search view doesn't fail when called without parameters.\n  [lgraf]\n\n- Only display selected facets list if there actually are selected facets.\n  [lgraf]\n\n- Added spellchecking feature (aka \"Did you mean ...\").\n  [buchi]\n\n- Made respecting the navroot for searches configurable.\n  Only if `ISearchSettings.respect_navroot` is set searches will be constrained\n  to the navigation root (defaults to False).\n  [lgraf]\n\n- Added autocomplete support based on Solr's suggester component.\n  [buchi]\n\n\n1.0.2 (2013-05-28)\n------------------\n\n- Fixed querytarget of livesearch for Plone 4.2 and later.\n  Use our @@livesearch_reply view instead of livesearch_reply.\n  [buchi]\n\n- Include description in snippetText.\n  [buchi]\n\n- If there's a SearchableText indexer, use it for snippetText generation.\n  [buchi]\n\n- Make length of breadcrumbs shown in search results configurable.\n  [buchi]\n\n- Added option to generate breadcrumbs from path rather than calling\n  breadcrumbs_view for each item.\n  [buchi]\n\n- Added support for dexterity content types in snippetText indexer.\n  [buchi]\n\n\n1.0.1 (2013-05-21)\n------------------\n\n- Monkey patching c.solr.search.Search.buildQuery in order to escape slahes in paths.\n  [lgraf]\n\n- Overwrite search extender: Add write permissions, fixed translations and\n  allowed content types in textfield.\n  [Julian Infanger]\n\n- Added option to scale Word Cloud by a constant factor.\n  [lgraf]\n\n- Added basic portlet to display Word Cloud.\n  [lgraf]\n\n- Added basic Word Cloud browser view.\n  [lgraf]\n\n\n1.0a1 (2012-08-22)\n------------------\n\n- Initial release",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -23,11 +23,11 @@
     "name": "ftw.solr",
     "platform": "",
     "project_url": "https://pypi.org/project/ftw.solr/",
-    "release_url": "https://pypi.org/project/ftw.solr/1.9.3/",
+    "release_url": "https://pypi.org/project/ftw.solr/1.9.5/",
     "requires_dist": [],
     "requires_python": "",
     "summary": "Solr integration for Plone using collective.solr",
-    "version": "1.9.3"
+    "version": "1.9.5"
   },
   "releases": {
     "1.1": [
@@ -37,7 +37,7 @@
           "md5": "bdb09d1f878019eb9eb25679ce7200b1",
           "sha256": "eda74bdc8061456adf275417b99594c6fee75642117edda56786530ab1ce18ed"
         },
-        "downloads": 2050,
+        "downloads": -1,
         "filename": "ftw.solr-1.1.tar.gz",
         "has_sig": false,
         "md5_digest": "bdb09d1f878019eb9eb25679ce7200b1",
@@ -55,7 +55,7 @@
           "md5": "b808440949e1f55a7cbfe6b03669a86c",
           "sha256": "bf39388eb5322620a932f090e10ffae264d4e53a134f4eac1104ebc2b429117b"
         },
-        "downloads": 2276,
+        "downloads": -1,
         "filename": "ftw.solr-1.1.1.zip",
         "has_sig": false,
         "md5_digest": "b808440949e1f55a7cbfe6b03669a86c",
@@ -73,7 +73,7 @@
           "md5": "0ccf8fdac823aa9e47b1a9ff05087f30",
           "sha256": "b84406bd85506f597142d86d8496d4d94058c55e2454e20152f577229465ba15"
         },
-        "downloads": 2209,
+        "downloads": -1,
         "filename": "ftw.solr-1.1.2.tar.gz",
         "has_sig": false,
         "md5_digest": "0ccf8fdac823aa9e47b1a9ff05087f30",
@@ -91,7 +91,7 @@
           "md5": "a5307184aa13b7b740ecb3093eec8451",
           "sha256": "d62bac00e54e996fc11dd5468fa2c8342fda54f0dc3515adf8d60cfc6fd02d70"
         },
-        "downloads": 2003,
+        "downloads": -1,
         "filename": "ftw.solr-1.2.zip",
         "has_sig": false,
         "md5_digest": "a5307184aa13b7b740ecb3093eec8451",
@@ -109,7 +109,7 @@
           "md5": "fbe1cef316256f9d0c4474b82ab6d2d2",
           "sha256": "612298b66d7113552c3432e7797737d7483a1e67adf2c33a27dc7ee8b11d2d48"
         },
-        "downloads": 2011,
+        "downloads": -1,
         "filename": "ftw.solr-1.2.1.zip",
         "has_sig": false,
         "md5_digest": "fbe1cef316256f9d0c4474b82ab6d2d2",
@@ -127,7 +127,7 @@
           "md5": "1504dd2603b7a6b3c16e803c8e88a3eb",
           "sha256": "fdae419f707941fea1519856fe24c0e27efaaa36aa2c033de273fdf3dd2bd475"
         },
-        "downloads": 2027,
+        "downloads": -1,
         "filename": "ftw.solr-1.2.2.zip",
         "has_sig": false,
         "md5_digest": "1504dd2603b7a6b3c16e803c8e88a3eb",
@@ -145,7 +145,7 @@
           "md5": "d698726b9c24fe9f038632a3bc5beba7",
           "sha256": "53f818b3caa6eeea5483091f6ea5c41e1b7c39bdc72b3c83f35dee3ebdaac49f"
         },
-        "downloads": 2018,
+        "downloads": -1,
         "filename": "ftw.solr-1.3.tar.gz",
         "has_sig": false,
         "md5_digest": "d698726b9c24fe9f038632a3bc5beba7",
@@ -163,7 +163,7 @@
           "md5": "e7d2f22675d241dab4ed3afde29cbdf7",
           "sha256": "10dd0affdac4fbd4ad08422bb315395044b66ae124a882b4fc2f9b21bfd155b3"
         },
-        "downloads": 1720,
+        "downloads": -1,
         "filename": "ftw.solr-1.3.1.zip",
         "has_sig": false,
         "md5_digest": "e7d2f22675d241dab4ed3afde29cbdf7",
@@ -181,7 +181,7 @@
           "md5": "da5c350cfa1a5c2b9dc5b313c2651d62",
           "sha256": "eb9fa4bf1d8abf44cd6d1a21a026a2d5303e75410969159ce69ea291f2c7c202"
         },
-        "downloads": 1345,
+        "downloads": -1,
         "filename": "ftw.solr-1.4.0.zip",
         "has_sig": false,
         "md5_digest": "da5c350cfa1a5c2b9dc5b313c2651d62",
@@ -199,7 +199,7 @@
           "md5": "150d0dd14f24ad4097748c2e3152c43a",
           "sha256": "b7781b8854e1028c2652bb80bef93bbbfabf513875e992e2144ac2d75d054f30"
         },
-        "downloads": 1532,
+        "downloads": -1,
         "filename": "ftw.solr-1.4.1.zip",
         "has_sig": false,
         "md5_digest": "150d0dd14f24ad4097748c2e3152c43a",
@@ -217,7 +217,7 @@
           "md5": "0274501e61b3781fe75dfcd78fe0962f",
           "sha256": "f9e4d5cf24a41afb6a20f74a4df99475dffa77ecdcef9489dd68e2cb89f41e42"
         },
-        "downloads": 1828,
+        "downloads": -1,
         "filename": "ftw.solr-1.4.2.zip",
         "has_sig": false,
         "md5_digest": "0274501e61b3781fe75dfcd78fe0962f",
@@ -235,7 +235,7 @@
           "md5": "ae9917142f4a3ec74ab7f6c260188998",
           "sha256": "fcb925060f539415a180bf9727ca4b16b0a52b754300fb4051e53d34f2f42921"
         },
-        "downloads": 1060,
+        "downloads": -1,
         "filename": "ftw.solr-1.4.3.zip",
         "has_sig": false,
         "md5_digest": "ae9917142f4a3ec74ab7f6c260188998",
@@ -253,7 +253,7 @@
           "md5": "7610e47be5ae2758e854024c5c5f7dc3",
           "sha256": "e029e42d9b6d77ba371d7a4c766a4e229666c2697d57ea1ee7c05318a2c1b83b"
         },
-        "downloads": 436,
+        "downloads": -1,
         "filename": "ftw.solr-1.4.4.zip",
         "has_sig": false,
         "md5_digest": "7610e47be5ae2758e854024c5c5f7dc3",
@@ -271,7 +271,7 @@
           "md5": "7ab0a22748bc24d6b67c31b2855354e7",
           "sha256": "468550caf7a47cc24b53fa946db49dff85c8204947e00f616cde0deb7a7083a8"
         },
-        "downloads": 137,
+        "downloads": -1,
         "filename": "ftw.solr-1.5.0.tar.gz",
         "has_sig": false,
         "md5_digest": "7ab0a22748bc24d6b67c31b2855354e7",
@@ -289,7 +289,7 @@
           "md5": "4ec6a8055e65ffdbe81bde175ab2f978",
           "sha256": "ba5b784ca3318f9eb75a7ef31acca9926ffd92ca36482e9826975efc88b3d953"
         },
-        "downloads": 137,
+        "downloads": -1,
         "filename": "ftw.solr-1.5.1.zip",
         "has_sig": false,
         "md5_digest": "4ec6a8055e65ffdbe81bde175ab2f978",
@@ -307,7 +307,7 @@
           "md5": "f6873c870629ea430532983a5b2b507b",
           "sha256": "4209becd69129ef48044a26574df1b04d742cedd7402bea7935a22dc8e0f6e2b"
         },
-        "downloads": 145,
+        "downloads": -1,
         "filename": "ftw.solr-1.5.2.tar.gz",
         "has_sig": false,
         "md5_digest": "f6873c870629ea430532983a5b2b507b",
@@ -325,7 +325,7 @@
           "md5": "c3013ab40ceff01a26fe07588b24a727",
           "sha256": "3eafb04409e5e0d333a8afe485359ff6e4a3c89dae6fe579062635e17d6be6e7"
         },
-        "downloads": 139,
+        "downloads": -1,
         "filename": "ftw.solr-1.5.3.tar.gz",
         "has_sig": false,
         "md5_digest": "c3013ab40ceff01a26fe07588b24a727",
@@ -343,7 +343,7 @@
           "md5": "e3f5bd2ab8cd8d7c0af10de3620c6c7a",
           "sha256": "b12300de83405ef1ee23ca0586c7be01c035dd5006ce8d5959b4ea817fa3ae33"
         },
-        "downloads": 152,
+        "downloads": -1,
         "filename": "ftw.solr-1.6.0.tar.gz",
         "has_sig": false,
         "md5_digest": "e3f5bd2ab8cd8d7c0af10de3620c6c7a",
@@ -361,7 +361,7 @@
           "md5": "f85b22359cb6c92e84c5960aab6b4618",
           "sha256": "52e3ff9facf052cdd6d532ab70c14fc8243a97f974bb88cd20fc5318418137f4"
         },
-        "downloads": 158,
+        "downloads": -1,
         "filename": "ftw.solr-1.6.1.tar.gz",
         "has_sig": false,
         "md5_digest": "f85b22359cb6c92e84c5960aab6b4618",
@@ -379,7 +379,7 @@
           "md5": "b6f7c2938583b7c3c49e838c1c75d417",
           "sha256": "c26a64bc7c359f1083e00933a88bfc56f5710b4dcc78c59386ff77e73fea8a81"
         },
-        "downloads": 330,
+        "downloads": -1,
         "filename": "ftw.solr-1.6.2.tar.gz",
         "has_sig": false,
         "md5_digest": "b6f7c2938583b7c3c49e838c1c75d417",
@@ -397,7 +397,7 @@
           "md5": "1194b5a8fb8d25d229ba9eaacdeeec1c",
           "sha256": "4175e3e3a0cf489c03cc72b3fa5938abdff4293eb72257338dd848ea3eba9f9c"
         },
-        "downloads": 123,
+        "downloads": -1,
         "filename": "ftw.solr-1.6.3.tar.gz",
         "has_sig": false,
         "md5_digest": "1194b5a8fb8d25d229ba9eaacdeeec1c",
@@ -415,7 +415,7 @@
           "md5": "78f4593431eadd272a3a4238f3f5ae79",
           "sha256": "526392475a03f3600bbc5099122619d304b19b71ca1e85956efdb339c5f590d4"
         },
-        "downloads": 92,
+        "downloads": -1,
         "filename": "ftw.solr-1.6.4.tar.gz",
         "has_sig": false,
         "md5_digest": "78f4593431eadd272a3a4238f3f5ae79",
@@ -433,7 +433,7 @@
           "md5": "ce189320d5e8b3706cafb3f11e4824f0",
           "sha256": "4440367b3d7a161d45f26d5e67ef3f986c7007a2ee1d2b2aba8141230ee8788e"
         },
-        "downloads": 133,
+        "downloads": -1,
         "filename": "ftw.solr-1.7.0.tar.gz",
         "has_sig": false,
         "md5_digest": "ce189320d5e8b3706cafb3f11e4824f0",
@@ -451,7 +451,7 @@
           "md5": "c67a87426e9f7cd68a84229015681df9",
           "sha256": "309d8d5d33192dbd93ea76f5657ba2684a853392735f8f65061fc5384cce2dce"
         },
-        "downloads": 104,
+        "downloads": -1,
         "filename": "ftw.solr-1.7.1.tar.gz",
         "has_sig": false,
         "md5_digest": "c67a87426e9f7cd68a84229015681df9",
@@ -469,7 +469,7 @@
           "md5": "ae31a8493590cdff4bf391dc637aa398",
           "sha256": "b79838965fc6e90ad8c53ca250aed7e9193af570155a6996bafc4fd8dc72dfbf"
         },
-        "downloads": 57,
+        "downloads": -1,
         "filename": "ftw.solr-1.7.2.tar.gz",
         "has_sig": false,
         "md5_digest": "ae31a8493590cdff4bf391dc637aa398",
@@ -487,7 +487,7 @@
           "md5": "effc0ec6c7c60fb1f787a8721f670d07",
           "sha256": "0a7d546cd20a4d25134d68fb5bb3b095ddb2c998c7785830af0681849f9d23e4"
         },
-        "downloads": 58,
+        "downloads": -1,
         "filename": "ftw.solr-1.8.0.tar.gz",
         "has_sig": false,
         "md5_digest": "effc0ec6c7c60fb1f787a8721f670d07",
@@ -505,7 +505,7 @@
           "md5": "941da03118cfd3077a9e4858cb9a8f3d",
           "sha256": "01ca6141149b1df24c664934bb79bfc8e358341387cae08a03cde7b71858d4d2"
         },
-        "downloads": 61,
+        "downloads": -1,
         "filename": "ftw.solr-1.8.1.tar.gz",
         "has_sig": false,
         "md5_digest": "941da03118cfd3077a9e4858cb9a8f3d",
@@ -523,7 +523,7 @@
           "md5": "f984acea4d42319b64ad47cb8ba910c5",
           "sha256": "48ec03e86016b98f420f778841feba665bdd43fea72cc06b5af080d645f65cba"
         },
-        "downloads": 324,
+        "downloads": -1,
         "filename": "ftw.solr-1.8.2.tar.gz",
         "has_sig": false,
         "md5_digest": "f984acea4d42319b64ad47cb8ba910c5",
@@ -541,7 +541,7 @@
           "md5": "0939416fcfc025b5622a8b71889a2eb8",
           "sha256": "6e18258c53af6188dd12e624c5dc5e995b2cf493f5a0c64707a6c9b6ec32d473"
         },
-        "downloads": 151,
+        "downloads": -1,
         "filename": "ftw.solr-1.8.3.tar.gz",
         "has_sig": false,
         "md5_digest": "0939416fcfc025b5622a8b71889a2eb8",
@@ -559,7 +559,7 @@
           "md5": "a800ec30e1db2d1edb93ef2727e346f2",
           "sha256": "a905ed07fc6281699640f9c9b5188e2c01f04b84e91a2cf627a98258fcf980eb"
         },
-        "downloads": 290,
+        "downloads": -1,
         "filename": "ftw.solr-1.8.4.tar.gz",
         "has_sig": false,
         "md5_digest": "a800ec30e1db2d1edb93ef2727e346f2",
@@ -577,7 +577,7 @@
           "md5": "fd92254922dfe58d909be3e70143d81c",
           "sha256": "3d0f95d56933b630cf8b5204989611da5f21c302fca855adbc84d877bd6697d9"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "ftw.solr-1.8.5.tar.gz",
         "has_sig": false,
         "md5_digest": "fd92254922dfe58d909be3e70143d81c",
@@ -595,7 +595,7 @@
           "md5": "cf0d6ddc9da5587ce9d25dd190768210",
           "sha256": "36eb5e225f6d30adc14f0e2c2440bec249e8e7009fcf4bb39b17816820d4a608"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "ftw.solr-1.8.6.tar.gz",
         "has_sig": false,
         "md5_digest": "cf0d6ddc9da5587ce9d25dd190768210",
@@ -613,7 +613,7 @@
           "md5": "a3046d14397691c30fdf1b021ff42903",
           "sha256": "ff266e73800229fe4ddf8ac530dd04fff39bcb598db941b0a8e6a52469bb78ad"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "ftw.solr-1.9.0.tar.gz",
         "has_sig": false,
         "md5_digest": "a3046d14397691c30fdf1b021ff42903",
@@ -631,7 +631,7 @@
           "md5": "6d05bcfef0bb318b63a7deaa27b95b14",
           "sha256": "92a4676c263ea6796f116956d97f6d2a813420efbd7b7fb8a3728a945b2b4be1"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "ftw.solr-1.9.1.tar.gz",
         "has_sig": false,
         "md5_digest": "6d05bcfef0bb318b63a7deaa27b95b14",
@@ -649,7 +649,7 @@
           "md5": "a09412480f6ddaea8914aa2a584425e6",
           "sha256": "a21661ce9a8b62ee4e330a33fe3a3a9d140de95f4e9e89153d1dd477a2523284"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "ftw.solr-1.9.2.tar.gz",
         "has_sig": false,
         "md5_digest": "a09412480f6ddaea8914aa2a584425e6",
@@ -667,7 +667,7 @@
           "md5": "f5bc71d87f92f87ee0940a5ce6eca2b8",
           "sha256": "d9c3e33f8033e4b79e659917f3a16b2171d791d9cb45b045f7a9a1ed44e627cd"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "ftw.solr-1.9.3.tar.gz",
         "has_sig": false,
         "md5_digest": "f5bc71d87f92f87ee0940a5ce6eca2b8",
@@ -677,24 +677,60 @@
         "upload_time": "2017-08-28T07:12:16",
         "url": "https://files.pythonhosted.org/packages/04/22/281939b5d76915c07241d789ad55c523da71a9ec3fdf926e35fe032c841d/ftw.solr-1.9.3.tar.gz"
       }
+    ],
+    "1.9.4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3eda240e8b301176e9b658081bfcb07e",
+          "sha256": "cebd06f40df05c6486973b3ebef3a77f0e052fa674084f21fd1f8e352b4817be"
+        },
+        "downloads": -1,
+        "filename": "ftw.solr-1.9.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3eda240e8b301176e9b658081bfcb07e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 109575,
+        "upload_time": "2017-11-03T17:02:01",
+        "url": "https://files.pythonhosted.org/packages/de/7d/0413a41a535bcce513f8a21849628e4cb0b7a8f1c88c28059a7da54a1fc2/ftw.solr-1.9.4.tar.gz"
+      }
+    ],
+    "1.9.5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "689af12f4b8fec058d8f528e77ca169e",
+          "sha256": "fcea0a1deaa53dccd93d430cdb9e33d29afc121cc96be8897aa4e156badf1e1a"
+        },
+        "downloads": -1,
+        "filename": "ftw.solr-1.9.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "689af12f4b8fec058d8f528e77ca169e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 109696,
+        "upload_time": "2017-11-03T17:47:00",
+        "url": "https://files.pythonhosted.org/packages/a5/ce/ad8fd21948048689f0cc0968d08cf26a5ce632d80027aaae4a76bd8a88a2/ftw.solr-1.9.5.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "f5bc71d87f92f87ee0940a5ce6eca2b8",
-        "sha256": "d9c3e33f8033e4b79e659917f3a16b2171d791d9cb45b045f7a9a1ed44e627cd"
+        "md5": "689af12f4b8fec058d8f528e77ca169e",
+        "sha256": "fcea0a1deaa53dccd93d430cdb9e33d29afc121cc96be8897aa4e156badf1e1a"
       },
-      "downloads": 0,
-      "filename": "ftw.solr-1.9.3.tar.gz",
+      "downloads": -1,
+      "filename": "ftw.solr-1.9.5.tar.gz",
       "has_sig": false,
-      "md5_digest": "f5bc71d87f92f87ee0940a5ce6eca2b8",
+      "md5_digest": "689af12f4b8fec058d8f528e77ca169e",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 108929,
-      "upload_time": "2017-08-28T07:12:16",
-      "url": "https://files.pythonhosted.org/packages/04/22/281939b5d76915c07241d789ad55c523da71a9ec3fdf926e35fe032c841d/ftw.solr-1.9.3.tar.gz"
+      "size": 109696,
+      "upload_time": "2017-11-03T17:47:00",
+      "url": "https://files.pythonhosted.org/packages/a5/ce/ad8fd21948048689f0cc0968d08cf26a5ce632d80027aaae4a76bd8a88a2/ftw.solr-1.9.5.tar.gz"
     }
   ]
 }
