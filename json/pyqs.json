@@ -1,29 +1,30 @@
 {
   "info": {
     "author": "Steve Pulec",
-    "author_email": "spulec@gmail",
+    "author_email": "spulec@gmail.com",
     "bugtrack_url": null,
     "classifiers": [],
-    "description": "PyQS - Python task-queues for Amazon SQS |Build Status| |Coverage Status|\n=========================================================================\n\n**WARNING: This library is still in beta. It has a stable API and has been deployed in production, but we have not received feedback from a large number of use cases, and it is possible there are unknown bugs.**\n\nPyQS is a simple task manager for SQS. It's goal is to provide a simple\nand reliable `celery <https://pypi.python.org/pypi/celery>`__-compatible\ninterface to working with SQS. It uses ``boto`` under the hood to\n`authenticate <https://boto.readthedocs.org/en/latest/boto_config_tut.html>`__\nand talk to SQS.\n\nInstallation\n------------\n\n**PyQS** is available from `PyPI <https://pypi.python.org/>`__ and can\nbe installed in all the usual ways. To install via *CLI*:\n\n.. code:: bash\n\n    $ pip install pyqs\n\nOr just add it to your ``requirements.txt``.\n\nUsage\n-----\n\nPyQS uses some very simple semantics to create and read tasks. Most of\nthis comes from SQS having a very simple API.\n\nCreating Tasks\n~~~~~~~~~~~~~~\n\nAdding a task to queue is pretty simple.\n\n.. code:: python\n\n    from pyqs import task\n\n    @task(queue='email')\n    def send_email(subject, message):\n        pass\n\n    send_email.delay(subject='Hi there')\n\n**NOTE:** This assumes that you have your AWS keys in the appropriate\nenvironment variables, or are using IAM roles. PyQS doesn't do anything\ntoo special to talk to AWS, it only creates the appropriate ``boto``\nconnection.\n\nIf you don't pass a queue, PyQS will use the function path as the queue\nname. For example the following function lives in ``email/tasks.py``.\n\n.. code:: python\n\n    @task()\n    def send_email(subject):\n        pass\n\nThis would show up in the ``email.tasks.send_email`` queue.\n\nYou can also specify the function path if you want to reference a function in a different project:\n\n.. code:: python\n\n    @task(custom_function_path=\"foo.bar.send_email\")\n    # This references function send_email in foo/bar.py instead of email/tasks.py\n    def send_email(subject):\n        pass\n\n\nReading Tasks\n~~~~~~~~~~~~~\n\nTo read tasks we need to run PyQS. If the task is already in your\n``PYTHON_PATH`` to be imported, we can just run:\n\n.. code:: bash\n\n    $ pyqs email.tasks.send_email\n\nIf we want want to run all tasks with a certain prefix. This is based on\nPython's `fnmatch <http://docs.python.org/2/library/fnmatch.html>`__.\n\n.. code:: bash\n\n    $ pyqs email.*\n\nWe can also read from multiple different queues with one call by\ndelimiting with commas:\n\n.. code:: bash\n\n    $ pyqs send_email,read_email,write_email\n\nIf you want to run more workers to process tasks, you can up the\nconcurrency. This will spawn additional processes to work through\nmessages.\n\n.. code:: bash\n\n    $ pyqs send_email --concurrency 10\n\nOperational Notes\n~~~~~~~~~~~~~~~~~\n\n**Dead Letter Queues**\n\nIt is recommended to use a `Dead Letter Queue <http://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/SQSDeadLetterQueue.html>`__\nfor any queues that are managed by PyQS.  This is because the current strategy\nfor fetching messages does not delete them upon initial receipt.  A message is\n**ONLY** deleted from SQS upon successful completion. **This is probably\nunexpected behavior if you are coming from Celery with SQS.**  Celery attempted\nto manage this behavior internally, with varying success.\n\nIf an error arises during message processing, it will be discarded and will\nre-appear after the visibility timeout.  This can lead to behavior where\nthere are messages that will never leave the queue and continuously throw\nerrors.  A Dead Letter Queue helps resolve this by collecting messages that\nhave be retried a specified number of times.\n\n**Worker Seppuku**\n\nEach process worker will shut itself down after ``100`` tasks have been\nprocessed (or failed to process). This is to prevent issues with stale\nconnections lingering and blocking tasks forever. In addition it helps\nguard against memory leaks, though in a rather brutish fashion. After\nthe process worker shut itself down the managing process should notice\nand restart it promptly. The value of ``100`` is currently hard-coded,\nbut could be configurable.\n\n**Queue Blocking**\n\nWhile there are multiple workers for reading from different queues, they\nall append to the same internal queue. This means that if you have one\nqueue with lots of fast tasks, and another with a few slow tasks, they\ncan block eachother and the fast tasks can build up behind the slow\ntasks. The simplest solution is to just run two different ``PyQS``\ncommands, one for each queue with appropriate concurrency settings.\n\n**Visibility Timeout**\n\nCare is taken to not process messages that have exceeded the visibility\ntimeout of their queue. The goal is to prevent double processing of\ntasks. However, it is still quite possible for this to happen since we\ndo not use transactional semantics around tasks. Therefore, it is\nimportant to properly set the visibility timeout on your queues based on\nthe expected length of your tasks. If the timeout is too short, tasks\nwill be processed twice, or very slowly. If it is too long, ephemeral\nfailures will delay messages and reduce the queue throughput\ndrastically. This is related to the queue blocking described above as\nwell. SQS queues are free, so it is good practice to keep the messages\nstored in each as homogenous as possible.\n\nCompatibility\n~~~~~~~~~~~~~\n\n**Celery:**\n\nPyQS was created to replace celery inside of our infrastructure. To\nachieve this goal we wanted to make sure we were compatible with the\nbasic Celery APIs. To this end, you can easily start trying out PyQS in\nyour Celery-based system. PyQS can read messages that Celery has written\nto SQS. It will read ``pickle`` and ``json`` serialized SQS messages\n(Although we recommend JSON).\n\n**Operating Systems:**\n\nUNIX. Due to the use of the ``os.getppid`` system call. This feature can\nprobably be worked around if anyone actually wants windows support.\n\n**Boto:**\n\nCurrently PyQS only supports a few basic connection parameters being\nexplicitly passed to the connection. Any work ``boto`` does to\ntransparently find connection credentials, such as IAM roles, will still\nwork properly.\n\nWhen running PyQS from the command-line you can pass ``--region``,\n``--access-key-id``, and ``--secret-access-key`` to override the default\nvalues.\n\nCaveats\n~~~~~~~\n\n**Durability:**\n\nWhen we read a batch of messages from SQS we attempt to add them to our\ninternal queue until we exceed the visibility timeout of the queue. Once\nthis is exceeded, we discard the messages and grab a new batch.\nAdditionally, when a process worker gets a message from the internal\nqueue, the time the message was fetched from SQS is checked against the\nqueues visibility timeout and discarded if it exceeds the timeout. The\ngoal is to reduce double processing. However, this system does not\nprovide transactions and there are cases where it is possible to process\na message whos' visibility timeout has been exceeded. It is up to you to\nmake sure that you can handle this edge case.\n\n**Task Importing:**\n\nCurrently there is not advanced logic in place to find the location of\nmodules to import tasks for processing. PyQS will try using\n``importlib`` to get the module, and then find the task inside the\nmodule. Currently we wrap our usage of PyQS inside a Django admin\ncommand, which simplifies task importing. We call the\n`\\*\\*\\_main()\\*\\* <https://github.com/spulec/PyQS/blob/master/pyqs/main.py#L53>`__\nmethod directly, skipping **main()** since it only performs argument\nparsing.\n\n**Why not just use Celery?**\n\nWe like Celery. We `(Yipit.com) <http://yipit.com/about/team/>`__ even\nsponsored the `original SQS\nimplementation <https://github.com/celery/kombu/commit/1ab629c23c85aeabf5a4c9a6bb570e8da822c3a6>`__.\nHowever, SQS is pretty different from the rest of the backends that\nCelery supports. Additionally the Celery team does not have the\nresources to create a robust SQS implementation in addition to the rest\nof their duties. This means the SQS is carrying around a lot extra\nfeatures and a complex codebase that makes it hard to debug.\n\nWe have personally experienced some very vexing resource leaks with\nCelery that have been hard to trackdown. For our use case, it has been\nsimpler to switch to a simple library that we fully understand. As this\nlibrary evolves that may change and the the costs of switching may not\nbe worth it. However, we want to provide the option to others who use\npython and SQS to use a simpler setup.\n\n.. |Build Status| image:: https://travis-ci.org/spulec/PyQS.svg?branch=master\n   :target: https://travis-ci.org/spulec/PyQS\n.. |Coverage Status| image:: https://coveralls.io/repos/spulec/PyQS/badge.svg?branch=master&service=github\n   :target: https://coveralls.io/github/spulec/PyQS?branch=master\n\n\nChangelog\n---------\n\n0.0.21\n~~~~~~\n\n- Add ability to tune ``PREFETCH_MULTIPLIER`` with ``--prefetch-multiplier``.\n\n0.0.20\n~~~~~~\n\n- Respect ``--batch-size`` when sizing internal queue on ManagerWorker\n\n0.0.19\n~~~~~~\n\n- Add ability to run with tunable BATCHSIZE and INTERVAL. Thanks to @masayang\n- Add ability to create tasks with a visibility delay.  Thanks to @joshbuddy\n- Add ability to create tasks with a custom function location, allowing cross project tasks\n\n0.0.18\n~~~~~~\n\n- Convert Changelog to .rst\n- Add Changelog to long description on Pypi.  Thanks to @adamchainz\n\n0.0.17\n~~~~~~\n\n-  Fix typos in README\n-  Add notes on Dead Letter Queues to README\n\n0.0.16\n~~~~~~\n\n-  Switch README to reStructuredText (.rst) format so it renders on PyPI\n\n0.0.15\n~~~~~~\n\n-  Process workers will kill themselves after attempting to process 100\n   requests, instead of checking the internal queue 100 times.\n-  If we find no messages on the internal queue, sleep for a moment\n   before rechecking.\n\n0.0.14\n~~~~~~\n\n-  Process workers will kill themselves after processing 100 requests\n-  Process workers will check a message's fetch time and visibility\n   timeout before processing, discarding it if it has exceeded the\n   timeout.\n-  Log the ``process_time()`` used to process a task to the INFO level.\n\n0.0.13\n~~~~~~\n\n-  Only pass SQS Queue ID to internal queue. This is attempting to fix a\n   bug when processing messages from multiple queues.\n\n0.0.12\n~~~~~~\n\n-  Remove extraneous debugging code\n\n0.0.11\n~~~~~~\n\n-  Add additional debugging to investigate message deletion errors\n\n0.0.10\n~~~~~~\n\n-  Give each process worker its own boto connection to avoid\n   multiprocess race conditions during message deletion\n\n0.0.9\n-----\n\n-  Change long polling interval to a valid value, 0<=LPI<=20\n\n0.0.8\n-----\n\n-  Switched to long polling when pulling down messages from SQS.\n-  Moved message deletion from SQS until after message has been\n   processed.\n\n0.0.7\n-----\n\n-  Added capability to read JSON encoded celery messages.\n\n0.0.6\n-----\n\n-  Switched shutdown logging to INFO\n-  Added brief sleep to message retrieval loop so that we don't look\n   like we are using a ton of CPU spinning.\n\n0.0.5\n-----\n\n-  Switching task failure logging to ERROR (actually this time)\n-  Moved task success logging to INFO\n-  Added INFO level logging for number of messages retrieved from an SQS\n   queue.\n-  Moved Reader and Worker process counts to DEBUG\n\n0.0.4\n-----\n\n-  Added ability to pass ``region``, ``access_key_id`` and\n   ``secret_access_key`` through to Boto when creating connections\n-  Switched logging of task failure to the ``ERROR`` logger, from\n   ``INFO``.",
+    "description": "PyQS - Python task-queues for Amazon SQS |Build Status| |Coverage Status|\n=========================================================================\n\n**WARNING: This library is still in beta. It has a stable API and has been deployed in production, but we have not received feedback from a large number of use cases, and it is possible there are unknown bugs.**\n\nPyQS is a simple task manager for SQS. It's goal is to provide a simple\nand reliable `celery <https://pypi.python.org/pypi/celery>`__-compatible\ninterface to working with SQS. It uses ``boto`` under the hood to\n`authenticate <https://boto.readthedocs.org/en/latest/boto_config_tut.html>`__\nand talk to SQS.\n\nInstallation\n------------\n\n**PyQS** is available from `PyPI <https://pypi.python.org/>`__ and can\nbe installed in all the usual ways. To install via *CLI*:\n\n.. code:: bash\n\n    $ pip install pyqs\n\nOr just add it to your ``requirements.txt``.\n\nUsage\n-----\n\nPyQS uses some very simple semantics to create and read tasks. Most of\nthis comes from SQS having a very simple API.\n\nCreating Tasks\n~~~~~~~~~~~~~~\n\nAdding a task to queue is pretty simple.\n\n.. code:: python\n\n    from pyqs import task\n\n    @task(queue='email')\n    def send_email(subject, message):\n        pass\n\n    send_email.delay(subject='Hi there')\n\n**NOTE:** This assumes that you have your AWS keys in the appropriate\nenvironment variables, or are using IAM roles. PyQS doesn't do anything\ntoo special to talk to AWS, it only creates the appropriate ``boto``\nconnection.\n\nIf you don't pass a queue, PyQS will use the function path as the queue\nname. For example the following function lives in ``email/tasks.py``.\n\n.. code:: python\n\n    @task()\n    def send_email(subject):\n        pass\n\nThis would show up in the ``email.tasks.send_email`` queue.\n\nYou can also specify the function path if you want to reference a function in a different project:\n\n.. code:: python\n\n    @task(custom_function_path=\"foo.bar.send_email\")\n    # This references function send_email in foo/bar.py instead of email/tasks.py\n    def send_email(subject):\n        pass\n\n\nReading Tasks\n~~~~~~~~~~~~~\n\nTo read tasks we need to run PyQS. If the task is already in your\n``PYTHON_PATH`` to be imported, we can just run:\n\n.. code:: bash\n\n    $ pyqs email.tasks.send_email\n\nIf we want want to run all tasks with a certain prefix. This is based on\nPython's `fnmatch <http://docs.python.org/2/library/fnmatch.html>`__.\n\n.. code:: bash\n\n    $ pyqs email.*\n\nWe can also read from multiple different queues with one call by\ndelimiting with commas:\n\n.. code:: bash\n\n    $ pyqs send_email,read_email,write_email\n\nIf you want to run more workers to process tasks, you can up the\nconcurrency. This will spawn additional processes to work through\nmessages.\n\n.. code:: bash\n\n    $ pyqs send_email --concurrency 10\n\nOperational Notes\n~~~~~~~~~~~~~~~~~\n\n**Dead Letter Queues**\n\nIt is recommended to use a `Dead Letter Queue <http://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/SQSDeadLetterQueue.html>`__\nfor any queues that are managed by PyQS.  This is because the current strategy\nfor fetching messages does not delete them upon initial receipt.  A message is\n**ONLY** deleted from SQS upon successful completion. **This is probably\nunexpected behavior if you are coming from Celery with SQS.**  Celery attempted\nto manage this behavior internally, with varying success.\n\nIf an error arises during message processing, it will be discarded and will\nre-appear after the visibility timeout.  This can lead to behavior where\nthere are messages that will never leave the queue and continuously throw\nerrors.  A Dead Letter Queue helps resolve this by collecting messages that\nhave be retried a specified number of times.\n\n**Worker Seppuku**\n\nEach process worker will shut itself down after ``100`` tasks have been\nprocessed (or failed to process). This is to prevent issues with stale\nconnections lingering and blocking tasks forever. In addition it helps\nguard against memory leaks, though in a rather brutish fashion. After\nthe process worker shut itself down the managing process should notice\nand restart it promptly. The value of ``100`` is currently hard-coded,\nbut could be configurable.\n\n**Queue Blocking**\n\nWhile there are multiple workers for reading from different queues, they\nall append to the same internal queue. This means that if you have one\nqueue with lots of fast tasks, and another with a few slow tasks, they\ncan block eachother and the fast tasks can build up behind the slow\ntasks. The simplest solution is to just run two different ``PyQS``\ncommands, one for each queue with appropriate concurrency settings.\n\n**Visibility Timeout**\n\nCare is taken to not process messages that have exceeded the visibility\ntimeout of their queue. The goal is to prevent double processing of\ntasks. However, it is still quite possible for this to happen since we\ndo not use transactional semantics around tasks. Therefore, it is\nimportant to properly set the visibility timeout on your queues based on\nthe expected length of your tasks. If the timeout is too short, tasks\nwill be processed twice, or very slowly. If it is too long, ephemeral\nfailures will delay messages and reduce the queue throughput\ndrastically. This is related to the queue blocking described above as\nwell. SQS queues are free, so it is good practice to keep the messages\nstored in each as homogenous as possible.\n\nCompatibility\n~~~~~~~~~~~~~\n\n**Celery:**\n\nPyQS was created to replace celery inside of our infrastructure. To\nachieve this goal we wanted to make sure we were compatible with the\nbasic Celery APIs. To this end, you can easily start trying out PyQS in\nyour Celery-based system. PyQS can read messages that Celery has written\nto SQS. It will read ``pickle`` and ``json`` serialized SQS messages\n(Although we recommend JSON).\n\n**Operating Systems:**\n\nUNIX. Due to the use of the ``os.getppid`` system call. This feature can\nprobably be worked around if anyone actually wants windows support.\n\n**Boto:**\n\nCurrently PyQS only supports a few basic connection parameters being\nexplicitly passed to the connection. Any work ``boto`` does to\ntransparently find connection credentials, such as IAM roles, will still\nwork properly.\n\nWhen running PyQS from the command-line you can pass ``--region``,\n``--access-key-id``, and ``--secret-access-key`` to override the default\nvalues.\n\nCaveats\n~~~~~~~\n\n**Durability:**\n\nWhen we read a batch of messages from SQS we attempt to add them to our\ninternal queue until we exceed the visibility timeout of the queue. Once\nthis is exceeded, we discard the messages and grab a new batch.\nAdditionally, when a process worker gets a message from the internal\nqueue, the time the message was fetched from SQS is checked against the\nqueues visibility timeout and discarded if it exceeds the timeout. The\ngoal is to reduce double processing. However, this system does not\nprovide transactions and there are cases where it is possible to process\na message whos' visibility timeout has been exceeded. It is up to you to\nmake sure that you can handle this edge case.\n\n**Task Importing:**\n\nCurrently there is not advanced logic in place to find the location of\nmodules to import tasks for processing. PyQS will try using\n``importlib`` to get the module, and then find the task inside the\nmodule. Currently we wrap our usage of PyQS inside a Django admin\ncommand, which simplifies task importing. We call the\n`\\*\\*\\_main()\\*\\* <https://github.com/spulec/PyQS/blob/master/pyqs/main.py#L53>`__\nmethod directly, skipping **main()** since it only performs argument\nparsing.\n\n**Why not just use Celery?**\n\nWe like Celery. We `(Yipit.com) <http://yipit.com/about/team/>`__ even\nsponsored the `original SQS\nimplementation <https://github.com/celery/kombu/commit/1ab629c23c85aeabf5a4c9a6bb570e8da822c3a6>`__.\nHowever, SQS is pretty different from the rest of the backends that\nCelery supports. Additionally the Celery team does not have the\nresources to create a robust SQS implementation in addition to the rest\nof their duties. This means the SQS is carrying around a lot extra\nfeatures and a complex codebase that makes it hard to debug.\n\nWe have personally experienced some very vexing resource leaks with\nCelery that have been hard to trackdown. For our use case, it has been\nsimpler to switch to a simple library that we fully understand. As this\nlibrary evolves that may change and the the costs of switching may not\nbe worth it. However, we want to provide the option to others who use\npython and SQS to use a simpler setup.\n\n.. |Build Status| image:: https://travis-ci.org/spulec/PyQS.svg?branch=master\n   :target: https://travis-ci.org/spulec/PyQS\n.. |Coverage Status| image:: https://coveralls.io/repos/spulec/PyQS/badge.svg?branch=master&service=github\n   :target: https://coveralls.io/github/spulec/PyQS?branch=master\n\n\nChangelog\n---------\n\n0.0.22\n~~~~~~\n\n- Fix Python 3 support\n- Allow overwriting the `delay_seconds` attibute at call time\n\n0.0.21\n~~~~~~\n\n- Add ability to tune ``PREFETCH_MULTIPLIER`` with ``--prefetch-multiplier``.\n\n0.0.20\n~~~~~~\n\n- Respect ``--batch-size`` when sizing internal queue on ManagerWorker\n\n0.0.19\n~~~~~~\n\n- Add ability to run with tunable BATCHSIZE and INTERVAL. Thanks to @masayang\n- Add ability to create tasks with a visibility delay.  Thanks to @joshbuddy\n- Add ability to create tasks with a custom function location, allowing cross project tasks\n\n0.0.18\n~~~~~~\n\n- Convert Changelog to .rst\n- Add Changelog to long description on Pypi.  Thanks to @adamchainz\n\n0.0.17\n~~~~~~\n\n-  Fix typos in README\n-  Add notes on Dead Letter Queues to README\n\n0.0.16\n~~~~~~\n\n-  Switch README to reStructuredText (.rst) format so it renders on PyPI\n\n0.0.15\n~~~~~~\n\n-  Process workers will kill themselves after attempting to process 100\n   requests, instead of checking the internal queue 100 times.\n-  If we find no messages on the internal queue, sleep for a moment\n   before rechecking.\n\n0.0.14\n~~~~~~\n\n-  Process workers will kill themselves after processing 100 requests\n-  Process workers will check a message's fetch time and visibility\n   timeout before processing, discarding it if it has exceeded the\n   timeout.\n-  Log the ``process_time()`` used to process a task to the INFO level.\n\n0.0.13\n~~~~~~\n\n-  Only pass SQS Queue ID to internal queue. This is attempting to fix a\n   bug when processing messages from multiple queues.\n\n0.0.12\n~~~~~~\n\n-  Remove extraneous debugging code\n\n0.0.11\n~~~~~~\n\n-  Add additional debugging to investigate message deletion errors\n\n0.0.10\n~~~~~~\n\n-  Give each process worker its own boto connection to avoid\n   multiprocess race conditions during message deletion\n\n0.0.9\n-----\n\n-  Change long polling interval to a valid value, 0<=LPI<=20\n\n0.0.8\n-----\n\n-  Switched to long polling when pulling down messages from SQS.\n-  Moved message deletion from SQS until after message has been\n   processed.\n\n0.0.7\n-----\n\n-  Added capability to read JSON encoded celery messages.\n\n0.0.6\n-----\n\n-  Switched shutdown logging to INFO\n-  Added brief sleep to message retrieval loop so that we don't look\n   like we are using a ton of CPU spinning.\n\n0.0.5\n-----\n\n-  Switching task failure logging to ERROR (actually this time)\n-  Moved task success logging to INFO\n-  Added INFO level logging for number of messages retrieved from an SQS\n   queue.\n-  Moved Reader and Worker process counts to DEBUG\n\n0.0.4\n-----\n\n-  Added ability to pass ``region``, ``access_key_id`` and\n   ``secret_access_key`` through to Boto when creating connections\n-  Switched logging of task failure to the ``ERROR`` logger, from\n   ``INFO``.\n",
     "docs_url": null,
-    "download_url": "UNKNOWN",
+    "download_url": "",
     "downloads": {
       "last_day": 0,
       "last_month": 0,
       "last_week": 0
     },
     "home_page": "https://github.com/spulec/pyqs",
-    "keywords": null,
-    "license": "UNKNOWN",
-    "maintainer": null,
-    "maintainer_email": null,
+    "keywords": "",
+    "license": "",
+    "maintainer": "",
+    "maintainer_email": "",
     "name": "pyqs",
-    "platform": "UNKNOWN",
+    "platform": "",
     "project_url": "https://pypi.org/project/pyqs/",
-    "release_url": "https://pypi.org/project/pyqs/0.0.21/",
-    "requires_python": null,
+    "release_url": "https://pypi.org/project/pyqs/0.0.22/",
+    "requires_dist": [],
+    "requires_python": "",
     "summary": "A simple task-queue for SQS.",
-    "version": "0.0.21"
+    "version": "0.0.22"
   },
   "releases": {
     "0.0.1": [
@@ -33,7 +34,7 @@
           "md5": "4beb413e8815859a926ba6b6bfb9be2e",
           "sha256": "21edca520755f148e1911ed55f896a4f972940c2213ee30c37afac86fa06571f"
         },
-        "downloads": 2232,
+        "downloads": -1,
         "filename": "pyqs-0.0.1.tar.gz",
         "has_sig": false,
         "md5_digest": "4beb413e8815859a926ba6b6bfb9be2e",
@@ -51,7 +52,7 @@
           "md5": "1bd6a8544bda20383993c7cb08892b25",
           "sha256": "e6b46ef655fd2ba44f817d7b8d3c9f3fbce053159c656f710d8972a66ed6d2f3"
         },
-        "downloads": 720,
+        "downloads": -1,
         "filename": "pyqs-0.0.10.tar.gz",
         "has_sig": false,
         "md5_digest": "1bd6a8544bda20383993c7cb08892b25",
@@ -69,7 +70,7 @@
           "md5": "473da91e5f34dd5b69ab42a6476d2dad",
           "sha256": "782723ff8a5df4cf1ce0aa2c83a399ccb45469eeeadf24fd10e302a957b72829"
         },
-        "downloads": 724,
+        "downloads": -1,
         "filename": "pyqs-0.0.11.tar.gz",
         "has_sig": false,
         "md5_digest": "473da91e5f34dd5b69ab42a6476d2dad",
@@ -87,7 +88,7 @@
           "md5": "195116cae37bae59f60649acec93953b",
           "sha256": "3e9768958ba500b9fec09e6aeb713bae21126d4d98a1f5f1d95c145e0531ab8c"
         },
-        "downloads": 730,
+        "downloads": -1,
         "filename": "pyqs-0.0.12.tar.gz",
         "has_sig": false,
         "md5_digest": "195116cae37bae59f60649acec93953b",
@@ -105,7 +106,7 @@
           "md5": "c5e3d7af87770bb8603c4475421d415e",
           "sha256": "da0289e16f50a7d58c4373bc51ff72d62010f934c4e601bf106580074a766e4a"
         },
-        "downloads": 1332,
+        "downloads": -1,
         "filename": "pyqs-0.0.13.tar.gz",
         "has_sig": false,
         "md5_digest": "c5e3d7af87770bb8603c4475421d415e",
@@ -123,7 +124,7 @@
           "md5": "1e441c442758a81c91edd8b67db101e2",
           "sha256": "00a23aa106329b3651eac27db4ab6680e631b99ca6d39614b8f6277d3302ddc9"
         },
-        "downloads": 122,
+        "downloads": -1,
         "filename": "pyqs-0.0.14.tar.gz",
         "has_sig": false,
         "md5_digest": "1e441c442758a81c91edd8b67db101e2",
@@ -141,7 +142,7 @@
           "md5": "087bfb148b93ad6d95461153d6a4e7ff",
           "sha256": "53c2a1a384bac85a48379245e881c711ed24009318799a5cb73656cc09e501d9"
         },
-        "downloads": 122,
+        "downloads": -1,
         "filename": "pyqs-0.0.15.tar.gz",
         "has_sig": false,
         "md5_digest": "087bfb148b93ad6d95461153d6a4e7ff",
@@ -159,7 +160,7 @@
           "md5": "133a670a23912b237b0898805516696f",
           "sha256": "ada55ca5d29aa4c06f7322bb303aa7afb056f8fc0ecb70057b6ecf2cdcde8f85"
         },
-        "downloads": 121,
+        "downloads": -1,
         "filename": "pyqs-0.0.16.tar.gz",
         "has_sig": false,
         "md5_digest": "133a670a23912b237b0898805516696f",
@@ -177,7 +178,7 @@
           "md5": "b9efe93b2c8d740fab0d1b3a351f3761",
           "sha256": "ff67f2c37c650fd04728d3c26684320670687cef0dccfb227d9b85d9c0b0b1f7"
         },
-        "downloads": 142,
+        "downloads": -1,
         "filename": "pyqs-0.0.17.tar.gz",
         "has_sig": false,
         "md5_digest": "b9efe93b2c8d740fab0d1b3a351f3761",
@@ -195,7 +196,7 @@
           "md5": "a43fca967ba83fe01532993ea2d56edd",
           "sha256": "c15fa46c323d151ff22699978f09bf45eae7538766e6402d9c4f644a4db64e54"
         },
-        "downloads": 92,
+        "downloads": -1,
         "filename": "pyqs-0.0.18.tar.gz",
         "has_sig": false,
         "md5_digest": "a43fca967ba83fe01532993ea2d56edd",
@@ -213,7 +214,7 @@
           "md5": "20fd61a7cfcb38fc80b5d0c13ee7a16f",
           "sha256": "f9a0deac07c1fe5c9e4414bd9846cbc74d9f1ba76742683ff67276dadf205d0d"
         },
-        "downloads": 20,
+        "downloads": -1,
         "filename": "pyqs-0.0.19.tar.gz",
         "has_sig": false,
         "md5_digest": "20fd61a7cfcb38fc80b5d0c13ee7a16f",
@@ -231,7 +232,7 @@
           "md5": "4f20807ad19e94f846339788bb8349c1",
           "sha256": "61bc8da097f1137e4bb707969dbcf0f2fab16b745e44e42bcdfbff7cf3195a62"
         },
-        "downloads": 710,
+        "downloads": -1,
         "filename": "pyqs-0.0.2.tar.gz",
         "has_sig": false,
         "md5_digest": "4f20807ad19e94f846339788bb8349c1",
@@ -249,7 +250,7 @@
           "md5": "ac9bc2c50d0dd9566fe6e7884bdf7dcb",
           "sha256": "3da8360f99ecc3cc8d4f2144147861c6fc9d4f691e06d8d37ee5511ef2f04c3b"
         },
-        "downloads": 94,
+        "downloads": -1,
         "filename": "pyqs-0.0.20.tar.gz",
         "has_sig": false,
         "md5_digest": "ac9bc2c50d0dd9566fe6e7884bdf7dcb",
@@ -267,7 +268,7 @@
           "md5": "b57011f054f693d8b9d90e8dfe079a31",
           "sha256": "87e01b1ae46c8cdf1aa593c698fb5761b5a8ceebabc169d8e3fa42a37de32552"
         },
-        "downloads": 99,
+        "downloads": -1,
         "filename": "pyqs-0.0.21.tar.gz",
         "has_sig": false,
         "md5_digest": "b57011f054f693d8b9d90e8dfe079a31",
@@ -278,6 +279,24 @@
         "url": "https://files.pythonhosted.org/packages/19/2d/a39de1d4f82bafc41a74d64157bf7acd83e4cf5d5d45a62c26162fe420bf/pyqs-0.0.21.tar.gz"
       }
     ],
+    "0.0.22": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "796d3faff57dfc84b7a96680203dac8d",
+          "sha256": "d7aa6c2fb2872d040ca3781c9d6bddf6a613d6cbf14ce0517ef0032f9d1f8a4d"
+        },
+        "downloads": -1,
+        "filename": "pyqs-0.0.22.tar.gz",
+        "has_sig": false,
+        "md5_digest": "796d3faff57dfc84b7a96680203dac8d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 16565,
+        "upload_time": "2017-11-04T17:37:04",
+        "url": "https://files.pythonhosted.org/packages/21/9a/d9957c69f84fb3b7810285de012e7ed305f2a8f48f885db2623d32b64cd0/pyqs-0.0.22.tar.gz"
+      }
+    ],
     "0.0.3": [
       {
         "comment_text": "",
@@ -285,7 +304,7 @@
           "md5": "cf0751fea0f1cb936c51d7c6818dcd5b",
           "sha256": "fab3e481651eec167218350d83055bf4c751de28f1e16c839073e2f7d2a702b0"
         },
-        "downloads": 759,
+        "downloads": -1,
         "filename": "pyqs-0.0.3.tar.gz",
         "has_sig": false,
         "md5_digest": "cf0751fea0f1cb936c51d7c6818dcd5b",
@@ -303,7 +322,7 @@
           "md5": "461a68f2d087e69572e4c04673c78805",
           "sha256": "a869e9c9b04e5cff5f054050c5f4d523238382e91c79bf185bc285c9591f616b"
         },
-        "downloads": 750,
+        "downloads": -1,
         "filename": "pyqs-0.0.4.tar.gz",
         "has_sig": false,
         "md5_digest": "461a68f2d087e69572e4c04673c78805",
@@ -321,7 +340,7 @@
           "md5": "5476b873543489e84e5582ca6c8db22c",
           "sha256": "9e75dc1ecb8bd1524899ecaee19ef3a72bcd0cc2beda086e92d127a68b5ff5a1"
         },
-        "downloads": 1971,
+        "downloads": -1,
         "filename": "pyqs-0.0.5.tar.gz",
         "has_sig": false,
         "md5_digest": "5476b873543489e84e5582ca6c8db22c",
@@ -339,7 +358,7 @@
           "md5": "32255cff234f665644917036cad00cd7",
           "sha256": "1ce99f90e8b76cc62407aeaab1b70d06f52e5171c15fd72159bb8cdab7fa4715"
         },
-        "downloads": 705,
+        "downloads": -1,
         "filename": "pyqs-0.0.6.tar.gz",
         "has_sig": false,
         "md5_digest": "32255cff234f665644917036cad00cd7",
@@ -357,7 +376,7 @@
           "md5": "7c2c3a33aeeefd59dec8bcbd81d00448",
           "sha256": "fa0576cec52e2fa2c6be4ebe47042efc6ffe717b348feae14e397309e826bfb3"
         },
-        "downloads": 712,
+        "downloads": -1,
         "filename": "pyqs-0.0.7.tar.gz",
         "has_sig": false,
         "md5_digest": "7c2c3a33aeeefd59dec8bcbd81d00448",
@@ -375,7 +394,7 @@
           "md5": "7a5690110755de3cb37724d06f8e71a2",
           "sha256": "f2d5fdc41358ca51e1f931d434404894ea6f85566739a325432097d7382c612f"
         },
-        "downloads": 697,
+        "downloads": -1,
         "filename": "pyqs-0.0.8.tar.gz",
         "has_sig": false,
         "md5_digest": "7a5690110755de3cb37724d06f8e71a2",
@@ -393,7 +412,7 @@
           "md5": "752eabdbe1ac4c76b65380cf2a68b1dc",
           "sha256": "2d2447023f41ccd4d3448c47fcf63020e2ccbfa515eb612c6a8157236bc40294"
         },
-        "downloads": 715,
+        "downloads": -1,
         "filename": "pyqs-0.0.9.tar.gz",
         "has_sig": false,
         "md5_digest": "752eabdbe1ac4c76b65380cf2a68b1dc",
@@ -409,18 +428,18 @@
     {
       "comment_text": "",
       "digests": {
-        "md5": "b57011f054f693d8b9d90e8dfe079a31",
-        "sha256": "87e01b1ae46c8cdf1aa593c698fb5761b5a8ceebabc169d8e3fa42a37de32552"
+        "md5": "796d3faff57dfc84b7a96680203dac8d",
+        "sha256": "d7aa6c2fb2872d040ca3781c9d6bddf6a613d6cbf14ce0517ef0032f9d1f8a4d"
       },
-      "downloads": 99,
-      "filename": "pyqs-0.0.21.tar.gz",
+      "downloads": -1,
+      "filename": "pyqs-0.0.22.tar.gz",
       "has_sig": false,
-      "md5_digest": "b57011f054f693d8b9d90e8dfe079a31",
+      "md5_digest": "796d3faff57dfc84b7a96680203dac8d",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 16465,
-      "upload_time": "2017-04-05T15:58:32",
-      "url": "https://files.pythonhosted.org/packages/19/2d/a39de1d4f82bafc41a74d64157bf7acd83e4cf5d5d45a62c26162fe420bf/pyqs-0.0.21.tar.gz"
+      "size": 16565,
+      "upload_time": "2017-11-04T17:37:04",
+      "url": "https://files.pythonhosted.org/packages/21/9a/d9957c69f84fb3b7810285de012e7ed305f2a8f48f885db2623d32b64cd0/pyqs-0.0.22.tar.gz"
     }
   ]
 }
