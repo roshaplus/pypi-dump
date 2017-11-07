@@ -14,7 +14,7 @@
       "Programming Language :: Python :: 3.6",
       "Topic :: Software Development"
     ],
-    "description": "Fleece\n======\n\nLogging\n-------\n\nTo start using fleece with a lambda project you will need to make 2\nsmall updates to your project.\n\n-  Where you would normally import ``logging.get_logger`` or\n   ``logging.getLogger`` use\\ ``fleece.log.get_logger`` or\n   ``fleece.log.getLogger``\n\n-  In the file with your primary lambda handler include\n   ``fleece.log.setup_root_logger()``\\ prior to setting up any\n   additional logging.\n\nThis should ensure that all handlers on the root logger are cleaned up\nand one with appropriate stream handlers is in place.\n\nRetry logging calls\n~~~~~~~~~~~~~~~~~~~\n\nA retry wrapper for logging handlers that occasionally fail is also\nprovided. This wrapper can be useful in preventing crashes when logging\ncalls to external services such as CloudWatch fail.\n\nFor example, consider the following handler for CloudWatch using\nwatchtower:\n\n.. code:: python\n\n    logger.addHandler(\n        watchtower.CloudWatchLogHandler(log_group='WORKER-POLL',\n                                        stream_name=str(uuid.uuid4()),\n                                        use_queues=False))\n\nIf the CloudWatch service is down, or rate limits the client, that will\ncause logging calls to raise an exception, which may interrupt the\nscript. To avoid that, the watchtower handler can be wrapped in a\n``RetryHandler`` as follows:\n\n.. code:: python\n\n    logger.addHandler(\n        fleece.log.RetryHandler(\n            watchtower.CloudWatchLogHandler(log_group='WORKER-POLL',\n                                            stream_name=str(uuid.uuid4()),\n                                            use_queues=False)))\n\nIn the above example, logging calls that fail will be retried up to 5\ntimes, using an exponential backoff algorithm to increasingly space out\nretries. If all retries fail, then the logging call will, by default,\ngive up silently and return, allowing the program to continue. See the\ndocumentation for the ``RetryHandler`` class for information on how to\ncustomize the retry strategy.\n\nboto3 wrappers\n--------------\n\nThis project includes ``fleece.boto3.client()`` and\n``fleece.boto3.resource()`` wrappers that support a friendly format for\nsetting less conservative timeouts than the default 60 seconds used by\nboto. The following additional arguments are accepted to set these\ntimeouts:\n\n-  ``connect_timeout``: timeout for socket connections in seconds.\n-  ``read_timeout``: timeout for socket read operations in seconds.\n-  ``timeout``: convenience timeout that sets both of the above to the\n   same value.\n\nAlso for convenience, timeouts can be set globally by calling\n``fleece.boto3.set_default_timeout()`` at startup. Globally set timeouts\nare then applied to all clients, unless explicitly overriden. Default\ntimeouts set via the ``set_default_timeout()`` function apply to all\nthreads, and for that reason it is a good idea to only call this\nfunction during start up, before any additional threads are spawn.\n\nAs an example, the following code written against the original boto3\npackage uses the default 60 second socket timeouts:\n\n.. code:: python\n\n    import boto3\n    # ...\n    lambda = boto3.client('lambda')\n\nIf you wanted to use 15 second timeouts instead, you can simply switch\nto the fleece wrappers as follows:\n\n.. code:: python\n\n    from fleece import boto3\n    boto3.set_default_timeout(15)\n    # ...\n    lambda = boto3.client('lambda')\n\nrequests wrappers\n-----------------\n\nThis project also includes a wrapper for the requests package. When\nusing ``fleece.requests``, convenient access to set timeouts and retries\nis provided.\n\nThe high-level request functions such as ``requests.get()`` and\n``requests.post()`` accept the following arguments:\n\n-  ``timeout``: a network timeout, or a tuple containing the connection\n   and\n   read timeouts, in seconds. Note that this is functionality that\n   exists in the requests package.\n-  ``retries``: a retry mechanism to use with this request. This\n   argument can be\n   of several types: if it is ``None``, then the default retry\n   mechanism installed by the ``set_default_retries`` function is used;\n   if it is an integer, it is the number of retries to use; if it is\n   a dictionary, it must have the arguments to a urllib3 ``Retry``\n   instance. Alternatively, this argument can be a Retry instance as\n   well.\n\nThe ``Session`` class is also wrapped. A session instance from this\nmodule also accepts the two arguments above, and passes them on to any\nrequests it issues.\n\nFinally, it is also possible to install global timeout and retry\ndefaults that are used for any requests that don't specify them\nexplicitly. This enables existing code to take advantage of retries and\ntimeouts after changing the imports to point to this wrapped version of\nrequests. Below is an example that sets global timeouts and retries:\n\n.. code:: python\n\n    from fleece import requests\n\n    # 15 second timeout\n    requests.set_default_timeout(15)\n\n    # 5 retries with exponential backoff, also retry 429 and 503 responses\n    requests.set_default_retries(total=5, backoff_factor=1,\n                                 status_forcelist=[429, 503])\n\n    # the defaults above apply to any regular requests, no need to make\n    # changes to existing code.\n    r = requests.get('https://...')\n\n    # a request can override the defaults if desired\n    r = requests.put('https://...', timeout=25, retries=2)\n\n    # sessions are also supported\n    with requests.Session() as session:\n        session.get('https://...')\n\nX-Ray integration\n-----------------\n\nThis project also bridges the gap of missing Python support in the `AWS\nX-Ray <https://aws.amazon.com/xray/>`__ `Lambda\nintegration <http://docs.aws.amazon.com/xray/latest/devguide/xray-services-lambda.html>`__.\n\nPrerequisites\n~~~~~~~~~~~~~\n\n#. Make sure you add the following permissions to the Lambda execution\n   role of your function: ``xray:PutTraceSegments`` and\n   ``xray:PutTelemetryRecords``.\n#. Enable active tracing under Advanced settings on the Configuration\n   tab of your Lambda function in the AWS Console (or using the\n   ```update_function_configuration`` API\n   call <http://boto3.readthedocs.io/en/latest/reference/services/lambda.html#Lambda.Client.update_function_configuration>`__).\n\nFeatures\n~~~~~~~~\n\nYou can mark any function or method for tracing by using the\n``@trace_xray_subsegment`` decorator. You can apply the decorator to any\nnumber of functions and methods, the resulting trace will be properly\nnested. You have to decorate all the methods you want traced (e.g. if\nyou decorate your handler function only, no other functions will be\ntraced that it calls).\n\nThis module also provides wrappers for ``boto`` and ``requests`` so that\nany AWS API call, or HTTP request will be automatically traced by X-Ray,\nbut you have to explicitly allow this behavior by calling\n``monkey_patch_botocore_for_xray`` and/or\n``monkey_patch_requests_for_xray``. The best place to do this would be\nthe main handler module where the Lambda entry point is defined.\n\nA quick example (``handler.py``)\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n.. code:: python\n\n    from fleece import boto3\n    from fleece.xray import (monkey_patch_botocore_for_xray,\n                             trace_xray_subsegment)\n\n    monkey_patch_botocore_for_xray()\n\n\n    @trace_xray_subsegment()\n    def lambda_handler(event, context):\n        return get_user()\n\n\n    def get_user():\n        # This function doesn't have to be decorated, because the API call to IAM\n        # will be traced thanks to the monkey-patching.\n        iam = boto3.client('iam')\n        return iam.get_user()\n\n**Note:** the monkey-patched tracing will also work with the wrappers\ndescribed above.\n\nConnexion integration\n---------------------\n\nSummary about what `Connexion <https://github.com/zalando/connexion>`__\nexactly is (from their project page):\n\n    Connexion is a framework on top of\n    `Flask <http://flask.pocoo.org/>`__ that automagically handles HTTP\n    requests based on `OpenAPI 2.0\n    Specification <https://github.com/OAI/OpenAPI-Specification/blob/master/versions/2.0.md>`__\n    (formerly known as Swagger Spec) of your API described in `YAML\n    format <https://github.com/OAI/OpenAPI-Specification/blob/master/versions/2.0.md#format>`__.\n    Connexion allows you to write a Swagger specification, then maps the\n    endpoints to your Python functions; this makes it unique, as many\n    tools generate the specification based on your Python code. You can\n    describe your REST API in as much detail as you want; then Connexion\n    guarantees that it will work as you specified.\n\nIt's the perfect glue between your API Gateway API specification and\nyour Lambda function. Fleece makes it very easy to use Connexion:\n\n.. code:: python\n\n    from fleece.connexion import call_api\n    from fleece.log import get_logger\n\n    logger = get_logger(__name__)\n\n\n    def lambda_handler(event, context):\n        return call_api(event, 'myapi', 'swagger.yml', logger)\n\nYou just have to make sure that the ``swagger.yml`` file is included in\nthe Lambda bundle. For the API Gateway integration, we assume the\n`request template defined by\nyoke <https://github.com/rackerlabs/yoke/blob/master/yoke/templates.py#L60-L132>`__\nfor now.\n\nUsing this integration has the added benefit of being able to run your\nAPI locally, by adding something like this to your Lambda handler:\n\n.. code:: python\n\n    from fleece.connexion import get_connexion_app\n\n    [...]\n\n    if __name__ == '__main__':\n        app = get_connexion_app('myapi', 'swagger.yml')\n        app.run(8080)\n\n\n",
+    "description": "UNKNOWN\n\n\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -23,18 +23,21 @@
       "last_week": 0
     },
     "home_page": "https://github.com/racker/fleece",
-    "keywords": "fleece,lambda,34dd90cf",
+    "keywords": "fleece,lambda,607b0511",
     "license": "Apache License, Version 2.0",
     "maintainer": "",
     "maintainer_email": "",
     "name": "fleece",
     "platform": "",
     "project_url": "https://pypi.org/project/fleece/",
-    "release_url": "https://pypi.org/project/fleece/0.14.0/",
+    "release_url": "https://pypi.org/project/fleece/0.15.0/",
     "requires_dist": [
+      "Werkzeug (==0.12.2); extra == 'wsgi'",
       "Werkzeug (==0.12.2); extra == 'connexion'",
       "Flask (==0.12.2); extra == 'connexion'",
       "connexion (==1.1.9); extra == 'connexion'",
+      "PyYAML (>=3.12); extra == 'cli'",
+      "docker (==2.5.1); extra == 'cli'",
       "wrapt (>=1.10.10)",
       "boto3 (>=1.0.0)",
       "requests (>=2.9.1)",
@@ -42,7 +45,7 @@
     ],
     "requires_python": "",
     "summary": "Wrap the lamb...da",
-    "version": "0.14.0"
+    "version": "0.15.0"
   },
   "releases": {
     "0.0.1": [
@@ -52,7 +55,7 @@
           "md5": "6d1b5a8d4163d127e5bc8c99e0890b4f",
           "sha256": "ffcc65aad1f145876d686d7c383be3cc351937f0dc010c1d2cb71e1b0c808f4e"
         },
-        "downloads": 356,
+        "downloads": -1,
         "filename": "fleece-0.0.1-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "6d1b5a8d4163d127e5bc8c99e0890b4f",
@@ -68,7 +71,7 @@
           "md5": "ee3cf74269cd3b3aa8b60f1fa7131c38",
           "sha256": "5ae1986807edcb7e51d4d19a15c45feb26e04618e28089bbcebd66f98e1df55e"
         },
-        "downloads": 298,
+        "downloads": -1,
         "filename": "fleece-0.0.1.tar.gz",
         "has_sig": false,
         "md5_digest": "ee3cf74269cd3b3aa8b60f1fa7131c38",
@@ -86,7 +89,7 @@
           "md5": "ff3bef15dcad64b5eb88f4d39df02be7",
           "sha256": "ed0986c50a1ca988320ddaa00c19f6c4123b095759958cd573a215a03bd8602d"
         },
-        "downloads": 129,
+        "downloads": -1,
         "filename": "fleece-0.1.0-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "ff3bef15dcad64b5eb88f4d39df02be7",
@@ -102,7 +105,7 @@
           "md5": "4e46f102b19d6b55d9ce641c6907ea7c",
           "sha256": "e8fe2ef85d1fd80f5d73cf7f3695918c81292b9073328d9f1e529852022a1665"
         },
-        "downloads": 132,
+        "downloads": -1,
         "filename": "fleece-0.1.0.tar.gz",
         "has_sig": false,
         "md5_digest": "4e46f102b19d6b55d9ce641c6907ea7c",
@@ -120,7 +123,7 @@
           "md5": "36c04c5e5f3c2fcbb7a7ed2b206800dc",
           "sha256": "6d45ec3441c7edc6b14406d47ebf6a6f7351893e66061bbead9c5ee15c3d0875"
         },
-        "downloads": 126,
+        "downloads": -1,
         "filename": "fleece-0.1.1-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "36c04c5e5f3c2fcbb7a7ed2b206800dc",
@@ -136,7 +139,7 @@
           "md5": "deee2fd9a04bcbdfba8e062510b8cfa3",
           "sha256": "6e7a5e6604a65791ef1b621a60b9703560c6776ad7888b3152f40f45ef80a35d"
         },
-        "downloads": 148,
+        "downloads": -1,
         "filename": "fleece-0.1.1.tar.gz",
         "has_sig": false,
         "md5_digest": "deee2fd9a04bcbdfba8e062510b8cfa3",
@@ -154,7 +157,7 @@
           "md5": "48afbc218c55460f502dca808feedbad",
           "sha256": "1d9c6b74c86429a8c6b3853c14ee0f319fc39267ea958050a422b27821ed1ad6"
         },
-        "downloads": 146,
+        "downloads": -1,
         "filename": "fleece-0.1.2-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "48afbc218c55460f502dca808feedbad",
@@ -170,7 +173,7 @@
           "md5": "3e2dc2a39d21336c78b691ebad0674b8",
           "sha256": "8c0aee1a33aa7a3f53dd153d284be61716a5eaf336832b328bc003ede5a2dc4e"
         },
-        "downloads": 183,
+        "downloads": -1,
         "filename": "fleece-0.1.2.tar.gz",
         "has_sig": false,
         "md5_digest": "3e2dc2a39d21336c78b691ebad0674b8",
@@ -188,7 +191,7 @@
           "md5": "e1efc454bbcae6e3ea98ebe986a61887",
           "sha256": "3db6644918beb29d6b6f8340861230888a45af2bea045f282b04462a1c1a2bc7"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "fleece-0.10.0.tar.gz",
         "has_sig": false,
         "md5_digest": "e1efc454bbcae6e3ea98ebe986a61887",
@@ -206,7 +209,7 @@
           "md5": "4184b6b3e5e86f345f0ffb12e98794af",
           "sha256": "22889184bccd41742fa636a89433691a11ac4fc4d187aa253b260d11ae0887a4"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "fleece-0.10.1.tar.gz",
         "has_sig": false,
         "md5_digest": "4184b6b3e5e86f345f0ffb12e98794af",
@@ -224,7 +227,7 @@
           "md5": "56cde47c3c03006bbc93bfa2ce45b22e",
           "sha256": "79f90349bee10778a3a744d881e7017778df3170cd872cc85dc73d1f078bbe72"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "fleece-0.11.0.tar.gz",
         "has_sig": false,
         "md5_digest": "56cde47c3c03006bbc93bfa2ce45b22e",
@@ -242,7 +245,7 @@
           "md5": "690f8e4aed221e80a9ac63b40bbdef8a",
           "sha256": "6bf7c6df0407094603ac2e1d493e9074057eae12cf5cba69aaf63e3d03339d48"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "fleece-0.11.1.tar.gz",
         "has_sig": false,
         "md5_digest": "690f8e4aed221e80a9ac63b40bbdef8a",
@@ -260,7 +263,7 @@
           "md5": "c5ffbec6497a82fb06552ff98347fe97",
           "sha256": "18d2b0fb6097c78225e439710c5a50018e602277818870f867a3f69ed9bcbf2a"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "fleece-0.11.2.tar.gz",
         "has_sig": false,
         "md5_digest": "c5ffbec6497a82fb06552ff98347fe97",
@@ -278,7 +281,7 @@
           "md5": "7d214331efc4510d6665d9f49737d014",
           "sha256": "79f4117f1cb7d99dcea89e3ed97f4062fdc9ed5d407e5b087c9d220c36058597"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "fleece-0.11.3.tar.gz",
         "has_sig": false,
         "md5_digest": "7d214331efc4510d6665d9f49737d014",
@@ -296,7 +299,7 @@
           "md5": "f0788cd04d8318fc930d4808b8a4f910",
           "sha256": "5ff8595f26c84b4b4b74edec1ea5a5f4a6a7231bf47168d27dac731e7c083b7f"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "fleece-0.11.4-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "f0788cd04d8318fc930d4808b8a4f910",
@@ -312,7 +315,7 @@
           "md5": "46f02ae41a30eec408eedf682b3e51e4",
           "sha256": "94c07b4100613933c5992603569469e62a32a0c44cddb40fb4612e4d21eb12ed"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "fleece-0.11.4.tar.gz",
         "has_sig": false,
         "md5_digest": "46f02ae41a30eec408eedf682b3e51e4",
@@ -330,7 +333,7 @@
           "md5": "b2a3909380e14f78a0793141ae6a58f9",
           "sha256": "29bc317367b0e039451d6ae4e4cdfccf3161f32e4f2373a852a3a7436b3b6b62"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "fleece-0.11.5-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "b2a3909380e14f78a0793141ae6a58f9",
@@ -346,7 +349,7 @@
           "md5": "3f8a1e98271e27f7530372e2429d343a",
           "sha256": "b28a55c72aada0804fde402bb88d81bd95487a0365760f96e583e8f536d07210"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "fleece-0.11.5.tar.gz",
         "has_sig": false,
         "md5_digest": "3f8a1e98271e27f7530372e2429d343a",
@@ -364,7 +367,7 @@
           "md5": "a8c858d6f51ed5fffa3c653c0660caf8",
           "sha256": "9a3876721acf380da98520c31b7e32bbe4255accc5561fbab5e695e931d96a39"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "fleece-0.11.6-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "a8c858d6f51ed5fffa3c653c0660caf8",
@@ -380,7 +383,7 @@
           "md5": "79d85b7700132476f5bae3023bb9c25f",
           "sha256": "7040143a13855ea6c714dcad4b825634bcce3c0af0b8654274ede3c93a1b6cd1"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "fleece-0.11.6.tar.gz",
         "has_sig": false,
         "md5_digest": "79d85b7700132476f5bae3023bb9c25f",
@@ -398,7 +401,7 @@
           "md5": "d13352c947f52a3d88adb73351c5331d",
           "sha256": "b6ebe5d46422c051948a4536eb3f281512b63293555ace48b1368472b8e23741"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "fleece-0.12.0-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "d13352c947f52a3d88adb73351c5331d",
@@ -414,7 +417,7 @@
           "md5": "dc391c7197a27721d5fe10cc10962461",
           "sha256": "86312e4619903d901bb270e2acf31e81fd2ffcab4175b1d011b9e50a59787eed"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "fleece-0.12.0.tar.gz",
         "has_sig": false,
         "md5_digest": "dc391c7197a27721d5fe10cc10962461",
@@ -432,7 +435,7 @@
           "md5": "fff42fadc521fe462ffedb515e50c2df",
           "sha256": "20103336581eea570aa6e34a9d03d4ac5de860ceac93bb0815c87a28d8c08ed4"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "fleece-0.12.1-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "fff42fadc521fe462ffedb515e50c2df",
@@ -448,7 +451,7 @@
           "md5": "70d5ac9ad9a3df069ecc191261a4781b",
           "sha256": "db63ac433ce6544bf12b318cda28e89199ee4daae525bcd90bd355510136f5ec"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "fleece-0.12.1.tar.gz",
         "has_sig": false,
         "md5_digest": "70d5ac9ad9a3df069ecc191261a4781b",
@@ -466,7 +469,7 @@
           "md5": "82d724806ceabe0b91d7b314a446c68f",
           "sha256": "e1e26c93e574fb02fe6fd72aab2ba08b71146b873e45c647c4a30f43ecf54c96"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "fleece-0.12.2.tar.gz",
         "has_sig": false,
         "md5_digest": "82d724806ceabe0b91d7b314a446c68f",
@@ -484,7 +487,7 @@
           "md5": "18e44d228c6909cda8ebf8e309a6e6ea",
           "sha256": "47c65221d7da3f1e943aa20eeaaa4153063012e2e5366070b8bb61d1a2669fe9"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "fleece-0.13.0.tar.gz",
         "has_sig": false,
         "md5_digest": "18e44d228c6909cda8ebf8e309a6e6ea",
@@ -502,7 +505,7 @@
           "md5": "2921e2ca40dde7441dc2239a4c8f3f2b",
           "sha256": "9bc3662a2dd76e1d4f684ddf6fa89cb8d06214d76225f985186ff9c5eb9a4608"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "fleece-0.14.0-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "2921e2ca40dde7441dc2239a4c8f3f2b",
@@ -518,7 +521,7 @@
           "md5": "f0c1ed231cf1262482717ac949255d04",
           "sha256": "c45875cf4a9ef32e6bc17b386a93015992cba509dbec9a85515af97288425d9d"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "fleece-0.14.0.tar.gz",
         "has_sig": false,
         "md5_digest": "f0c1ed231cf1262482717ac949255d04",
@@ -529,6 +532,40 @@
         "url": "https://files.pythonhosted.org/packages/8f/6e/716d94879a17499a42062ec61e7e0cdad92de34d562a1a23e902a0a3ce4c/fleece-0.14.0.tar.gz"
       }
     ],
+    "0.15.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "76d63b8cb1b01ab6b894a21635659e52",
+          "sha256": "0d4493ce492f4017e3f341738f8ccc7c936b927fc0e2ccf61855f612dfeff9a1"
+        },
+        "downloads": -1,
+        "filename": "fleece-0.15.0-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "76d63b8cb1b01ab6b894a21635659e52",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 33750,
+        "upload_time": "2017-11-07T16:22:58",
+        "url": "https://files.pythonhosted.org/packages/b5/12/7b80a92a6dba30dd55d14cde5dcce82e1d9cd28415443c18dba4b041ae02/fleece-0.15.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "cd3fb9e29dbdab9af4f97cac4a1b6166",
+          "sha256": "2ae63954387a3e7186e31e1659bae9b6df347339c66cafd1c79ee502c685735c"
+        },
+        "downloads": -1,
+        "filename": "fleece-0.15.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "cd3fb9e29dbdab9af4f97cac4a1b6166",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 30375,
+        "upload_time": "2017-11-07T16:22:59",
+        "url": "https://files.pythonhosted.org/packages/a6/4c/285ae2242e786ddd3130679125b54adaa358deb61aabe9373e4a56200961/fleece-0.15.0.tar.gz"
+      }
+    ],
     "0.2.0": [
       {
         "comment_text": "",
@@ -536,7 +573,7 @@
           "md5": "413c0cfb67db098536efe23f184df6e9",
           "sha256": "1f52073fb762c4e9ad4715b69772c3c8d37dbe1ab72bbadfd69e465dd04ef5ed"
         },
-        "downloads": 130,
+        "downloads": -1,
         "filename": "fleece-0.2.0-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "413c0cfb67db098536efe23f184df6e9",
@@ -552,7 +589,7 @@
           "md5": "04dc5fe1e1047542d47d48de89c05a9a",
           "sha256": "9b2d72c5d582bd1b5a056c634d9f00abf58f0b90267966c3ba50c35106dba25e"
         },
-        "downloads": 136,
+        "downloads": -1,
         "filename": "fleece-0.2.0.tar.gz",
         "has_sig": false,
         "md5_digest": "04dc5fe1e1047542d47d48de89c05a9a",
@@ -570,7 +607,7 @@
           "md5": "b335a0ee971446d7a4bf1abd90655a93",
           "sha256": "fc1e0842fc8121fa9fdfa1cec5a0e56805e4fa5062b18c4eb96c5654a9017c97"
         },
-        "downloads": 134,
+        "downloads": -1,
         "filename": "fleece-0.3.0-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "b335a0ee971446d7a4bf1abd90655a93",
@@ -586,7 +623,7 @@
           "md5": "c3fe8dc560682bba0e26b080e5c72836",
           "sha256": "82c72d0bcad37eaf46fad5388683682c22c73a9fa5c6eb305ba92f22956662ab"
         },
-        "downloads": 140,
+        "downloads": -1,
         "filename": "fleece-0.3.0.tar.gz",
         "has_sig": false,
         "md5_digest": "c3fe8dc560682bba0e26b080e5c72836",
@@ -604,7 +641,7 @@
           "md5": "43e05bf4b952cb6166faf134762946ee",
           "sha256": "cec3a55b13dfa67548488b5cbb0e6649f12339743d00c7a14aa4cb84fa8b7630"
         },
-        "downloads": 137,
+        "downloads": -1,
         "filename": "fleece-0.4.0-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "43e05bf4b952cb6166faf134762946ee",
@@ -620,7 +657,7 @@
           "md5": "5bd14f0d10a72f76e87ad4a44af6f07b",
           "sha256": "1faf8ccccab294e2210a0b2a8f42cf3a196622f98b91d5b1545000b487fec092"
         },
-        "downloads": 152,
+        "downloads": -1,
         "filename": "fleece-0.4.0.tar.gz",
         "has_sig": false,
         "md5_digest": "5bd14f0d10a72f76e87ad4a44af6f07b",
@@ -638,7 +675,7 @@
           "md5": "7ad7e02b1087ffc465e051b3c5a95c74",
           "sha256": "f6ee3172b0bbc2b98ab8e8ecbbdfd7cdf2887f31e5354ce41c9b80d10df0867b"
         },
-        "downloads": 138,
+        "downloads": -1,
         "filename": "fleece-0.4.1-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "7ad7e02b1087ffc465e051b3c5a95c74",
@@ -654,7 +691,7 @@
           "md5": "d6935f969eadf5260ea479617e25f99c",
           "sha256": "5a8301be7de409433f1c83b8bb25f466fd2ddb884b5aadaee53905b37fa4d109"
         },
-        "downloads": 157,
+        "downloads": -1,
         "filename": "fleece-0.4.1.tar.gz",
         "has_sig": false,
         "md5_digest": "d6935f969eadf5260ea479617e25f99c",
@@ -672,7 +709,7 @@
           "md5": "573b9c4ecc087cc0cac14e3f532ad116",
           "sha256": "94ebfd344257b4810f9264e95243cea7e9184adb57c9af08fd663285e8d530fd"
         },
-        "downloads": 822,
+        "downloads": -1,
         "filename": "fleece-0.4.2-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "573b9c4ecc087cc0cac14e3f532ad116",
@@ -688,7 +725,7 @@
           "md5": "11387c61b8e32698f6572e8449a007ea",
           "sha256": "cff68158c0f85bb6a579e0413197ea11e6984b48d34ed9244dd3907de4a24d3d"
         },
-        "downloads": 213,
+        "downloads": -1,
         "filename": "fleece-0.4.2.tar.gz",
         "has_sig": false,
         "md5_digest": "11387c61b8e32698f6572e8449a007ea",
@@ -706,7 +743,7 @@
           "md5": "b1914144cb4f36edcd790560c32bb582",
           "sha256": "f5587a627c8b1efc867d63043b0e62c8a6352146708fe46f822a257638201720"
         },
-        "downloads": 174,
+        "downloads": -1,
         "filename": "fleece-0.4.3-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "b1914144cb4f36edcd790560c32bb582",
@@ -722,7 +759,7 @@
           "md5": "acf4fa094586a9afd16f5dc8eeab664e",
           "sha256": "592abcbaa518fd81c3544eb5502a72db4ecf0e02980cc426bfbf8ab3649d6b67"
         },
-        "downloads": 136,
+        "downloads": -1,
         "filename": "fleece-0.4.3.tar.gz",
         "has_sig": false,
         "md5_digest": "acf4fa094586a9afd16f5dc8eeab664e",
@@ -740,7 +777,7 @@
           "md5": "5b2ee8aa1390dfda863536e27842c57f",
           "sha256": "5bf69cf7769bf276dec1494cf982e62b9d2989dc784999113569b3ab37cf4050"
         },
-        "downloads": 291,
+        "downloads": -1,
         "filename": "fleece-0.4.4-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "5b2ee8aa1390dfda863536e27842c57f",
@@ -756,7 +793,7 @@
           "md5": "00d9fc28e1de537aa85172504877eb95",
           "sha256": "0563dac5a4b25f4d533ef9de1d04ad32b48d2e8a38a759f43aea2c3857176a76"
         },
-        "downloads": 154,
+        "downloads": -1,
         "filename": "fleece-0.4.4.tar.gz",
         "has_sig": false,
         "md5_digest": "00d9fc28e1de537aa85172504877eb95",
@@ -774,7 +811,7 @@
           "md5": "5f047f7c6dbcd77f4d68b0883074b0f9",
           "sha256": "3a12d3cbddee0dbeccb6e5172725fa181d8931676dad7b1982709ed909054099"
         },
-        "downloads": 1943,
+        "downloads": -1,
         "filename": "fleece-0.4.5-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "5f047f7c6dbcd77f4d68b0883074b0f9",
@@ -790,7 +827,7 @@
           "md5": "565982f555c96e53ac4ebdba038d4cb6",
           "sha256": "4fc60e72fba6526c52ae62804448200d8567b293d6bc103e8c3e01a18a8e679d"
         },
-        "downloads": 167,
+        "downloads": -1,
         "filename": "fleece-0.4.5.tar.gz",
         "has_sig": false,
         "md5_digest": "565982f555c96e53ac4ebdba038d4cb6",
@@ -808,7 +845,7 @@
           "md5": "000bb629760fb046af2c3e7099337cd2",
           "sha256": "eed0df35d54988a05b6e49c39b8b0509b6e0d616ddfac75aa6a962e412010205"
         },
-        "downloads": 651,
+        "downloads": -1,
         "filename": "fleece-0.5.0.tar.gz",
         "has_sig": false,
         "md5_digest": "000bb629760fb046af2c3e7099337cd2",
@@ -826,7 +863,7 @@
           "md5": "38d09b92e677f396075d0685dd40ba6f",
           "sha256": "1efca0daf7f6e8299bf9692f78fdfdf50f8f9131cb6dee13eab241788eaa8b26"
         },
-        "downloads": 396,
+        "downloads": -1,
         "filename": "fleece-0.5.0rc1.tar.gz",
         "has_sig": false,
         "md5_digest": "38d09b92e677f396075d0685dd40ba6f",
@@ -844,7 +881,7 @@
           "md5": "4d5ca6ac26fe6952156aa23643cc88d0",
           "sha256": "66697f3f3c06d97d6deeb61debd967907895155ae6f7839a53d6b93f26ace449"
         },
-        "downloads": 344,
+        "downloads": -1,
         "filename": "fleece-0.6.0.tar.gz",
         "has_sig": false,
         "md5_digest": "4d5ca6ac26fe6952156aa23643cc88d0",
@@ -862,7 +899,7 @@
           "md5": "e988869c8b3bcc920f2a61df085e4a7d",
           "sha256": "f3d33dc83ec3900965f69ae80d622e963d16fe2463c5ef5f68324c585f34d8cd"
         },
-        "downloads": 276,
+        "downloads": -1,
         "filename": "fleece-0.7.0.tar.gz",
         "has_sig": false,
         "md5_digest": "e988869c8b3bcc920f2a61df085e4a7d",
@@ -880,7 +917,7 @@
           "md5": "f088853e01addff1309be0e19db32918",
           "sha256": "960684bedf9b7fd517954d54255119b34e5c87bac4a8ea133ce71aefdf102a07"
         },
-        "downloads": 83,
+        "downloads": -1,
         "filename": "fleece-0.8.0.tar.gz",
         "has_sig": false,
         "md5_digest": "f088853e01addff1309be0e19db32918",
@@ -898,7 +935,7 @@
           "md5": "f8e19811f9b64f82de62265958195ac2",
           "sha256": "d75c120cfa2b723111ec227cec36440359b9d8a897d4845f641c62efbe4c1231"
         },
-        "downloads": 17,
+        "downloads": -1,
         "filename": "fleece-0.9.0-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "f8e19811f9b64f82de62265958195ac2",
@@ -914,7 +951,7 @@
           "md5": "7dcd008447f778a63c6a5c4038c17af9",
           "sha256": "dbbce606d832a87f309abb84a0f618a1c3cb6cd7f4cc51952850695fa6028b2a"
         },
-        "downloads": 10,
+        "downloads": -1,
         "filename": "fleece-0.9.0.tar.gz",
         "has_sig": false,
         "md5_digest": "7dcd008447f778a63c6a5c4038c17af9",
@@ -932,7 +969,7 @@
           "md5": "39425321a299ec7877fbcfd3a91140a0",
           "sha256": "68c86f964c6de77a533ca96c5c953ca45fd0b1a8495f3acdf6e15c12c09e6675"
         },
-        "downloads": 19,
+        "downloads": -1,
         "filename": "fleece-0.9.1-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "39425321a299ec7877fbcfd3a91140a0",
@@ -948,7 +985,7 @@
           "md5": "0b00f0cf159e7bf314fb428a1f4af609",
           "sha256": "01dfeb121bca840ee971e178465c527267af7318f287a72f390088893f9b12cd"
         },
-        "downloads": 16,
+        "downloads": -1,
         "filename": "fleece-0.9.1.tar.gz",
         "has_sig": false,
         "md5_digest": "0b00f0cf159e7bf314fb428a1f4af609",
@@ -964,34 +1001,34 @@
     {
       "comment_text": "",
       "digests": {
-        "md5": "2921e2ca40dde7441dc2239a4c8f3f2b",
-        "sha256": "9bc3662a2dd76e1d4f684ddf6fa89cb8d06214d76225f985186ff9c5eb9a4608"
+        "md5": "76d63b8cb1b01ab6b894a21635659e52",
+        "sha256": "0d4493ce492f4017e3f341738f8ccc7c936b927fc0e2ccf61855f612dfeff9a1"
       },
-      "downloads": 0,
-      "filename": "fleece-0.14.0-py2.py3-none-any.whl",
+      "downloads": -1,
+      "filename": "fleece-0.15.0-py2.py3-none-any.whl",
       "has_sig": false,
-      "md5_digest": "2921e2ca40dde7441dc2239a4c8f3f2b",
+      "md5_digest": "76d63b8cb1b01ab6b894a21635659e52",
       "packagetype": "bdist_wheel",
       "python_version": "py2.py3",
-      "size": 29772,
-      "upload_time": "2017-09-22T16:51:29",
-      "url": "https://files.pythonhosted.org/packages/73/95/cfa7335647764a9019b9038faaf1e1d11b12c28dacf92a9757f16aa63588/fleece-0.14.0-py2.py3-none-any.whl"
+      "size": 33750,
+      "upload_time": "2017-11-07T16:22:58",
+      "url": "https://files.pythonhosted.org/packages/b5/12/7b80a92a6dba30dd55d14cde5dcce82e1d9cd28415443c18dba4b041ae02/fleece-0.15.0-py2.py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "f0c1ed231cf1262482717ac949255d04",
-        "sha256": "c45875cf4a9ef32e6bc17b386a93015992cba509dbec9a85515af97288425d9d"
+        "md5": "cd3fb9e29dbdab9af4f97cac4a1b6166",
+        "sha256": "2ae63954387a3e7186e31e1659bae9b6df347339c66cafd1c79ee502c685735c"
       },
-      "downloads": 0,
-      "filename": "fleece-0.14.0.tar.gz",
+      "downloads": -1,
+      "filename": "fleece-0.15.0.tar.gz",
       "has_sig": false,
-      "md5_digest": "f0c1ed231cf1262482717ac949255d04",
+      "md5_digest": "cd3fb9e29dbdab9af4f97cac4a1b6166",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 22414,
-      "upload_time": "2017-09-22T16:51:36",
-      "url": "https://files.pythonhosted.org/packages/8f/6e/716d94879a17499a42062ec61e7e0cdad92de34d562a1a23e902a0a3ce4c/fleece-0.14.0.tar.gz"
+      "size": 30375,
+      "upload_time": "2017-11-07T16:22:59",
+      "url": "https://files.pythonhosted.org/packages/a6/4c/285ae2242e786ddd3130679125b54adaa358deb61aabe9373e4a56200961/fleece-0.15.0.tar.gz"
     }
   ]
 }

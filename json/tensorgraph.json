@@ -4,9 +4,9 @@
     "author_email": "hyciswu@gmail.com",
     "bugtrack_url": null,
     "classifiers": [],
-    "description": "# TensorGraph\nTensorGraph is a framework for building any imaginable models based on TensorFlow.\n\nAs deep learning becomes more and more common and the architectures becoming more\nand more complicated, it seems that we need some easy to use framework to quickly\nbuild these models and that's why TensorGraph is born. It's a very simple and easy\nto use framework, but it allows you to build all kinds of imaginable models.\n\n-----\n### Install\n\nFirst you need to install [tensorflow](https://www.tensorflow.org/versions/r0.9/get_started/os_setup.html)\n\nTo install tensorgraph simply do via pip\n```bash\nsudo pip install tensorgraph\n```\nor for bleeding edge version do\n```bash\nsudo pip install --upgrade git+https://github.com/hycis/TensorGraph.git@master\n```\nor simply clone and add to `PYTHONPATH`.\n```bash\ngit clone https://github.com/hycis/TensorGraph.git\nexport PYTHONPATH=/path/to/TensorGraph:$PYTHONPATH\n```\nin order for the install to persist via export `PYTHONPATH`. Add `PYTHONPATH=/path/to/TensorGraph:$PYTHONPATH` to your `.bashrc` for linux or\n`.bash_profile` for mac. While this method works, you will have to ensure that\nall the dependencies in [setup.py](setup.py) are installed.\n\n-----\n### How TensorGraph Works?\nIn TensorGraph, we defined three types of nodes\n\n1. StartNode : for inputs to the graph\n2. HiddenNode : for putting sequential layers inside\n3. EndNode : for getting outputs from the model\n\nWe put all the sequential layers into a `HiddenNode`, and connect the hidden nodes\ntogether to build all kinds of architectures without worrying about how to design\nthe forward propagation. We let the graph engine sort out all the forward propagations\nfor you, so that you just focus on designing the architecture. The graph always\nstarts with `StartNode` and ends with `EndNode`. Below shows an\n[example](examples/example.py) of building a tensor graph.\n\n-----\n### Graph Example\n\n<img src=\"draw/graph.png\" height=\"250\">\n\nFirst define the `StartNode` for putting the input placeholder\n```python\ny1_dim = 50\ny2_dim = 100\nbatchsize = 32\nlearning_rate = 0.01\n\ny1 = tf.placeholder('float32', [None, y1_dim])\ny2 = tf.placeholder('float32', [None, y2_dim])\ns1 = StartNode(input_vars=[y1])\ns2 = StartNode(input_vars=[y2])\n```\nThen define the `HiddenNode` for putting the sequential layers in each `HiddenNode`\n```python\nh1 = HiddenNode(prev=[s1, s2],\n                input_merge_mode=Concat(),\n                layers=[Linear(y1_dim+y2_dim, y2_dim), RELU()])\nh2 = HiddenNode(prev=[start2],\n                layers=[Linear(y2_dim, y2_dim), RELU()])\nh3 = HiddenNode(prev=[h1, h2],\n                input_merge_mode=Sum(),\n                layers=[Linear(y2_dim, y1_dim), RELU()])\n```\nThen define the `EndNode`. `EndNode` is used to back-trace the graph to connect\nthe nodes together.\n```python\ne1 = EndNode(prev=[h3])\ne2 = EndNode(prev=[h2])\n```\nFinally build the graph by putting `StartNodes` and `EndNodes` into `Graph`\n```python\ngraph = Graph(start=[s1, s2], end=[e1, e2])\n```\nRun train forward propagation to get symbolic output from train mode. The number\nof outputs from `graph.train_fprop` is the same as the number of `EndNodes` put\ninto `Graph`\n```python\no1, o2 = graph.train_fprop()\n```\nFinally build an optimizer to optimize the objective function\n```python\no1_mse = tf.reduce_mean((y1 - o1)**2)\no2_mse = tf.reduce_mean((y2 - o2)**2)\nmse = o1_mse + o2_mse\noptimizer = tf.train.AdamOptimizer(learning_rate).minimize(mse)\n```\n-----\n### Hierachical Softmax Example\nBelow is another example for building a more powerful [hierachical softmax](examples/hierachical_softmax.py)\nwhereby the lower hierachical softmax layer can be conditioned on all the upper\nhierachical softmax layers.\n\n<img src=\"draw/hsoftmax.png\" height=\"250\">\n\n```python\n## params\nx_dim = 50\ncomponent_dim = 100\nbatchsize = 32\nlearning_rate = 0.01\n\n\nx_ph = tf.placeholder('float32', [None, x_dim])\n# the three hierachical level\ny1_ph = tf.placeholder('float32', [None, component_dim])\ny2_ph = tf.placeholder('float32', [None, component_dim])\ny3_ph = tf.placeholder('float32', [None, component_dim])\n\n# define the graph model structure\nstart = StartNode(input_vars=[x_ph])\n\nh1 = HiddenNode(prev=[start], layers=[Linear(x_dim, component_dim), Softmax()])\nh2 = HiddenNode(prev=[h1], layers=[Linear(component_dim, component_dim), Softmax()])\nh3 = HiddenNode(prev=[h2], layers=[Linear(component_dim, component_dim), Softmax()])\n\n\ne1 = EndNode(prev=[h1], input_merge_mode=Sum())\ne2 = EndNode(prev=[h1, h2], input_merge_mode=Sum())\ne3 = EndNode(prev=[h1, h2, h3], input_merge_mode=Sum())\n\ngraph = Graph(start=[start], end=[e1, e2, e3])\n\no1, o2, o3 = graph.train_fprop()\n\no1_mse = tf.reduce_mean((y1_ph - o1)**2)\no2_mse = tf.reduce_mean((y2_ph - o2)**2)\no3_mse = tf.reduce_mean((y3_ph - o3)**2)\nmse = o1_mse + o2_mse + o3_mse\noptimizer = tf.train.AdamOptimizer(learning_rate).minimize(mse)\n```\n\n-----\n### Transfer Learning Example\nBelow is an example on transfer learning with bi-modality inputs and merge at\nthe middle layer with shared representation, in fact, TensorGraph can be used\nto build any number of modalities for transfer learning.\n\n<img src=\"draw/transferlearn.png\" height=\"250\">\n\n```python\n## params\nx1_dim = 50\nx2_dim = 100\nshared_dim = 200\ny_dim = 100\nbatchsize = 32\nlearning_rate = 0.01\n\n\nx1_ph = tf.placeholder('float32', [None, x1_dim])\nx2_ph = tf.placeholder('float32', [None, x2_dim])\ny_ph = tf.placeholder('float32', [None, y_dim])\n\n# define the graph model structure\ns1 = StartNode(input_vars=[x1_ph])\ns2 = StartNode(input_vars=[x2_ph])\n\nh1 = HiddenNode(prev=[s1], layers=[Linear(x1_dim, shared_dim), RELU()])\nh2 = HiddenNode(prev=[s2], layers=[Linear(x2_dim, shared_dim), RELU()])\nh3 = HiddenNode(prev=[h1,h2], input_merge_mode=Sum(),\n                layers=[Linear(shared_dim, y_dim), Softmax()])\n\ne1 = EndNode(prev=[h3])\n\ngraph = Graph(start=[s1, s2], end=[e1])\no1, = graph.train_fprop()\n\nmse = tf.reduce_mean((y_ph - o1)**2)\noptimizer = tf.train.AdamOptimizer(learning_rate).minimize(mse)\n```\n",
+    "description": "# TensorGraph\nTensorGraph is a framework for building any imaginable models based on TensorFlow.\n\nAs deep learning becomes more and more common and the architectures becoming more\nand more complicated, it seems that we need some easy to use framework to quickly\nbuild these models and that's what TensorGraph is designed for. It's a very simple\nand easy to use framework and allows you to build any imaginable models.\n\n-----\n### Target Audience\nTensorGraph is targeted more at intermediate to advance users who feel keras or\nother packages is having too much restrictions on model building, and someone who\ndon't want to rewrite the standard layers in tensorflow constantly, and someone\nwho want to use some higher level layers to build models quickly without the\nrestrictions of most other deep learning package.\n\n-----\n### Install\n\nFirst you need to install [tensorflow](https://www.tensorflow.org/versions/r0.9/get_started/os_setup.html)\n\nTo install tensorgraph simply do via pip\n```bash\nsudo pip install tensorgraph\n```\nor for bleeding edge version do\n```bash\nsudo pip install --upgrade git+https://github.com/hycis/TensorGraph.git@master\n```\nor simply clone and add to `PYTHONPATH`.\n```bash\ngit clone https://github.com/hycis/TensorGraph.git\nexport PYTHONPATH=/path/to/TensorGraph:$PYTHONPATH\n```\nin order for the install to persist via export `PYTHONPATH`. Add `PYTHONPATH=/path/to/TensorGraph:$PYTHONPATH` to your `.bashrc` for linux or\n`.bash_profile` for mac. While this method works, you will have to ensure that\nall the dependencies in [setup.py](setup.py) are installed.\n\n-----\n### How TensorGraph Works?\nIn TensorGraph, we defined three types of nodes\n\n1. StartNode : for inputs to the graph\n2. HiddenNode : for putting sequential layers inside\n3. EndNode : for getting outputs from the model\n\nWe put all the sequential layers into a `HiddenNode`, and connect the hidden nodes\ntogether to build the architecture that you want. The graph always\nstarts with `StartNode` and ends with `EndNode`. The `StartNode` is where you place\nyour starting point, it can be a `placeholder`, a symbolic output from another graph,\nor data output from `tfrecords`. `EndNode` is where you want to get an output from\nthe graph, where the output can be used to calculate loss or simply just a peek at the\noutputs at that particular layer. Below shows an\n[example](examples/example.py) of building a tensor graph.\n\n-----\n### Graph Example\n\n<img src=\"draw/graph.png\" height=\"250\">\n\nFirst define the `StartNode` for putting the input placeholder\n```python\ny1_dim = 50\ny2_dim = 100\nbatchsize = 32\nlearning_rate = 0.01\n\ny1 = tf.placeholder('float32', [None, y1_dim])\ny2 = tf.placeholder('float32', [None, y2_dim])\ns1 = StartNode(input_vars=[y1])\ns2 = StartNode(input_vars=[y2])\n```\nThen define the `HiddenNode` for putting the sequential layers in each `HiddenNode`\n```python\nh1 = HiddenNode(prev=[s1, s2],\n                input_merge_mode=Concat(),\n                layers=[Linear(y1_dim+y2_dim, y2_dim), RELU()])\nh2 = HiddenNode(prev=[s2],\n                layers=[Linear(y2_dim, y2_dim), RELU()])\nh3 = HiddenNode(prev=[h1, h2],\n                input_merge_mode=Sum(),\n                layers=[Linear(y2_dim, y1_dim), RELU()])\n```\nThen define the `EndNode`. `EndNode` is used to back-trace the graph to connect\nthe nodes together.\n```python\ne1 = EndNode(prev=[h3])\ne2 = EndNode(prev=[h2])\n```\nFinally build the graph by putting `StartNodes` and `EndNodes` into `Graph`\n```python\ngraph = Graph(start=[s1, s2], end=[e1, e2])\n```\nRun train forward propagation to get symbolic output from train mode. The number\nof outputs from `graph.train_fprop` is the same as the number of `EndNodes` put\ninto `Graph`\n```python\no1, o2 = graph.train_fprop()\n```\nFinally build an optimizer to optimize the objective function\n```python\no1_mse = tf.reduce_mean((y1 - o1)**2)\no2_mse = tf.reduce_mean((y2 - o2)**2)\nmse = o1_mse + o2_mse\noptimizer = tf.train.AdamOptimizer(learning_rate).minimize(mse)\n```\n-----\n### Hierachical Softmax Example\nBelow is another example for building a more powerful [hierachical softmax](examples/hierachical_softmax.py)\nwhereby the lower hierachical softmax layer can be conditioned on all the upper\nhierachical softmax layers.\n\n<img src=\"draw/hsoftmax.png\" height=\"250\">\n\n```python\n## params\nx_dim = 50\ncomponent_dim = 100\nbatchsize = 32\nlearning_rate = 0.01\n\n\nx_ph = tf.placeholder('float32', [None, x_dim])\n# the three hierachical level\ny1_ph = tf.placeholder('float32', [None, component_dim])\ny2_ph = tf.placeholder('float32', [None, component_dim])\ny3_ph = tf.placeholder('float32', [None, component_dim])\n\n# define the graph model structure\nstart = StartNode(input_vars=[x_ph])\n\nh1 = HiddenNode(prev=[start], layers=[Linear(x_dim, component_dim), Softmax()])\nh2 = HiddenNode(prev=[h1], layers=[Linear(component_dim, component_dim), Softmax()])\nh3 = HiddenNode(prev=[h2], layers=[Linear(component_dim, component_dim), Softmax()])\n\n\ne1 = EndNode(prev=[h1], input_merge_mode=Sum())\ne2 = EndNode(prev=[h1, h2], input_merge_mode=Sum())\ne3 = EndNode(prev=[h1, h2, h3], input_merge_mode=Sum())\n\ngraph = Graph(start=[start], end=[e1, e2, e3])\n\no1, o2, o3 = graph.train_fprop()\n\no1_mse = tf.reduce_mean((y1_ph - o1)**2)\no2_mse = tf.reduce_mean((y2_ph - o2)**2)\no3_mse = tf.reduce_mean((y3_ph - o3)**2)\nmse = o1_mse + o2_mse + o3_mse\noptimizer = tf.train.AdamOptimizer(learning_rate).minimize(mse)\n```\n\n-----\n### Transfer Learning Example\nBelow is an example on transfer learning with bi-modality inputs and merge at\nthe middle layer with shared representation, in fact, TensorGraph can be used\nto build any number of modalities for transfer learning.\n\n<img src=\"draw/transferlearn.png\" height=\"250\">\n\n```python\n## params\nx1_dim = 50\nx2_dim = 100\nshared_dim = 200\ny_dim = 100\nbatchsize = 32\nlearning_rate = 0.01\n\n\nx1_ph = tf.placeholder('float32', [None, x1_dim])\nx2_ph = tf.placeholder('float32', [None, x2_dim])\ny_ph = tf.placeholder('float32', [None, y_dim])\n\n# define the graph model structure\ns1 = StartNode(input_vars=[x1_ph])\ns2 = StartNode(input_vars=[x2_ph])\n\nh1 = HiddenNode(prev=[s1], layers=[Linear(x1_dim, shared_dim), RELU()])\nh2 = HiddenNode(prev=[s2], layers=[Linear(x2_dim, shared_dim), RELU()])\nh3 = HiddenNode(prev=[h1,h2], input_merge_mode=Sum(),\n                layers=[Linear(shared_dim, y_dim), Softmax()])\n\ne1 = EndNode(prev=[h3])\n\ngraph = Graph(start=[s1, s2], end=[e1])\no1, = graph.train_fprop()\n\nmse = tf.reduce_mean((y_ph - o1)**2)\noptimizer = tf.train.AdamOptimizer(learning_rate).minimize(mse)\n```\n",
     "docs_url": null,
-    "download_url": "https://github.com/hycis/TensorGraph/tarball/3.4.6",
+    "download_url": "https://github.com/hycis/TensorGraph/tarball/3.5.7",
     "downloads": {
       "last_day": 0,
       "last_month": 0,
@@ -20,11 +20,11 @@
     "name": "tensorgraph",
     "platform": "",
     "project_url": "https://pypi.org/project/tensorgraph/",
-    "release_url": "https://pypi.org/project/tensorgraph/3.4.6/",
+    "release_url": "https://pypi.org/project/tensorgraph/3.5.7/",
     "requires_dist": [],
     "requires_python": "",
     "summary": "A high level tensorflow library for building deep learning models",
-    "version": "3.4.6"
+    "version": "3.5.7"
   },
   "releases": {
     "1.4.10": [
@@ -34,7 +34,7 @@
           "md5": "1c4dafae7f264c92c2b8c17ef63c084a",
           "sha256": "103472cdbff7a949bd10ee69797319931671de9151aa8f9ed8133cdad4a6d991"
         },
-        "downloads": 85,
+        "downloads": -1,
         "filename": "tensorgraph-1.4.10.tar.gz",
         "has_sig": false,
         "md5_digest": "1c4dafae7f264c92c2b8c17ef63c084a",
@@ -52,7 +52,7 @@
           "md5": "59add117d647fe9f7139ee0ec9897a94",
           "sha256": "aaaa63c55672fb3b79491d63f2f5bb5f3c6db45b051a78acd5a4431daabcb6d9"
         },
-        "downloads": 107,
+        "downloads": -1,
         "filename": "tensorgraph-1.4.11.tar.gz",
         "has_sig": false,
         "md5_digest": "59add117d647fe9f7139ee0ec9897a94",
@@ -70,7 +70,7 @@
           "md5": "264e3c087a1ed02b5e415b2cd1e0191b",
           "sha256": "5080bf2078111f50c1264aa2f0d8de4cf4d369f928c5ab10367db2a1df1d7134"
         },
-        "downloads": 45,
+        "downloads": -1,
         "filename": "tensorgraph-1.4.12.tar.gz",
         "has_sig": false,
         "md5_digest": "264e3c087a1ed02b5e415b2cd1e0191b",
@@ -88,7 +88,7 @@
           "md5": "9128c0603c9b0db771004f3cac83545d",
           "sha256": "facda448abf1d0a810316f6d9a5cb7fa39330a28f6726dcb5b34d802de616b29"
         },
-        "downloads": 322,
+        "downloads": -1,
         "filename": "tensorgraph-1.4.2.tar.gz",
         "has_sig": false,
         "md5_digest": "9128c0603c9b0db771004f3cac83545d",
@@ -106,7 +106,7 @@
           "md5": "f2a6742aa925365edd6bce3584489491",
           "sha256": "f110089ca03193ea25e7f24426393ed43c98205abd3a010b05aef6c511cfe1e6"
         },
-        "downloads": 162,
+        "downloads": -1,
         "filename": "tensorgraph-1.4.3.tar.gz",
         "has_sig": false,
         "md5_digest": "f2a6742aa925365edd6bce3584489491",
@@ -124,7 +124,7 @@
           "md5": "3d4d3a98602ce3fa61442a129ed5bf5f",
           "sha256": "b16c1fc0585da8f748000551431c6b424cc117563dd807369939d7d1859e04d3"
         },
-        "downloads": 161,
+        "downloads": -1,
         "filename": "tensorgraph-1.4.4.tar.gz",
         "has_sig": false,
         "md5_digest": "3d4d3a98602ce3fa61442a129ed5bf5f",
@@ -142,7 +142,7 @@
           "md5": "a34e8dff21a5a11061f85dac90c1a016",
           "sha256": "be4f03c856b6ad3d70c09afb14015628d0ca69fb99b09b676cca0a9505135b7e"
         },
-        "downloads": 169,
+        "downloads": -1,
         "filename": "tensorgraph-1.4.5.tar.gz",
         "has_sig": false,
         "md5_digest": "a34e8dff21a5a11061f85dac90c1a016",
@@ -160,7 +160,7 @@
           "md5": "d7bd6916b9bad20a3b49274d9df9c415",
           "sha256": "dae3eb78eae67e223451e649f8b08e6aa2a0e71f36c55e70b9e96601196541ed"
         },
-        "downloads": 85,
+        "downloads": -1,
         "filename": "tensorgraph-1.4.6.tar.gz",
         "has_sig": false,
         "md5_digest": "d7bd6916b9bad20a3b49274d9df9c415",
@@ -178,7 +178,7 @@
           "md5": "d9483b407f62faa89a1a4d2fe713c0b9",
           "sha256": "bef2d6e84f18ed04094e6d048598884bbbf627eb5834d21050f7be0203b4cb63"
         },
-        "downloads": 86,
+        "downloads": -1,
         "filename": "tensorgraph-1.4.7.tar.gz",
         "has_sig": false,
         "md5_digest": "d9483b407f62faa89a1a4d2fe713c0b9",
@@ -196,7 +196,7 @@
           "md5": "59f955937c4fd6a643a4eef955e889a3",
           "sha256": "12f2f24da19735e989da5a444d7c5bcd50ccf5473df9ef6807a370946a33b911"
         },
-        "downloads": 86,
+        "downloads": -1,
         "filename": "tensorgraph-1.4.8.tar.gz",
         "has_sig": false,
         "md5_digest": "59f955937c4fd6a643a4eef955e889a3",
@@ -214,7 +214,7 @@
           "md5": "d33b18712b73cdb8c12d7dadb7282b03",
           "sha256": "734b9123ab500a4de6e71cdfe0fec0d361747c2334c7496ecac206a463c973a0"
         },
-        "downloads": 81,
+        "downloads": -1,
         "filename": "tensorgraph-1.4.9.tar.gz",
         "has_sig": false,
         "md5_digest": "d33b18712b73cdb8c12d7dadb7282b03",
@@ -232,7 +232,7 @@
           "md5": "417dc344f3451d3aa473794300f0c63d",
           "sha256": "7db39abef98c20f1925fddc6958cd8cb52c578227d64193eefb295e48c99616b"
         },
-        "downloads": 57,
+        "downloads": -1,
         "filename": "tensorgraph-2.0.0.tar.gz",
         "has_sig": false,
         "md5_digest": "417dc344f3451d3aa473794300f0c63d",
@@ -250,7 +250,7 @@
           "md5": "7a9e5f1a47adea1934e229bde199966e",
           "sha256": "93e56770cd57d6bd4b97066c09eea74704bca148e1937bc977455cc86b145df0"
         },
-        "downloads": 56,
+        "downloads": -1,
         "filename": "tensorgraph-2.1.0.tar.gz",
         "has_sig": false,
         "md5_digest": "7a9e5f1a47adea1934e229bde199966e",
@@ -268,7 +268,7 @@
           "md5": "72f51a7dd152376b35d53f22bceae483",
           "sha256": "5b62f1f857fdf08b28670f4e25b64ca72f50c4a3d4ff67649b8f6fdb6a8595d9"
         },
-        "downloads": 86,
+        "downloads": -1,
         "filename": "tensorgraph-2.1.1.tar.gz",
         "has_sig": false,
         "md5_digest": "72f51a7dd152376b35d53f22bceae483",
@@ -286,7 +286,7 @@
           "md5": "b3e8104df6dc4fda8af357e8ba43086c",
           "sha256": "6d4767b7e962039d2f0033bb69790a97f12655b19b10a77a0744f5cac0755208"
         },
-        "downloads": 229,
+        "downloads": -1,
         "filename": "tensorgraph-2.2.1.tar.gz",
         "has_sig": false,
         "md5_digest": "b3e8104df6dc4fda8af357e8ba43086c",
@@ -304,7 +304,7 @@
           "md5": "5daa19031e80f42cf2723bfaadeb5a5c",
           "sha256": "307f5eec9f01a3a3adc987eb3c46f4cd1ffdbe3883ec400162782948b88c3fd8"
         },
-        "downloads": 236,
+        "downloads": -1,
         "filename": "tensorgraph-2.2.2.tar.gz",
         "has_sig": false,
         "md5_digest": "5daa19031e80f42cf2723bfaadeb5a5c",
@@ -322,7 +322,7 @@
           "md5": "15f3eb35583666c4f86b1d381f2cbbcd",
           "sha256": "1ec365a46cef0fe164cffb9868d4a900e899ea8809839a6b1aa350f1b5558a1d"
         },
-        "downloads": 17,
+        "downloads": -1,
         "filename": "tensorgraph-2.2.3.tar.gz",
         "has_sig": false,
         "md5_digest": "15f3eb35583666c4f86b1d381f2cbbcd",
@@ -340,7 +340,7 @@
           "md5": "d182cc9e869e55e000d2f23dbb521ec7",
           "sha256": "036be87a6c8536fed36ad42afc11350786a0f10e8fdac320406f2bd5d8ba97be"
         },
-        "downloads": 16,
+        "downloads": -1,
         "filename": "tensorgraph-2.3.0.tar.gz",
         "has_sig": false,
         "md5_digest": "d182cc9e869e55e000d2f23dbb521ec7",
@@ -358,7 +358,7 @@
           "md5": "0aee481fecbb4ab846c51e73dfc7365b",
           "sha256": "f3dc76dfc3d2ef81167b0109698fd13eafd1bd8700d503e241ba294725b57752"
         },
-        "downloads": 16,
+        "downloads": -1,
         "filename": "tensorgraph-2.4.0.tar.gz",
         "has_sig": false,
         "md5_digest": "0aee481fecbb4ab846c51e73dfc7365b",
@@ -376,7 +376,7 @@
           "md5": "10821a638e7d14b6bb4f15e1c18ddaa0",
           "sha256": "719a544c63ad7681c00217a92ac41b6101bf20275aef3679b0e052aef525c9b0"
         },
-        "downloads": 16,
+        "downloads": -1,
         "filename": "tensorgraph-2.5.0.tar.gz",
         "has_sig": false,
         "md5_digest": "10821a638e7d14b6bb4f15e1c18ddaa0",
@@ -394,7 +394,7 @@
           "md5": "4e73429c42e442d74114f4033e5644f3",
           "sha256": "930e4154f6113d0991862a56a472ef7257f29e16dc3c40e3a3d4e84fb4815313"
         },
-        "downloads": 19,
+        "downloads": -1,
         "filename": "tensorgraph-2.5.1.tar.gz",
         "has_sig": false,
         "md5_digest": "4e73429c42e442d74114f4033e5644f3",
@@ -412,7 +412,7 @@
           "md5": "15794d12665e40d07e8497813bc30bcc",
           "sha256": "1180c22e53261515f0430c0605d2744e96bf64513976550aa253ba0bed6575d5"
         },
-        "downloads": 18,
+        "downloads": -1,
         "filename": "tensorgraph-2.5.3.tar.gz",
         "has_sig": false,
         "md5_digest": "15794d12665e40d07e8497813bc30bcc",
@@ -430,7 +430,7 @@
           "md5": "7f1afd3d3037d03dc290a54ec9a598cb",
           "sha256": "714299c25cf68202db663e2a3ed40814818fbc0fe78d688a70d505969911c391"
         },
-        "downloads": 17,
+        "downloads": -1,
         "filename": "tensorgraph-3.0.0.tar.gz",
         "has_sig": false,
         "md5_digest": "7f1afd3d3037d03dc290a54ec9a598cb",
@@ -448,7 +448,7 @@
           "md5": "c89fb01fed7b22069b88b3e051b3a9e7",
           "sha256": "84b9e8e3f57c1531d19b95e77b9d10db38b89ac48d96e8ed0cee5975854e90cc"
         },
-        "downloads": 19,
+        "downloads": -1,
         "filename": "tensorgraph-3.0.1.tar.gz",
         "has_sig": false,
         "md5_digest": "c89fb01fed7b22069b88b3e051b3a9e7",
@@ -466,7 +466,7 @@
           "md5": "3d155ae85363fcc7bfb3f3c7a2925a50",
           "sha256": "3fb860404b921337ea2309e7c0770d03700ef7e8170ec480e966aece1db7fa1a"
         },
-        "downloads": 20,
+        "downloads": -1,
         "filename": "tensorgraph-3.0.2.tar.gz",
         "has_sig": false,
         "md5_digest": "3d155ae85363fcc7bfb3f3c7a2925a50",
@@ -484,7 +484,7 @@
           "md5": "a706d7beb8c3f6813d8f5ee69141aca1",
           "sha256": "861bbe6a96d59b9f2355a2deb388af4684f947ee2c319e9686612c54961b9593"
         },
-        "downloads": 120,
+        "downloads": -1,
         "filename": "tensorgraph-3.0.3.tar.gz",
         "has_sig": false,
         "md5_digest": "a706d7beb8c3f6813d8f5ee69141aca1",
@@ -502,7 +502,7 @@
           "md5": "539fdd01aa8f83cdb7df9aa2cdf8750f",
           "sha256": "b61e9f44a800e17dd905453e9790592fcb3e2839ea34bca01ec2605a0c3f09bc"
         },
-        "downloads": 122,
+        "downloads": -1,
         "filename": "tensorgraph-3.0.4.tar.gz",
         "has_sig": false,
         "md5_digest": "539fdd01aa8f83cdb7df9aa2cdf8750f",
@@ -520,7 +520,7 @@
           "md5": "77087d484d2a7ddb11116e7e43c1f6a1",
           "sha256": "20943142c830613c6157daee9c23e00b11ef639958d61eb62733e8accf1bb91b"
         },
-        "downloads": 113,
+        "downloads": -1,
         "filename": "tensorgraph-3.0.5.tar.gz",
         "has_sig": false,
         "md5_digest": "77087d484d2a7ddb11116e7e43c1f6a1",
@@ -538,7 +538,7 @@
           "md5": "aed55a9f8647f188b11a8a1da78d7ad0",
           "sha256": "ff9975fd6033ec0d12851e901714e1d9eaefdc2d8fa236c2c043256d7065c9a8"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "tensorgraph-3.1.5.tar.gz",
         "has_sig": false,
         "md5_digest": "aed55a9f8647f188b11a8a1da78d7ad0",
@@ -556,7 +556,7 @@
           "md5": "fd33169fbd96a44c227f63fc9f91015d",
           "sha256": "78d287346d240b8a609f6d2ffa8d7b3c6b4efddae88995bfaeaa0ff106d37e2b"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "tensorgraph-3.2.5.tar.gz",
         "has_sig": false,
         "md5_digest": "fd33169fbd96a44c227f63fc9f91015d",
@@ -574,7 +574,7 @@
           "md5": "f579ec4473aa0343d2199494edc46964",
           "sha256": "0de9a00ff754132e02346c15d7e7c567f912b3de1b35274c55e6f5b7acd4c00b"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "tensorgraph-3.3.5.tar.gz",
         "has_sig": false,
         "md5_digest": "f579ec4473aa0343d2199494edc46964",
@@ -592,7 +592,7 @@
           "md5": "a4695d771e0e945196ea1a50ec75cffc",
           "sha256": "fd425ab2a86f13484953230d5df53dff4bc87d7af6a8de414dfa30e5a49f90a9"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "tensorgraph-3.4.5.tar.gz",
         "has_sig": false,
         "md5_digest": "a4695d771e0e945196ea1a50ec75cffc",
@@ -610,7 +610,7 @@
           "md5": "bdf514c1bd627c9bd61c6ea979ec1c02",
           "sha256": "4eaf95b1d474b81211ff580589af18dc53268f69e59b49767890f566a86fadf5"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "tensorgraph-3.4.6.tar.gz",
         "has_sig": false,
         "md5_digest": "bdf514c1bd627c9bd61c6ea979ec1c02",
@@ -620,24 +620,60 @@
         "upload_time": "2017-08-18T09:40:32",
         "url": "https://files.pythonhosted.org/packages/93/21/627899efe313df56d0981232670db9f713db1026413ff3092825b065942b/tensorgraph-3.4.6.tar.gz"
       }
+    ],
+    "3.5.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "604262b4d35267216ad3cf203065b37c",
+          "sha256": "05448821f1d6a7a6c393b811e543935385a5cc2aa1f0ea2459ba3a2ce7b03933"
+        },
+        "downloads": -1,
+        "filename": "tensorgraph-3.5.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "604262b4d35267216ad3cf203065b37c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 48920,
+        "upload_time": "2017-11-07T06:38:27",
+        "url": "https://files.pythonhosted.org/packages/0a/bc/fafd8af8f3a1d83e7ed9cb4d9734da9665d95f8235c51e267f7c60c82f34/tensorgraph-3.5.6.tar.gz"
+      }
+    ],
+    "3.5.7": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1d148d38f210d9e1cdeb2041877755bc",
+          "sha256": "2f51d7269f41d9c85df345552019be35e9c45ce5d6cf062d34c5a4efeaad8b38"
+        },
+        "downloads": -1,
+        "filename": "tensorgraph-3.5.7.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1d148d38f210d9e1cdeb2041877755bc",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 48918,
+        "upload_time": "2017-11-07T06:39:10",
+        "url": "https://files.pythonhosted.org/packages/75/96/d56675740842ad43d91923a19de7f9cec033df4f8700ff2905396fcdcd1a/tensorgraph-3.5.7.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "bdf514c1bd627c9bd61c6ea979ec1c02",
-        "sha256": "4eaf95b1d474b81211ff580589af18dc53268f69e59b49767890f566a86fadf5"
+        "md5": "1d148d38f210d9e1cdeb2041877755bc",
+        "sha256": "2f51d7269f41d9c85df345552019be35e9c45ce5d6cf062d34c5a4efeaad8b38"
       },
-      "downloads": 0,
-      "filename": "tensorgraph-3.4.6.tar.gz",
+      "downloads": -1,
+      "filename": "tensorgraph-3.5.7.tar.gz",
       "has_sig": false,
-      "md5_digest": "bdf514c1bd627c9bd61c6ea979ec1c02",
+      "md5_digest": "1d148d38f210d9e1cdeb2041877755bc",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 28503,
-      "upload_time": "2017-08-18T09:40:32",
-      "url": "https://files.pythonhosted.org/packages/93/21/627899efe313df56d0981232670db9f713db1026413ff3092825b065942b/tensorgraph-3.4.6.tar.gz"
+      "size": 48918,
+      "upload_time": "2017-11-07T06:39:10",
+      "url": "https://files.pythonhosted.org/packages/75/96/d56675740842ad43d91923a19de7f9cec033df4f8700ff2905396fcdcd1a/tensorgraph-3.5.7.tar.gz"
     }
   ]
 }
