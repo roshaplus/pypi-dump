@@ -12,7 +12,7 @@
       "Programming Language :: Python :: 3",
       "Topic :: Software Development :: Libraries"
     ],
-    "description": "\nPyBreaker\n=========\n\n.. image:: https://travis-ci.org/danielfm/pybreaker.svg?branch=master\n    :target: https://travis-ci.org/danielfm/pybreaker\n\nPyBreaker is a Python implementation of the Circuit Breaker pattern, described\nin Michael T. Nygard's book `Release It!`_.\n\nIn Nygard's words, *\"circuit breakers exists to allow one subsystem to fail\nwithout destroying the entire system. This is done by wrapping dangerous\noperations (typically integration points) with a component that can circumvent\ncalls when the system is not healthy\"*.\n\n\nFeatures\n--------\n\n* Configurable list of excluded exceptions (e.g. business exceptions)\n* Configurable failure threshold and reset timeout\n* Support for several event listeners per circuit breaker\n* Can guard generator functions\n* Functions and properties for easy monitoring and management\n* Thread-safe\n* Optional redis backing\n* Optional support for asynchronous Tornado calls\n\n\nRequirements\n------------\n\n* `Python`_ 2.7+ (or Python 3.0+)\n\n\nInstallation\n------------\n\nRun the following command line to download the latest stable version of\nPyBreaker from `PyPI`_::\n\n    $ easy_install -U pybreaker\n\nIf you are a `Git`_ user, you might want to download the current development\nversion::\n\n    $ git clone git://github.com/danielfm/pybreaker.git\n    $ cd pybreaker\n    $ python setup.py test\n    $ python setup.py install\n\n\nUsage\n-----\n\nThe first step is to create an instance of ``CircuitBreaker`` for each\nintegration point you want to protect against::\n\n    import pybreaker\n\n    # Used in database integration points\n    db_breaker = pybreaker.CircuitBreaker(fail_max=5, reset_timeout=60)\n\n\n``CircuitBreaker`` instances should live globally inside the application scope,\ne.g., live across requests.\n\n.. note::\n\n  Integration points to external services (i.e. databases, queues, etc) are\n  more likely to fail, so make sure to always use timeouts when accessing such\n  services if there's support at the API level.\n\nIf you'd like to use the Redis backing, initialize the ``CircuitBreaker`` with a ``CircuitRedisStorage``::\n\n    import pybreaker\n    import redis\n\n    redis = redis.StrictRedis()\n    db_breaker = pybreaker.CircuitBreaker(\n        fail_max=5,\n        reset_timeout=60,\n        state_storage=pybreaker.CircuitRedisStorage(pybreaker.STATE_CLOSED, redis))\n\n.. note::\n\n  You may want to reuse a connection already created in your application, if you're using ``django_redis`` for example::\n\n    import pybreaker\n    from django_redis import get_redis_connection\n\n    db_breaker = pybreaker.CircuitBreaker(\n        fail_max=5,\n        reset_timeout=60,\n        state_storage=pybreaker.CircuitRedisStorage(pybreaker.STATE_CLOSED, get_redis_connection('default')))\n\n\nEvent Listening\n```````````````\n\nThere's no need to subclass ``CircuitBreaker`` if you just want to take action\nwhen certain events occur. In that case, it's better to subclass\n``CircuitBreakerListener`` instead::\n\n    class DBListener(pybreaker.CircuitBreakerListener):\n        \"Listener used by circuit breakers that execute database operations.\"\n\n        def before_call(self, cb, func, *args, **kwargs):\n            \"Called before the circuit breaker `cb` calls `func`.\"\n            pass\n\n        def state_change(self, cb, old_state, new_state):\n            \"Called when the circuit breaker `cb` state changes.\"\n            pass\n\n        def failure(self, cb, exc):\n            \"Called when a function invocation raises a system error.\"\n            pass\n\n        def success(self, cb):\n            \"Called when a function invocation succeeds.\"\n            pass\n\n    class LogListener(pybreaker.CircuitBreakerListener):\n        \"Listener used to log circuit breaker events.\"\n        pass\n\n\nTo add listeners to a circuit breaker::\n\n    # At creation time...\n    db_breaker = pybreaker.CircuitBreaker(listeners=[DBListener(), LogListener()])\n\n    # ...or later\n    db_breaker.add_listeners(OneListener(), AnotherListener())\n\n\nWhat Does a Circuit Breaker Do?\n```````````````````````````````\n\nLet's say you want to use a circuit breaker on a function that updates a row\nin the ``customer`` database table::\n\n    @db_breaker\n    def update_customer(cust):\n        # Do stuff here...\n        pass\n\n    # Will trigger the circuit breaker\n    updated_customer = update_customer(my_customer)\n\n\nOr if you don't want to use the decorator syntax::\n\n    def update_customer(cust):\n        # Do stuff here...\n        pass\n\n    # Will trigger the circuit breaker\n    updated_customer = db_breaker.call(update_customer, my_customer)\n\n\nAccording to the default parameters, the circuit breaker ``db_breaker`` will\nautomatically open the circuit after 5 consecutive failures in\n``update_customer``.\n\nWhen the circuit is open, all calls to ``update_customer`` will fail immediately\n(raising ``CircuitBreakerError``) without any attempt to execute the real\noperation.\n\nAfter 60 seconds, the circuit breaker will allow the next call to\n``update_customer`` pass through. If that call succeeds, the circuit is closed;\nif it fails, however, the circuit is opened again until another timeout elapses.\n\nOptional Tornado Support\n```````````````````````````````\nA circuit breaker can (optionally) be used to call asynchronous Tornado functions::\n\n    from tornado import gen\n\n    @db_breaker(__pybreaker_call_async=True)\n    @gen.coroutine\n    def async_update(cust):\n        # Do async stuff here...\n        pass\n\nOr if you don't want to use the decorator syntax::\n\n    @gen.coroutine\n    def async_update(cust):\n        # Do async stuff here...\n        pass\n\n    updated_customer = db_breaker.call_async(async_update, my_customer)\n\n\nExcluding Exceptions\n````````````````````\n\nBy default, a failed call is any call that raises an exception. However, it's\ncommon to raise exceptions to also indicate business exceptions, and those\nexceptions should be ignored by the circuit breaker as they don't indicate\nsystem errors::\n\n    # At creation time...\n    db_breaker = CircuitBreaker(exclude=[CustomerValidationError])\n\n    # ...or later\n    db_breaker.add_excluded_exception(CustomerValidationError)\n\n\nIn that case, when any function guarded by that circuit breaker raises\n``CustomerValidationError`` (or any exception derived from\n``CustomerValidationError``), that call won't be considered a system failure.\n\n\nMonitoring and Management\n`````````````````````````\n\nA circuit breaker provides properties and functions you can use to monitor and\nchange its current state::\n\n    # Get the current number of consecutive failures\n    print db_breaker.fail_counter\n\n    # Get/set the maximum number of consecutive failures\n    print db_breaker.fail_max\n    db_breaker.fail_max = 10\n\n    # Get/set the current reset timeout period (in seconds)\n    print db_breaker.reset_timeout\n    db_breaker.reset_timeout = 60\n\n    # Get the current state, i.e., 'open', 'half-open', 'closed'\n    print db_breaker.current_state\n\n    # Closes the circuit\n    db_breaker.close()\n\n    # Half-opens the circuit\n    db_breaker.half_open()\n\n    # Opens the circuit\n    db_breaker.open()\n\n\nThese properties and functions might and should be exposed to the operations\nstaff somehow as they help them to detect problems in the system.\n\n\n.. _Python: http://python.org\n.. _Jython: http://jython.org\n.. _Release It!: http://pragprog.com/titles/mnee/release-it\n.. _PyPI: http://pypi.python.org\n.. _Git: http://git-scm.com\n",
+    "description": "\nPyBreaker\n=========\n\n.. image:: https://travis-ci.org/danielfm/pybreaker.svg?branch=master\n    :target: https://travis-ci.org/danielfm/pybreaker\n\nPyBreaker is a Python implementation of the Circuit Breaker pattern, described\nin Michael T. Nygard's book `Release It!`_.\n\nIn Nygard's words, *\"circuit breakers exists to allow one subsystem to fail\nwithout destroying the entire system. This is done by wrapping dangerous\noperations (typically integration points) with a component that can circumvent\ncalls when the system is not healthy\"*.\n\n\nFeatures\n--------\n\n* Configurable list of excluded exceptions (e.g. business exceptions)\n* Configurable failure threshold and reset timeout\n* Support for several event listeners per circuit breaker\n* Can guard generator functions\n* Functions and properties for easy monitoring and management\n* Thread-safe\n* Optional redis backing\n* Optional support for asynchronous Tornado calls\n\n\nRequirements\n------------\n\n* `Python`_ 2.7+ (or Python 3.0+)\n\n\nInstallation\n------------\n\nRun the following command line to download the latest stable version of\nPyBreaker from `PyPI`_::\n\n    $ easy_install -U pybreaker\n\nIf you are a `Git`_ user, you might want to download the current development\nversion::\n\n    $ git clone git://github.com/danielfm/pybreaker.git\n    $ cd pybreaker\n    $ python setup.py test\n    $ python setup.py install\n\n\nUsage\n-----\n\nThe first step is to create an instance of ``CircuitBreaker`` for each\nintegration point you want to protect against::\n\n    import pybreaker\n\n    # Used in database integration points\n    db_breaker = pybreaker.CircuitBreaker(fail_max=5, reset_timeout=60)\n\n\n``CircuitBreaker`` instances should live globally inside the application scope,\ne.g., live across requests.\n\n.. note::\n\n  Integration points to external services (i.e. databases, queues, etc) are\n  more likely to fail, so make sure to always use timeouts when accessing such\n  services if there's support at the API level.\n\nIf you'd like to use the Redis backing, initialize the ``CircuitBreaker`` with a ``CircuitRedisStorage``::\n\n    import pybreaker\n    import redis\n\n    redis = redis.StrictRedis()\n    db_breaker = pybreaker.CircuitBreaker(\n        fail_max=5,\n        reset_timeout=60,\n        state_storage=pybreaker.CircuitRedisStorage(pybreaker.STATE_CLOSED, redis))\n\n.. note::\n\n  You may want to reuse a connection already created in your application, if you're using ``django_redis`` for example::\n\n    import pybreaker\n    from django_redis import get_redis_connection\n\n    db_breaker = pybreaker.CircuitBreaker(\n        fail_max=5,\n        reset_timeout=60,\n        state_storage=pybreaker.CircuitRedisStorage(pybreaker.STATE_CLOSED, get_redis_connection('default')))\n\n\nEvent Listening\n```````````````\n\nThere's no need to subclass ``CircuitBreaker`` if you just want to take action\nwhen certain events occur. In that case, it's better to subclass\n``CircuitBreakerListener`` instead::\n\n    class DBListener(pybreaker.CircuitBreakerListener):\n        \"Listener used by circuit breakers that execute database operations.\"\n\n        def before_call(self, cb, func, *args, **kwargs):\n            \"Called before the circuit breaker `cb` calls `func`.\"\n            pass\n\n        def state_change(self, cb, old_state, new_state):\n            \"Called when the circuit breaker `cb` state changes.\"\n            pass\n\n        def failure(self, cb, exc):\n            \"Called when a function invocation raises a system error.\"\n            pass\n\n        def success(self, cb):\n            \"Called when a function invocation succeeds.\"\n            pass\n\n    class LogListener(pybreaker.CircuitBreakerListener):\n        \"Listener used to log circuit breaker events.\"\n\n        def state_change(self, cb, old_state, new_state):\n            msg = \"State Change: CB: {0}, New State: {1}\".format(cb.name, new_state)\n            logging.info(msg)\n\n\nTo add listeners to a circuit breaker::\n\n    # At creation time...\n    db_breaker = pybreaker.CircuitBreaker(listeners=[DBListener(), LogListener()])\n\n    # ...or later\n    db_breaker.add_listeners(OneListener(), AnotherListener())\n\n\nWhat Does a Circuit Breaker Do?\n```````````````````````````````\n\nLet's say you want to use a circuit breaker on a function that updates a row\nin the ``customer`` database table::\n\n    @db_breaker\n    def update_customer(cust):\n        # Do stuff here...\n        pass\n\n    # Will trigger the circuit breaker\n    updated_customer = update_customer(my_customer)\n\n\nOr if you don't want to use the decorator syntax::\n\n    def update_customer(cust):\n        # Do stuff here...\n        pass\n\n    # Will trigger the circuit breaker\n    updated_customer = db_breaker.call(update_customer, my_customer)\n\n\nAccording to the default parameters, the circuit breaker ``db_breaker`` will\nautomatically open the circuit after 5 consecutive failures in\n``update_customer``.\n\nWhen the circuit is open, all calls to ``update_customer`` will fail immediately\n(raising ``CircuitBreakerError``) without any attempt to execute the real\noperation.\n\nAfter 60 seconds, the circuit breaker will allow the next call to\n``update_customer`` pass through. If that call succeeds, the circuit is closed;\nif it fails, however, the circuit is opened again until another timeout elapses.\n\nOptional Tornado Support\n```````````````````````````````\nA circuit breaker can (optionally) be used to call asynchronous Tornado functions::\n\n    from tornado import gen\n\n    @db_breaker(__pybreaker_call_async=True)\n    @gen.coroutine\n    def async_update(cust):\n        # Do async stuff here...\n        pass\n\nOr if you don't want to use the decorator syntax::\n\n    @gen.coroutine\n    def async_update(cust):\n        # Do async stuff here...\n        pass\n\n    updated_customer = db_breaker.call_async(async_update, my_customer)\n\n\nExcluding Exceptions\n````````````````````\n\nBy default, a failed call is any call that raises an exception. However, it's\ncommon to raise exceptions to also indicate business exceptions, and those\nexceptions should be ignored by the circuit breaker as they don't indicate\nsystem errors::\n\n    # At creation time...\n    db_breaker = CircuitBreaker(exclude=[CustomerValidationError])\n\n    # ...or later\n    db_breaker.add_excluded_exception(CustomerValidationError)\n\n\nIn that case, when any function guarded by that circuit breaker raises\n``CustomerValidationError`` (or any exception derived from\n``CustomerValidationError``), that call won't be considered a system failure.\n\n\nMonitoring and Management\n`````````````````````````\n\nA circuit breaker provides properties and functions you can use to monitor and\nchange its current state::\n\n    # Get the current number of consecutive failures\n    print db_breaker.fail_counter\n\n    # Get/set the maximum number of consecutive failures\n    print db_breaker.fail_max\n    db_breaker.fail_max = 10\n\n    # Get/set the current reset timeout period (in seconds)\n    print db_breaker.reset_timeout\n    db_breaker.reset_timeout = 60\n\n    # Get the current state, i.e., 'open', 'half-open', 'closed'\n    print db_breaker.current_state\n\n    # Closes the circuit\n    db_breaker.close()\n\n    # Half-opens the circuit\n    db_breaker.half_open()\n\n    # Opens the circuit\n    db_breaker.open()\n\n\nThese properties and functions might and should be exposed to the operations\nstaff somehow as they help them to detect problems in the system.\n\n\n.. _Python: http://python.org\n.. _Jython: http://jython.org\n.. _Release It!: http://pragprog.com/titles/mnee/release-it\n.. _PyPI: http://pypi.python.org\n.. _Git: http://git-scm.com\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -28,11 +28,11 @@
     "name": "pybreaker",
     "platform": "Any",
     "project_url": "https://pypi.org/project/pybreaker/",
-    "release_url": "https://pypi.org/project/pybreaker/0.4.1/",
+    "release_url": "https://pypi.org/project/pybreaker/0.4.2/",
     "requires_dist": [],
     "requires_python": "",
     "summary": "Python implementation of the Circuit Breaker pattern",
-    "version": "0.4.1"
+    "version": "0.4.2"
   },
   "releases": {
     "0.1.1": [
@@ -42,7 +42,7 @@
           "md5": "9cb2a57df07e3f6d480304b2e7893f83",
           "sha256": "3039cadf10a06129f1fe0d8bd98a7d8d2c4c07a993030fed1067e6436db251f1"
         },
-        "downloads": 2720,
+        "downloads": -1,
         "filename": "pybreaker-0.1.1.tar.gz",
         "has_sig": false,
         "md5_digest": "9cb2a57df07e3f6d480304b2e7893f83",
@@ -60,7 +60,7 @@
           "md5": "2bf38fd6364482bc5c2a7c085fb5a656",
           "sha256": "0fa5bb539ff256ace3d5284fd82d1b0ac40e708f6fc4b919911bc1301771ac87"
         },
-        "downloads": 2494,
+        "downloads": -1,
         "filename": "pybreaker-0.2.tar.gz",
         "has_sig": false,
         "md5_digest": "2bf38fd6364482bc5c2a7c085fb5a656",
@@ -78,7 +78,7 @@
           "md5": "7ec1ba3d3926fbdb0fe131ded62af82a",
           "sha256": "fe66577062e7610b3c41de7dffae9fad9fc405c4a23ff4e61caefd497e042ad8"
         },
-        "downloads": 3966,
+        "downloads": -1,
         "filename": "pybreaker-0.2.1.tar.gz",
         "has_sig": false,
         "md5_digest": "7ec1ba3d3926fbdb0fe131ded62af82a",
@@ -96,7 +96,7 @@
           "md5": "e6a8abcbef85d2813293a0418a5df5ce",
           "sha256": "514a597e27ec464e65e39fc7a7728a0a163cb3d1a9c9b2cb913775398b132b51"
         },
-        "downloads": 2237,
+        "downloads": -1,
         "filename": "pybreaker-0.2.2-py2.6.egg",
         "has_sig": false,
         "md5_digest": "e6a8abcbef85d2813293a0418a5df5ce",
@@ -112,7 +112,7 @@
           "md5": "78213cff35001612e04eb70fe8dfb765",
           "sha256": "ef95f1503a220bb9ce8c5bcb7bdef98de01c4551038344ab0c67adff9ef6e214"
         },
-        "downloads": 2284,
+        "downloads": -1,
         "filename": "pybreaker-0.2.2-py2.7.egg",
         "has_sig": false,
         "md5_digest": "78213cff35001612e04eb70fe8dfb765",
@@ -128,7 +128,7 @@
           "md5": "af3dd7d332783744eb6e0ce0f24b8cc6",
           "sha256": "d1f2842f519ffbfbe3571de0c3760afa455a799aecc29665ef1d47407c41a1e9"
         },
-        "downloads": 2240,
+        "downloads": -1,
         "filename": "pybreaker-0.2.2-py3.2.egg",
         "has_sig": false,
         "md5_digest": "af3dd7d332783744eb6e0ce0f24b8cc6",
@@ -144,7 +144,7 @@
           "md5": "39b5b54b25fbdca075b28a08d086d5db",
           "sha256": "c36612988753d56a0c1485b03022ba9990b73c32187d6c685d17fd2e03792be9"
         },
-        "downloads": 7079,
+        "downloads": -1,
         "filename": "pybreaker-0.2.2.tar.gz",
         "has_sig": false,
         "md5_digest": "39b5b54b25fbdca075b28a08d086d5db",
@@ -162,7 +162,7 @@
           "md5": "813f42a4fe2eb1e7790307fc51bf64b4",
           "sha256": "762b6b080f1d1735ed8a8b9ced5595b88a7fcfce550ab2da3e501051b5c95904"
         },
-        "downloads": 8189,
+        "downloads": -1,
         "filename": "pybreaker-0.2.3.tar.gz",
         "has_sig": false,
         "md5_digest": "813f42a4fe2eb1e7790307fc51bf64b4",
@@ -180,7 +180,7 @@
           "md5": "11941e9be32a1d14b9ee32c87761d0a1",
           "sha256": "8d7af4e669dd1dbf59b3d00eb125bff65d5dd511df2133a4ab40b07447623ab0"
         },
-        "downloads": 1618,
+        "downloads": -1,
         "filename": "pybreaker-0.3.0.tar.gz",
         "has_sig": false,
         "md5_digest": "11941e9be32a1d14b9ee32c87761d0a1",
@@ -198,7 +198,7 @@
           "md5": "185eaa3caff6c1f8ff474a70f9668586",
           "sha256": "fe1e29d58ddd3291140eb3ee6b3c18f6ad558d2b55ce82470ce808fced0d62a9"
         },
-        "downloads": 165,
+        "downloads": -1,
         "filename": "pybreaker-0.3.1.tar.gz",
         "has_sig": false,
         "md5_digest": "185eaa3caff6c1f8ff474a70f9668586",
@@ -216,7 +216,7 @@
           "md5": "32ed7dd86b4ae7a66419445d2a507905",
           "sha256": "2654f3701a40c69e4133b5421445489e171fe6804863d306f8e395a8fb8f6f4a"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pybreaker-0.3.2.tar.gz",
         "has_sig": false,
         "md5_digest": "32ed7dd86b4ae7a66419445d2a507905",
@@ -234,7 +234,7 @@
           "md5": "c22a1c47c0e430f2377d61a5d732f00e",
           "sha256": "18cca0f7f2293b4202f0e3882f543208d971b8538a011fb64091f1a893485cce"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pybreaker-0.3.3.tar.gz",
         "has_sig": false,
         "md5_digest": "c22a1c47c0e430f2377d61a5d732f00e",
@@ -252,7 +252,7 @@
           "md5": "0aad7be6dd10da0301cd657306d961f0",
           "sha256": "923b60065bf1b14df58fd7cffcca04de7e605e301cf163a2f0c2ce507b1f75c2"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pybreaker-0.4.0.tar.gz",
         "has_sig": false,
         "md5_digest": "0aad7be6dd10da0301cd657306d961f0",
@@ -270,7 +270,7 @@
           "md5": "26d61001fc193a267cbfefa9499586a2",
           "sha256": "c4ed5d2499d4b9a030e675ab458b68f7cf9dd324891d77258a16a9f39ed926ef"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "pybreaker-0.4.1.tar.gz",
         "has_sig": false,
         "md5_digest": "26d61001fc193a267cbfefa9499586a2",
@@ -280,24 +280,42 @@
         "upload_time": "2017-10-02T17:09:45",
         "url": "https://files.pythonhosted.org/packages/f6/36/eba7b5d8c113724d607f37a69a764eae72324749da870ae8f62792ec4e94/pybreaker-0.4.1.tar.gz"
       }
+    ],
+    "0.4.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "fa550f72bd38f489b0a5d60a6b4c2b27",
+          "sha256": "f1167038a31ebb841bc821de5afa5fa84d960a1d1caf7aeb0f97e217cd819662"
+        },
+        "downloads": -1,
+        "filename": "pybreaker-0.4.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "fa550f72bd38f489b0a5d60a6b4c2b27",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9690,
+        "upload_time": "2017-11-09T16:28:58",
+        "url": "https://files.pythonhosted.org/packages/3e/78/e291f6ed115e7d396e6a501c3398ce32e5a0d26cdf307d9bb5de98525d44/pybreaker-0.4.2.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "26d61001fc193a267cbfefa9499586a2",
-        "sha256": "c4ed5d2499d4b9a030e675ab458b68f7cf9dd324891d77258a16a9f39ed926ef"
+        "md5": "fa550f72bd38f489b0a5d60a6b4c2b27",
+        "sha256": "f1167038a31ebb841bc821de5afa5fa84d960a1d1caf7aeb0f97e217cd819662"
       },
-      "downloads": 0,
-      "filename": "pybreaker-0.4.1.tar.gz",
+      "downloads": -1,
+      "filename": "pybreaker-0.4.2.tar.gz",
       "has_sig": false,
-      "md5_digest": "26d61001fc193a267cbfefa9499586a2",
+      "md5_digest": "fa550f72bd38f489b0a5d60a6b4c2b27",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 9467,
-      "upload_time": "2017-10-02T17:09:45",
-      "url": "https://files.pythonhosted.org/packages/f6/36/eba7b5d8c113724d607f37a69a764eae72324749da870ae8f62792ec4e94/pybreaker-0.4.1.tar.gz"
+      "size": 9690,
+      "upload_time": "2017-11-09T16:28:58",
+      "url": "https://files.pythonhosted.org/packages/3e/78/e291f6ed115e7d396e6a501c3398ce32e5a0d26cdf307d9bb5de98525d44/pybreaker-0.4.2.tar.gz"
     }
   ]
 }
