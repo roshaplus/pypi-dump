@@ -1,0 +1,71 @@
+{
+  "info": {
+    "author": "David Read",
+    "author_email": "david.read@hackneyworkshop.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 4 - Beta",
+      "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+      "Programming Language :: Python :: 2.7"
+    ],
+    "description": ".. You should enable this project on travis-ci.org and coveralls.io to make\n   these badges work. The necessary Travis and Coverage config files have been\n   generated for you.\n\n.. .. image:: https://travis-ci.org/davidread/ckanext-xloader.svg?branch=master\n..     :target: https://travis-ci.org/davidread/ckanext-xloader\n\n.. .. image:: https://coveralls.io/repos/davidread/ckanext-xloader/badge.svg\n..   :target: https://coveralls.io/r/davidread/ckanext-xloader\n\n.. image:: https://pypip.in/download/ckanext-xloader/badge.svg\n    :target: https://pypi.python.org/pypi//ckanext-xloader/\n    :alt: Downloads\n\n.. image:: https://pypip.in/version/ckanext-xloader/badge.svg\n    :target: https://pypi.python.org/pypi/ckanext-xloader/\n    :alt: Latest Version\n\n.. image:: https://pypip.in/py_versions/ckanext-xloader/badge.svg\n    :target: https://pypi.python.org/pypi/ckanext-xloader/\n    :alt: Supported Python versions\n\n.. image:: https://pypip.in/status/ckanext-xloader/badge.svg\n    :target: https://pypi.python.org/pypi/ckanext-xloader/\n    :alt: Development Status\n\n.. image:: https://pypip.in/license/ckanext-xloader/badge.svg\n    :target: https://pypi.python.org/pypi/ckanext-xloader/\n    :alt: License\n\n================================\nExpress Loader - ckanext-xloader\n================================\n\nLoads CSV (and similar) data into CKAN's DataStore. Designed as a replacement for DataPusher because it offers ten times the speed and more robustness.\n\n**OpenGov Inc.** has sponsored this development, with the aim of benefiting open data infrastructure worldwide.\n\n-------------------------------\nKey differences from DataPusher\n-------------------------------\n\nSpeed of loading\n----------------\n\nDataPusher - parses CSV rows, converts to detected column types, converts the data to a JSON string, calls datastore_create for each batch of rows, which reformats the data into an INSERT statement string, which is passed to PostgreSQL.\n\nExpress Loader - pipes the CSV file directly into PostgreSQL using COPY.\n\nIn `tests <https://github.com/davidread/ckanext-xloader/issues/25>`_, Express Loader is over ten times faster than DataPusher.\n\nRobustness\n----------\n\nDataPusher - one cause of failure was when casting cells to a guessed type. The type of a column was decided by looking at the values of only the first few rows. So if a column is mainly numeric or dates, but a string (like \"N/A\") comes later on, then this will cause the load to error at that point, leaving it half-loaded into DataStore.\n\nExpress Loader - loads all the cells as text, before allowing the admin to convert columns to the types they want (using the Data Dictionary feature). In future it could do automatic detection and conversion.\n\nSimpler queueing tech\n----------------------\n\nDataPusher - job queue is done by ckan-service-provider which is bespoke, complicated and stores jobs in its own database (sqlite by default).\n\nExpress Loader - job queue is done by RQ, which is simpler and is backed by Redis and allows access to the CKAN model. You can also debug jobs easily using pdb. Job results are currently still stored in its own database, but the intention is to move this relatively small amount of data into CKAN's database, to reduce the complication of install.\n\n(The other obvious candidate is Celery, but we don't need its heavyweight architecture and its jobs are not debuggable with pdb.)\n\nSeparate web server\n-------------------\n\nDataPusher - has the complication that the queue jobs are done by a separate (Flask) web app, apart from CKAN. This was the design because the job requires intensive processing to convert every line of the data into JSON. However it means more complicated code as info needs to be passed between the services in http requests, more for the user to set-up and manage - another app config, another apache config, separate log files.\n\nExpress Loader - the job runs in a worker process, in the same app as CKAN, so can access the CKAN config, db and logging directly and avoids many HTTP calls. This simplification makes sense because the xloader job doesn't need to do much processing - mainly it is streaming the CSV file from disk into PostgreSQL.\n\nCaveats\n-------\n\n* All columns are loaded as 'text' type. However an admin can use the resource's Data Dictionary tab (CKAN 2.7 onwards) to change these to numeric or datestamp and re-load the file. There is scope to do this automatically in future.\n* No support yet for private datasets\n\n\n------------\nRequirements\n------------\n\nWorks with CKAN 2.7.x and later.\n\nWorks with CKAN 2.3.x - 2.6.x if you install ckanext-rq.\n\n\n------------\nInstallation\n------------\n\nTo install Express Loader:\n\n1. Activate your CKAN virtual environment, for example::\n\n     . /usr/lib/ckan/default/bin/activate\n\n2. Install the ckanext-xloader Python package into your virtual environment::\n\n     pip install ckanext-xloader\n\n3. Install dependencies::\n\n     pip install -r requirements.txt\n     pip install -U requests[security]\n\n4. If you are using CKAN version before 2.8.x you need to define the\n   ``populate_full_text_trigger`` in your database\n   ::\n\n     sudo -u postgres psql datastore_default -f full_text_function.sql\n\n   If successful it will print\n   ::\n\n     CREATE FUNCTION\n     ALTER FUNCTION\n\n   NB this assumes you used the defaults for the database name and username.\n   If in doubt, check your config's ckan.datastore.write_url. If you don't have\n   database name ``datastore_default`` and username ``ckan_default`` then adjust\n   the psql option and full_text_function.sql before running this.\n\n5. Add ``xloader`` to the ``ckan.plugins`` setting in your CKAN\n   config file (by default the config file is located at\n   ``/etc/ckan/default/production.ini``).\n\n   You should also remove ``datapusher`` if it is in the list, to avoid them\n   both trying to load resources into the DataStore.\n\n6. If it is a production server, you'll want to store jobs info in a more robust\n   database than the default sqlite file::\n\n     sudo -u postgres createdb -O ckan_default xloader_jobs -E utf-8\n\n   And add this list to the config::\n\n     ckanext.xloader.jobs_db.uri postgresql://ckan_default:pass@localhost/xloader_jobs\n\n   (This step can be skipped when just developing or testing.)\n\n7. Restart CKAN. For example if you've deployed CKAN with Apache on Ubuntu::\n\n     sudo service apache2 reload\n\n8. Run the worker. First test it on the command-line::\n\n     paster --plugin=ckan jobs -c /etc/ckan/default/ckan.ini worker\n\n   or if you have CKAN version 2.6.x or less (and are therefore using ckanext-rq)::\n\n     paster --plugin=ckanext-rq jobs -c /etc/ckan/default/ckan.ini worker\n\n   Test it will load a CSV ok by submitting a `CSV in the web interface <http://docs.ckan.org/projects/datapusher/en/latest/using.html#ckan-2-2-and-above>`_\n   or in another shell::\n\n     paster --plugin=ckanext-xloader xloader submit <dataset-name> -c /etc/ckan/default/ckan.ini\n\n   Clearly, running the worker on the command-line is only for testing - for\n   production services see:\n\n       http://docs.ckan.org/en/ckan-2.7.0/maintaining/background-tasks.html#using-supervisor\n\n   If you have CKAN version 2.6.x or less then you'll need to download\n   `supervisor-ckan-worker.conf <https://raw.githubusercontent.com/ckan/ckan/master/ckan/config/supervisor-ckan-worker.conf>`_ and adjust the ``command`` to reference\n   ckanext-rq.\n\n\n---------------\nConfig Settings\n---------------\n\nConfiguration:\n\n::\n\n    # The connection string for the jobs database used by Express Loader. The\n    # default of an sqlite file is fine for development. For production use a\n    # Postgresql database.\n    ckanext.xloader.jobs_db.uri = sqlite:////tmp/xloader_jobs.db\n\n    # The formats that are accepted. If the value of the resource.format is\n    # anything else then it won't be 'xloadered' to DataStore (and will therefore\n    # only be available to users in the form of the original download/link).\n    # Case insensitive.\n    # (optional, defaults are listed in plugin.py - DEFAULT_FORMATS).\n    ckanext.xloader.formats = csv application/csv xls application/vnd.ms-excel\n\n    # The maximum size of files to load into DataStore. In bytes. Default is 1 GB.\n    ckanext.xloader.max_content_length = 1000000000\n\n    # The maximum time for the loading of a resource before it is aborted.\n    # Give an amount in seconds. Default is 60 minutes\n    ckanext.xloader.job_timeout = 3600\n\n------------------------\nDevelopment Installation\n------------------------\n\nTo install Express Loader for development, activate your CKAN virtualenv and\nin the directory up from your local ckan repo::\n\n    git clone https://github.com/davidread/ckanext-xloader.git\n    cd ckanext-xloader\n    python setup.py develop\n    pip install -r requirements.txt\n    pip install -r dev-requirements.txt\n\n\n-------------------------\nUpgrading from DataPusher\n-------------------------\n\nTo upgrade from DataPusher to Express Loader:\n\n1. Install Express Loader as above, including running the xloader worker.\n\n2. If you've not already, change the enabled plugin in your config - on the\n   ``ckan.plugins`` line replace ``datapusher`` with ``xloader``.\n\n3. Stop the datapusher worker::\n\n       sudo a2dissite datapusher\n\n4. Restart CKAN::\n\n       sudo service apache2 reload\n       sudo service nginx reload\n\n-----------------\nRunning the Tests\n-----------------\n\nTo run the tests, do::\n\n    nosetests --nologcapture --with-pylons=test.ini\n\nTo run the tests and produce a coverage report, first make sure you have\ncoverage installed in your virtualenv (``pip install coverage``) then run::\n\n    nosetests --nologcapture --with-pylons=test.ini --with-coverage --cover-package=ckanext.xloader --cover-inclusive --cover-erase --cover-tests\n\n-----------------------------------------\nReleasing a New Version of Express Loader\n-----------------------------------------\n\nExpress Loader is availabe on PyPI as https://pypi.python.org/pypi/ckanext-xloader.\nTo publish a new version to PyPI follow these steps:\n\n1. Update the version number in the ``setup.py`` file.\n   See `PEP 440 <http://legacy.python.org/dev/peps/pep-0440/#public-version-identifiers>`_\n   for how to choose version numbers.\n\n2. Create a source distribution of the new version::\n\n     python setup.py sdist\n\n3. Upload the source distribution to PyPI::\n\n     python setup.py sdist upload\n\n4. Tag the new release of the project on GitHub with the version number from\n   the ``setup.py`` file. For example if the version number in ``setup.py`` is\n   0.0.2 then do::\n\n       git tag 0.0.2\n       git push --tags\n",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/davidread/ckanext-xloader",
+    "keywords": "CKAN extension datastore",
+    "license": "AGPL",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "ckanext-xloader",
+    "platform": "",
+    "project_url": "https://pypi.org/project/ckanext-xloader/",
+    "release_url": "https://pypi.org/project/ckanext-xloader/0.2.0/",
+    "requires_dist": [],
+    "requires_python": "",
+    "summary": "Express Loader - quickly load data into CKAN DataStore",
+    "version": "0.2.0"
+  },
+  "releases": {
+    "0.2.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3c5cb8760f1edf5af7a37933de8a590a",
+          "sha256": "993b741e3d91a81ae5ff74bc38c7c5b473a7667e31baf0bcf58b7dcede59f54c"
+        },
+        "downloads": -1,
+        "filename": "ckanext-xloader-0.2.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3c5cb8760f1edf5af7a37933de8a590a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 92091,
+        "upload_time": "2017-11-10T17:06:55",
+        "url": "https://files.pythonhosted.org/packages/8f/6b/eff2c598831795c9b28de61fafcae4278e2dce70e5922ab32fd1126c7829/ckanext-xloader-0.2.0.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "3c5cb8760f1edf5af7a37933de8a590a",
+        "sha256": "993b741e3d91a81ae5ff74bc38c7c5b473a7667e31baf0bcf58b7dcede59f54c"
+      },
+      "downloads": -1,
+      "filename": "ckanext-xloader-0.2.0.tar.gz",
+      "has_sig": false,
+      "md5_digest": "3c5cb8760f1edf5af7a37933de8a590a",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 92091,
+      "upload_time": "2017-11-10T17:06:55",
+      "url": "https://files.pythonhosted.org/packages/8f/6b/eff2c598831795c9b28de61fafcae4278e2dce70e5922ab32fd1126c7829/ckanext-xloader-0.2.0.tar.gz"
+    }
+  ]
+}

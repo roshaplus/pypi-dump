@@ -14,7 +14,7 @@
       "Programming Language :: Python :: 3.4",
       "Topic :: Software Development :: Libraries :: Python Modules"
     ],
-    "description": "Watchtower: Python CloudWatch Logging\n=====================================\nWatchtower is a log handler for `Amazon Web Services CloudWatch Logs\n<https://aws.amazon.com/blogs/aws/cloudwatch-log-service/>`_.\n\nCloudWatch Logs is a log management service built into AWS. It is conceptually similar to services like Splunk and\nLoggly, but is more lightweight, cheaper, and tightly integrated with the rest of AWS.\n\nWatchtower, in turn, is a lightweight adapter between the `Python logging system\n<https://docs.python.org/library/logging.html>`_ and CloudWatch Logs. It uses the `boto3 AWS SDK\n<https://github.com/boto/boto3>`_, and lets you plug your application logging directly into CloudWatch without the need\nto install a system-wide log collector like `awscli-cwlogs <https://pypi.python.org/pypi/awscli-cwlogs>`_ and round-trip\nyour logs through the instance's syslog. It aggregates logs into batches to avoid sending an API request per each log\nmessage, while guaranteeing a delivery deadline (60 seconds by default).\n\nInstallation\n~~~~~~~~~~~~\n::\n\n    pip install watchtower\n\nSynopsis\n~~~~~~~~\nInstall `awscli <https://pypi.python.org/pypi/awscli>`_ and set your AWS credentials (run ``aws configure``).\n\n.. code-block:: python\n\n    import watchtower, logging\n    logging.basicConfig(level=logging.INFO)\n    logger = logging.getLogger(__name__)\n    logger.addHandler(watchtower.CloudWatchLogHandler())\n    logger.info(\"Hi\")\n    logger.info(dict(foo=\"bar\", details={}))\n\nAfter running the example, you can see the log output in your `AWS console\n<https://console.aws.amazon.com/cloudwatch/home>`_.\n\nExample: Flask logging with Watchtower\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n.. code-block:: python\n\n    import watchtower, flask, logging\n\n    logging.basicConfig(level=logging.INFO)\n    app = flask.Flask(\"loggable\")\n    handler = watchtower.CloudWatchLogHandler()\n    app.logger.addHandler(handler)\n    logging.getLogger(\"werkzeug\").addHandler(handler)\n\n    @app.route('/')\n    def hello_world():\n        return 'Hello World!'\n\n    if __name__ == '__main__':\n        app.run()\n\n(See also `http://flask.pocoo.org/docs/errorhandling/ <http://flask.pocoo.org/docs/errorhandling/>`_.)\n\nExample: Django logging with Watchtower\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\nThis is an example of Watchtower integration with Django. In your Django project, add the following to ``settings.py``:\n\n.. code-block:: python\n\n    from boto3.session import Session\n    \n    AWS_ACCESS_KEY_ID = 'your access key'\n    AWS_SECRET_ACCESS_KEY = 'your secret access key'\n    AWS_REGION_NAME = 'your region'\n\n    boto3_session = Session(aws_access_key_id=AWS_ACCESS_KEY_ID,\n                            aws_secret_access_key=AWS_SECRET_ACCESS_KEY,\n                            region_name=AWS_REGION_NAME)\n\n    LOGGING = {\n        'version': 1,\n        'disable_existing_loggers': False,\n        'root': {\n            'level': logging.ERROR,\n            'handlers': ['console'],\n        },\n        'formatters': {\n            'simple': {\n                'format': u\"%(asctime)s [%(levelname)-8s] %(message)s\",\n                'datefmt': \"%Y-%m-%d %H:%M:%S\"\n            },\n            'aws': {\n                # you can add specific format for aws here\n                'format': u\"%(asctime)s [%(levelname)-8s] %(message)s\",\n                'datefmt': \"%Y-%m-%d %H:%M:%S\"\n            },\n        },\n\n        'handlers': {\n            'watchtower': {\n                'level': 'DEBUG',\n                'class': 'watchtower.CloudWatchLogHandler',\n                         'boto3_session': boto3_session,\n                         'log_group': 'MyLogGroupName',\n                         'stream_name': 'MyStreamName',\n                'formatter': 'aws',\n            },\n        }\n        'loggers': {\n            'django': {\n                'level': 'INFO',\n                'handlers': ['watchtower'],\n                'propagate': False,\n            },\n            # add your other loggers here...\n        },\n    }\n\nUsing this configuration, every log statement from Django will be sent to Cloudwatch in the log group ``MyLogGroupName``\nunder the stream name ``MyStreamName``. Instead of setting credentials via ``AWS_ACCESS_KEY_ID`` and other variables,\nyou can also assign an IAM role to your instance and omit those parameters, prompting boto3 to ingest credentials from\ninstance metadata.\n\n(See also the [Django logging documentation](https://docs.djangoproject.com/en/dev/topics/logging/)).\n\nExamples: Querying CloudWatch logs\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\nThis section is not specific to Watchtower. It demonstrates the use of awscli and jq to read and search CloudWatch logs\non the command line.\n\nFor the Flask example above, you can retrieve your application logs with the following two commands::\n\n    aws logs get-log-events --log-group-name watchtower --log-stream-name loggable | jq '.events[].message'\n    aws logs get-log-events --log-group-name watchtower --log-stream-name werkzeug | jq '.events[].message'\n\nCloudWatch Logs supports alerting and dashboards based on `metric filters\n<http://docs.aws.amazon.com/AmazonCloudWatch/latest/DeveloperGuide/FilterAndPatternSyntax.html>`_, which are pattern\nrules that extract information from your logs and feed it to alarms and dashboard graphs. The following example shows\nlogging structured JSON data using Watchtower, setting up a metric filter to extract data from the log stream, a dashboard to\nvisualize it, and an alarm that sends an email::\n\n    TODO\n\nExamples: Python Logging Config\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nPython has the ability to provide a configuration file that can be loaded in order to separate the logging\nconfiguration from the code. Historically, Python has used the `logging.config.fileConfig` function to do\nso, however, that feature lacks the ability to use keyword args. Python 2.7 introduced a new feature to\nhandle logging that is more robust - `logging.config.dictConfig` which profiles the ability to do more\nadvanced Filters, but more importantly adds keyword args, thus allowing the `logging.config` functionality\nto instantiate Watchtower.\n\nThe following are two example YAML configuration files that can be loaded using `PyYaml`. The resulting\n`dict` object can then be loaded into `logging.config.dictConfig`. The first example is a basic example\nthat relies on the default configuration provided by `boto3`:\n\n.. code-block:: yaml\n    # Default AWS Config\n    version: 1\n    formatters:\n        json:\n            format: \"[%(asctime)s] %(process)d %(levelname)s %(name)s:%(funcName)s:%(lineno)s - %(message)s\"\n        plaintext:\n            format: \"[%(asctime)s] %(process)d %(levelname)s %(name)s:%(funcName)s:%(lineno)s - %(message)s\"\n    handlers:\n        console:\n            (): logging.StreamHandler\n            level: DEBUG\n            formatter: plaintext\n            stream: sys.stdout\n        watchtower:\n            formatter: json\n            level: DEBUG\n            (): watchtower.CloudWatchLogHandler\n            log_group: logger\n            stream_name:  loggable\n            send_interval: 1\n            create_log_group: False\n    loggers:\n        root:\n            handlers: [console, watchtower, logfile]\n        boto:\n            handlers: [console]\n        boto3:\n            handlers: [console]\n        botocore:\n            handlers: [console]\n        requests:\n            handlers: [console]\n\n\nThe above works well if you can use the default configuration, or rely on environmental variables.\nHowever, sometimes one may want to use different credentials for logging than used for other functionality;\nin this case the `boto3_profile_name` option to Watchtower can be used to profile a profile name:\n\n.. code-block:: yaml\n    # AWS Config Profile\n    version: 1\n    formatters:\n        json:\n            format: \"[%(asctime)s] %(process)d %(levelname)s %(name)s:%(funcName)s:%(lineno)s - %(message)s\"\n        plaintext:\n            format: \"[%(asctime)s] %(process)d %(levelname)s %(name)s:%(funcName)s:%(lineno)s - %(message)s\"\n    handlers:\n        console:\n            (): logging.StreamHandler\n            level: DEBUG\n            formatter: plaintext\n            stream: sys.stdout\n        watchtower:\n            formatter: json\n            level: DEBUG\n            (): watchtower.CloudWatchLogHandler\n            log_group: logger\n            stream_name:  loggable\n            boto3_profile_name: watchtowerlogger\n            send_interval: 1\n            create_log_group: False\n    loggers:\n        root:\n            handlers: [console, watchtower, logfile]\n        boto:\n            handlers: [console]\n        boto3:\n            handlers: [console]\n        botocore:\n            handlers: [console]\n        requests:\n            handlers: [console]\n\nFor the more advanced configuration, the following configuration file will profile\nthe matching credentials to the `watchtowerlogger` profile:\n\n.. code-block:: cfg\n    [profile watchtowerlogger]\n    aws_access_key_id=MyAwsAccessKey\n    aws_secret_access_key=MyAwsSecretAccessKey\n    region=us-east-1\n\nFinally, the following shows how to load the configuration into the working application:\n\n.. code-block:: python\n\n    import logging.config\n\n    import flask\n    import yaml\n\n    app = flask.Flask(\"loggable\")\n\n    @app.route('/')\n    def hello_world():\n        return 'Hello World!'\n\n    if __name__ == '__main__':\n        with open('logging.yml', 'r') as log_config:\n            config_yml = log_config.read()\n            config_dict = yaml.load(config_yml)\n            logging.config.dictConfig(config_dict)\n            app.run()\n\nAuthors\n-------\n* Andrey Kislyuk\n\nLinks\n-----\n* `Project home page (GitHub) <https://github.com/kislyuk/watchtower>`_\n* `Documentation (Read the Docs) <https://watchtower.readthedocs.io/en/latest/>`_\n* `Package distribution (PyPI) <https://pypi.python.org/pypi/watchtower>`_\n* `AWS CLI CloudWatch Logs plugin <https://pypi.python.org/pypi/awscli-cwlogs>`_\n* `Docker awslogs adapter <https://github.com/docker/docker/blob/master/daemon/logger/awslogs/cloudwatchlogs.go>`_\n\nBugs\n~~~~\nPlease report bugs, issues, feature requests, etc. on `GitHub <https://github.com/kislyuk/watchtower/issues>`_.\n\nLicense\n-------\nLicensed under the terms of the `Apache License, Version 2.0 <http://www.apache.org/licenses/LICENSE-2.0>`_.\n\n.. image:: https://travis-ci.org/kislyuk/watchtower.svg\n        :target: https://travis-ci.org/kislyuk/watchtower\n.. image:: https://codecov.io/github/kislyuk/watchtower/coverage.svg?branch=master\n        :target: https://codecov.io/github/kislyuk/watchtower?branch=master\n.. image:: https://img.shields.io/pypi/v/watchtower.svg\n        :target: https://pypi.python.org/pypi/watchtower\n.. image:: https://img.shields.io/pypi/l/watchtower.svg\n        :target: https://pypi.python.org/pypi/watchtower\n.. image:: https://readthedocs.org/projects/watchtower/badge/?version=latest\n        :target: https://watchtower.readthedocs.io/\n",
+    "description": "Watchtower: Python CloudWatch Logging\n=====================================\nWatchtower is a log handler for `Amazon Web Services CloudWatch Logs\n<https://aws.amazon.com/blogs/aws/cloudwatch-log-service/>`_.\n\nCloudWatch Logs is a log management service built into AWS. It is conceptually similar to services like Splunk and\nLoggly, but is more lightweight, cheaper, and tightly integrated with the rest of AWS.\n\nWatchtower, in turn, is a lightweight adapter between the `Python logging system\n<https://docs.python.org/library/logging.html>`_ and CloudWatch Logs. It uses the `boto3 AWS SDK\n<https://github.com/boto/boto3>`_, and lets you plug your application logging directly into CloudWatch without the need\nto install a system-wide log collector like `awscli-cwlogs <https://pypi.python.org/pypi/awscli-cwlogs>`_ and round-trip\nyour logs through the instance's syslog. It aggregates logs into batches to avoid sending an API request per each log\nmessage, while guaranteeing a delivery deadline (60 seconds by default).\n\nInstallation\n~~~~~~~~~~~~\n::\n\n    pip install watchtower\n\nSynopsis\n~~~~~~~~\nInstall `awscli <https://pypi.python.org/pypi/awscli>`_ and set your AWS credentials (run ``aws configure``).\n\n.. code-block:: python\n\n    import watchtower, logging\n    logging.basicConfig(level=logging.INFO)\n    logger = logging.getLogger(__name__)\n    logger.addHandler(watchtower.CloudWatchLogHandler())\n    logger.info(\"Hi\")\n    logger.info(dict(foo=\"bar\", details={}))\n\nAfter running the example, you can see the log output in your `AWS console\n<https://console.aws.amazon.com/cloudwatch/home>`_.\n\nExample: Flask logging with Watchtower\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n.. code-block:: python\n\n    import watchtower, flask, logging\n\n    logging.basicConfig(level=logging.INFO)\n    app = flask.Flask(\"loggable\")\n    handler = watchtower.CloudWatchLogHandler()\n    app.logger.addHandler(handler)\n    logging.getLogger(\"werkzeug\").addHandler(handler)\n\n    @app.route('/')\n    def hello_world():\n        return 'Hello World!'\n\n    if __name__ == '__main__':\n        app.run()\n\n(See also `http://flask.pocoo.org/docs/errorhandling/ <http://flask.pocoo.org/docs/errorhandling/>`_.)\n\nExample: Django logging with Watchtower\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\nThis is an example of Watchtower integration with Django. In your Django project, add the following to ``settings.py``:\n\n.. code-block:: python\n\n    from boto3.session import Session\n    \n    AWS_ACCESS_KEY_ID = 'your access key'\n    AWS_SECRET_ACCESS_KEY = 'your secret access key'\n    AWS_REGION_NAME = 'your region'\n\n    boto3_session = Session(aws_access_key_id=AWS_ACCESS_KEY_ID,\n                            aws_secret_access_key=AWS_SECRET_ACCESS_KEY,\n                            region_name=AWS_REGION_NAME)\n\n    LOGGING = {\n        'version': 1,\n        'disable_existing_loggers': False,\n        'root': {\n            'level': logging.ERROR,\n            'handlers': ['console'],\n        },\n        'formatters': {\n            'simple': {\n                'format': u\"%(asctime)s [%(levelname)-8s] %(message)s\",\n                'datefmt': \"%Y-%m-%d %H:%M:%S\"\n            },\n            'aws': {\n                # you can add specific format for aws here\n                'format': u\"%(asctime)s [%(levelname)-8s] %(message)s\",\n                'datefmt': \"%Y-%m-%d %H:%M:%S\"\n            },\n        },\n\n        'handlers': {\n            'watchtower': {\n                'level': 'DEBUG',\n                'class': 'watchtower.CloudWatchLogHandler',\n                         'boto3_session': boto3_session,\n                         'log_group': 'MyLogGroupName',\n                         'stream_name': 'MyStreamName',\n                'formatter': 'aws',\n            },\n        }\n        'loggers': {\n            'django': {\n                'level': 'INFO',\n                'handlers': ['watchtower'],\n                'propagate': False,\n            },\n            # add your other loggers here...\n        },\n    }\n\nUsing this configuration, every log statement from Django will be sent to Cloudwatch in the log group ``MyLogGroupName``\nunder the stream name ``MyStreamName``. Instead of setting credentials via ``AWS_ACCESS_KEY_ID`` and other variables,\nyou can also assign an IAM role to your instance and omit those parameters, prompting boto3 to ingest credentials from\ninstance metadata.\n\n(See also the [Django logging documentation](https://docs.djangoproject.com/en/dev/topics/logging/)).\n\nExamples: Querying CloudWatch logs\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\nThis section is not specific to Watchtower. It demonstrates the use of awscli and jq to read and search CloudWatch logs\non the command line.\n\nFor the Flask example above, you can retrieve your application logs with the following two commands::\n\n    aws logs get-log-events --log-group-name watchtower --log-stream-name loggable | jq '.events[].message'\n    aws logs get-log-events --log-group-name watchtower --log-stream-name werkzeug | jq '.events[].message'\n\nCloudWatch Logs supports alerting and dashboards based on `metric filters\n<http://docs.aws.amazon.com/AmazonCloudWatch/latest/DeveloperGuide/FilterAndPatternSyntax.html>`_, which are pattern\nrules that extract information from your logs and feed it to alarms and dashboard graphs. The following example shows\nlogging structured JSON data using Watchtower, setting up a metric filter to extract data from the log stream, a dashboard to\nvisualize it, and an alarm that sends an email::\n\n    TODO\n\nExamples: Python Logging Config\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nPython has the ability to provide a configuration file that can be loaded in order to separate the logging\nconfiguration from the code. Historically, Python has used the ``logging.config.fileConfig`` function to do\nso, however, that feature lacks the ability to use keyword args. Python 2.7 introduced a new feature to\nhandle logging that is more robust - ``logging.config.dictConfig`` which profiles the ability to do more\nadvanced Filters, but more importantly adds keyword args, thus allowing the ``logging.config`` functionality\nto instantiate Watchtower.\n\nThe following are two example YAML configuration files that can be loaded using ``PyYaml``. The resulting\n``dict`` object can then be loaded into ``logging.config.dictConfig``. The first example is a basic example\nthat relies on the default configuration provided by ``boto3``:\n\n.. code-block:: yaml\n\n    # Default AWS Config\n    version: 1\n    formatters:\n        json:\n            format: \"[%(asctime)s] %(process)d %(levelname)s %(name)s:%(funcName)s:%(lineno)s - %(message)s\"\n        plaintext:\n            format: \"[%(asctime)s] %(process)d %(levelname)s %(name)s:%(funcName)s:%(lineno)s - %(message)s\"\n    handlers:\n        console:\n            (): logging.StreamHandler\n            level: DEBUG\n            formatter: plaintext\n            stream: sys.stdout\n        watchtower:\n            formatter: json\n            level: DEBUG\n            (): watchtower.CloudWatchLogHandler\n            log_group: logger\n            stream_name:  loggable\n            send_interval: 1\n            create_log_group: False\n    loggers:\n        root:\n            handlers: [console, watchtower, logfile]\n        boto:\n            handlers: [console]\n        boto3:\n            handlers: [console]\n        botocore:\n            handlers: [console]\n        requests:\n            handlers: [console]\n\n\nThe above works well if you can use the default configuration, or rely on environmental variables.\nHowever, sometimes one may want to use different credentials for logging than used for other functionality;\nin this case the ``boto3_profile_name`` option to Watchtower can be used to profile a profile name:\n\n.. code-block:: yaml\n\n    # AWS Config Profile\n    version: 1\n    formatters:\n        json:\n            format: \"[%(asctime)s] %(process)d %(levelname)s %(name)s:%(funcName)s:%(lineno)s - %(message)s\"\n        plaintext:\n            format: \"[%(asctime)s] %(process)d %(levelname)s %(name)s:%(funcName)s:%(lineno)s - %(message)s\"\n    handlers:\n        console:\n            (): logging.StreamHandler\n            level: DEBUG\n            formatter: plaintext\n            stream: sys.stdout\n        watchtower:\n            formatter: json\n            level: DEBUG\n            (): watchtower.CloudWatchLogHandler\n            log_group: logger\n            stream_name:  loggable\n            boto3_profile_name: watchtowerlogger\n            send_interval: 1\n            create_log_group: False\n    loggers:\n        root:\n            handlers: [console, watchtower, logfile]\n        boto:\n            handlers: [console]\n        boto3:\n            handlers: [console]\n        botocore:\n            handlers: [console]\n        requests:\n            handlers: [console]\n\nFor the more advanced configuration, the following configuration file will profile\nthe matching credentials to the ``watchtowerlogger`` profile:\n\n.. code-block:: cfg\n\n    [profile watchtowerlogger]\n    aws_access_key_id=MyAwsAccessKey\n    aws_secret_access_key=MyAwsSecretAccessKey\n    region=us-east-1\n\nFinally, the following shows how to load the configuration into the working application:\n\n.. code-block:: python\n\n    import logging.config\n\n    import flask\n    import yaml\n\n    app = flask.Flask(\"loggable\")\n\n    @app.route('/')\n    def hello_world():\n        return 'Hello World!'\n\n    if __name__ == '__main__':\n        with open('logging.yml', 'r') as log_config:\n            config_yml = log_config.read()\n            config_dict = yaml.load(config_yml)\n            logging.config.dictConfig(config_dict)\n            app.run()\n\nAuthors\n-------\n* Andrey Kislyuk\n\nLinks\n-----\n* `Project home page (GitHub) <https://github.com/kislyuk/watchtower>`_\n* `Documentation (Read the Docs) <https://watchtower.readthedocs.io/en/latest/>`_\n* `Package distribution (PyPI) <https://pypi.python.org/pypi/watchtower>`_\n* `AWS CLI CloudWatch Logs plugin <https://pypi.python.org/pypi/awscli-cwlogs>`_\n* `Docker awslogs adapter <https://github.com/docker/docker/blob/master/daemon/logger/awslogs/cloudwatchlogs.go>`_\n\nBugs\n~~~~\nPlease report bugs, issues, feature requests, etc. on `GitHub <https://github.com/kislyuk/watchtower/issues>`_.\n\nLicense\n-------\nLicensed under the terms of the `Apache License, Version 2.0 <http://www.apache.org/licenses/LICENSE-2.0>`_.\n\n.. image:: https://travis-ci.org/kislyuk/watchtower.svg\n        :target: https://travis-ci.org/kislyuk/watchtower\n.. image:: https://codecov.io/github/kislyuk/watchtower/coverage.svg?branch=master\n        :target: https://codecov.io/github/kislyuk/watchtower?branch=master\n.. image:: https://img.shields.io/pypi/v/watchtower.svg\n        :target: https://pypi.python.org/pypi/watchtower\n.. image:: https://img.shields.io/pypi/l/watchtower.svg\n        :target: https://pypi.python.org/pypi/watchtower\n.. image:: https://readthedocs.org/projects/watchtower/badge/?version=latest\n        :target: https://watchtower.readthedocs.io/\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -30,11 +30,11 @@
     "name": "watchtower",
     "platform": "MacOS X",
     "project_url": "https://pypi.org/project/watchtower/",
-    "release_url": "https://pypi.org/project/watchtower/0.4.1/",
+    "release_url": "https://pypi.org/project/watchtower/0.5.2/",
     "requires_dist": [],
     "requires_python": "",
     "summary": "Python CloudWatch Logging",
-    "version": "0.4.1"
+    "version": "0.5.2"
   },
   "releases": {
     "0.1.1": [],
@@ -45,7 +45,7 @@
           "md5": "c5457146ad9caeea7d4625f6ce305ee6",
           "sha256": "d0add19a3af7faa3d1f24364d2c17e2f48d3be63df445cd57c6ab5487fa8e50a"
         },
-        "downloads": 784,
+        "downloads": -1,
         "filename": "watchtower-0.1.2-py2.py3-none-any.whl",
         "has_sig": true,
         "md5_digest": "c5457146ad9caeea7d4625f6ce305ee6",
@@ -61,7 +61,7 @@
           "md5": "886a12a279fe87c50138b9e69e571ec3",
           "sha256": "e406581dddad32650ceaeb068c0d3e18dd4facea0bb3a9aea077bb35c2724a05"
         },
-        "downloads": 598,
+        "downloads": -1,
         "filename": "watchtower-0.1.2.tar.gz",
         "has_sig": true,
         "md5_digest": "886a12a279fe87c50138b9e69e571ec3",
@@ -79,7 +79,7 @@
           "md5": "39f97b01851a9bb75960e1b70b7b91e6",
           "sha256": "2c7d9303c71a38418115c27a09f4e56689921a5afbcb2ed0aa4abd0135c75607"
         },
-        "downloads": 7779,
+        "downloads": -1,
         "filename": "watchtower-0.1.3-py2.py3-none-any.whl",
         "has_sig": true,
         "md5_digest": "39f97b01851a9bb75960e1b70b7b91e6",
@@ -95,7 +95,7 @@
           "md5": "a99ff270886334749d422598ecd2c084",
           "sha256": "4189ea5867a697296cf28442998c1eab39d9e7978f16dbc658d75813d7ab4baf"
         },
-        "downloads": 578,
+        "downloads": -1,
         "filename": "watchtower-0.1.3.tar.gz",
         "has_sig": true,
         "md5_digest": "a99ff270886334749d422598ecd2c084",
@@ -113,7 +113,7 @@
           "md5": "b3861393684e9ec8ef87e055395565d8",
           "sha256": "287c45d3cbe471b94787d1677fd5067187dab5291b7a7a2e76bf14171335c3db"
         },
-        "downloads": 755,
+        "downloads": -1,
         "filename": "watchtower-0.1.4-py2.py3-none-any.whl",
         "has_sig": true,
         "md5_digest": "b3861393684e9ec8ef87e055395565d8",
@@ -129,7 +129,7 @@
           "md5": "09bea606ed14fb93db13c52ab53a2319",
           "sha256": "0b7f430980b66ada47bb6d9f2912ed676c6a4a0d074eb715ce9210c001a5584d"
         },
-        "downloads": 447,
+        "downloads": -1,
         "filename": "watchtower-0.1.4.tar.gz",
         "has_sig": true,
         "md5_digest": "09bea606ed14fb93db13c52ab53a2319",
@@ -147,7 +147,7 @@
           "md5": "ef42e302cce2994519915eedaa970eb5",
           "sha256": "66c1e03950015b650bbd46a0d38aa01eed5351d7ecbba98b5b488afff8d30fbf"
         },
-        "downloads": 380,
+        "downloads": -1,
         "filename": "watchtower-0.1.5-py2.py3-none-any.whl",
         "has_sig": true,
         "md5_digest": "ef42e302cce2994519915eedaa970eb5",
@@ -163,7 +163,7 @@
           "md5": "68c85cf1fdae1b53f7c0a7b7d9ed2f95",
           "sha256": "834f072f8059ddcea46bfb20392d09d3d0028744e2126c5ed2e0be1d7ec208ed"
         },
-        "downloads": 397,
+        "downloads": -1,
         "filename": "watchtower-0.1.5.tar.gz",
         "has_sig": true,
         "md5_digest": "68c85cf1fdae1b53f7c0a7b7d9ed2f95",
@@ -181,7 +181,7 @@
           "md5": "e5e7c98c6ac0ae1ba762c4a11683381f",
           "sha256": "e46d722bc8aa0640eda35c563419f36ee2186919d01f3b2c8f276a23e3f1f337"
         },
-        "downloads": 3538,
+        "downloads": -1,
         "filename": "watchtower-0.1.6-py2.py3-none-any.whl",
         "has_sig": true,
         "md5_digest": "e5e7c98c6ac0ae1ba762c4a11683381f",
@@ -197,7 +197,7 @@
           "md5": "e6ff8dfc149e94aada9d464be23eadee",
           "sha256": "8ee1a67d761971812b02ce5b98d6fbd486e792b7726cfbf64be146baf3fcdc51"
         },
-        "downloads": 427,
+        "downloads": -1,
         "filename": "watchtower-0.1.6.tar.gz",
         "has_sig": true,
         "md5_digest": "e6ff8dfc149e94aada9d464be23eadee",
@@ -215,7 +215,7 @@
           "md5": "6181512c054831e6b11e813dcf17406c",
           "sha256": "1d6c9c8539e48d49563444396a73a6c63bef3909d70298864bbb419fcc340931"
         },
-        "downloads": 113,
+        "downloads": -1,
         "filename": "watchtower-0.1.7.tar.gz",
         "has_sig": true,
         "md5_digest": "6181512c054831e6b11e813dcf17406c",
@@ -233,7 +233,7 @@
           "md5": "6df62edfd14c3383541075d0405927ae",
           "sha256": "c82c5a9415ca32566f6affd57ac4906e4742cde3c68791c7c0b08a3ab2060499"
         },
-        "downloads": 432,
+        "downloads": -1,
         "filename": "watchtower-0.1.8-py2.py3-none-any.whl",
         "has_sig": true,
         "md5_digest": "6df62edfd14c3383541075d0405927ae",
@@ -249,7 +249,7 @@
           "md5": "0440f5d2d320b701e8bbc2e4a15a2077",
           "sha256": "b8889baa0cb6be7b8edf3231f4fd9f5420e0cfc14928fdaa720fa1f93749c4de"
         },
-        "downloads": 113,
+        "downloads": -1,
         "filename": "watchtower-0.1.8.tar.gz",
         "has_sig": true,
         "md5_digest": "0440f5d2d320b701e8bbc2e4a15a2077",
@@ -267,7 +267,7 @@
           "md5": "8814a9c8cababaf56fb1a08c6459e1ef",
           "sha256": "0148a2d635bb47c39090cca3e1444d330364d160a7239e17eb10750a15795558"
         },
-        "downloads": 12243,
+        "downloads": -1,
         "filename": "watchtower-0.2.0-py2.py3-none-any.whl",
         "has_sig": true,
         "md5_digest": "8814a9c8cababaf56fb1a08c6459e1ef",
@@ -283,7 +283,7 @@
           "md5": "7cc7dee57e2fa747183cd1fcc53a6cf7",
           "sha256": "4c3344884d9d9c2fa30e91e22c7bab0be8b363b8406629b391b110e0587db0cf"
         },
-        "downloads": 285,
+        "downloads": -1,
         "filename": "watchtower-0.2.0.tar.gz",
         "has_sig": true,
         "md5_digest": "7cc7dee57e2fa747183cd1fcc53a6cf7",
@@ -301,7 +301,7 @@
           "md5": "fcd046718ce0c51e1e3558c6f9c06a21",
           "sha256": "838d0387da0ee4a850ca9e8c17bf979c52f75e267b81ad2a1e529d83af12eb08"
         },
-        "downloads": 5688,
+        "downloads": -1,
         "filename": "watchtower-0.3.3-py2.py3-none-any.whl",
         "has_sig": true,
         "md5_digest": "fcd046718ce0c51e1e3558c6f9c06a21",
@@ -317,7 +317,7 @@
           "md5": "893663ff8ba23f2aabee9edaa95bed6b",
           "sha256": "5fc20e03d3795ec9a5d17729f146ffbc5fac5c3ca77e44797d381adf0d55d344"
         },
-        "downloads": 251,
+        "downloads": -1,
         "filename": "watchtower-0.3.3.tar.gz",
         "has_sig": true,
         "md5_digest": "893663ff8ba23f2aabee9edaa95bed6b",
@@ -335,7 +335,7 @@
           "md5": "86b0ceac71a197e928a40062dfafe7eb",
           "sha256": "a367b50707a97578e8657f47b933c4bfc9a493dc29bd804284c45450300fb50f"
         },
-        "downloads": 599,
+        "downloads": -1,
         "filename": "watchtower-0.3.5-py2.py3-none-any.whl",
         "has_sig": true,
         "md5_digest": "86b0ceac71a197e928a40062dfafe7eb",
@@ -351,7 +351,7 @@
           "md5": "72b3559f2128b1a7e87f45ffa1e1f52a",
           "sha256": "2f1bc83c098cba5f71d10b46e9c9b0942028662337babb6b32e4fb057c544aeb"
         },
-        "downloads": 14,
+        "downloads": -1,
         "filename": "watchtower-0.3.5.tar.gz",
         "has_sig": true,
         "md5_digest": "72b3559f2128b1a7e87f45ffa1e1f52a",
@@ -369,7 +369,7 @@
           "md5": "14332d6dcf1632b052e0c712c8ba57ce",
           "sha256": "01c9c51fa6956ab9e48283254ab8a643853b4c41d396934a4f90eddc4a94c760"
         },
-        "downloads": 478,
+        "downloads": -1,
         "filename": "watchtower-0.3.6-py2.py3-none-any.whl",
         "has_sig": true,
         "md5_digest": "14332d6dcf1632b052e0c712c8ba57ce",
@@ -385,7 +385,7 @@
           "md5": "e5eac8630295fe1473d72547f20a0a7b",
           "sha256": "ca2341a5216610239e01ffc5eb7887916377a58f68cc6afa04e75404a7e4e1b6"
         },
-        "downloads": 106,
+        "downloads": -1,
         "filename": "watchtower-0.3.6.tar.gz",
         "has_sig": true,
         "md5_digest": "e5eac8630295fe1473d72547f20a0a7b",
@@ -403,7 +403,7 @@
           "md5": "e018b7fd336e73e6e23a6417ce0bbcf0",
           "sha256": "11dfad2462ba222fda78c00c1e679d56e730e0ccc132740af67ed8378c7ee1d3"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "watchtower-0.4.0-py2.py3-none-any.whl",
         "has_sig": true,
         "md5_digest": "e018b7fd336e73e6e23a6417ce0bbcf0",
@@ -419,7 +419,7 @@
           "md5": "28b7e73729f9d11f05137d7d262541cf",
           "sha256": "4d827b30bd29735ec21b0f698f8db641ae7bcc04e3d914973c027f0a111a9ac9"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "watchtower-0.4.0.tar.gz",
         "has_sig": true,
         "md5_digest": "28b7e73729f9d11f05137d7d262541cf",
@@ -437,7 +437,7 @@
           "md5": "cdf0962fb21e5ecc258a73ce291e8dfa",
           "sha256": "d62ba6161ae686c83756cba15a0ef9b7e970d56ed3ee8065d9e548238427eb67"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "watchtower-0.4.1-py2.py3-none-any.whl",
         "has_sig": true,
         "md5_digest": "cdf0962fb21e5ecc258a73ce291e8dfa",
@@ -453,7 +453,7 @@
           "md5": "b43ff71b50d217719e099283c5a6eafe",
           "sha256": "2ee67e1d967f9c0a82349be717f4d858ae10133c475f7ed3564092e365bc6afc"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "watchtower-0.4.1.tar.gz",
         "has_sig": true,
         "md5_digest": "b43ff71b50d217719e099283c5a6eafe",
@@ -463,40 +463,142 @@
         "upload_time": "2017-09-20T20:31:11",
         "url": "https://files.pythonhosted.org/packages/4b/03/27e6b189c28b5f9e10b3662282d0c273a0ce125acef01cabc90d6f07fa16/watchtower-0.4.1.tar.gz"
       }
+    ],
+    "0.5.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0094e6aa38b614a5a0f01e1a0e3a2b35",
+          "sha256": "ef57fe157bcea2d7608ec25de4b5feab2194c458404f7c2f17a0647d066c4497"
+        },
+        "downloads": -1,
+        "filename": "watchtower-0.5.0-py2.py3-none-any.whl",
+        "has_sig": true,
+        "md5_digest": "0094e6aa38b614a5a0f01e1a0e3a2b35",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 12645,
+        "upload_time": "2017-11-09T20:15:20",
+        "url": "https://files.pythonhosted.org/packages/09/91/7c707fee9c8677a9e86a6fa9d61d2ef0ac478c0857ad3b7a0e71e07b0a89/watchtower-0.5.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "75771193d382ed182385afa6d63b9956",
+          "sha256": "96f9e9f121c9c1f910e8e6326f0b144f43c238bf7d5610227936ac652500e847"
+        },
+        "downloads": -1,
+        "filename": "watchtower-0.5.0.tar.gz",
+        "has_sig": true,
+        "md5_digest": "75771193d382ed182385afa6d63b9956",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 12841,
+        "upload_time": "2017-11-09T20:15:18",
+        "url": "https://files.pythonhosted.org/packages/67/8d/4fbd4e56182a1b7c4d28824b28dd7fcd03826a80d27d95029126ad7c9cfc/watchtower-0.5.0.tar.gz"
+      }
+    ],
+    "0.5.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "fcd5a13d28e6e29807dc615f4971538d",
+          "sha256": "8eff2d52156c9a2f5ec35ec559456db04ce800774010c75c03761017c81a52d5"
+        },
+        "downloads": -1,
+        "filename": "watchtower-0.5.1-py2.py3-none-any.whl",
+        "has_sig": true,
+        "md5_digest": "fcd5a13d28e6e29807dc615f4971538d",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 12653,
+        "upload_time": "2017-11-09T20:22:34",
+        "url": "https://files.pythonhosted.org/packages/31/ae/48f351144bcd2b559cd084ca4ab3f87221c9f599e831fa9db77f2ef46bb2/watchtower-0.5.1-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "86dffcdcc14b5232161afa5a2b6eb1e2",
+          "sha256": "108523187e8781ab75670ac8bd7f1c2cfbc82a5360be1f86387a6d93b7dc4514"
+        },
+        "downloads": -1,
+        "filename": "watchtower-0.5.1.tar.gz",
+        "has_sig": true,
+        "md5_digest": "86dffcdcc14b5232161afa5a2b6eb1e2",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 12849,
+        "upload_time": "2017-11-09T20:22:30",
+        "url": "https://files.pythonhosted.org/packages/bb/4c/792bdb16298f47ba1cbee9a13dd2f4ef35e8def34a4fbd746ee33e6d6f9d/watchtower-0.5.1.tar.gz"
+      }
+    ],
+    "0.5.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a2928744e1047ba9cc8244c771879a76",
+          "sha256": "c9ebfb8c2fb7dd49306418166921fb9184341fd28c096adc8955a949bdf0cde9"
+        },
+        "downloads": -1,
+        "filename": "watchtower-0.5.2-py2.py3-none-any.whl",
+        "has_sig": true,
+        "md5_digest": "a2928744e1047ba9cc8244c771879a76",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 12667,
+        "upload_time": "2017-11-09T20:30:43",
+        "url": "https://files.pythonhosted.org/packages/8c/f9/ee3378e20ec3c0708fd4b5f209c27144d55beeff7b1745d2c20542496dd4/watchtower-0.5.2-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "dbab534b470f325bcb8a67ad0655b4dd",
+          "sha256": "a47aa79c15f8efb7726bb2b209e2f5d15b830148806b8f1d242353f90375203a"
+        },
+        "downloads": -1,
+        "filename": "watchtower-0.5.2.tar.gz",
+        "has_sig": true,
+        "md5_digest": "dbab534b470f325bcb8a67ad0655b4dd",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 12870,
+        "upload_time": "2017-11-09T20:30:40",
+        "url": "https://files.pythonhosted.org/packages/9a/bb/afd70dba609f8f1ec891dfb90ecfa293f7398fe641b723eda21f635837e0/watchtower-0.5.2.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "cdf0962fb21e5ecc258a73ce291e8dfa",
-        "sha256": "d62ba6161ae686c83756cba15a0ef9b7e970d56ed3ee8065d9e548238427eb67"
+        "md5": "a2928744e1047ba9cc8244c771879a76",
+        "sha256": "c9ebfb8c2fb7dd49306418166921fb9184341fd28c096adc8955a949bdf0cde9"
       },
-      "downloads": 0,
-      "filename": "watchtower-0.4.1-py2.py3-none-any.whl",
+      "downloads": -1,
+      "filename": "watchtower-0.5.2-py2.py3-none-any.whl",
       "has_sig": true,
-      "md5_digest": "cdf0962fb21e5ecc258a73ce291e8dfa",
+      "md5_digest": "a2928744e1047ba9cc8244c771879a76",
       "packagetype": "bdist_wheel",
       "python_version": "2.7",
-      "size": 12640,
-      "upload_time": "2017-09-20T20:31:13",
-      "url": "https://files.pythonhosted.org/packages/3f/f2/46be1cdb0c5c60983dac1d8da1f8b2f12b290fb08f007b46fa17997bc627/watchtower-0.4.1-py2.py3-none-any.whl"
+      "size": 12667,
+      "upload_time": "2017-11-09T20:30:43",
+      "url": "https://files.pythonhosted.org/packages/8c/f9/ee3378e20ec3c0708fd4b5f209c27144d55beeff7b1745d2c20542496dd4/watchtower-0.5.2-py2.py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "b43ff71b50d217719e099283c5a6eafe",
-        "sha256": "2ee67e1d967f9c0a82349be717f4d858ae10133c475f7ed3564092e365bc6afc"
+        "md5": "dbab534b470f325bcb8a67ad0655b4dd",
+        "sha256": "a47aa79c15f8efb7726bb2b209e2f5d15b830148806b8f1d242353f90375203a"
       },
-      "downloads": 0,
-      "filename": "watchtower-0.4.1.tar.gz",
+      "downloads": -1,
+      "filename": "watchtower-0.5.2.tar.gz",
       "has_sig": true,
-      "md5_digest": "b43ff71b50d217719e099283c5a6eafe",
+      "md5_digest": "dbab534b470f325bcb8a67ad0655b4dd",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 12833,
-      "upload_time": "2017-09-20T20:31:11",
-      "url": "https://files.pythonhosted.org/packages/4b/03/27e6b189c28b5f9e10b3662282d0c273a0ce125acef01cabc90d6f07fa16/watchtower-0.4.1.tar.gz"
+      "size": 12870,
+      "upload_time": "2017-11-09T20:30:40",
+      "url": "https://files.pythonhosted.org/packages/9a/bb/afd70dba609f8f1ec891dfb90ecfa293f7398fe641b723eda21f635837e0/watchtower-0.5.2.tar.gz"
     }
   ]
 }
