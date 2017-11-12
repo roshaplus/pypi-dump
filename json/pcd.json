@@ -1,0 +1,85 @@
+{
+  "info": {
+    "author": "Peter Varo",
+    "author_email": "hello@petervaro.com",
+    "bugtrack_url": null,
+    "classifiers": [],
+    "description": "[![pipeline status][4]][5]\n\n![pcd][0]\n\nPython Contract Decorators\n==========================\n\n- [Abstract](#abstract)\n- [Install](#install)\n- [Documentation](#documentation)\n- [Performance](#performance)\n- [Testing](#testing)\n- [License](#license)\n\n\nAbstract\n--------\n\nContract programming can boost performance, increase self-documentation coverage\nand all in all is a useful code *hardening* technique.  The main principle is\nthat all components in a program should *agree* on how they are interacting with\neach other.  Therefore instead of having isolated components which all have to\nguarantee their own correctness, with contract programming entire blocks of\ncomponents guarantee their correctness as a unit.\n\nThough Python is not supporting contracts natively as a language feature, there\nare several libraries out there trying to add the same functionality to Python.\nSadly they are either broken, or incomplete, or extremely heavy, or simply just\nreinventing the wheel by introducing foreign syntax to Python.  Fortunately\nthere is almost always a light and easy way to do things in Python, and that is\nexactly what `pcd` is offering.\n\nAnyway, enough of the abstract *mumbo-jumbo*, let's start talking about how it\nworks, shall we?  As usual, it is easier to understand what is going on via dead\nsimple and dummy examples.\n\nSo, let's say we have the following setup:\n\n```python\ndef get_user_input():\n    input = {}\n    while True:\n        try:\n            key, value = raw_input('<key>,<value> or <return>: ').split(',')\n            input[key] = value\n        except ValueError:\n            break\n    return process_input(input)\n\ndef process_input(input):\n    cleaned = {}\n    for key, value in input.items():\n        cleaned[clean_value(key)] = clean_value(value)\n    return cleaned\n\ndef clean_value(value):\n    return value.strip()\n```\n\nIf we want to make this safer, and the components more reusable for other\ncomponents, the main approach would be hardening each component by introducing\nerror handling in each function, like so:\n\n```python\ndef get_user_input():\n    input = {}\n    while True:\n        try:\n            key, value = raw_input('<key>,<value> or <return>: ').split(',')\n            input[key] = value\n        except ValueError:\n            break\n    # If something went wrong processing inputs\n    try:\n        return process_input(input)\n    except TypeError:\n        return {}\n\ndef process_input(input):\n    cleaned = {}\n    # If input is not a dict-like object\n    try:\n        for key, value in input.items():\n            try:\n                cleaned[clean_value(key)] = clean_value(value)\n            except TypeError:\n                continue\n    except AttributeError:\n        raise TypeError('Invalid input type')\n    return cleaned\n\ndef clean_value(value):\n    # If value is not an str-like object\n    try:\n        return value.strip()\n    except AttributeError:\n        raise TypeError('Invalid value type')\n```\n\nNow, this approach have two downsides.  On one hand, the code is now cluttered,\nbecause all the error checkings are spread across the functions, making it\nharder to understand what the exact problems each of the functions are\ntrying to solve.  On the other hand the introduced error handling mechanism\ncauses unnecessary overhead (and sometimes even redundant checkings in seemingly\nunrelated places), that is, the checks are running regardless of the correctness\nof the input data which may already have been checked.\n\nThis is where contract programming comes in!  If we can make sure, that the\ntop-level component which is using the other two components can guarentee the\ncorrectness of the inputs, it is completely unnecessary to introduce the above\nshown error handling:\n\n```python\nfrom pcd import contract\n\n@contract(post=lambda r: isinstance(r, dict))\ndef get_user_input():\n    input = {}\n    while True:\n        try:\n            key, value = raw_input('<key>,<value> or <return>: ').split(',')\n            input[key] = value\n        except ValueError:\n            break\n    return process_input(input)\n\n@contract(pre=lambda: isinstance(input, dict),\n          post=lambda r: isinstance(r, dict))\ndef process_input(input):\n    cleaned = {}\n    for key, value in input.items():\n        cleaned[clean_value(key)] = clean_value(value)\n    return cleaned\n\n@contract(pre=lambda: isinstance(value, str) or\n                      isinstance(value, unicode))\ndef clean_value(value):\n    return value.strip()\n```\n\nThe result is much cleaner, easier to read and understand, and best of all at\nthe same time it is also conditionally there, and can be removed without\ntouching the code again.  So, after heavily testing the program with the\ncontracts enabled, the application can be optimised greatly by stripping the\ndecorators out.  During the development phase, if another component wants to use\nan already *contracted* one then that component has to respect its contracts,\nwhich is exactly what the decorator ensures.\n\n> **Note:** `pcd` currently only supports pre- and postconditions, but later on\n> it will introduce *invariants* as well.\n\n> For further info on contract programming, read this [Wikipedia][1] article.\n\nInstall\n-------\n\n```bash\npip install pcd\n```\n\nAfter the package has been installed import and use it:\n\n```\nfrom pcd import contract\n```\n\nFor development, clone the [git repository][2] and install the requirements:\n\n```bash\npip install -r requirements.txt\n```\n\nTo run the tests use `pytest`:\n\n```bash\npytest tests.py\n```\n\n\nDocumentation\n-------------\n\nThe `pcd` module defines the following functions:\n\n<pre><code><b>contract</b><i>(</i><b>pre</b>=[<i>callable</i> or <i>iterable of callables</i>],\n         <b>post</b>=[<i>callable</i> or <i>iterable of callables</i>],\n         <b>mut</b>=[<i>callable</i> or <i>iterable of callables</i>]<i>)</i></code></pre>\n\nThe `pre` should contain all the *preconditions* of the decorated function.\nEach *callable* takes no argument, and can use the same argument names that are\ndefined by the decorated function.  Every *callable* see all arguments.\n\nThe `post` should contain all the *postconditions* of the decorated function.\nEach *callable* takes one argument which can be named freely.  This argument\nwill contain the value returned by the decorated function.  Every *callable*\nsee all of the arguments of the decorated functions as well.\n\nThe `mut` should contain all the *postconditions* of the *mutable* arguments.\nThis can be very useful in case the decorated function has side effects via its\narguments.  Each *callable* takes no argument, and can use the same argument\nnames that are defined by the decorated function.  The checks are called after\nthe function returned.  Every *callable* see all arguments.\n\nIf `__debug__` is `True` then `contract` has no effect.\n\n- - -\n\nRunning the program in a *regular* fashion causes the `contract` to kick in.  To\nremove the checks, run the program with optimisations:\n\n```bash\n$ python -O sample.py\n```\n\n- - -\n\n> **WARNING!** One should never change the arguments or the return value of the\n> decorated function inside the conditions of the `contract`, as those may be\n> mutable values, therefore removing the contracts will alter the behaviour of\n> the function and may lead to unexpected behaviour!\n\n\nPerformance\n-----------\n\nInvoking a function with or without the `contract` decorator by running python\nwith the `-O` (optimisation) flag has asbolutely no performance penalty. The\nexamples in the `perf.py` shows that both functions have the same amount\nof bytecode instructions and their execution times are the same as well.\n\nRunning these functions with simple `assert`s instead while `__debug__` is\n`True` is course faster than any other execution due to the argument handling\nand injection that is done by the `contract` decorator.  However doing so makes\nit hard in most cases to check the return value and/or side effects of the\ndecorated function, and `contract` is a convenient way of doing that.\n\n\nTesting\n-------\n\nContract programming plays nicely with unit testing.  As a matter of fact it is\nhighly recommended to test the contracts, and the generic behaviour of the code\ncomponent as one would do anyway:\n\n```python\nfrom pcd import contract\nfrom pytest import raises\n\n@contract(pre=lambda: len(name) > 0)\ndef store_name(name):\n    #\n    # Normalise and store value ...\n    #\n\n    # Return the length of the actual value being stored\n    return stored_length\n\ndef test_store_name():\n    # Check constraints of the contract\n    if __debug__:\n        with raises(AssertionError):\n            store_name('')\n\n    # Check regular behaviour on correct data\n    assert srore_name('hello') == 5\n```\n\n\nLicense\n-------\n\nCopyright &copy; 2017 [Peter Varo][3]\n\nThis program is free software: you can redistribute it and/or modify\nit under the terms of the GNU Lesser General Public License as published by\nthe Free Software Foundation, either version 3 of the License, or\n(at your option) any later version.\n\nThis program is distributed in the hope that it will be useful,\nbut WITHOUT ANY WARRANTY; without even the implied warranty of\nMERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the\nGNU Lesser General Public License for more details.\n\nYou should have received a copy of the GNU Lesser General Public License\nalong with this program.  If not, see http://www.gnu.org/licenses\n\n- - -\n\nCopyright &copy; 2017 [Peter Varo][3]\n\nThe logo is licensed under a [Creative Commons Attribution-ShareAlike 4.0\nInternational License][6].\n\n[![license][7]][6]\n\n[0]: img/logo.png?raw=true \"pcd\"\n[1]: https://en.wikipedia.org/wiki/Design_by_contract\n[2]: https://gitlab.com/petervaro/pcd\n[3]: wwww.petervaro.com\n[4]: https://gitlab.com/petervaro/pcd/badges/master/pipeline.svg\n[5]: https://gitlab.com/petervaro/pcd/commits/master\n[6]: https://creativecommons.org/licenses/by-sa/4.0\n[7]: https://i.creativecommons.org/l/by-sa/4.0/80x15.png",
+    "docs_url": null,
+    "download_url": "https://github.com/petervaro/pcd/archive/0.1.2.tar.gz",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/petervaro/pcd",
+    "keywords": "contract,design,testing",
+    "license": "LGPL-3.0",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "pcd",
+    "platform": "",
+    "project_url": "https://pypi.org/project/pcd/",
+    "release_url": "https://pypi.org/project/pcd/0.1.2/",
+    "requires_dist": [],
+    "requires_python": "",
+    "summary": "Python Contract Decorators",
+    "version": "0.1.2"
+  },
+  "releases": {
+    "0.1.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "fa74e07ebf68f9b8a1a001f26d435f79",
+          "sha256": "bbe3593679f69c9397fb2a7460a049f7842cd3c0b76891ebd5e38f5ebb85e1b1"
+        },
+        "downloads": -1,
+        "filename": "pcd-0.1.1.tar.gz",
+        "has_sig": true,
+        "md5_digest": "fa74e07ebf68f9b8a1a001f26d435f79",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 6249,
+        "upload_time": "2017-11-12T11:56:22",
+        "url": "https://files.pythonhosted.org/packages/75/b1/284c1b846e95d7c38b04ec06981ac1331aee39bb648ab73a9e08c99ed14a/pcd-0.1.1.tar.gz"
+      }
+    ],
+    "0.1.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "012f6ab04dcdfd2d4d7ac37fc6955957",
+          "sha256": "12dc49f33e2adc0551ca5b0fbdd00d39178b6d3c21a3129c43413e83fd0e0e78"
+        },
+        "downloads": -1,
+        "filename": "pcd-0.1.2.tar.gz",
+        "has_sig": true,
+        "md5_digest": "012f6ab04dcdfd2d4d7ac37fc6955957",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 34980,
+        "upload_time": "2017-11-12T12:19:48",
+        "url": "https://files.pythonhosted.org/packages/05/6a/eb40e94a57be04bf36ca52f57fb8fdd29d16198e2f4479442eb32a0283d6/pcd-0.1.2.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "012f6ab04dcdfd2d4d7ac37fc6955957",
+        "sha256": "12dc49f33e2adc0551ca5b0fbdd00d39178b6d3c21a3129c43413e83fd0e0e78"
+      },
+      "downloads": -1,
+      "filename": "pcd-0.1.2.tar.gz",
+      "has_sig": true,
+      "md5_digest": "012f6ab04dcdfd2d4d7ac37fc6955957",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 34980,
+      "upload_time": "2017-11-12T12:19:48",
+      "url": "https://files.pythonhosted.org/packages/05/6a/eb40e94a57be04bf36ca52f57fb8fdd29d16198e2f4479442eb32a0283d6/pcd-0.1.2.tar.gz"
+    }
+  ]
+}
