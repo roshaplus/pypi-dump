@@ -8,7 +8,7 @@
       "Intended Audience :: Developers",
       "Programming Language :: Python :: 3"
     ],
-    "description": "A Python structured logger for Fluentd\n======================================\n\nWARNING: This is a fork of the https://github.com/fluent/fluent-logger-python\nproject to work with asyncio.\n\n\nMany web/mobile applications generate huge amount of event logs (c,f.\nlogin, logout, purchase, follow, etc). To analyze these event logs could\nbe really valuable for improving the service. However, the challenge is\ncollecting these logs easily and reliably.\n\n`Fluentd <https://github.com/fluent/fluentd>`__ solves that problem by\nhaving: easy installation, small footprint, plugins, reliable buffering,\nlog forwarding, etc.\n\n**aiofluent** is a Python library, to record the events from\nPython application.\n\nRequirements\n------------\n\n-  Python 3.5 or greater\n- ``msgpack-python``\n\nInstallation\n------------\n\nThis library is distributed as 'aiofluent' python package. Please\nexecute the following command to install it.\n\n.. code:: sh\n\n    $ pip install aiofluent\n\nConfiguration\n-------------\n\nFluentd daemon must be launched with a tcp source configuration:\n\n::\n\n    <source>\n      type forward\n      port 24224\n    </source>\n\nTo quickly test your setup, add a matcher that logs to the stdout:\n\n::\n\n    <match app.**>\n      type stdout\n    </match>\n\nUsage\n-----\n\nFluentSender Interface\n~~~~~~~~~~~~~~~~~~~~~~\n\n`sender.FluentSender` is a structured event logger for Fluentd.\n\nBy default, the logger assumes fluentd daemon is launched locally. You\ncan also specify remote logger by passing the options.\n\n.. code:: python\n\n    from aiofluent import sender\n\n    # for local fluent\n    logger = sender.FluentSender('app')\n\n    # for remote fluent\n    logger = sender.FluentSender('app', host='host', port=24224)\n\nFor sending event, call `emit` method with your event. Following example will send the event to\nfluentd, with tag 'app.follow' and the attributes 'from' and 'to'.\n\n.. code:: python\n\n    # Use current time\n    logger.emit('follow', {'from': 'userA', 'to': 'userB'})\n\n    # Specify optional time\n    cur_time = int(time.time())\n    logger.emit_with_time('follow', cur_time, {'from': 'userA', 'to':'userB'})\n\nYou can detect an error via return value of `emit`. If an error happens in `emit`, `emit` returns `False` and get an error object using `last_error` method.\n\n.. code:: python\n\n    if not logger.emit('follow', {'from': 'userA', 'to': 'userB'}):\n        print(logger.last_error)\n        logger.clear_last_error() # clear stored error after handled errors\n\nIf you want to shutdown the client, call `close()` method.\n\n.. code:: python\n\n    logger.close()\n\nEvent-Based Interface\n~~~~~~~~~~~~~~~~~~~~~\n\nThis API is a wrapper for `sender.FluentSender`.\n\nFirst, you need to call ``sender.setup()`` to create global `sender.FluentSender` logger\ninstance. This call needs to be called only once, at the beginning of\nthe application for example.\n\nInitialization code of Event-Based API is below:\n\n.. code:: python\n\n    from aiofluent import sender\n\n    # for local fluent\n    sender.setup('app')\n\n    # for remote fluent\n    sender.setup('app', host='host', port=24224)\n\nThen, please create the events like this. This will send the event to\nfluentd, with tag 'app.follow' and the attributes 'from' and 'to'.\n\n.. code:: python\n\n    from aiofluent import event\n\n    # send event to fluentd, with 'app.follow' tag\n    event.Event('follow', {\n      'from': 'userA',\n      'to':   'userB'\n    })\n\n`event.Event` has one limitation which can't return success/failure result.\n\nOther methods for Event-Based Interface.\n\n.. code:: python\n\n    sender.get_global_sender # get instance of global sender\n    sender.close # Call FluentSender#close\n\nHandler for buffer overflow\n~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nYou can inject your own custom proc to handle buffer overflow in the event of connection failure. This will mitigate the loss of data instead of simply throwing data away.\n\n.. code:: python\n\n    import msgpack\n    from io import BytesIO\n\n    def handler(pendings):\n        unpacker = msgpack.Unpacker(BytesIO(pendings))\n        for unpacked in unpacker:\n            print(unpacked)\n\n    logger = sender.FluentSender('app', host='host', port=24224, buffer_overflow_handler=handler)\n\nYou should handle any exception in handler. aiofluent ignores exceptions from ``buffer_overflow_handler``.\n\nThis handler is also called when pending events exist during `close()`.\n\nPython logging.Handler interface\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nThis client-library also has ``FluentHandler`` class for Python logging\nmodule.\n\n.. code:: python\n\n    import logging\n    from aiofluent import handler\n\n    custom_format = {\n      'host': '%(hostname)s',\n      'where': '%(module)s.%(funcName)s',\n      'type': '%(levelname)s',\n      'stack_trace': '%(exc_text)s'\n    }\n\n    logging.basicConfig(level=logging.INFO)\n    l = logging.getLogger('fluent.test')\n    h = handler.FluentHandler('app.follow', host='host', port=24224)\n    formatter = handler.FluentRecordFormatter(custom_format)\n    h.setFormatter(formatter)\n    l.addHandler(h)\n    l.info({\n      'from': 'userA',\n      'to': 'userB'\n    })\n    l.info('{\"from\": \"userC\", \"to\": \"userD\"}')\n    l.info(\"This log entry will be logged with the additional key: 'message'.\")\n\nYou can also customize formatter via logging.config.dictConfig\n\n.. code:: python\n\n    import logging.config\n    import yaml\n\n    with open('logging.yaml') as fd:\n        conf = yaml.load(fd)\n\n    logging.config.dictConfig(conf['logging'])\n\nA sample configuration ``logging.yaml`` would be:\n\n.. code:: python\n\n    logging:\n        version: 1\n\n        formatters:\n          brief:\n            format: '%(message)s'\n          default:\n            format: '%(asctime)s %(levelname)-8s %(name)-15s %(message)s'\n            datefmt: '%Y-%m-%d %H:%M:%S'\n          fluent_fmt:\n            '()': fluent.handler.FluentRecordFormatter\n            format:\n              level: '%(levelname)s'\n              hostname: '%(hostname)s'\n              where: '%(module)s.%(funcName)s'\n\n        handlers:\n            console:\n                class : logging.StreamHandler\n                level: DEBUG\n                formatter: default\n                stream: ext://sys.stdout\n            fluent:\n                class: fluent.handler.FluentHandler\n                host: localhost\n                port: 24224\n                tag: test.logging\n                formatter: fluent_fmt\n                level: DEBUG\n            none:\n                class: logging.NullHandler\n\n        loggers:\n            amqp:\n                handlers: [none]\n                propagate: False\n            conf:\n                handlers: [none]\n                propagate: False\n            '': # root logger\n                handlers: [console, fluent]\n                level: DEBUG\n                propagate: False\n\nLicense\n-------\n\nApache License, Version 2.0\n\n\n1.0.5 (2017-10-17)\n------------------\n\n- Fix release to include CHANGELOG.rst file\n  [vangheem]\n\n\n1.0.4 (2017-10-10)\n------------------\n\n- Fix pushing initial record\n\n\n1.0.3 (2017-10-10)\n------------------\n\n- Handle Runtime error when logging done before event loop started\n  [vangheem]\n\n\n1.0.2 (2017-10-09)\n------------------\n\n- Fix to make normal logging call async\n  [vangheem]\n\n\n1.0.1 (2017-07-03)\n------------------\n\n- initial release\n\n\n",
+    "description": "A Python structured logger for Fluentd\n======================================\n\nWARNING: This is a fork of the https://github.com/fluent/fluent-logger-python\nproject to work with asyncio.\n\n\nMany web/mobile applications generate huge amount of event logs (c,f.\nlogin, logout, purchase, follow, etc). To analyze these event logs could\nbe really valuable for improving the service. However, the challenge is\ncollecting these logs easily and reliably.\n\n`Fluentd <https://github.com/fluent/fluentd>`__ solves that problem by\nhaving: easy installation, small footprint, plugins, reliable buffering,\nlog forwarding, etc.\n\n**aiofluent** is a Python library, to record the events from\nPython application.\n\nRequirements\n------------\n\n-  Python 3.5 or greater\n- ``msgpack-python``\n\nInstallation\n------------\n\nThis library is distributed as 'aiofluent' python package. Please\nexecute the following command to install it.\n\n.. code:: sh\n\n    $ pip install aiofluent\n\nConfiguration\n-------------\n\nFluentd daemon must be launched with a tcp source configuration:\n\n::\n\n    <source>\n      type forward\n      port 24224\n    </source>\n\nTo quickly test your setup, add a matcher that logs to the stdout:\n\n::\n\n    <match app.**>\n      type stdout\n    </match>\n\nUsage\n-----\n\nFluentSender Interface\n~~~~~~~~~~~~~~~~~~~~~~\n\n`sender.FluentSender` is a structured event logger for Fluentd.\n\nBy default, the logger assumes fluentd daemon is launched locally. You\ncan also specify remote logger by passing the options.\n\n.. code:: python\n\n    from aiofluent import sender\n\n    # for local fluent\n    logger = sender.FluentSender('app')\n\n    # for remote fluent\n    logger = sender.FluentSender('app', host='host', port=24224)\n\nFor sending event, call `emit` method with your event. Following example will send the event to\nfluentd, with tag 'app.follow' and the attributes 'from' and 'to'.\n\n.. code:: python\n\n    # Use current time\n    logger.emit('follow', {'from': 'userA', 'to': 'userB'})\n\n    # Specify optional time\n    cur_time = int(time.time())\n    logger.emit_with_time('follow', cur_time, {'from': 'userA', 'to':'userB'})\n\nYou can detect an error via return value of `emit`. If an error happens in `emit`, `emit` returns `False` and get an error object using `last_error` method.\n\n.. code:: python\n\n    if not logger.emit('follow', {'from': 'userA', 'to': 'userB'}):\n        print(logger.last_error)\n        logger.clear_last_error() # clear stored error after handled errors\n\nIf you want to shutdown the client, call `close()` method.\n\n.. code:: python\n\n    logger.close()\n\nEvent-Based Interface\n~~~~~~~~~~~~~~~~~~~~~\n\nThis API is a wrapper for `sender.FluentSender`.\n\nFirst, you need to call ``sender.setup()`` to create global `sender.FluentSender` logger\ninstance. This call needs to be called only once, at the beginning of\nthe application for example.\n\nInitialization code of Event-Based API is below:\n\n.. code:: python\n\n    from aiofluent import sender\n\n    # for local fluent\n    sender.setup('app')\n\n    # for remote fluent\n    sender.setup('app', host='host', port=24224)\n\nThen, please create the events like this. This will send the event to\nfluentd, with tag 'app.follow' and the attributes 'from' and 'to'.\n\n.. code:: python\n\n    from aiofluent import event\n\n    # send event to fluentd, with 'app.follow' tag\n    event.Event('follow', {\n      'from': 'userA',\n      'to':   'userB'\n    })\n\n`event.Event` has one limitation which can't return success/failure result.\n\nOther methods for Event-Based Interface.\n\n.. code:: python\n\n    sender.get_global_sender # get instance of global sender\n    sender.close # Call FluentSender#close\n\nHandler for buffer overflow\n~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nYou can inject your own custom proc to handle buffer overflow in the event of connection failure. This will mitigate the loss of data instead of simply throwing data away.\n\n.. code:: python\n\n    import msgpack\n    from io import BytesIO\n\n    def handler(pendings):\n        unpacker = msgpack.Unpacker(BytesIO(pendings))\n        for unpacked in unpacker:\n            print(unpacked)\n\n    logger = sender.FluentSender('app', host='host', port=24224, buffer_overflow_handler=handler)\n\nYou should handle any exception in handler. aiofluent ignores exceptions from ``buffer_overflow_handler``.\n\nThis handler is also called when pending events exist during `close()`.\n\nPython logging.Handler interface\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nThis client-library also has ``FluentHandler`` class for Python logging\nmodule.\n\n.. code:: python\n\n    import logging\n    from aiofluent import handler\n\n    custom_format = {\n      'host': '%(hostname)s',\n      'where': '%(module)s.%(funcName)s',\n      'type': '%(levelname)s',\n      'stack_trace': '%(exc_text)s'\n    }\n\n    logging.basicConfig(level=logging.INFO)\n    l = logging.getLogger('fluent.test')\n    h = handler.FluentHandler('app.follow', host='host', port=24224)\n    formatter = handler.FluentRecordFormatter(custom_format)\n    h.setFormatter(formatter)\n    l.addHandler(h)\n    l.info({\n      'from': 'userA',\n      'to': 'userB'\n    })\n    l.info('{\"from\": \"userC\", \"to\": \"userD\"}')\n    l.info(\"This log entry will be logged with the additional key: 'message'.\")\n\nYou can also customize formatter via logging.config.dictConfig\n\n.. code:: python\n\n    import logging.config\n    import yaml\n\n    with open('logging.yaml') as fd:\n        conf = yaml.load(fd)\n\n    logging.config.dictConfig(conf['logging'])\n\nA sample configuration ``logging.yaml`` would be:\n\n.. code:: python\n\n    logging:\n        version: 1\n\n        formatters:\n          brief:\n            format: '%(message)s'\n          default:\n            format: '%(asctime)s %(levelname)-8s %(name)-15s %(message)s'\n            datefmt: '%Y-%m-%d %H:%M:%S'\n          fluent_fmt:\n            '()': fluent.handler.FluentRecordFormatter\n            format:\n              level: '%(levelname)s'\n              hostname: '%(hostname)s'\n              where: '%(module)s.%(funcName)s'\n\n        handlers:\n            console:\n                class : logging.StreamHandler\n                level: DEBUG\n                formatter: default\n                stream: ext://sys.stdout\n            fluent:\n                class: fluent.handler.FluentHandler\n                host: localhost\n                port: 24224\n                tag: test.logging\n                formatter: fluent_fmt\n                level: DEBUG\n            none:\n                class: logging.NullHandler\n\n        loggers:\n            amqp:\n                handlers: [none]\n                propagate: False\n            conf:\n                handlers: [none]\n                propagate: False\n            '': # root logger\n                handlers: [console, fluent]\n                level: DEBUG\n                propagate: False\n\nLicense\n-------\n\nApache License, Version 2.0\n\n\n1.0.6 (2017-11-14)\n------------------\n\n- Prevent log queue from getting too large\n  [vangheem]\n\n\n1.0.5 (2017-10-17)\n------------------\n\n- Fix release to include CHANGELOG.rst file\n  [vangheem]\n\n\n1.0.4 (2017-10-10)\n------------------\n\n- Fix pushing initial record\n\n\n1.0.3 (2017-10-10)\n------------------\n\n- Handle Runtime error when logging done before event loop started\n  [vangheem]\n\n\n1.0.2 (2017-10-09)\n------------------\n\n- Fix to make normal logging call async\n  [vangheem]\n\n\n1.0.1 (2017-07-03)\n------------------\n\n- initial release\n\n\n",
     "docs_url": null,
     "download_url": "http://pypi.python.org/pypi/aiofluent/",
     "downloads": {
@@ -24,13 +24,13 @@
     "name": "aiofluent",
     "platform": "",
     "project_url": "https://pypi.org/project/aiofluent/",
-    "release_url": "https://pypi.org/project/aiofluent/1.0.5/",
+    "release_url": "https://pypi.org/project/aiofluent/1.0.6/",
     "requires_dist": [
       "msgpack-python"
     ],
     "requires_python": "",
     "summary": "A Python logging handler for Fluentd event collector",
-    "version": "1.0.5"
+    "version": "1.0.6"
   },
   "releases": {
     "1.0.0": [
@@ -236,40 +236,74 @@
         "upload_time": "2017-10-17T10:14:04",
         "url": "https://files.pythonhosted.org/packages/cb/b5/c9b6b0f8ddfa2819aff42d352089722e725eb60d012943b388f437d6f735/aiofluent-1.0.5.tar.gz"
       }
+    ],
+    "1.0.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e4b9423ea5d05dbd3c3a3435192a4589",
+          "sha256": "aaf782848e20b7cd596ea7374377adcc5ca1918c7fad9adbe1439efda96e2c1e"
+        },
+        "downloads": -1,
+        "filename": "aiofluent-1.0.6-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "e4b9423ea5d05dbd3c3a3435192a4589",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 11387,
+        "upload_time": "2017-11-14T20:04:42",
+        "url": "https://files.pythonhosted.org/packages/fd/27/08c706d5fc957b7b8c8a2df31a4e70d45c8f777756f3763a2966c59ddc7d/aiofluent-1.0.6-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "bd69f844139d9074752ef5ee5151a480",
+          "sha256": "22bb76629b6c51c0100b5ec392d643b96be1eeb00161bd161e726e45319bc785"
+        },
+        "downloads": -1,
+        "filename": "aiofluent-1.0.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "bd69f844139d9074752ef5ee5151a480",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10326,
+        "upload_time": "2017-11-14T20:04:44",
+        "url": "https://files.pythonhosted.org/packages/41/b9/5ba7871d9dc3b8874bfa2ab83d7c7a126172ecd50420671c25a02bf64c09/aiofluent-1.0.6.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "bec82ed79efc91aa5163a83670acbbb8",
-        "sha256": "2643f015118f131062cfdfda48932c70e1be3819252d656479be8177d74557a8"
+        "md5": "e4b9423ea5d05dbd3c3a3435192a4589",
+        "sha256": "aaf782848e20b7cd596ea7374377adcc5ca1918c7fad9adbe1439efda96e2c1e"
       },
       "downloads": -1,
-      "filename": "aiofluent-1.0.5-py2.py3-none-any.whl",
+      "filename": "aiofluent-1.0.6-py2.py3-none-any.whl",
       "has_sig": false,
-      "md5_digest": "bec82ed79efc91aa5163a83670acbbb8",
+      "md5_digest": "e4b9423ea5d05dbd3c3a3435192a4589",
       "packagetype": "bdist_wheel",
       "python_version": "py2.py3",
-      "size": 11118,
-      "upload_time": "2017-10-17T10:14:03",
-      "url": "https://files.pythonhosted.org/packages/a0/38/b761396735dd0c0b397d32a54f37340556f2dc2f1992183e3b0a53f607ad/aiofluent-1.0.5-py2.py3-none-any.whl"
+      "size": 11387,
+      "upload_time": "2017-11-14T20:04:42",
+      "url": "https://files.pythonhosted.org/packages/fd/27/08c706d5fc957b7b8c8a2df31a4e70d45c8f777756f3763a2966c59ddc7d/aiofluent-1.0.6-py2.py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "7b01e333afba30b4a5cc8a53e7929d78",
-        "sha256": "f3fab4d5b565289a7b5463120a574f45c8c06090bfbe1d620a58509cc77eb905"
+        "md5": "bd69f844139d9074752ef5ee5151a480",
+        "sha256": "22bb76629b6c51c0100b5ec392d643b96be1eeb00161bd161e726e45319bc785"
       },
       "downloads": -1,
-      "filename": "aiofluent-1.0.5.tar.gz",
+      "filename": "aiofluent-1.0.6.tar.gz",
       "has_sig": false,
-      "md5_digest": "7b01e333afba30b4a5cc8a53e7929d78",
+      "md5_digest": "bd69f844139d9074752ef5ee5151a480",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 10135,
-      "upload_time": "2017-10-17T10:14:04",
-      "url": "https://files.pythonhosted.org/packages/cb/b5/c9b6b0f8ddfa2819aff42d352089722e725eb60d012943b388f437d6f735/aiofluent-1.0.5.tar.gz"
+      "size": 10326,
+      "upload_time": "2017-11-14T20:04:44",
+      "url": "https://files.pythonhosted.org/packages/41/b9/5ba7871d9dc3b8874bfa2ab83d7c7a126172ecd50420671c25a02bf64c09/aiofluent-1.0.6.tar.gz"
     }
   ]
 }
