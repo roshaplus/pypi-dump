@@ -4,7 +4,7 @@
     "author_email": "developers@onespacemedia.com",
     "bugtrack_url": null,
     "classifiers": [],
-    "description": "# onespacemedia-server-management\n\n``onespacemedia-server-management`` allows for very simple deployment and day-to-day management of Django projects.  Primarily used and maintained by the team at [Onespacemedia](http://www.onespacemedia.com/), but should work for most people.  It allows you to deploy a Django application, preferably onto a Ubuntu 16.04 or Debian Jessie server, and maintain the application over time.\n\n### Features:\n\n* Deploying to a fresh server.\n* Pushing your local database to the remote server.\n* Pushing your local media files to the remote server.\n* Pulling the database from the remote server to your local machine.\n* Pulling the media files from the remote server to your local machine.\n* Update the remote server with the latest version of your project.\n\n### Notes / Assumptions:\n\n* This project currently makes the assumption that your code is hosted on either Github or Bitbucket.  However, the code can be very easily updated to support generic Git hosts, pull requests are welcomed for this.\n* The code takes database credentials from a file on disk, so projects using configuration data stored in environment variables are not currently supported.\n* The application stack consists of Nginx, Supervisor, Gunicorn, Memcached and PostgreSQL.\n* The deployment process will deploy all services onto one machine, it does not support splitting services across multiple machines.\n* Your project is expected to use a virtual environment, with the folder in the same directory as the ``manage.py`` file, and be named ``venv`` or ``.venv``.\n* The deploy script currently logs in as root and installs the base packages as root. It then creates a deploy user and disable root access. The application, PostgreSQL server and Supervisor all run under their own users.\n* The deployment script requires you to have HTTPS-only traffic.  It uses Let's Encrypt to request certificates and nginx is configured to use HTTP/2 by default.\n* Specific static and media paths are required, they are documented below.\n\n## Installation\n\nTo install ``onespacemedia-server-management`` simply run:\n\n    $ pip install onespacemedia-server-management\n\n## Configuration\n\nWe need to add ``onespacemedia-server-management`` to our project, so add ``server_management`` to your ``INSTALLED_APPS``.\n\n    INSTALLED_APPS = [\n        ...\n        'server_management',\n    ]\n\nNext, you need to create a ``server.json`` file which contains the information about your remote server and your database. This will live in the project folder above ``manage.py``, you can print the exact location with ``settings.SITE_ROOT``. Ah example file is below:\n\n\n### Multiple hosts (including AWS)\n\nIf you only wanted to deploy to one host, you would simply need to remove one of the values from the \"remotes\" dictionary.\n\n    {\n        \"local\": {\n            \"database\": {\n                \"name\": \"example_dev\"\n            }\n        },\n        \"remotes\": {\n            \"staging\": {\n                \"server\": {\n                    \"ip\": \"ec2-xx-xx-xx-xx.eu-west-1.compute.amazonaws.com\",\n                    \"identity_file\": \"~/.ssh/server-key.pem\",\n                    \"initial_user\": \"ubuntu\",\n                },\n                \"database\": {\n                    \"password\": \"\",\n                    \"name\": \"example_prod\",\n                    \"user\": \"example_prod_user\"\n                }\n                \"is_aws\": false,\n            },\n            \"production\": {\n                \"server\": {\n                    \"ip\": \"12.34.56.78\",\n                    \"deploy_user\": \"root\",\n                },\n                \"database\": {\n                    \"password\": \"\",\n                    \"name\": \"example_prod\",\n                    \"user\": \"example_prod_user\"\n                }\n            }\n        }\n    }\n\nWhen running one of the management commands, you will be prompted for a remote host on which to perform the operation. To skip this prompt, specify the _name_ of the remote as a positional argument. For example, if you wanted to update the host named as `production` above, you would use `manage.py deploy production`.\n\nThe default PostgreSQL deployment uses trust authentication for connecting to the database, so a password is not usually required.\n\nUpdate your ``STATIC_ROOT`` and ``MEDIA_ROOT`` to match the format the scripts expect:\n\n    STATIC_ROOT = \"/var/www/example_static\"\n    MEDIA_ROOT = \"/var/www/example_media\"\n\n## Usage\n\nOnce ``onespacemedia-server-management`` has been added to your project you will have access to a number of ``manage.py`` commands, they are currently as follows:\n\n* [``deploy``](#deploy)\n* [``pulldb``](#pulldb)\n* [``pullmedia``](#pullmedia)\n* [``pushdb``](#pushdb)\n* [``pushmedia``](#pushmedia)\n* [``update``](#update)\n\n### Deploy\n\nThe deploy script is the most complex command in the library, but saves many man-hours upon use.  The steps it takes are as follows:\n\n#### On your machine\n* Check if a connection can be made to the remove server using the username ``root`` and the IP specified in the ``server.json``.\n* Parses the username and repo name from the current git remote.\n* Requests a valid Github token or Bitbucket username and password.\n* Renders template files for PostgreSQL, Gunicorn and Nginx.\n\n#### On the remote server\n* Base actions:\n\t* Update the apt-cache.\n\t* Enables unattended-upgrades\n\t* Installs a set of base packages via apt.\n\t* Installs PostgreSQL.\n\t* Starts PostgreSQL.\n\t* Creates the database user.\n\t* Adds the database user to the database.\n\t* Ensures the database user doesn't have unnecessary privileges.\n* Application tasks:\n\t* Creates a group (named ``webapps``) for the application user.\n\t* Creates a user (with the name being your application name) and adds it to the ``webapps`` group.\n\t* Adds the server's public SSH key to the Github / Bitbucket repository, if it's not there already.\n\t* Checks out the Git repository to ``/var/www/<application name>``\n\t* Creates the static directory at ``/var/www/<application name>_static``\n\t* Creates the media directory at ``/var/www/<application name>_media``\n\t* Creates a virtual environment in the project directory.\n\t* Uploads the Gunicorn file that we made earlier.\n\t* Creates a log file for Supervisor and Gunicorn with the correct permissions.\n\t* Installs the project requirements from the ``requirements.txt`` file (if you have one).\n\t* Installs Gunicorn into the project.\n\t* Runs ``collectstatic``, making symlinks into the static folder.\n\t* Updates the permissions of the media folder.\n\t* Installs ``npm`` packages.\n\t* Compiles CSS (using ``gulp``).\n\t* Creates a ``run`` folder for Supervisor.\n\t* Ensures the ``.venv`` folder has the correct permissions.\n* Nginx tasks:\n\t* Installs nginx.\n\t* Uploads the nginx config we created earlier.\n\t* Removes the default nginx site.\n\t* Enabled the application site.\n* Supervisor tasks:\n\t* Upload the config file we created earlier.\n\t* Reloads the config files and updates Supervisor (this enables the process).\n* Post setup tasks:\n\t* Dumps the local database, uploads it and imports it.\n\t* Uploads the local media files to the remote server.\n\n\n### pulldb\n* Dumps the database on the remote server to an SQL file.\n* Pulls the database file down the the local machine (using ``scp``).\n* Removes the file from the remote server.\n* Drops the local database (with ``dropdb``).\n* Creates the local database (with ``createdb``).\n* Imports the downloaded SQL file into the local database.\n* Removes the downloaded file.\n\n### pullmedia\n* Ensures the media folder exists on the local machine, creating it if necessary.\n* Pulls down the remote uploads folder (using ``rsync``).\n\n### pushdb\n* Dumps the database on the local machine to an SQL file.\n* Uploads the database to the remote server.\n* Imports the SQL file into the remote database.\n* Removes the SQL file from the remote server.\n* Removes the SQL file from the local machine.\n\n### pushmedia\n* Pushes up the local uploads folder to the remote server (using ``rsync``)\n\n### update\n* Ensures the file permissions are correct on the remote server.\n* Runs a ``git pull`` in the virtual environment.\n* Installs the requirements from the ``requirements.txt``.\n* Runs ``collectstatic`` and symlinks the files into the static directory.\n* Runs database migrations.\n* Restarts the Supervisor instance.\n* Ensures the file permissions are still correct.\n",
+    "description": "# onespacemedia-server-management\n\n``onespacemedia-server-management`` allows for very simple deployment and day-to-day management of Django projects.  Primarily used and maintained by the team at [Onespacemedia](http://www.onespacemedia.com/), but should work for most people.  It allows you to deploy a Django application, preferably onto a Ubuntu 16.04 or Debian Jessie server, and maintain the application over time.\n\n### Features:\n\n* Deploying to a fresh server.\n* Pushing your local database to the remote server.\n* Pushing your local media files to the remote server.\n* Pulling the database from the remote server to your local machine.\n* Pulling the media files from the remote server to your local machine.\n* Update the remote server with the latest version of your project.\n\n### Notes / Assumptions:\n\n* This project currently makes the assumption that your code is hosted on either Github or Bitbucket.  However, the code can be very easily updated to support generic Git hosts, pull requests are welcomed for this.\n* The code takes database credentials from a file on disk, so projects using configuration data stored in environment variables are not currently supported.\n* The application stack consists of Nginx, Supervisor, Gunicorn, Memcached and PostgreSQL.\n* The deployment process will deploy all services onto one machine, it does not support splitting services across multiple machines.\n* Your project is expected to use a virtual environment, with the folder in the same directory as the ``manage.py`` file, and be named ``venv`` or ``.venv``.\n* The deploy script currently logs in as root and installs the base packages as root. It then creates a deploy user and disable root access. The application, PostgreSQL server and Supervisor all run under their own users.\n* The deployment script requires you to have HTTPS-only traffic.  It uses Let's Encrypt to request certificates and nginx is configured to use HTTP/2 by default.\n* Specific static and media paths are required, they are documented below.\n\n## Installation\n\nTo install ``onespacemedia-server-management`` simply run:\n\n    $ pip install onespacemedia-server-management\n\n## Configuration\n\nWe need to add ``onespacemedia-server-management`` to our project, so add ``server_management`` to your ``INSTALLED_APPS``.\n\n    INSTALLED_APPS = [\n        ...\n        'server_management',\n    ]\n\nNext, you need to create a ``server.json`` file which contains the information about your remote server and your database. This will live in the project folder above ``manage.py``, you can print the exact location with ``settings.SITE_ROOT``. Ah example file is below:\n\n\n### Multiple hosts (including AWS)\n\nIf you only wanted to deploy to one host, you would simply need to remove one of the values from the \"remotes\" dictionary.\n\n    {\n        \"local\": {\n            \"database\": {\n                \"name\": \"example_dev\"\n            }\n        },\n        \"remotes\": {\n            \"staging\": {\n                \"server\": {\n                    \"ip\": \"ec2-xx-xx-xx-xx.eu-west-1.compute.amazonaws.com\",\n                    \"identity_file\": \"~/.ssh/server-key.pem\",\n                    \"initial_user\": \"ubuntu\",\n                },\n                \"database\": {\n                    \"password\": \"\",\n                    \"name\": \"example_prod\",\n                    \"user\": \"example_prod_user\"\n                }\n                \"is_aws\": false,\n            },\n            \"production\": {\n                \"server\": {\n                    \"ip\": \"12.34.56.78\",\n                    \"deploy_user\": \"root\",\n                },\n                \"database\": {\n                    \"password\": \"\",\n                    \"name\": \"example_prod\",\n                    \"user\": \"example_prod_user\"\n                }\n            }\n        }\n    }\n\nWhen running one of the management commands, you will be prompted for a remote host on which to perform the operation. To skip this prompt, specify the _name_ of the remote as a positional argument. For example, if you wanted to update the host named as `production` above, you would use `manage.py deploy production`.\n\nThe default PostgreSQL deployment uses trust authentication for connecting to the database, so a password is not usually required.\n\nUpdate your ``STATIC_ROOT`` and ``MEDIA_ROOT`` to match the format the scripts expect:\n\n    STATIC_ROOT = \"/var/www/example_static\"\n    MEDIA_ROOT = \"/var/www/example_media\"\n\n## Usage\n\nOnce ``onespacemedia-server-management`` has been added to your project you will have access to a number of ``manage.py`` commands, they are currently as follows:\n\n* [``deploy``](#deploy)\n* [``pulldb``](#pulldb)\n* [``pullmedia``](#pullmedia)\n* [``pushdb``](#pushdb)\n* [``pushmedia``](#pushmedia)\n* [``update``](#update)\n\n### Deploy\n\nThe deploy script is the most complex command in the library, but saves many man-hours upon use.  The steps it takes are as follows:\n\n#### On your machine\n* Check if a connection can be made to the remove server using the username ``root`` and the IP specified in the ``server.json``.\n* Parses the username and repo name from the current git remote.\n* Requests a valid Github token or Bitbucket username and password.\n* Renders template files for PostgreSQL, Gunicorn and Nginx.\n\n#### On the remote server\n* Base actions:\n\t* Update the apt-cache.\n\t* Enables unattended-upgrades\n\t* Installs a set of base packages via apt.\n\t* Installs PostgreSQL.\n\t* Starts PostgreSQL.\n\t* Creates the database user.\n\t* Adds the database user to the database.\n\t* Ensures the database user doesn't have unnecessary privileges.\n* Application tasks:\n\t* Creates a group (named ``webapps``) for the application user.\n\t* Creates a user (with the name being your application name) and adds it to the ``webapps`` group.\n\t* Adds the server's public SSH key to the Github / Bitbucket repository, if it's not there already.\n\t* Checks out the Git repository to ``/var/www/<application name>``\n\t* Creates the static directory at ``/var/www/<application name>_static``\n\t* Creates the media directory at ``/var/www/<application name>_media``\n\t* Creates a virtual environment in the project directory.\n\t* Uploads the Gunicorn file that we made earlier.\n\t* Creates a log file for Supervisor and Gunicorn with the correct permissions.\n\t* Installs the project requirements from the ``requirements.txt`` file (if you have one).\n\t* Installs Gunicorn into the project.\n\t* Runs ``collectstatic``, making symlinks into the static folder.\n\t* Updates the permissions of the media folder.\n\t* Installs ``npm`` packages.\n\t* Compiles CSS (using ``gulp``).\n\t* Creates a ``run`` folder for Supervisor.\n\t* Ensures the ``.venv`` folder has the correct permissions.\n* Nginx tasks:\n\t* Installs nginx.\n\t* Uploads the nginx config we created earlier.\n\t* Removes the default nginx site.\n\t* Enabled the application site.\n* Supervisor tasks:\n\t* Upload the config file we created earlier.\n\t* Reloads the config files and updates Supervisor (this enables the process).\n* Post setup tasks:\n\t* Dumps the local database, uploads it and imports it.\n\t* Uploads the local media files to the remote server.\n\n\n### pulldb\n* Dumps the database on the remote server to an SQL file.\n* Pulls the database file down the the local machine (using ``scp``).\n* Removes the file from the remote server.\n* Drops the local database (with ``dropdb``).\n* Creates the local database (with ``createdb``).\n* Imports the downloaded SQL file into the local database.\n* Removes the downloaded file.\n\n### pullmedia\n* Ensures the media folder exists on the local machine, creating it if necessary.\n* Pulls down the remote uploads folder (using ``rsync``).\n\n### pushdb\n* Dumps the database on the local machine to an SQL file.\n* Uploads the database to the remote server.\n* Imports the SQL file into the remote database.\n* Removes the SQL file from the remote server.\n* Removes the SQL file from the local machine.\n\n### pushmedia\n* Pushes up the local uploads folder to the remote server (using ``rsync``)\n\n### update\n* Ensures the file permissions are correct on the remote server.\n* Runs a ``git pull`` in the virtual environment.\n* Installs the requirements from the ``requirements.txt``.\n* Runs ``collectstatic`` and symlinks the files into the static directory.\n* Runs database migrations.\n* Restarts the Supervisor instance.\n* Ensures the file permissions are still correct.\n\n\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -20,11 +20,24 @@
     "name": "onespacemedia-server-management",
     "platform": "",
     "project_url": "https://pypi.org/project/onespacemedia-server-management/",
-    "release_url": "https://pypi.org/project/onespacemedia-server-management/3.0.2/",
-    "requires_dist": [],
-    "requires_python": "",
+    "release_url": "https://pypi.org/project/onespacemedia-server-management/3.0.3/",
+    "requires_dist": [
+      "isort; extra == 'testing'",
+      "pylint-mccabe; extra == 'testing'",
+      "pylint-django; extra == 'testing'",
+      "pylint; extra == 'testing'",
+      "pytest-django; extra == 'testing'",
+      "pytest-cov; extra == 'testing'",
+      "pytest; extra == 'testing'",
+      "coveralls; extra == 'testing'",
+      "fabric3-virtualenv",
+      "requests",
+      "fabric3",
+      "django"
+    ],
+    "requires_python": ">=3",
     "summary": "A set of server management tools used by Onespacemedia.",
-    "version": "3.0.2"
+    "version": "3.0.3"
   },
   "releases": {
     "0.1.10": [
@@ -692,24 +705,74 @@
         "upload_time": "2017-08-18T15:49:55",
         "url": "https://files.pythonhosted.org/packages/2e/91/7f148ca1a3cffff07982320866482b23745087ec4e630c3718ae1732c119/onespacemedia-server-management-3.0.2.tar.gz"
       }
+    ],
+    "3.0.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "47b5cf90170573b9ff12b625ba3b6523",
+          "sha256": "f00168b59526f8196b1b92be225c3420155f86a0f4e672c691cf24d0e6e9c065"
+        },
+        "downloads": -1,
+        "filename": "onespacemedia_server_management-3.0.3-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "47b5cf90170573b9ff12b625ba3b6523",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "size": 33589,
+        "upload_time": "2017-11-16T15:34:44",
+        "url": "https://files.pythonhosted.org/packages/77/9d/ac2a8fe0410b78abf6a3fac53df3ccd7ea3873e240e58651ee76920786f8/onespacemedia_server_management-3.0.3-py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "afbbf4d312b573d1dee185940f5afe6f",
+          "sha256": "872715e1abacc420cbda410e768e6c90c3b3c86ef4ba0445018a2950d718430b"
+        },
+        "downloads": -1,
+        "filename": "onespacemedia-server-management-3.0.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "afbbf4d312b573d1dee185940f5afe6f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 25329,
+        "upload_time": "2017-11-16T15:34:45",
+        "url": "https://files.pythonhosted.org/packages/3c/b4/68830fb06a11425c220d610e60e73edc1fd1d0dcf9f2533d41d5f1186213/onespacemedia-server-management-3.0.3.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "8a05243c98874174028e37110bf91702",
-        "sha256": "a0517e3ffc12bdafb7cab81a8a868a68b68ed7becd38b10eaca1fa2b26c97222"
+        "md5": "47b5cf90170573b9ff12b625ba3b6523",
+        "sha256": "f00168b59526f8196b1b92be225c3420155f86a0f4e672c691cf24d0e6e9c065"
       },
       "downloads": -1,
-      "filename": "onespacemedia-server-management-3.0.2.tar.gz",
+      "filename": "onespacemedia_server_management-3.0.3-py3-none-any.whl",
       "has_sig": false,
-      "md5_digest": "8a05243c98874174028e37110bf91702",
+      "md5_digest": "47b5cf90170573b9ff12b625ba3b6523",
+      "packagetype": "bdist_wheel",
+      "python_version": "py3",
+      "size": 33589,
+      "upload_time": "2017-11-16T15:34:44",
+      "url": "https://files.pythonhosted.org/packages/77/9d/ac2a8fe0410b78abf6a3fac53df3ccd7ea3873e240e58651ee76920786f8/onespacemedia_server_management-3.0.3-py3-none-any.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "afbbf4d312b573d1dee185940f5afe6f",
+        "sha256": "872715e1abacc420cbda410e768e6c90c3b3c86ef4ba0445018a2950d718430b"
+      },
+      "downloads": -1,
+      "filename": "onespacemedia-server-management-3.0.3.tar.gz",
+      "has_sig": false,
+      "md5_digest": "afbbf4d312b573d1dee185940f5afe6f",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 20391,
-      "upload_time": "2017-08-18T15:49:55",
-      "url": "https://files.pythonhosted.org/packages/2e/91/7f148ca1a3cffff07982320866482b23745087ec4e630c3718ae1732c119/onespacemedia-server-management-3.0.2.tar.gz"
+      "size": 25329,
+      "upload_time": "2017-11-16T15:34:45",
+      "url": "https://files.pythonhosted.org/packages/3c/b4/68830fb06a11425c220d610e60e73edc1fd1d0dcf9f2533d41d5f1186213/onespacemedia-server-management-3.0.3.tar.gz"
     }
   ]
 }
