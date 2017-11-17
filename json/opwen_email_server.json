@@ -4,7 +4,7 @@
     "author_email": "clemens.wolff+pypi@gmail.com",
     "bugtrack_url": null,
     "classifiers": [],
-    "description": "Opwen cloudserver\n=================\n\n.. image:: https://travis-ci.org/ascoderu/opwen-cloudserver.svg?branch=master\n  :target: https://travis-ci.org/ascoderu/opwen-cloudserver\n\n.. image:: https://img.shields.io/pypi/v/opwen_email_server.svg\n  :target: https://pypi.python.org/pypi/opwen_email_server/\n\nWhat's this?\n------------\n\nThis repository contains the source code for the Opwen cloud server. Its purpose\nis to connect the `application <https://github.com/ascoderu/opwen-webapp>`_\nrunning on the Opwen Lokole devices to the rest of the world.\n\nThe server has two main responsibilities:\n\n1. Receive emails from the internet that are addressed to Lokole users and\n   forward them to the appropriate Lokole device.\n2. Send new emails created by Lokole users to the rest of the internet.\n\nThis package is intended to run on an Ubuntu server. There is a `script <https://github.com/ascoderu/opwen-setup/blob/master/setup-cloudserver.sh>`_\nto set up a server with all the bits and pieces necessary for deployment.\n\nSystem overview\n---------------\n\n.. image:: docs/system-overview.png\n  :width: 800\n  :align: center\n  :alt: Overview of the Lokole system\n  :target: https://raw.githubusercontent.com/ascoderu/opwen-cloudserver/master/docs/system-overview.png\n\nData exchange format\n--------------------\n\nIn order to communicate between the Opwen cloud server and the Opwen\nweb-application (aka Lokole), a protocol based on gzipped jsonl files uploaded\nto Azure Blob Storage is used. The files contains a JSON object per line.\nEach JSON object describes an email, using the following schema:\n\n.. sourcecode :: json\n\n  {\n    \"sent_at\": \"yyyy-mm-dd HH:MM\",\n    \"to\": [\"email\"],\n    \"cc\": [\"email\"],\n    \"bcc\": [\"email\"],\n    \"from\": \"email\",\n    \"subject\": \"string\",\n    \"body\": \"html\",\n    \"attachments\": [{\"filename\": \"string\", \"content\": \"base64\"}]\n  }\n\nDevelopment setup\n-----------------\n\nFirst, get the source code.\n\n.. sourcecode :: sh\n\n  git clone git@github.com:ascoderu/opwen-cloudserver.git\n  cd opwen-cloudserver\n\nSecond, install the system-level dependencies using your package manager.\n\n.. sourcecode :: sh\n\n  sudo apt-get install -y python3-dev python3-venv openssl-dev jq\n  curl -L https://aka.ms/InstallAzureCli | bash\n\nNext, set up the required Azure resources and environment variables:\n\n.. sourcecode :: sh\n\n  # connect to Azure account\n  az login\n  az account set --subscription \"YOUR_SUBSCRIPTION_ID_HERE\"\n\n  # define client properties\n  client_name=\"$(whoami | tr -dC 'a-zA-Z0-9')\"\n  client_id=\"123456789\"\n\n  # create development Azure resources\n  location=\"westus\"\n  resource_group=\"opwentest${client_name}\"\n  storage_name=\"opwenteststorage${client_name}\"\n  az group create -n ${resource_group} -l ${location} > /dev/null\n  az storage account create -n ${storage_name} -g ${resource_group} -l ${location} --sku Standard_RAGRS > /dev/null\n\n  # setup environment variables\n  storage_key=\"$(az storage account keys list -n ${storage_name} -g ${resource_group} | jq -r '.[0].value')\"\n  cat > .env << EOF\n  LOKOLE_EMAIL_SERVER_AZURE_BLOBS_NAME='${storage_name}'\n  LOKOLE_EMAIL_SERVER_AZURE_QUEUES_NAME='${storage_name}'\n  LOKOLE_EMAIL_SERVER_AZURE_TABLES_NAME='${storage_name}'\n  LOKOLE_CLIENT_AZURE_STORAGE_NAME='${storage_name}'\n  LOKOLE_EMAIL_SERVER_AZURE_BLOBS_KEY='${storage_key}'\n  LOKOLE_EMAIL_SERVER_AZURE_QUEUES_KEY='${storage_key}'\n  LOKOLE_EMAIL_SERVER_AZURE_TABLES_KEY='${storage_key}'\n  LOKOLE_CLIENT_AZURE_STORAGE_KEY='${storage_key}'\n  LOKOLE_DEFAULT_CLIENTS='[{\"id\":\"${client_id}\",\"domain\":\"${client_name}.lokole.ca\"}]'\n  EOF\n\nThird, use the makefile to verify your installation by running the tests and\nstarting up the server. The makefile will automatically install all required\ndependencies into a virtual environment.\n\n.. sourcecode :: sh\n\n  make tests\n  make server\n  make workers\n\nThere is an `OpenAPI specification <https://github.com/ascoderu/opwen-cloudserver/blob/master/opwen_email_server/static/email-api-spec.yaml>`_\nthat documents the functionality of the application and provides pointers to the\nentry points into the code. You can experiment with the endpoints in the `API test console <http://localhost:8080/api/email/ui>`_\n(for any endpoints that require `client_id` to be specified, fill in the value\ndescribed in the script above, i.e., 123456789).\n\nHow do I...\n-----------\n\n... test the receiving of an email from an external entity like Outlook?\n````````````````````````````````````````````````````````````````````````\n\n.. sourcecode :: sh\n\n  # start the server and the worker that processes inbound emails\n  make server &\n  make inbound-store-worker &\n\n  # simulate the Sendgrid service forwarding an email received at the Lokole MX\n  # records to this service\n  # the server will receive the request and enqueue a message to process and\n  # ingest the raw MIME email\n  # the inbound-store-worker then wakes up, parses the MIME email into a domain\n  # object and stores it in the email datastore\n  curl localhost:8080/api/email/sendgrid/YOUR_CLIENT_ID_HERE -F \"email=YOUR_MIME_EMAIL_HERE\"\n\n... test the Lokole devices uploading emails to be sent into the world?\n```````````````````````````````````````````````````````````````````````\n\n.. sourcecode :: sh\n\n  # start the server and the workers that process outbound emails\n  make server &\n  make outbound-store-worker &\n  make outbound-send-worker &\n\n  # upload a compressed emails package to Azure as the Lokole device would do\n  az storage blob upload -f emails.pack -c compressedpackages -n test-resource-id --account-name \"YOUR_ACCOUNT_NAME_HERE\" --account-key \"YOUR_KEY_HERE\"\n\n  # simulate the Lokole device's upload phase of the sync cycle calling out to\n  # the service\n  # the server will receive the request and enqueue a message to process and\n  # ingest the uploaded emails\n  # the outbound-store-worker then wakes up, retrieves the uploaded emails from\n  # Azure, stores them in the email datastore and enqueues another message to\n  # send the emails to their recipients\n  # the outbound-send-worker then wakes up, retrieves each email to be sent,\n  # formats it into a MIME email and shoots it off to Sendgrid for delivery\n  curl localhost:8080/api/email/lokole/YOUR_CLIENT_ID_HERE -X POST -d '{\"resource_container\":\"compressedpackages\",\"resource_id\":\"test-resource-id\",\"resource_type\":\"azure-blob\"}' -H \"Content-Type: application/json\"\n\n... test the Lokole devices downloading emails sent to it?\n``````````````````````````````````````````````````````````\n\n.. sourcecode :: sh\n\n  # start the server\n  make server &\n\n  # upload a compressed emails package to Azure as the Lokole device would do\n  az storage blob upload -f emailsFromLokole.pack -c compressedpackages -n test-resource-id --account-name \"YOUR_ACCOUNT_NAME_HERE\" --account-key \"YOUR_KEY_HERE\"\n\n  # simulate the Lokole device's download phase of the sync cycle calling out to\n  # the service\n  # the server will receive the request, fetch all the new messages sent to the\n  # Lokole device since the last request, package them and upload them to Azure\n  resource_id=$(curl localhost:8080/api/email/lokole/YOUR_CLIENT_ID_HERE -X GET | jq -r '.resource_id')\n\n  # download the compressed emails package that the Lokole device would ingest\n  az storage blob download -f emailsToLokole.pack -c compressedpackages -n ${resource_id} --account-name \"YOUR_ACCOUNT_NAME_HERE\" --account-key \"YOUR_KEY_HERE\"\n",
+    "description": "Opwen cloudserver\n=================\n\n.. image:: https://travis-ci.org/ascoderu/opwen-cloudserver.svg?branch=master\n  :target: https://travis-ci.org/ascoderu/opwen-cloudserver\n\n.. image:: https://img.shields.io/pypi/v/opwen_email_server.svg\n  :target: https://pypi.python.org/pypi/opwen_email_server/\n\nWhat's this?\n------------\n\nThis repository contains the source code for the Opwen cloud server. Its purpose\nis to connect the `application <https://github.com/ascoderu/opwen-webapp>`_\nrunning on the Opwen Lokole devices to the rest of the world.\n\nThe server has two main responsibilities:\n\n1. Receive emails from the internet that are addressed to Lokole users and\n   forward them to the appropriate Lokole device.\n2. Send new emails created by Lokole users to the rest of the internet.\n\nSystem overview\n---------------\n\n.. image:: docs/system-overview.png\n  :width: 800\n  :align: center\n  :alt: Overview of the Lokole system\n  :target: https://raw.githubusercontent.com/ascoderu/opwen-cloudserver/master/docs/system-overview.png\n\nData exchange format\n--------------------\n\nIn order to communicate between the Opwen cloud server and the Opwen\nweb-application (aka Lokole), a protocol based on gzipped jsonl files uploaded\nto Azure Blob Storage is used. The files contains a JSON object per line.\nEach JSON object describes an email, using the following schema:\n\n.. sourcecode :: json\n\n  {\n    \"sent_at\": \"yyyy-mm-dd HH:MM\",\n    \"to\": [\"email\"],\n    \"cc\": [\"email\"],\n    \"bcc\": [\"email\"],\n    \"from\": \"email\",\n    \"subject\": \"string\",\n    \"body\": \"html\",\n    \"attachments\": [{\"filename\": \"string\", \"content\": \"base64\"}]\n  }\n\nDevelopment setup\n-----------------\n\nFirst, get the source code.\n\n.. sourcecode :: sh\n\n  git clone git@github.com:ascoderu/opwen-cloudserver.git\n  cd opwen-cloudserver\n\nSecond, install the system-level dependencies using your package manager.\n\n.. sourcecode :: sh\n\n  sudo apt-get install -y python3-dev python3-venv openssl-dev jq\n  curl -L https://aka.ms/InstallAzureCli | bash\n  python3 -m pip install sfctl\n\nNext, set up the required Azure resources and environment variables:\n\n.. sourcecode :: sh\n\n  # connect to Azure account\n  az login\n  az account set --subscription \"YOUR_SUBSCRIPTION_ID_HERE\"\n\n  # define client properties\n  client_name=\"$(whoami | tr -dC 'a-zA-Z0-9')\"\n  client_id=\"123456789\"\n\n  # create development Azure resources\n  location=\"westus\"\n  resource_group=\"opwentest${client_name}\"\n  storage_name=\"opwenteststorage${client_name}\"\n  az group create -n ${resource_group} -l ${location} > /dev/null\n  az storage account create -n ${storage_name} -g ${resource_group} -l ${location} --sku Standard_RAGRS > /dev/null\n\n  # setup environment variables\n  storage_key=\"$(az storage account keys list -n ${storage_name} -g ${resource_group} | jq -r '.[0].value')\"\n  cat > .env << EOF\n  LOKOLE_EMAIL_SERVER_AZURE_BLOBS_NAME='${storage_name}'\n  LOKOLE_EMAIL_SERVER_AZURE_QUEUES_NAME='${storage_name}'\n  LOKOLE_EMAIL_SERVER_AZURE_TABLES_NAME='${storage_name}'\n  LOKOLE_CLIENT_AZURE_STORAGE_NAME='${storage_name}'\n  LOKOLE_EMAIL_SERVER_AZURE_BLOBS_KEY='${storage_key}'\n  LOKOLE_EMAIL_SERVER_AZURE_QUEUES_KEY='${storage_key}'\n  LOKOLE_EMAIL_SERVER_AZURE_TABLES_KEY='${storage_key}'\n  LOKOLE_CLIENT_AZURE_STORAGE_KEY='${storage_key}'\n  LOKOLE_DEFAULT_CLIENTS='[{\"id\":\"${client_id}\",\"domain\":\"${client_name}.lokole.ca\"}]'\n  EOF\n\nThird, use the makefile to verify your installation by running the tests and\nstarting up the server. The makefile will automatically install all required\ndependencies into a virtual environment.\n\n.. sourcecode :: sh\n\n  make tests\n  make server\n\nAlternatively, you can also run the entire application stack via Docker:\n\n.. sourcecode :: sh\n\n  export APP_PORT=8080\n  export ENV_FILE=.env\n  export BUILD_TAG=development\n  docker-compose build\n  docker-compose up\n\nThere are OpenAPI specifications that document the functionality of the\napplication and provide references to the entry points into the code\n(look for \"some-api-name-spec.yaml\" files in the repository).\n\nProduction setup\n----------------\n\nFor setting up a new deployment, run the steps below to create a new\n`ServiceFabric cluster <https://docs.microsoft.com/en-us/azure/service-fabric/service-fabric-docker-compose>`_\nvia Docker-Compose and deploy the application across the cluster. This only\nneeds to be done once. After that, the cluster is wired-up with continuous\ndelivery via Travis so that whenever a\n`new release <https://github.com/ascoderu/opwen-cloudserver/releases/new>`_\ngets created on Github, the containers are automatically re-built and\ndeployed to the cluster.\n\n.. sourcecode :: sh\n\n  location='eastus'\n  name='opwenserver'\n  deploy_tag='latest'\n  cert_folder=\"$(mktemp -d)\"\n  cluster_size='5'\n  vm_size='Standard_B2S'\n\n  deploy_password=\"FILL ME IN\"\n  appinsights_key=\"SET ME\"\n\n  # create required resources\n  az configure --defaults group=\"${name}\" location=\"${location}\"\n  az group create --name=\"${name}\"\n  az storage account create --sku=standard_lrs --name=\"opwenserverqueues\"\n  az storage account create --sku=standard_lrs --name=\"opwenservertables\"\n  az storage account create --sku=standard_lrs --name=\"opwenserverblobs\"\n  az storage account create --sku=standard_lrs --name=\"opwenclientblobs\"\n\n  # fetch access keys\n  queues_key=$(az storage account keys list --account-name=\"opwenserverqueues\" | jq -r \".[0].value\")\n  tables_key=$(az storage account keys list --account-name=\"opwenservertables\" | jq -r \".[0].value\")\n  blobs_key=$(az storage account keys list --account-name=\"opwenserverblobs\" | jq -r \".[0].value\")\n  clients_key=$(az storage account keys list --account-name=\"opwenclientblobs\" | jq -r \".[0].value\")\n\n  # build the containers to be deployed\n  cat > .env << EOF\n    LOKOLE_EMAIL_SERVER_APPINSIGHTS_KEY=\"${appinsights_key}\"\n    LOKOLE_EMAIL_SERVER_AZURE_QUEUES_NAME=\"opwenserverqueues\"\n    LOKOLE_EMAIL_SERVER_AZURE_QUEUES_KEY=\"${queues_key}\"\n    LOKOLE_EMAIL_SERVER_AZURE_TABLES_NAME=\"opwenservertables\"\n    LOKOLE_EMAIL_SERVER_AZURE_TABLES_KEY=\"${tables_key}\"\n    LOKOLE_EMAIL_SERVER_AZURE_BLOBS_NAME=\"opwenserverblobs\"\n    LOKOLE_EMAIL_SERVER_AZURE_BLOBS_KEY=\"${blobs_key}\"\n    LOKOLE_CLIENT_AZURE_STORAGE_NAME=\"opwenclientblobs\"\n    LOKOLE_CLIENT_AZURE_STORAGE_KEY=\"${clients_key}\"\n  EOF\n  APP_PORT=80 ENV_FILE=.env BUILD_TAG=\"$deploy_tag\" docker-compose config > compose.yml\n  docker-compose -f compose.yml push\n\n  # create a new cluster\n  cluster_host=\"$name.$location.cloudapp.azure.com\"\n  az sf cluster create \\\n    --resource-group \"$name\" --location \"$location\" --certificate-output-folder \"$cert_folder\" \\\n    --certificate-password \"$deploy_password\" --certificate-subject-name \"$cluster_host\" \\\n    --cluster-name \"$name\" --cluster-size \"$cluster_size\" --os UbuntuServer1604 \\\n    --vault-name \"$name\" --vault-resource-group \"$name\" \\\n    --vm-password \"$deploy_password\" --vm-user-name \"$name\" --vm-sku \"$vm_size\"\n\n  # deploy the containers for the application to the cluster\n  cert_file=\"$(ls $cert_folder/*.pem | head -1)\"\n  REQUESTS_CA_BUNDLE=\"$cert_file\" sfctl cluster select --endpoint \"https://$cluster_host:19080\" --pem \"$cert_file\" --no-verify\n  sfctl compose create --deployment-name \"$name\" --file-path compose.yml\n\n  # log some information about the deployment\n  echo \"All done. Keep the following for your records:\"\n  echo \"- Cluster URL: http://$cluster_host\"\n  echo \"- Certificate: $cert_file\"\n\nIf you're setting up a new continuous delivery integration, make sure to\nupdate the secrets archive in Travis to include your cluster certificate\nand environment dotfile since the items included in this repository are\nspecific to the Ascoderu deployment of this repository. For more information,\ntake a look at how to\n`encrypt files with Travis <https://docs.travis-ci.com/user/encrypting-files/>`_.\n\nHow do I...\n-----------\n\n... test the receiving of an email from an external entity like Outlook?\n````````````````````````````````````````````````````````````````````````\n\n.. sourcecode :: sh\n\n  # start the server and the worker that processes inbound emails\n  make server &\n  make inbound-store-worker &\n\n  # simulate the Sendgrid service forwarding an email received at the Lokole MX\n  # records to this service\n  # the server will receive the request from Sendgrid and enqueue a message to\n  # process and ingest the newly received raw MIME email\n  # the inbound-store-worker then wakes up, parses the MIME email into a domain\n  # object and stores it in the email datastore\n  curl localhost:8080/api/email/sendgrid/YOUR_CLIENT_ID_HERE -F \"email=YOUR_MIME_EMAIL_HERE\"\n\n... test the Lokole devices uploading emails written on them?\n`````````````````````````````````````````````````````````````\n\n.. sourcecode :: sh\n\n  # start the server and the workers that process outbound emails\n  make server &\n  make outbound-store-worker &\n  make outbound-send-worker &\n\n  # create and upload a compressed emails package to Azure just like the Lokole\n  cat \"YOUR_EMAIL_DATA_HERE\" > emailsFromLokole.pack\n  az storage blob upload -f emailsFromLokole.pack -c compressedpackages -n test-resource-id --account-name \"YOUR_ACCOUNT_NAME_HERE\" --account-key \"YOUR_KEY_HERE\"\n\n  # simulate the Lokole device's upload phase of the sync cycle calling out to\n  # the service\n  # the server will receive the Lokole's upload request and enqueue a message to\n  # process and ingest the uploaded emails\n  # the outbound-store-worker then wakes up, retrieves the uploaded emails from\n  # Azure, stores them in the email datastore and enqueues another message to\n  # send the emails to their recipients\n  # the outbound-send-worker then wakes up, retrieves each email to be sent,\n  # formats it into a MIME email and shoots it off to Sendgrid for delivery\n  curl localhost:8080/api/email/lokole/YOUR_CLIENT_ID_HERE -X POST -d '{\"resource_container\":\"compressedpackages\",\"resource_id\":\"test-resource-id\",\"resource_type\":\"azure-blob\"}' -H \"Content-Type: application/json\"\n\n... test the Lokole devices downloading emails sent to them?\n````````````````````````````````````````````````````````````\n\n.. sourcecode :: sh\n\n  # start the server\n  make server &\n\n  # simulate the Lokole device's download phase of the sync cycle calling out to\n  # the service\n  # the server will receive the Lokole's download request, fetch all the new\n  # messages sent to the Lokole device since the last request, package them and\n  # upload them to Azure\n  resource_id=$(curl localhost:8080/api/email/lokole/YOUR_CLIENT_ID_HERE -X GET | jq -r '.resource_id')\n\n  # download the compressed emails package that the Lokole device would ingest\n  az storage blob download -f emailsToLokole.pack -c compressedpackages -n ${resource_id} --account-name \"YOUR_ACCOUNT_NAME_HERE\" --account-key \"YOUR_KEY_HERE\"\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -14,413 +14,35 @@
     },
     "home_page": "https://github.com/ascoderu/opwen-cloudserver",
     "keywords": "",
-    "license": "LICENSE.txt",
+    "license": "License :: OSI Approved :: Apache Software License",
     "maintainer": "",
     "maintainer_email": "",
     "name": "opwen_email_server",
     "platform": "",
     "project_url": "https://pypi.org/project/opwen_email_server/",
-    "release_url": "https://pypi.org/project/opwen_email_server/0.1.15/",
+    "release_url": "https://pypi.org/project/opwen_email_server/0.1.16/",
     "requires_dist": [],
     "requires_python": "",
     "summary": "Email server for the Opwen project",
-    "version": "0.1.15"
+    "version": "0.1.16"
   },
   "releases": {
-    "0.0.10": [
+    "0.1.16": [
       {
         "comment_text": "",
         "digests": {
-          "md5": "76cbe1e79d50362718da9ec5ef28dcf7",
-          "sha256": "acdcc88ed185a198152f8390aa70c3f1e559c4cd8007cc713ac37461312c35a9"
+          "md5": "4da65f0d250e7690c844f023cc6be985",
+          "sha256": "98ee4e57c2758ea314ca5c6833e3d851a6213363df33142ceab2d3ec4f4208ef"
         },
-        "downloads": 15,
-        "filename": "opwen_email_server-0.0.10.tar.gz",
+        "downloads": -1,
+        "filename": "opwen_email_server-0.1.16.tar.gz",
         "has_sig": false,
-        "md5_digest": "76cbe1e79d50362718da9ec5ef28dcf7",
+        "md5_digest": "4da65f0d250e7690c844f023cc6be985",
         "packagetype": "sdist",
         "python_version": "source",
-        "size": 5286,
-        "upload_time": "2017-02-13T01:02:45",
-        "url": "https://files.pythonhosted.org/packages/a3/65/18d5f2e8cacc9b820afdfbaf1c6b23166bb7bff526aa4861632f89442ed6/opwen_email_server-0.0.10.tar.gz"
-      }
-    ],
-    "0.0.11": [
-      {
-        "comment_text": "",
-        "digests": {
-          "md5": "8786b1a512135fb5ff05a2bf6c8ec36a",
-          "sha256": "35cc880ae34b4dc870a86f539c94a64b7a55a9646e334f20c6f47b7d446cfad1"
-        },
-        "downloads": 16,
-        "filename": "opwen_email_server-0.0.11.tar.gz",
-        "has_sig": false,
-        "md5_digest": "8786b1a512135fb5ff05a2bf6c8ec36a",
-        "packagetype": "sdist",
-        "python_version": "source",
-        "size": 5336,
-        "upload_time": "2017-02-13T06:53:09",
-        "url": "https://files.pythonhosted.org/packages/96/32/1bcfd386b6e8d17b958f49102e81ddeb51336de74db32b613b56cad4d39a/opwen_email_server-0.0.11.tar.gz"
-      }
-    ],
-    "0.0.12": [
-      {
-        "comment_text": "",
-        "digests": {
-          "md5": "e335de47ac45b453123340f7168bce9c",
-          "sha256": "77ea73b97482fcf3ae82b8264a777566aa3543ebe47950680dadf83fceb150e7"
-        },
-        "downloads": 15,
-        "filename": "opwen_email_server-0.0.12.tar.gz",
-        "has_sig": false,
-        "md5_digest": "e335de47ac45b453123340f7168bce9c",
-        "packagetype": "sdist",
-        "python_version": "source",
-        "size": 9943,
-        "upload_time": "2017-02-13T08:04:54",
-        "url": "https://files.pythonhosted.org/packages/6e/37/1070b1f267120613b5373f85eb2c68fb40c6d2385c311d458c745197b7d7/opwen_email_server-0.0.12.tar.gz"
-      }
-    ],
-    "0.0.13": [
-      {
-        "comment_text": "",
-        "digests": {
-          "md5": "c305a353fb713332755447c9aae8a077",
-          "sha256": "0994ffa75d6e4cb7a9b242ee6b654a087d7dc98fea9a22645a012fc6415cb5f3"
-        },
-        "downloads": 14,
-        "filename": "opwen_email_server-0.0.13.tar.gz",
-        "has_sig": false,
-        "md5_digest": "c305a353fb713332755447c9aae8a077",
-        "packagetype": "sdist",
-        "python_version": "source",
-        "size": 9942,
-        "upload_time": "2017-02-13T22:17:10",
-        "url": "https://files.pythonhosted.org/packages/37/1a/72f2406ca6c5e8fa5d2a7eb8b3b3aec33df3110e704a64df680c9e11ad80/opwen_email_server-0.0.13.tar.gz"
-      }
-    ],
-    "0.0.8": [
-      {
-        "comment_text": "",
-        "digests": {
-          "md5": "d84e41c1814618d9aae2db8b92480319",
-          "sha256": "ae82aa3fb0a45f91b35ce500bdccf901aa40cc8c33dfaaa1e2352fe0ca6ce8c7"
-        },
-        "downloads": 17,
-        "filename": "opwen_email_server-0.0.8.tar.gz",
-        "has_sig": false,
-        "md5_digest": "d84e41c1814618d9aae2db8b92480319",
-        "packagetype": "sdist",
-        "python_version": "source",
-        "size": 5299,
-        "upload_time": "2017-02-09T06:07:51",
-        "url": "https://files.pythonhosted.org/packages/36/c3/4769ab8b789cdc01892b1e25d7d94696380ab6c2b38dadc1724fec2ba666/opwen_email_server-0.0.8.tar.gz"
-      }
-    ],
-    "0.0.9": [
-      {
-        "comment_text": "",
-        "digests": {
-          "md5": "810904993993f1933cafa9fef5f0d7a9",
-          "sha256": "2f6bd7320745743b9dc49c1e6df71a480b393e32e16f8e09bd7a32ca22c7c493"
-        },
-        "downloads": 14,
-        "filename": "opwen_email_server-0.0.9.tar.gz",
-        "has_sig": false,
-        "md5_digest": "810904993993f1933cafa9fef5f0d7a9",
-        "packagetype": "sdist",
-        "python_version": "source",
-        "size": 5288,
-        "upload_time": "2017-02-12T20:43:10",
-        "url": "https://files.pythonhosted.org/packages/a4/e1/fa01243ce42e98888bcdff5758d6e208d0723ac4031a1c656fa513003ed4/opwen_email_server-0.0.9.tar.gz"
-      }
-    ],
-    "0.1.0": [
-      {
-        "comment_text": "",
-        "digests": {
-          "md5": "a76099c8888930e94e7a7cc5f11f95fe",
-          "sha256": "55f019a77f383f0d6c8237080e60c94f29ec8d5184789191e13b2ec3080a1115"
-        },
-        "downloads": 0,
-        "filename": "opwen_email_server-0.1.0.tar.gz",
-        "has_sig": false,
-        "md5_digest": "a76099c8888930e94e7a7cc5f11f95fe",
-        "packagetype": "sdist",
-        "python_version": "source",
-        "size": 10673,
-        "upload_time": "2017-04-09T07:22:37",
-        "url": "https://files.pythonhosted.org/packages/26/ca/0a32c07f2aa3ff695ed912044de318e50e7a34f72eb646fb8bdcfcc69ebd/opwen_email_server-0.1.0.tar.gz"
-      }
-    ],
-    "0.1.1": [
-      {
-        "comment_text": "",
-        "digests": {
-          "md5": "8b28e9c3fe2739e053068f551a667351",
-          "sha256": "2956142059d01059604ca00e8391f4d721ff36bffaabb28cacb0f5cd3777fcd8"
-        },
-        "downloads": 0,
-        "filename": "opwen_email_server-0.1.1.tar.gz",
-        "has_sig": false,
-        "md5_digest": "8b28e9c3fe2739e053068f551a667351",
-        "packagetype": "sdist",
-        "python_version": "source",
-        "size": 10689,
-        "upload_time": "2017-04-09T07:38:04",
-        "url": "https://files.pythonhosted.org/packages/0e/c2/f3e69aa63ac751aa63185e04bc9d1e65a16d95868b746d1f148f80910de9/opwen_email_server-0.1.1.tar.gz"
-      }
-    ],
-    "0.1.10": [
-      {
-        "comment_text": "",
-        "digests": {
-          "md5": "8ac8f9dfa96c8f1c531967f62f970448",
-          "sha256": "0340445831484c4d99680378d7825729bbd8c05ad59b1a4ca8e70cdc1c59b35f"
-        },
-        "downloads": 0,
-        "filename": "opwen_email_server-0.1.10.tar.gz",
-        "has_sig": false,
-        "md5_digest": "8ac8f9dfa96c8f1c531967f62f970448",
-        "packagetype": "sdist",
-        "python_version": "source",
-        "size": 13741,
-        "upload_time": "2017-05-14T07:40:45",
-        "url": "https://files.pythonhosted.org/packages/2f/78/da6d7a56e3f1eb18904b79ee16a856a055a1346cd9057d19c30ec7fefe8c/opwen_email_server-0.1.10.tar.gz"
-      }
-    ],
-    "0.1.11": [
-      {
-        "comment_text": "",
-        "digests": {
-          "md5": "5f16d5b7ef96442763b3e0c587d6f035",
-          "sha256": "12af252baaf90f034df619d45db6cf722f2203000486bb96269b432c0e1e4b5c"
-        },
-        "downloads": 0,
-        "filename": "opwen_email_server-0.1.11.tar.gz",
-        "has_sig": false,
-        "md5_digest": "5f16d5b7ef96442763b3e0c587d6f035",
-        "packagetype": "sdist",
-        "python_version": "source",
-        "size": 13998,
-        "upload_time": "2017-06-27T02:08:41",
-        "url": "https://files.pythonhosted.org/packages/09/a0/828fe0b04a433fe25dccdaf88231f2a171e62e6580699bc6dbd9541b7210/opwen_email_server-0.1.11.tar.gz"
-      }
-    ],
-    "0.1.12": [
-      {
-        "comment_text": "",
-        "digests": {
-          "md5": "c3ff69cff3a9c6134fe40c21d54c32f6",
-          "sha256": "9b176427bc0e9b04d352e716e1447c4af0dfe24c8e056c182efd624d551a5660"
-        },
-        "downloads": 0,
-        "filename": "opwen_email_server-0.1.12.tar.gz",
-        "has_sig": false,
-        "md5_digest": "c3ff69cff3a9c6134fe40c21d54c32f6",
-        "packagetype": "sdist",
-        "python_version": "source",
-        "size": 14272,
-        "upload_time": "2017-07-02T21:47:12",
-        "url": "https://files.pythonhosted.org/packages/15/3a/be706e5914f154b1da34b4f9ddbbbca84c259c51ab86bc37556052ef87bc/opwen_email_server-0.1.12.tar.gz"
-      }
-    ],
-    "0.1.13": [
-      {
-        "comment_text": "",
-        "digests": {
-          "md5": "f5449c72b0eb7c22b1b287272c1a64fc",
-          "sha256": "9bd244782d02cb9eb13bf3b0221f537bbd824e65962e691c00cd3551d853a33b"
-        },
-        "downloads": 0,
-        "filename": "opwen_email_server-0.1.13.tar.gz",
-        "has_sig": false,
-        "md5_digest": "f5449c72b0eb7c22b1b287272c1a64fc",
-        "packagetype": "sdist",
-        "python_version": "source",
-        "size": 14405,
-        "upload_time": "2017-07-03T04:31:01",
-        "url": "https://files.pythonhosted.org/packages/aa/67/7acd9d33e16a03b96de5a2d92ff2e95f45a50919bc714204dda11bb9654f/opwen_email_server-0.1.13.tar.gz"
-      }
-    ],
-    "0.1.14": [
-      {
-        "comment_text": "",
-        "digests": {
-          "md5": "fcd21dec0bd3be6b1c186b60ed97fd80",
-          "sha256": "ebcd95e0a891ae6cc46d39ddc23b4436aaf44a6db1e272d0777fbb94fceb7d90"
-        },
-        "downloads": 0,
-        "filename": "opwen_email_server-0.1.14.tar.gz",
-        "has_sig": false,
-        "md5_digest": "fcd21dec0bd3be6b1c186b60ed97fd80",
-        "packagetype": "sdist",
-        "python_version": "source",
-        "size": 15584,
-        "upload_time": "2017-07-27T02:39:37",
-        "url": "https://files.pythonhosted.org/packages/ac/bc/302d76c7d81f6d69e12949facf74c0b6fa9c932428fa82ba44eb172fdd83/opwen_email_server-0.1.14.tar.gz"
-      }
-    ],
-    "0.1.15": [
-      {
-        "comment_text": "",
-        "digests": {
-          "md5": "6a75f2f12bae95efc65fb73412d851f6",
-          "sha256": "3d2170db91b5cbffd26035c8ed2fc26f90d49cb899aaac2eee384e91a6574e22"
-        },
-        "downloads": 0,
-        "filename": "opwen_email_server-0.1.15.tar.gz",
-        "has_sig": false,
-        "md5_digest": "6a75f2f12bae95efc65fb73412d851f6",
-        "packagetype": "sdist",
-        "python_version": "source",
-        "size": 17782,
-        "upload_time": "2017-07-27T05:51:28",
-        "url": "https://files.pythonhosted.org/packages/43/0d/b647b256e233a370b48f2983a06e288234bf30e2310418bb155a80cf4453/opwen_email_server-0.1.15.tar.gz"
-      }
-    ],
-    "0.1.2": [
-      {
-        "comment_text": "",
-        "digests": {
-          "md5": "e07fc5bbead7073e18c68d5ecf7dd2f5",
-          "sha256": "7474ce6a3e2adb7e3b8fac760730bb0c78c70cb73ece7f01b0f0a0289c5c914f"
-        },
-        "downloads": 0,
-        "filename": "opwen_email_server-0.1.2.tar.gz",
-        "has_sig": false,
-        "md5_digest": "e07fc5bbead7073e18c68d5ecf7dd2f5",
-        "packagetype": "sdist",
-        "python_version": "source",
-        "size": 11844,
-        "upload_time": "2017-04-22T02:59:22",
-        "url": "https://files.pythonhosted.org/packages/a9/60/d7a741c7139787761ef5b4be171b9dc5ad062cfd8653b91557c0acef57f2/opwen_email_server-0.1.2.tar.gz"
-      }
-    ],
-    "0.1.3": [
-      {
-        "comment_text": "",
-        "digests": {
-          "md5": "d9df3c89dd14619d0178793be600f15c",
-          "sha256": "540e551fd7d8ef90f80699eb4bb9c1501f988db7d3cc619a66953cae354759de"
-        },
-        "downloads": 0,
-        "filename": "opwen_email_server-0.1.3.tar.gz",
-        "has_sig": false,
-        "md5_digest": "d9df3c89dd14619d0178793be600f15c",
-        "packagetype": "sdist",
-        "python_version": "source",
-        "size": 11781,
-        "upload_time": "2017-04-22T03:53:50",
-        "url": "https://files.pythonhosted.org/packages/ff/e1/9dc1869134c1b7aafb02acc1e46741dba513fac02991f5c5ceb74cc9ed15/opwen_email_server-0.1.3.tar.gz"
-      }
-    ],
-    "0.1.4": [
-      {
-        "comment_text": "",
-        "digests": {
-          "md5": "6e51880419204072736578531fe0189d",
-          "sha256": "c362b669e8fd61e210c1306180ebcc93efe5604bf731442209a4cee3b0d00370"
-        },
-        "downloads": 0,
-        "filename": "opwen_email_server-0.1.4.tar.gz",
-        "has_sig": false,
-        "md5_digest": "6e51880419204072736578531fe0189d",
-        "packagetype": "sdist",
-        "python_version": "source",
-        "size": 12055,
-        "upload_time": "2017-04-22T21:11:45",
-        "url": "https://files.pythonhosted.org/packages/b2/be/a60604ca69ed615ffa74c0fac09113d8afe521436551714a5a8de6bbc1c0/opwen_email_server-0.1.4.tar.gz"
-      }
-    ],
-    "0.1.5": [
-      {
-        "comment_text": "",
-        "digests": {
-          "md5": "cecb8e824c0e6a54177cf2c61f45eba4",
-          "sha256": "c691b359f65aed73b3853160d0e43aac995f36f2e8d90d385c4c6a086ef97feb"
-        },
-        "downloads": 0,
-        "filename": "opwen_email_server-0.1.5.tar.gz",
-        "has_sig": false,
-        "md5_digest": "cecb8e824c0e6a54177cf2c61f45eba4",
-        "packagetype": "sdist",
-        "python_version": "source",
-        "size": 12126,
-        "upload_time": "2017-04-22T21:53:06",
-        "url": "https://files.pythonhosted.org/packages/66/b0/96a80c71b572d4c3748359f8c1aa54cf7e1b3a0e7c3e2494d7047a4ade71/opwen_email_server-0.1.5.tar.gz"
-      }
-    ],
-    "0.1.6": [
-      {
-        "comment_text": "",
-        "digests": {
-          "md5": "f5056f9a9a42f2122de72d44a2da6164",
-          "sha256": "973b3af54c08e5de5cb415010b423e2caa2bab2591f73b72fb5534ca6b7a0ec2"
-        },
-        "downloads": 0,
-        "filename": "opwen_email_server-0.1.6.tar.gz",
-        "has_sig": false,
-        "md5_digest": "f5056f9a9a42f2122de72d44a2da6164",
-        "packagetype": "sdist",
-        "python_version": "source",
-        "size": 13152,
-        "upload_time": "2017-04-23T05:53:09",
-        "url": "https://files.pythonhosted.org/packages/43/9f/86f3ce8324298b94188bbc0d6044d657abd3f085752a1e67079c3d289a17/opwen_email_server-0.1.6.tar.gz"
-      }
-    ],
-    "0.1.7": [
-      {
-        "comment_text": "",
-        "digests": {
-          "md5": "6385de420ccd4b8237af7c990b05f8dd",
-          "sha256": "8f4ad55c7282bcd60eb9d77bc4086ddbbb797893fb6ab6252ecf95151b6f392d"
-        },
-        "downloads": 0,
-        "filename": "opwen_email_server-0.1.7.tar.gz",
-        "has_sig": false,
-        "md5_digest": "6385de420ccd4b8237af7c990b05f8dd",
-        "packagetype": "sdist",
-        "python_version": "source",
-        "size": 13549,
-        "upload_time": "2017-04-23T20:59:38",
-        "url": "https://files.pythonhosted.org/packages/5a/40/b7944c165e0cc08807b8781f4c907bb6a73417006c62ab358a6f6bba946c/opwen_email_server-0.1.7.tar.gz"
-      }
-    ],
-    "0.1.8": [
-      {
-        "comment_text": "",
-        "digests": {
-          "md5": "005b037d3966fb62dcb0e6b1b835e9fb",
-          "sha256": "4cdba20fa57849c5f58f562160987e9827a053e8feb1f548512458cd6bca6bdc"
-        },
-        "downloads": 0,
-        "filename": "opwen_email_server-0.1.8.tar.gz",
-        "has_sig": false,
-        "md5_digest": "005b037d3966fb62dcb0e6b1b835e9fb",
-        "packagetype": "sdist",
-        "python_version": "source",
-        "size": 13549,
-        "upload_time": "2017-04-23T22:22:32",
-        "url": "https://files.pythonhosted.org/packages/06/09/a9e6d3e48a46d5fb920b5b41cb5338b4db262a0a2dbcd91217918fec6109/opwen_email_server-0.1.8.tar.gz"
-      }
-    ],
-    "0.1.9": [
-      {
-        "comment_text": "",
-        "digests": {
-          "md5": "791ce8b77a75ebb8b9943aa9b1680aab",
-          "sha256": "971370a5dcd3e909120c107bb8736b85ea8a398bee7a4ab46aa9d4e30c161fc3"
-        },
-        "downloads": 0,
-        "filename": "opwen_email_server-0.1.9.tar.gz",
-        "has_sig": false,
-        "md5_digest": "791ce8b77a75ebb8b9943aa9b1680aab",
-        "packagetype": "sdist",
-        "python_version": "source",
-        "size": 13568,
-        "upload_time": "2017-04-23T22:44:43",
-        "url": "https://files.pythonhosted.org/packages/b1/bf/a80bafda24dcfe51e93df643afb96dcffbf6ad57b81934935da3e562d52c/opwen_email_server-0.1.9.tar.gz"
+        "size": 21066,
+        "upload_time": "2017-11-17T16:43:21",
+        "url": "https://files.pythonhosted.org/packages/6d/ba/da64077c078c5658e072453185493debd1c6a2315d294c9dd2d6ffd57f6d/opwen_email_server-0.1.16.tar.gz"
       }
     ]
   },
@@ -428,18 +50,18 @@
     {
       "comment_text": "",
       "digests": {
-        "md5": "6a75f2f12bae95efc65fb73412d851f6",
-        "sha256": "3d2170db91b5cbffd26035c8ed2fc26f90d49cb899aaac2eee384e91a6574e22"
+        "md5": "4da65f0d250e7690c844f023cc6be985",
+        "sha256": "98ee4e57c2758ea314ca5c6833e3d851a6213363df33142ceab2d3ec4f4208ef"
       },
-      "downloads": 0,
-      "filename": "opwen_email_server-0.1.15.tar.gz",
+      "downloads": -1,
+      "filename": "opwen_email_server-0.1.16.tar.gz",
       "has_sig": false,
-      "md5_digest": "6a75f2f12bae95efc65fb73412d851f6",
+      "md5_digest": "4da65f0d250e7690c844f023cc6be985",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 17782,
-      "upload_time": "2017-07-27T05:51:28",
-      "url": "https://files.pythonhosted.org/packages/43/0d/b647b256e233a370b48f2983a06e288234bf30e2310418bb155a80cf4453/opwen_email_server-0.1.15.tar.gz"
+      "size": 21066,
+      "upload_time": "2017-11-17T16:43:21",
+      "url": "https://files.pythonhosted.org/packages/6d/ba/da64077c078c5658e072453185493debd1c6a2315d294c9dd2d6ffd57f6d/opwen_email_server-0.1.16.tar.gz"
     }
   ]
 }
