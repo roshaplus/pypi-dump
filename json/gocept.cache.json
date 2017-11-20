@@ -13,16 +13,16 @@
       "Programming Language :: Python :: 2",
       "Programming Language :: Python :: 2.7",
       "Programming Language :: Python :: 3",
-      "Programming Language :: Python :: 3.3",
       "Programming Language :: Python :: 3.4",
       "Programming Language :: Python :: 3.5",
+      "Programming Language :: Python :: 3.6",
       "Programming Language :: Python :: Implementation :: CPython",
       "Programming Language :: Python :: Implementation :: PyPy",
       "Topic :: Software Development",
       "Topic :: Software Development :: Libraries",
       "Topic :: Software Development :: Libraries :: Python Modules"
     ],
-    "description": ".. contents::\n\n============\ngocept.cache\n============\n\nMethod cache\n============\n\nMemoize with timeout\n--------------------\n\nMemoize with timeout caches methods with a certain timeout:\n\n>>> import math\n>>> import gocept.cache.method\n>>>\n>>> class Point(object):\n...\n...     def __init__(self, x, y):\n...         self.x, self.y = x, y\n...\n...     @gocept.cache.method.Memoize(0.1)\n...     def distance(self, x, y):\n...         print('computing distance')\n...         return math.sqrt((self.x - x)**2 + (self.y - y)**2)\n...\n...     @gocept.cache.method.Memoize(0.1, ignore_self=True)\n...     def add_one(self, i):\n...         if not isinstance(i, int):\n...             print(\"I want an int\")\n...         else:\n...             print('adding one')\n...             return i + 1\n...\n>>> point = Point(1.0, 2.0)\n\nWhen we first ask for the distance it is computed:\n\n>>> point.distance(2, 2)\ncomputing distance\n1.0\n\nThe second time the distance is not computed but returned from the cache:\n\n>>> point.distance(2, 2)\n1.0\n\nNow, let's wait 0.1 secondes, the value we set as cache timeout. After that the\ndistance is computed again:\n\n>>> import time\n>>> time.sleep(0.5)\n>>> point.distance(2, 2)\ncomputing distance\n1.0\n\n\nWhen we create a new instance, the new instance gets its own cache:\n\n>>> p2 = Point(1.0, 2.0)\n>>> p2.distance(2, 2)\ncomputing distance\n1.0\n\nIt's also possible to explicitly ignore self. We did this for the `add_one`\nmethod:\n\n>>> point.add_one(3)\nadding one\n4\n\nThe second time it's not computed as you would expect:\n>>> point.add_one(3)\n4\n\nIf we ask `p2` now the result is not computed as well:\n\n>>> p2.add_one(3)\n4\n\nIf we put a non hashable argument into a memoized function it will not be\ncached:\n\n>>> point.add_one({'a': 1})\nI want an int\n>>> point.add_one({'a': 1})\nI want an int\n\n\nThe decorated method can be introspected and yields the same results ad the\noriginal:\n\n>>> import inspect\n>>> Point.distance.__name__\n'distance'\n>>> tuple(inspect.getargspec(Point.distance))\n(['self', 'x', 'y'], None, None, None)\n\n\nExplicitly exclude caching of a certain value\n---------------------------------------------\n\nEspecially when talking to external systems, you want to handle\nerrors (i.e. by returning an emtpy result). But normally you\ndo not want to cache this special return value.\n\nThis is our database.\n\n>>> class DB(object):\n...\n...     call_count = 0\n...\n...     def get_country(self, zip):\n...         self.call_count += 1\n...         if self.call_count % 2 == 0:\n...             raise ValueError('Some strange response')\n...         return 'Somecountry'\n...\n\nIt will throw an exception with every 2nd call:\n\n>>> db = DB()\n>>> db.get_country(12345)\n'Somecountry'\n\n>>> db.get_country(12345)\nTraceback (most recent call last):\n...\nValueError: Some strange response\n\n>>> db.get_country(12345)\n'Somecountry'\n\n>>> db.get_country(12345)\nTraceback (most recent call last):\n...\nValueError: Some strange response\n\n\nNow we use do_not_cache_and_return to specify that we do\nnot want to cache if there was en error.\n\n>>> import gocept.cache.method\n>>>\n>>> class Country(object):\n...\n...     db = DB()\n...\n...     @gocept.cache.method.Memoize(1000)\n...     def by_zip(self, zip):\n...         try:\n...             return self.db.get_country(zip)\n...         except ValueError:\n...             return gocept.cache.method.do_not_cache_and_return(\n...                     'DB is down.')\n...\n\n>>> country = Country()\n\nFirst call will get cached, so we get the correct country with every call:\n\n>>> country.by_zip(12345)\n'Somecountry'\n\n>>> country.by_zip(12345)\n'Somecountry'\n\n>>> country.by_zip(12345)\n'Somecountry'\n\nBy using a new zip, the get_country method is called the second time, and\nthere will be an exception, which is not cached:\n\n>>> country.by_zip(54321)\n'DB is down.'\n\nCalling it again will call get_country, because special return value is not\ncached:\n\n>>> country.by_zip(54321)\n'Somecountry'\n\nNow we always get the cached value:\n\n>>> country.by_zip(54321)\n'Somecountry'\n\n\nStore memoizations on an attribute\n----------------------------------\n\nIf you want more control over the cache used by gocept.cache.method.Memoize\n(e. g. you want to associate it with a gocept.cache.property.CacheDataManager\nto invalidate it on transaction boundaries), you can use the @memoize_on_attribute\ndecorator to retrieve the cache-dictionary from the instance:\n\n>>> class Bar(object):\n...     cache = {}\n...\n...     @gocept.cache.method.memoize_on_attribute('cache', 10)\n...     def echo(self, x):\n...         print('miss')\n...         return x\n\n>>> bar = Bar()\n>>> bar.echo(5)\nmiss\n5\n>>> bar.echo(5)\n5\n>>> bar.cache.clear()\n>>> bar.echo(5)\nmiss\n5\n\nThis decorator should be used on methods, not on plain functions, since it must\nbe able to retrieve the cache-dictionary from the first argument of the function\n(which is 'self' for methods):\n\n>>> @gocept.cache.method.memoize_on_attribute('cache', 10)\n... def bar():\n...     print('foo')\n>>> bar()\nTraceback (most recent call last):\nTypeError: gocept.cache.method.memoize_on_attribute could not retrieve cache attribute 'cache' for function <function bar at 0x...>\n\n>>> @gocept.cache.method.memoize_on_attribute('cache', 10)\n... def baz(x):\n...     print('foo')\n>>> baz(5)\nTraceback (most recent call last):\nTypeError: gocept.cache.method.memoize_on_attribute could not retrieve cache attribute 'cache' for function <function baz at 0x...>\n\n\nCached Properties\n=================\n\nTransaction Bound Cache\n-----------------------\n\nThe transaction bound cache is invalidated on transaction boundaries.\n\nCreate a class and set some data:\n\n>>> import gocept.cache.property\n>>> class Foo(object):\n...\n...     cache = gocept.cache.property.TransactionBoundCache('_v_cache', dict)\n...\n\n(NOTE: You probably want to use a \"volatile\" attribute name for the cache\nstorage, otherwise a read-only access of the cache triggers a write.)\n\n>>> foo = Foo()\n>>> foo.cache\n{}\n>>> foo.cache['A'] = 1\n>>> foo.cache\n{'A': 1}\n\nIf we commit the transaction the cache is empty again:\n\n>>> import transaction\n>>> transaction.commit()\n>>> foo.cache\n{}\n\n\nThe same happens on abort:\n\n>>> foo.cache['A'] = 1\n>>> foo.cache\n{'A': 1}\n>>> transaction.abort()\n>>> foo.cache\n{}\n\n\n=======\nChanges\n=======\n\n2.1 (2016-11-17)\n================\n\n- Bugfix: ``.property.CacheDataManager`` no longer invalidates the cache in\n  ``tpc_vote()`` and ``commit()`` but in ``tpc_finish()``.\n\n- Raise `TransactionJoinError` if joining the transaction failed in\n  ``.property.TransactionBoundCache``.\n\n\n2.0 (2016-03-18)\n================\n\n- Drop support of Python 2.6.\n\n- Declare support of PyPy and PyPy3.\n\n\n1.0 (2015-09-25)\n================\n\n- Now testing against currently newest versions of dependencies.\n\n- Drop support of Python 3.2.\n\n- Declare Support of Python 3.4 and 3.5.\n\n\n0.6.1 (2013-09-13)\n==================\n\n- Finish Python 3 compatibility\n\n\n0.6 (2013-09-13)\n================\n\n- Changes not recored, sorry.\n\n\n0.6b2 (2013-09-05)\n==================\n\n- Changes not recored, sorry.\n\n\n0.6b1 (2013-09-05)\n==================\n\n- Python3 compatibility\n\n\n0.5.2 (2012-06-22)\n==================\n\n- Added ``gocept.cache.method.do_not_cache_and_return(value)`` in memoized\n  methods/functions which will return the given value, without caching it.\n\n0.5.1 (2012-03-10)\n==================\n\n- Prevent race condition which caused values of ``gocept.cache.method.Memoize``\n  not to be stored when collect was called during the Memoize call\n  (in multi threaded environments).\n\n- Pin test versions to ZTK 1.1\n\n0.5 (2011-03-15)\n================\n\n- Replace dependency on ZODB with a dependency on transaction.\n\n0.4 (2009-06-18)\n================\n\n- Registered clearing the cache with zope.testing.cleanup.\n\n0.3 (2008-12-19)\n================\n\n- Added @memoize_on_attribute to retrieve the memoization cache from the\n  instance instead of using gocept.cache.method's built-in cache.\n\n0.2.2 (2007-12-17)\n==================\n\n- Fixed the bug in `TransactionBoundCache` where the cache was not invalidated\n  on transaction abort.\n\n0.2.1 (2007-10-17)\n==================\n\n- Fixed a bug in `TransactionBoundCache` which yielded an error in the log:\n  `TypeError: <lambda>() takes exactly 1 argument (2 given)`",
+    "description": ".. contents::\n\n============\ngocept.cache\n============\n\nMethod cache\n============\n\nMemoize with timeout\n--------------------\n\nMemoize with timeout caches methods with a certain timeout:\n\n>>> import math\n>>> import gocept.cache.method\n>>>\n>>> class Point(object):\n...\n...     def __init__(self, x, y):\n...         self.x, self.y = x, y\n...\n...     @gocept.cache.method.Memoize(0.1)\n...     def distance(self, x, y):\n...         print('computing distance')\n...         return math.sqrt((self.x - x)**2 + (self.y - y)**2)\n...\n...     @gocept.cache.method.Memoize(0.1, ignore_self=True)\n...     def add_one(self, i):\n...         if not isinstance(i, int):\n...             print(\"I want an int\")\n...         else:\n...             print('adding one')\n...             return i + 1\n...\n>>> point = Point(1.0, 2.0)\n\nWhen we first ask for the distance it is computed:\n\n>>> point.distance(2, 2)\ncomputing distance\n1.0\n\nThe second time the distance is not computed but returned from the cache:\n\n>>> point.distance(2, 2)\n1.0\n\nNow, let's wait 0.1 secondes, the value we set as cache timeout. After that the\ndistance is computed again:\n\n>>> import time\n>>> time.sleep(0.5)\n>>> point.distance(2, 2)\ncomputing distance\n1.0\n\n\nWhen we create a new instance, the new instance gets its own cache:\n\n>>> p2 = Point(1.0, 2.0)\n>>> p2.distance(2, 2)\ncomputing distance\n1.0\n\nIt's also possible to explicitly ignore self. We did this for the `add_one`\nmethod:\n\n>>> point.add_one(3)\nadding one\n4\n\nThe second time it's not computed as you would expect:\n>>> point.add_one(3)\n4\n\nIf we ask `p2` now the result is not computed as well:\n\n>>> p2.add_one(3)\n4\n\nIf we put a non hashable argument into a memoized function it will not be\ncached:\n\n>>> point.add_one({'a': 1})\nI want an int\n>>> point.add_one({'a': 1})\nI want an int\n\n\nThe decorated method can be introspected and yields the same results ad the\noriginal:\n\n>>> import inspect\n>>> Point.distance.__name__\n'distance'\n>>> tuple(inspect.getargspec(Point.distance))\n(['self', 'x', 'y'], None, None, None)\n\n\nExplicitly exclude caching of a certain value\n---------------------------------------------\n\nEspecially when talking to external systems, you want to handle\nerrors (i.e. by returning an emtpy result). But normally you\ndo not want to cache this special return value.\n\nThis is our database.\n\n>>> class DB(object):\n...\n...     call_count = 0\n...\n...     def get_country(self, zip):\n...         self.call_count += 1\n...         if self.call_count % 2 == 0:\n...             raise ValueError('Some strange response')\n...         return 'Somecountry'\n...\n\nIt will throw an exception with every 2nd call:\n\n>>> db = DB()\n>>> db.get_country(12345)\n'Somecountry'\n\n>>> db.get_country(12345)\nTraceback (most recent call last):\n...\nValueError: Some strange response\n\n>>> db.get_country(12345)\n'Somecountry'\n\n>>> db.get_country(12345)\nTraceback (most recent call last):\n...\nValueError: Some strange response\n\n\nNow we use do_not_cache_and_return to specify that we do\nnot want to cache if there was en error.\n\n>>> import gocept.cache.method\n>>>\n>>> class Country(object):\n...\n...     db = DB()\n...\n...     @gocept.cache.method.Memoize(1000)\n...     def by_zip(self, zip):\n...         try:\n...             return self.db.get_country(zip)\n...         except ValueError:\n...             return gocept.cache.method.do_not_cache_and_return(\n...                     'DB is down.')\n...\n\n>>> country = Country()\n\nFirst call will get cached, so we get the correct country with every call:\n\n>>> country.by_zip(12345)\n'Somecountry'\n\n>>> country.by_zip(12345)\n'Somecountry'\n\n>>> country.by_zip(12345)\n'Somecountry'\n\nBy using a new zip, the get_country method is called the second time, and\nthere will be an exception, which is not cached:\n\n>>> country.by_zip(54321)\n'DB is down.'\n\nCalling it again will call get_country, because special return value is not\ncached:\n\n>>> country.by_zip(54321)\n'Somecountry'\n\nNow we always get the cached value:\n\n>>> country.by_zip(54321)\n'Somecountry'\n\n\nStore memoizations on an attribute\n----------------------------------\n\nIf you want more control over the cache used by gocept.cache.method.Memoize\n(e. g. you want to associate it with a gocept.cache.property.CacheDataManager\nto invalidate it on transaction boundaries), you can use the @memoize_on_attribute\ndecorator to retrieve the cache-dictionary from the instance:\n\n>>> class Bar(object):\n...     cache = {}\n...\n...     @gocept.cache.method.memoize_on_attribute('cache', 10)\n...     def echo(self, x):\n...         print('miss')\n...         return x\n\n>>> bar = Bar()\n>>> bar.echo(5)\nmiss\n5\n>>> bar.echo(5)\n5\n>>> bar.cache.clear()\n>>> bar.echo(5)\nmiss\n5\n\nThis decorator should be used on methods, not on plain functions, since it must\nbe able to retrieve the cache-dictionary from the first argument of the function\n(which is 'self' for methods):\n\n>>> @gocept.cache.method.memoize_on_attribute('cache', 10)\n... def bar():\n...     print('foo')\n>>> bar()\nTraceback (most recent call last):\nTypeError: gocept.cache.method.memoize_on_attribute could not retrieve cache attribute 'cache' for function <function bar at 0x...>\n\n>>> @gocept.cache.method.memoize_on_attribute('cache', 10)\n... def baz(x):\n...     print('foo')\n>>> baz(5)\nTraceback (most recent call last):\nTypeError: gocept.cache.method.memoize_on_attribute could not retrieve cache attribute 'cache' for function <function baz at 0x...>\n\n\nCached Properties\n=================\n\nTransaction Bound Cache\n-----------------------\n\nThe transaction bound cache is invalidated on transaction boundaries.\n\nCreate a class and set some data:\n\n>>> import gocept.cache.property\n>>> class Foo(object):\n...\n...     cache = gocept.cache.property.TransactionBoundCache('_v_cache', dict)\n...\n\n(NOTE: You probably want to use a \"volatile\" attribute name for the cache\nstorage, otherwise a read-only access of the cache triggers a write.)\n\n>>> foo = Foo()\n>>> foo.cache\n{}\n>>> foo.cache['A'] = 1\n>>> foo.cache\n{'A': 1}\n\nIf we commit the transaction the cache is empty again:\n\n>>> import transaction\n>>> transaction.commit()\n>>> foo.cache\n{}\n\n\nThe same happens on abort:\n\n>>> foo.cache['A'] = 1\n>>> foo.cache\n{'A': 1}\n>>> transaction.abort()\n>>> foo.cache\n{}\n\n\n=======\nChanges\n=======\n\n3.0 (2017-11-20)\n================\n\n- Remove use of ``__file__`` in setup.py, to accommodate recent setuptools.\n\n- Add support for Python 3.6.\n\n- Drop support for Python 3.3.\n\n\n2.1 (2016-11-17)\n================\n\n- Bugfix: ``.property.CacheDataManager`` no longer invalidates the cache in\n  ``tpc_vote()`` and ``commit()`` but in ``tpc_finish()``.\n\n- Raise `TransactionJoinError` if joining the transaction failed in\n  ``.property.TransactionBoundCache``.\n\n\n2.0 (2016-03-18)\n================\n\n- Drop support of Python 2.6.\n\n- Declare support of PyPy and PyPy3.\n\n\n1.0 (2015-09-25)\n================\n\n- Now testing against currently newest versions of dependencies.\n\n- Drop support of Python 3.2.\n\n- Declare Support of Python 3.4 and 3.5.\n\n\n0.6.1 (2013-09-13)\n==================\n\n- Finish Python 3 compatibility\n\n\n0.6 (2013-09-13)\n================\n\n- Changes not recored, sorry.\n\n\n0.6b2 (2013-09-05)\n==================\n\n- Changes not recored, sorry.\n\n\n0.6b1 (2013-09-05)\n==================\n\n- Python3 compatibility\n\n\n0.5.2 (2012-06-22)\n==================\n\n- Added ``gocept.cache.method.do_not_cache_and_return(value)`` in memoized\n  methods/functions which will return the given value, without caching it.\n\n0.5.1 (2012-03-10)\n==================\n\n- Prevent race condition which caused values of ``gocept.cache.method.Memoize``\n  not to be stored when collect was called during the Memoize call\n  (in multi threaded environments).\n\n- Pin test versions to ZTK 1.1\n\n0.5 (2011-03-15)\n================\n\n- Replace dependency on ZODB with a dependency on transaction.\n\n0.4 (2009-06-18)\n================\n\n- Registered clearing the cache with zope.testing.cleanup.\n\n0.3 (2008-12-19)\n================\n\n- Added @memoize_on_attribute to retrieve the memoization cache from the\n  instance instead of using gocept.cache.method's built-in cache.\n\n0.2.2 (2007-12-17)\n==================\n\n- Fixed the bug in `TransactionBoundCache` where the cache was not invalidated\n  on transaction abort.\n\n0.2.1 (2007-10-17)\n==================\n\n- Fixed a bug in `TransactionBoundCache` which yielded an error in the log:\n  `TypeError: <lambda>() takes exactly 1 argument (2 given)`",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -31,17 +31,18 @@
       "last_week": 0
     },
     "home_page": "https://bitbucket.org/gocept/gocept.cache",
-    "keywords": "",
+    "keywords": "cache transaction bound zope",
     "license": "ZPL 2.1",
     "maintainer": "",
     "maintainer_email": "",
     "name": "gocept.cache",
-    "platform": "UNKNOWN",
+    "platform": "",
     "project_url": "https://pypi.org/project/gocept.cache/",
-    "release_url": "https://pypi.org/project/gocept.cache/2.1/",
+    "release_url": "https://pypi.org/project/gocept.cache/3.0/",
+    "requires_dist": [],
     "requires_python": "",
     "summary": "Cache descriptors for Python and Zope",
-    "version": "2.1"
+    "version": "3.0"
   },
   "releases": {
     "0.1": [
@@ -51,7 +52,7 @@
           "md5": "614894ea47722e7987afa6630aa6aa3e",
           "sha256": "e1b5eca976f9036f34e38267f4214c7a6e9ddff1ae516b3edf15bad189edd6d1"
         },
-        "downloads": 3270,
+        "downloads": -1,
         "filename": "gocept.cache-0.1.tar.gz",
         "has_sig": true,
         "md5_digest": "614894ea47722e7987afa6630aa6aa3e",
@@ -69,7 +70,7 @@
           "md5": "2abd813184994145150db4aaa57a9d24",
           "sha256": "93bbb91f3e8959304e6475433e56118c26ec4387b0256c331b2cd95f78438520"
         },
-        "downloads": 3273,
+        "downloads": -1,
         "filename": "gocept.cache-0.2.tar.gz",
         "has_sig": true,
         "md5_digest": "2abd813184994145150db4aaa57a9d24",
@@ -87,7 +88,7 @@
           "md5": "e8ba0ea8db8da85366a87841bcd03925",
           "sha256": "da14537dac9d1be5d97711b04956b044c9177a502181e2a021c70b0103357648"
         },
-        "downloads": 3274,
+        "downloads": -1,
         "filename": "gocept.cache-0.2.1.tar.gz",
         "has_sig": true,
         "md5_digest": "e8ba0ea8db8da85366a87841bcd03925",
@@ -105,7 +106,7 @@
           "md5": "3db809466048d72336a523e51f94f0f4",
           "sha256": "19c6e32c129d03569ec09c1d49e3ad6c4f18a061ac22a80f655287a0ea33aa05"
         },
-        "downloads": 3433,
+        "downloads": -1,
         "filename": "gocept.cache-0.2.2.tar.gz",
         "has_sig": false,
         "md5_digest": "3db809466048d72336a523e51f94f0f4",
@@ -123,7 +124,7 @@
           "md5": "4d30848eef97e3bd81187f92a55f1293",
           "sha256": "5bcf1b2d1e12e371293ea245af288fb86af4e3fa0d82dcdbb77cd2792744b03c"
         },
-        "downloads": 3374,
+        "downloads": -1,
         "filename": "gocept.cache-0.3.tar.gz",
         "has_sig": false,
         "md5_digest": "4d30848eef97e3bd81187f92a55f1293",
@@ -141,7 +142,7 @@
           "md5": "858b3391c8a89316cdb78636ba98ad04",
           "sha256": "f3781119ca921ab1a0b2a091bfc86e4df3a17c7eefddac21a272c2ea0a8f22fe"
         },
-        "downloads": 3778,
+        "downloads": -1,
         "filename": "gocept.cache-0.4.tar.gz",
         "has_sig": false,
         "md5_digest": "858b3391c8a89316cdb78636ba98ad04",
@@ -159,7 +160,7 @@
           "md5": "2d60879f99b372ab38bbae619ac5e5b6",
           "sha256": "ff185684671bdeb73ec13fa518e6732d7e2d2c28e9c1ceeae1e6e952c33ee39f"
         },
-        "downloads": 3164,
+        "downloads": -1,
         "filename": "gocept.cache-0.5.tar.gz",
         "has_sig": false,
         "md5_digest": "2d60879f99b372ab38bbae619ac5e5b6",
@@ -177,7 +178,7 @@
           "md5": "f449ff8761cea10642c00a30dcba2503",
           "sha256": "058e2f182f906b4d25d2d687c269d7c009a393aea8ebf087970163065227f654"
         },
-        "downloads": 3226,
+        "downloads": -1,
         "filename": "gocept.cache-0.5.1.tar.gz",
         "has_sig": false,
         "md5_digest": "f449ff8761cea10642c00a30dcba2503",
@@ -195,7 +196,7 @@
           "md5": "577e4bb0d90b69124f0047dc61d40585",
           "sha256": "2807d8a8098095dfb5644e9cbf274b785caf5b91169011944f2112ca755279f1"
         },
-        "downloads": 4012,
+        "downloads": -1,
         "filename": "gocept.cache-0.5.2.tar.gz",
         "has_sig": false,
         "md5_digest": "577e4bb0d90b69124f0047dc61d40585",
@@ -213,7 +214,7 @@
           "md5": "0ac93fcdf99dbfba479ca9f5b4f372dd",
           "sha256": "4ddbe1577422b7f2ed0f847ac3e31f860ba840f893abf3f6c75fc95b89754824"
         },
-        "downloads": 1969,
+        "downloads": -1,
         "filename": "gocept.cache-0.6.zip",
         "has_sig": false,
         "md5_digest": "0ac93fcdf99dbfba479ca9f5b4f372dd",
@@ -231,7 +232,7 @@
           "md5": "bb5186173f6c2e0d4d043527f8ba2596",
           "sha256": "4a7565e43d73a5ef15cbccd1c0e723c09bde02788a342b71770e9dbe82f931fa"
         },
-        "downloads": 6438,
+        "downloads": -1,
         "filename": "gocept.cache-0.6.1.zip",
         "has_sig": false,
         "md5_digest": "bb5186173f6c2e0d4d043527f8ba2596",
@@ -249,7 +250,7 @@
           "md5": "e62bc84abb949e6057d8e84fe7243b56",
           "sha256": "319c40984dbe2309a2b70e6369fceb7e4ec5e58f25f4035c0e1b84d78cd94175"
         },
-        "downloads": 2020,
+        "downloads": -1,
         "filename": "gocept.cache-0.6b1.tar.gz",
         "has_sig": false,
         "md5_digest": "e62bc84abb949e6057d8e84fe7243b56",
@@ -267,7 +268,7 @@
           "md5": "cda223d6febf83b43ae13319edc078a5",
           "sha256": "b85c07a0497a98d4a5c9bfd362a435cd9e12f7d984b8d5ddf0385ff2a71317a7"
         },
-        "downloads": 2072,
+        "downloads": -1,
         "filename": "gocept.cache-0.6b2.zip",
         "has_sig": false,
         "md5_digest": "cda223d6febf83b43ae13319edc078a5",
@@ -285,7 +286,7 @@
           "md5": "bcba17a2c8d74077f5d54979a0d690a8",
           "sha256": "f3874e59461826f37206d361e1b88f18c61c0090d55d70cfebc9c82d15680385"
         },
-        "downloads": 1455,
+        "downloads": -1,
         "filename": "gocept.cache-1.0.tar.gz",
         "has_sig": false,
         "md5_digest": "bcba17a2c8d74077f5d54979a0d690a8",
@@ -303,7 +304,7 @@
           "md5": "b94dbd3b219ba5f6cfcd52cbc2c3148f",
           "sha256": "86060135a377e54a5f91e1190ae788162d44e6a8c435a0c1f52ce4fe4dc590cd"
         },
-        "downloads": 213,
+        "downloads": -1,
         "filename": "gocept.cache-2.0.tar.gz",
         "has_sig": false,
         "md5_digest": "b94dbd3b219ba5f6cfcd52cbc2c3148f",
@@ -321,7 +322,7 @@
           "md5": "b7cd60e16d63a11ca36fbfcfa21066b4",
           "sha256": "d8eac7a3546fbf294c86340fb4ec2d075d3d52852bf7c1f1e720af51d22e6b55"
         },
-        "downloads": 166,
+        "downloads": -1,
         "filename": "gocept.cache-2.1.tar.gz",
         "has_sig": false,
         "md5_digest": "b7cd60e16d63a11ca36fbfcfa21066b4",
@@ -331,24 +332,42 @@
         "upload_time": "2016-11-17T15:09:19",
         "url": "https://files.pythonhosted.org/packages/43/6c/701b6d37b42186d6748ad171f7dd34b49c593a28c485384b68f4e3e647f9/gocept.cache-2.1.tar.gz"
       }
+    ],
+    "3.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9d42c986af9496c994b23a03126c7365",
+          "sha256": "39895648ebbdd6a13fbce168a87eb81e96244bb776bc6752bb85aa7fdad64c90"
+        },
+        "downloads": -1,
+        "filename": "gocept.cache-3.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "9d42c986af9496c994b23a03126c7365",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 15623,
+        "upload_time": "2017-11-20T15:41:05",
+        "url": "https://files.pythonhosted.org/packages/e5/ca/56eab246f1253eeb4e00fb99c34a6b59c022fcc1c0d2ba02c73a927ec86d/gocept.cache-3.0.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "b7cd60e16d63a11ca36fbfcfa21066b4",
-        "sha256": "d8eac7a3546fbf294c86340fb4ec2d075d3d52852bf7c1f1e720af51d22e6b55"
+        "md5": "9d42c986af9496c994b23a03126c7365",
+        "sha256": "39895648ebbdd6a13fbce168a87eb81e96244bb776bc6752bb85aa7fdad64c90"
       },
-      "downloads": 166,
-      "filename": "gocept.cache-2.1.tar.gz",
+      "downloads": -1,
+      "filename": "gocept.cache-3.0.tar.gz",
       "has_sig": false,
-      "md5_digest": "b7cd60e16d63a11ca36fbfcfa21066b4",
+      "md5_digest": "9d42c986af9496c994b23a03126c7365",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 14245,
-      "upload_time": "2016-11-17T15:09:19",
-      "url": "https://files.pythonhosted.org/packages/43/6c/701b6d37b42186d6748ad171f7dd34b49c593a28c485384b68f4e3e647f9/gocept.cache-2.1.tar.gz"
+      "size": 15623,
+      "upload_time": "2017-11-20T15:41:05",
+      "url": "https://files.pythonhosted.org/packages/e5/ca/56eab246f1253eeb4e00fb99c34a6b59c022fcc1c0d2ba02c73a927ec86d/gocept.cache-3.0.tar.gz"
     }
   ]
 }
