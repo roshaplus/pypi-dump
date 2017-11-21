@@ -13,7 +13,7 @@
       "Topic :: System :: Networking",
       "Topic :: System :: Networking :: Firewalls"
     ],
-    "description": "# no,*YOU* talk to the hand!\n\nAccess all your corporate stuff and web stuff at the same time without fuss\n\n**You want this if you're being worn out by:**\n- Seeing the 'talk to the hand' page from the corporate web proxy/filter\n- Re-entering ssh credentials over and over (key based auth isn't allowed everywhere)\n- Tunnel/proxy setup in too many places and in too many ways\n- Not having application specific tunnels (dbvis, datagrip) available from the console\n- Tunnels dropping silently\n- Forgetting to manually bring up tunnels after logging onto vpn\n\nno-YOU-talk-to-the-hand really has **solved all these issues** for me, by providing a straight-forward combination of [sshuttle](https://github.com/sshuttle/sshuttle) for the heavy network lifting, supervisord to keep everything up and manageable, and yaml to keep it simple and organized\n\nWorks with Linux and MacOS but **not MS Windows** due to sshuttle though there is a workaround for windows described [here](http://sshuttle.readthedocs.io/en/stable/windows.html)\n\n\n## What it does\n\n- *Sets up your tunnels automatically* when your VPN connects\n- *Takes down your tunnels automatically* when your VPN disconnects\n- *Keeps your tunnels up* when they should be up\n- *Organizes your tunnels* with a single, simple, YAML configuration \n- *Enters passwords for you* as needed ([sshpass](https://gist.github.com/arunoda/7790979) required for now)\n- Supports *multiple VPNs (roots)*. Have different vpns that require separate tunnels? Define them in one place and only tunnels dependent on the vpn that is up are established \n- Supports any number of *simultaneous tunnels* (thanks to [sshuttle](https://github.com/sshuttle/sshuttle) )\n- Supportes *nested dependencies*. For example: (qa_db, prod_db) -- depends --> (corp_private) -- depends --> (corp_vpn)\n\n\n### Yaml replaces all your tunnel scripts/aliases, ssh setup inside db tools, application specific web proxy setup, etc.\n\n```yaml\n\n# Watch for connection to corporate VPN. This is the 'root', external tunnel\nvpn:\n    check:\n        host: *HOST_CORP_JUMP\n        port: 22\n\n# Bypass corporate network for web browsing, skype, streaming music, etc. \n# Anything at a public ip.\npersonal:\ndepends: vpn\nproxy:\n  host: *HOST_PERSONAL_PROXY\n  port: 22\nforwards:\n    # includes and excludes. items can be ips, subnets, or lists of ip/subnets.\n    include:\n    - 0/0\n    exclude:\n    - *ALL_PRIVATE_ADDRESSES\n\n# Forward traffic destined for restricted subnets through a corporate jump server.\ncorp_restricted:\n    depends: vpn\n    proxy:\n        host: *HOST_CORP_JUMP\n        user: *CORP_USER\n        pass: *CORP_PASS\n    # verify by checking ssh access to the privileged app server\n    check:\n        host: *HOST_CORP_PRIVILEGED_APP\n        port: 22\n    forwards:\n        # includes and excludes. items can be ips, subnets, or lists of ip/subnets.\n        include:\n          - *SUBNETS_CORP_RESTRICTED\n        exclude:\n          - *HOST_CORP_SEURE_DB\n\n# Tunnel to access a secure db server from a privliged app server. This tunnel depends \n# on corp_restricted being established\nprod_db:\ndepends: corp_restricted\n    proxy:\n        host: *HOST_CORP_PRIVILEGED_APP\n        user: *CORP_USER\n        pass: *CORP_PASS\n    forwards:\n        # includes and excludes. items can be ips, subnets, or lists of ip/subnets.\n        include:\n          - *HOST_CORP_SECURE_DB\n```\n\n\n## Installation\n\n```pip install no_you_talk_to_the_hand```\n\n\n*Note* If you configure a password for any remote server then [sshpass](https://gist.github.com/arunoda/7790979) is required\n\n## Running\n\nBelow are some sample commands.\n\n**Note:** Before running a configuration file called config.yml must be created in the project directory. Look at sample_config.yml as a start.\n\n\n#### Start - Start the supervisord process and begin managing the configured tunnels\n\n```\n$ nyttth start\n```\n\n\n#### Stop - Stop supervisord process and all tunnels with it\n\n```\n$ nyttth stop\n```\n\n\n#### Status - View status of all defined tunnels\n\nwhen VPN is down:\n\n``` \n$ nyttth status\n\nProcess   Depends   State     Check     \n----------------------------------------\nvpn                 N/A       down      \nrfindb    itun      STOPPED   skipped   \ndbtun     vpn       STOPPED   skipped   \netun      vpn       STOPPED   skipped   \nitun      vpn       STOPPED   skipped   \nqadb      vpn       STOPPED   skipped   \n```\n\nwhen VPN is up:\n\n```\n$ nyttth status\n\nProcess   Depends   State     Check     \n----------------------------------------\nvpn                 N/A       up        \nrfindb    itun      RUNNING   up        \ndbtun     vpn       RUNNING   up        \netun      vpn       RUNNING   up        \nitun      vpn       RUNNING   up        \nqadb      vpn       RUNNING   up        \n```\n\n#### Tail - Tail the tunnel monitor that checks tunnel statuses and brings them up or down as needed.\n\nwhen VPN Disconnects:\n\n```\n$ nyttth tail\n2017-05-17 11:51:44,701 DEBUG nyttth: checking tunnels\n2017-05-17 11:51:55,000 DEBUG nyttth: checking tunnels\n2017-05-17 11:52:05,265 DEBUG nyttth: checking tunnels\n2017-05-17 11:52:07,269 DEBUG nyttth: vpn is down\n2017-05-17 11:52:07,274 INFO nyttth: qadb depends on vpn which is down. stopping\n2017-05-17 11:52:07,281 INFO nyttth: itun depends on vpn which is down. stopping\n2017-05-17 11:52:07,286 INFO nyttth: rfindb depends on itun which is down. stopping\n2017-05-17 11:52:07,292 INFO nyttth: dbtun depends on vpn which is down. stopping\n2017-05-17 11:52:07,299 INFO nyttth: etun depends on vpn which is down. stopping\n2017-05-17 11:52:17,306 DEBUG nyttth: checking tunnels\n2017-05-17 11:52:19,310 DEBUG nyttth: vpn is down\n2017-05-17 11:52:29,324 DEBUG nyttth: checking tunnels\n2017-05-17 11:52:31,329 DEBUG nyttth: vpn is down\n2017-05-17 11:52:41,340 DEBUG nyttth: checking tunnels\n2017-05-17 11:52:43,345 DEBUG nyttth: vpn is down\n```\n\nwhen VPN Connects:\n\n```\n2017-05-17 11:52:53,357 DEBUG nyttth: checking tunnels\n2017-05-17 11:52:53,497 INFO nyttth: qadb is down. starting\n2017-05-17 11:52:53,498 INFO nyttth: dbtun is down. starting\n2017-05-17 11:52:53,907 INFO nyttth: etun is down. starting\n2017-05-17 11:52:55,493 INFO nyttth: itun is down. starting\n2017-05-17 11:53:06,527 DEBUG nyttth: checking tunnels\n2017-05-17 11:53:06,814 INFO nyttth: rfindb is down. starting\n2017-05-17 11:53:17,826 DEBUG nyttth: checking tunnels\n2017-05-17 11:53:28,129 DEBUG nyttth: checking tunnels\n\n```\n\n\n## Notes\n\nThis docs ignores whatever technical differences there are between tunnels and forwards and just uses the word 'tunnels'. \n\nRemote ssh servers through which trafffic is forwarded, are referred to as proxies. \n\nThe term 'VPN' refers to a 'root' tunnel in the configuration that specifies no proxy setup or forwards. It exsits to check an external condition (reachable network endpoint)and does not really have to be a true VPN\n\n\n",
+    "description": "# no,*YOU* talk to the hand!\n\nAccess all your corporate stuff and web stuff at the same time without fuss\n\n**You want this if you're being worn out by:**\n- Seeing the 'talk to the hand' page from the corporate web proxy/filter\n- Re-entering ssh credentials over and over (key based auth isn't allowed everywhere)\n- Tunnel/proxy setup in too many places and in too many ways\n- Not having application specific tunnels (dbvis, datagrip) available from the console\n- Tunnels dropping silently\n- Forgetting to manually bring up tunnels after logging onto vpn\n\nno-YOU-talk-to-the-hand really has **solved all these issues** for me, by providing a straight-forward combination of [sshuttle](https://github.com/sshuttle/sshuttle) for the heavy network lifting, supervisord to keep everything up and manageable, and yaml to keep it simple and organized\n\nWorks with Linux and MacOS but **not MS Windows** due to sshuttle though there is a workaround for windows described [here](http://sshuttle.readthedocs.io/en/stable/windows.html)\n\n\n## What it does\n\n- *Sets up your tunnels automatically* when your VPN connects\n- *Takes down your tunnels automatically* when your VPN disconnects\n- *Keeps your tunnels up* when they should be up\n- *Organizes your tunnels* with a single, simple, YAML configuration \n- *Enters passwords for you* as needed ([sshpass](https://gist.github.com/arunoda/7790979) required for now)\n- Supports *multiple VPNs (roots)*. Have different vpns that require separate tunnels? Define them in one place and only tunnels dependent on the vpn that is up are established \n- Supports any number of *simultaneous tunnels* (thanks to [sshuttle](https://github.com/sshuttle/sshuttle) )\n- Supportes *nested dependencies*. For example: (qa_db, prod_db) -- depends --> (corp_private) -- depends --> (corp_vpn)\n\n\n### Yaml replaces all your tunnel scripts/aliases, ssh setup inside db tools, application specific web proxy setup, etc.\n\n```yaml\n\nHOST_PERSONAL_PROXY: &HOST_PERSONAL_PROXY 192.168.1.X\nPROXY_USER: &PROXY_USER proxy.username\n\nCORP_USER: &CORP_USER company.username\nCORP_PASS: &CORP_PASS pA$$wuuuurd\n\n# Define the corporate subnets. SUBNETS_CORP_ALL encompasses addresses that will already be sent\n# through your default network interace to the compnay network. This var is defined for exclusion \n# from other tunnels which will override your system defaults. SUBNETS_CORP_RESTRICTED is used\n# to forward a subset of corporate traffic through a jump server in order to reach hosts that are \n# not reachable directly on the VPN. \nSUBNETS_CORP_ALL: &SUBNETS_CORP_ALL\n    - \"10.0.0.0/8\"\nSUBNETS_CORP_RESTRICTED: &SUBNETS_CORP_RESTRICTED \n    - \"10.0.1.0/24\"\n    - \"10.0.2.0/24\"\n\n# Define several special destinations on the corporate network. HOST_CORP_JUMP defines the host \n# through which all protected subnets must be accessed. HOST_CORP_PRIVILEGED_APP and HOST_CORP_SEURE_DB\n# define an application server and database where the database can only be reached from the\n# application server. Reaching the database will require a nested tunnel\nHOST_CORP_JUMP: &HOST_CORP_JUMP 10.0.0.1\nHOST_CORP_PRIVILEGED_APP: &HOST_CORP_PRIVILEGED_APP 10.0.1.1\nHOST_CORP_SECURE_DB: &HOST_CORP_SECURE_DB 10.0.2.1\n\n\ntunnels:\n\n    # Watch for connection to corporate VPN. This is the 'root', external tunnel\n    # In this configuraiton, if the corporate jump server is available, then the vpn is up\n    vpn:\n        check:\n            host: *HOST_CORP_JUMP\n            port: 22\n\n\n    # Bypass corporate network policies for web browsing, skype, streaming music, etc. \n    # You must have a proxy server available that is outside the corporate network. If \n    # you don't have one, this project is still useful for accessing restricted \n    # resources within the corporate network.\n    personal:\n        depends: vpn\n        proxy:\n            host: *HOST_PERSONAL_PROXY\n            user: *PROXY_USER\n            pass:\n        check:\n            # instead of an ip and port, a check target can be a url for an http check\n            url: https://twitter.com/\n\n        forwards:\n            # includes and excludes. items can be ips, subnets, or lists of ip/subnets.\n            include:\n                # By default, forward everything through the personal proxy\n                - 0/0\n            exclude:\n                # exclude home network and anything corporate \n                - 192.168.0.0/16\n                - *SUBNETS_CORP_ALL\n\n    # Forward traffic destined for restricted subnets through a corporate jump server.\n    corp_sec:\n        depends: vpn\n        proxy:\n            host: *HOST_CORP_JUMP\n            user: *CORP_USER\n            pass: *CORP_PASS\n        # verify by checking ssh access to the privileged app server\n        check:\n            # If the application server is reachable, this tunnel is up\n            host: *HOST_CORP_PRIVILEGED_APP\n            port: 22\n        forwards:\n            # Include anything destined for a secured corporate subnet\n            include:\n              - *SUBNETS_CORP_RESTRICTED\n\n    # Tunnel to access a secure db server from a privileged app server. This tunnel depends \n    # on corp_restricted being established. For traffic destined for the DB, this rule will \n    # fire first and the traffic will be forwarded through the APP server, however traffic \n    # destined for the APP server is forwarded through the JUMP server. \n    prod_db:\n        depends: corp_sec\n        proxy:\n            host: *HOST_CORP_PRIVILEGED_APP\n            user: *CORP_USER\n            pass: *CORP_PASS\n        forwards:\n            # includes and excludes. items can be ips, subnets, or lists of ip/subnets.\n            include:\n              - *HOST_CORP_SECURE_DB\n\n\n```\n\n\n## Installation\n\n```pip install no_you_talk_to_the_hand```\n\n\n*Note* If you configure a password for any remote server then [sshpass](https://gist.github.com/arunoda/7790979) is required\n\n## Running\n\nBelow are some sample commands.\n\n**Note:** Before running a configuration file called config.yml must be created in the project directory. Look at sample_config.yml as a start.\n\n\n#### Start - Start the supervisord process and begin managing the configured tunnels\n\n```\n$ nyttth start\n```\n\n\n#### Stop - Stop supervisord process and all tunnels with it\n\n```\n$ nyttth stop\n```\n\n\n#### Status - View status of all defined tunnels\n\nwhen VPN is down:\n\n``` \n$ nyttth status\n\nProcess   Depends   State     Check     \n----------------------------------------\nvpn                 N/A       down      \nrfindb    itun      STOPPED   skipped   \ndbtun     vpn       STOPPED   skipped   \netun      vpn       STOPPED   skipped   \nitun      vpn       STOPPED   skipped   \nqadb      vpn       STOPPED   skipped   \n```\n\nwhen VPN is up:\n\n```\n$ nyttth status\n\nProcess   Depends   State     Check     \n----------------------------------------\nvpn                 N/A       up        \nrfindb    itun      RUNNING   up        \ndbtun     vpn       RUNNING   up        \netun      vpn       RUNNING   up        \nitun      vpn       RUNNING   up        \nqadb      vpn       RUNNING   up        \n```\n\n#### Tail - Tail the tunnel monitor that checks tunnel statuses and brings them up or down as needed.\n\nwhen VPN Disconnects:\n\n```\n$ nyttth tail\n2017-05-17 11:51:44,701 DEBUG nyttth: checking tunnels\n2017-05-17 11:51:55,000 DEBUG nyttth: checking tunnels\n2017-05-17 11:52:05,265 DEBUG nyttth: checking tunnels\n2017-05-17 11:52:07,269 DEBUG nyttth: vpn is down\n2017-05-17 11:52:07,274 INFO nyttth: qadb depends on vpn which is down. stopping\n2017-05-17 11:52:07,281 INFO nyttth: itun depends on vpn which is down. stopping\n2017-05-17 11:52:07,286 INFO nyttth: rfindb depends on itun which is down. stopping\n2017-05-17 11:52:07,292 INFO nyttth: dbtun depends on vpn which is down. stopping\n2017-05-17 11:52:07,299 INFO nyttth: etun depends on vpn which is down. stopping\n2017-05-17 11:52:17,306 DEBUG nyttth: checking tunnels\n2017-05-17 11:52:19,310 DEBUG nyttth: vpn is down\n2017-05-17 11:52:29,324 DEBUG nyttth: checking tunnels\n2017-05-17 11:52:31,329 DEBUG nyttth: vpn is down\n2017-05-17 11:52:41,340 DEBUG nyttth: checking tunnels\n2017-05-17 11:52:43,345 DEBUG nyttth: vpn is down\n```\n\nwhen VPN Connects:\n\n```\n2017-05-17 11:52:53,357 DEBUG nyttth: checking tunnels\n2017-05-17 11:52:53,497 INFO nyttth: qadb is down. starting\n2017-05-17 11:52:53,498 INFO nyttth: dbtun is down. starting\n2017-05-17 11:52:53,907 INFO nyttth: etun is down. starting\n2017-05-17 11:52:55,493 INFO nyttth: itun is down. starting\n2017-05-17 11:53:06,527 DEBUG nyttth: checking tunnels\n2017-05-17 11:53:06,814 INFO nyttth: rfindb is down. starting\n2017-05-17 11:53:17,826 DEBUG nyttth: checking tunnels\n2017-05-17 11:53:28,129 DEBUG nyttth: checking tunnels\n\n```\n\n\n## Notes\n\nThis docs ignores whatever technical differences there are between tunnels and forwards and just uses the word 'tunnels'. \n\nRemote ssh servers through which trafffic is forwarded, are referred to as proxies. \n\nThe term 'VPN' refers to a 'root' tunnel in the configuration that specifies no proxy setup or forwards. It exsits to check an external condition (reachable network endpoint)and does not really have to be a true VPN\n\n\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -29,16 +29,20 @@
     "name": "no-you-talk-to-the-hand",
     "platform": "osx",
     "project_url": "https://pypi.org/project/no-you-talk-to-the-hand/",
-    "release_url": "https://pypi.org/project/no-you-talk-to-the-hand/1.0.1/",
+    "release_url": "https://pypi.org/project/no-you-talk-to-the-hand/1.0.2/",
     "requires_dist": [
-      "supervisor",
-      "pyyaml",
+      "sshuttle",
+      "futures",
+      "requests",
+      "six",
       "jinja2",
+      "pyyaml",
+      "supervisor",
       "Click"
     ],
     "requires_python": "",
-    "summary": "Boss your corporate network effortlessly. Automatic and organized tunneling with sshuttle + supervisord + yaml",
-    "version": "1.0.1"
+    "summary": "nyttth: Boss your corporate network effortlessly. Automatic and organized tunneling with sshuttle + supervisord + yaml",
+    "version": "1.0.2"
   },
   "releases": {
     "0.3": [
@@ -48,7 +52,7 @@
           "md5": "fed2f6d996aaa82eb8bd497d0ae0c81f",
           "sha256": "1a6e201987c1f41bd2dbf835cee08e06229150bf33b71ee8096f0fdc957d56fc"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "no_you_talk_to_the_hand-0.3-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "fed2f6d996aaa82eb8bd497d0ae0c81f",
@@ -64,7 +68,7 @@
           "md5": "93a17bc695a117da5de635a54a7fafc1",
           "sha256": "30eb41101bf4e663a4be66393858c3fea16b6e94fcca4a656d1f906d35b901aa"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "no_you_talk_to_the_hand-0.3.tar.gz",
         "has_sig": false,
         "md5_digest": "93a17bc695a117da5de635a54a7fafc1",
@@ -82,7 +86,7 @@
           "md5": "6db70159adc719e7f4c8237114954f62",
           "sha256": "a696f01e5e01b6920cc60776111fe49ad56870a6c4c0a2fa245500803942024a"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "no_you_talk_to_the_hand-1.0.0-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "6db70159adc719e7f4c8237114954f62",
@@ -98,7 +102,7 @@
           "md5": "01e9c03baf8d77dedab21fd54c61fcd6",
           "sha256": "20611d470e1bb5d28a2b1ae744f8150d7fa06aa492182b0227e4e7124eb3efff"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "no_you_talk_to_the_hand-1.0.0-py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "01e9c03baf8d77dedab21fd54c61fcd6",
@@ -114,7 +118,7 @@
           "md5": "9a4ce5cbc8b494aa0fd69544a2cfc802",
           "sha256": "285d4873a6810987c8ca894d45c40239e439a0d2c86c9c6d36ae8d198e9d35a7"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "no_you_talk_to_the_hand-1.0.0.tar.gz",
         "has_sig": false,
         "md5_digest": "9a4ce5cbc8b494aa0fd69544a2cfc802",
@@ -132,7 +136,7 @@
           "md5": "d1a3b00585131128f6eb3a09362cceb4",
           "sha256": "4c3dd5be526e4334b059623cf6ddd9b25fdb9e05833dc6fb65a576dee8496e15"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "no_you_talk_to_the_hand-1.0.1-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "d1a3b00585131128f6eb3a09362cceb4",
@@ -142,24 +146,74 @@
         "upload_time": "2017-08-02T22:52:25",
         "url": "https://files.pythonhosted.org/packages/0e/1a/f0d4fd9de621c69345fd6cb4313b05159d59f234d60b80221889b3306b74/no_you_talk_to_the_hand-1.0.1-py2-none-any.whl"
       }
+    ],
+    "1.0.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0c3d79af53d0eabd67081e46d94ad7a7",
+          "sha256": "dc26bcca6bd77d5e06f0e49b851a7eece029bcfb1f7c53d80fa67bfd3c482836"
+        },
+        "downloads": -1,
+        "filename": "no_you_talk_to_the_hand-1.0.2-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "0c3d79af53d0eabd67081e46d94ad7a7",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2",
+        "size": 15799,
+        "upload_time": "2017-11-21T16:52:00",
+        "url": "https://files.pythonhosted.org/packages/fb/94/8bc16996196c8094b4a31822dafb6dbe54b313a2c6482bf81c0c6b69131e/no_you_talk_to_the_hand-1.0.2-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e6a3a8971d506b43e8b6a8ce00cb869e",
+          "sha256": "56481ba001eb2d4c6875a884aaff88bc2d5343a5e16de63f2ea0292e679883c7"
+        },
+        "downloads": -1,
+        "filename": "no_you_talk_to_the_hand-1.0.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e6a3a8971d506b43e8b6a8ce00cb869e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 14200,
+        "upload_time": "2017-11-21T16:52:03",
+        "url": "https://files.pythonhosted.org/packages/fb/00/37a48857822e5526011bbe3f49a70ed6ddc48aa088003558367b01652192/no_you_talk_to_the_hand-1.0.2.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "d1a3b00585131128f6eb3a09362cceb4",
-        "sha256": "4c3dd5be526e4334b059623cf6ddd9b25fdb9e05833dc6fb65a576dee8496e15"
+        "md5": "0c3d79af53d0eabd67081e46d94ad7a7",
+        "sha256": "dc26bcca6bd77d5e06f0e49b851a7eece029bcfb1f7c53d80fa67bfd3c482836"
       },
-      "downloads": 0,
-      "filename": "no_you_talk_to_the_hand-1.0.1-py2-none-any.whl",
+      "downloads": -1,
+      "filename": "no_you_talk_to_the_hand-1.0.2-py2-none-any.whl",
       "has_sig": false,
-      "md5_digest": "d1a3b00585131128f6eb3a09362cceb4",
+      "md5_digest": "0c3d79af53d0eabd67081e46d94ad7a7",
       "packagetype": "bdist_wheel",
       "python_version": "py2",
-      "size": 14000,
-      "upload_time": "2017-08-02T22:52:25",
-      "url": "https://files.pythonhosted.org/packages/0e/1a/f0d4fd9de621c69345fd6cb4313b05159d59f234d60b80221889b3306b74/no_you_talk_to_the_hand-1.0.1-py2-none-any.whl"
+      "size": 15799,
+      "upload_time": "2017-11-21T16:52:00",
+      "url": "https://files.pythonhosted.org/packages/fb/94/8bc16996196c8094b4a31822dafb6dbe54b313a2c6482bf81c0c6b69131e/no_you_talk_to_the_hand-1.0.2-py2-none-any.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "e6a3a8971d506b43e8b6a8ce00cb869e",
+        "sha256": "56481ba001eb2d4c6875a884aaff88bc2d5343a5e16de63f2ea0292e679883c7"
+      },
+      "downloads": -1,
+      "filename": "no_you_talk_to_the_hand-1.0.2.tar.gz",
+      "has_sig": false,
+      "md5_digest": "e6a3a8971d506b43e8b6a8ce00cb869e",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 14200,
+      "upload_time": "2017-11-21T16:52:03",
+      "url": "https://files.pythonhosted.org/packages/fb/00/37a48857822e5526011bbe3f49a70ed6ddc48aa088003558367b01652192/no_you_talk_to_the_hand-1.0.2.tar.gz"
     }
   ]
 }

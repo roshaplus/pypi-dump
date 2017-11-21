@@ -1,0 +1,146 @@
+{
+  "info": {
+    "author": "Mike Wakerly",
+    "author_email": "opensource@hoho.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "License :: OSI Approved :: Apache Software License",
+      "Programming Language :: Python",
+      "Programming Language :: Python :: 2.7",
+      "Programming Language :: Python :: 3",
+      "Programming Language :: Python :: 3.3",
+      "Programming Language :: Python :: 3.4",
+      "Programming Language :: Python :: 3.5",
+      "Programming Language :: Python :: 3.6",
+      "Programming Language :: Python :: Implementation :: CPython",
+      "Programming Language :: Python :: Implementation :: PyPy"
+    ],
+    "description": "\ndjango-db-multitenant\n=====================\n\nProvides a simple multi-tenancy solution for Django based on the concept\nof having a **single tenant per database**.\n\nThis application is still experimental, but is being used in production\nby the authors. Contributions and discussion are welcome.\n\n`Read the Changelog <CHANGELOG.rst>`__\n\nBackground\n----------\n\nMulti-tenancy is the ability to support multiple distinct datasets from\nthe same application server. Each dataset usually maps to a customer\n(the tenant) and is partially or fully partitioned from all other tenant\ndata.\n\nAmong the possible approaches are:\n\n-  **Isolated approach**: Separate database per tenant.\n-  **Semi-isolated approach**: Shared database, separate namespaces\n   (PostgreSQL schemas) or table names/prefix per tenant.\n-  **Shared approach**: Single database for all tenants. Each table has\n   a column identifying the tenant for that row of data.\n\nThis application supports two backends, MySQL and PostgreSQL:\n\n- **With MySQL**, this application implements a variation of the **isolated approach**,\n  each tenant has its **own database**, however their **connection details are\n  shared** (such as password, database user).\n\n- **For PostgreSQL**, this application implements a **semi-isolated approach**,\n  each tenant has its own schema and the connection details are shared via the\n  public schema.\n\ndjango-db-multitenant makes it possible (even easy) to take a Django\napplication designed for a single tenant and use it with multiple\ntenants.\n\nOperation\n---------\n\nThe main technique is as follows:\n\n#. When a request first arrives, determine desired the tenant from the\n   ``request`` object, and save it in thread-local storage.\n#. Later in the request, when a database cursor is accquired, issue an\n   SQL ``USE <tenant database name>`` for the desired tenant with MySQL\n   or ``SET search_patch TO <tenant name>`` with PostgreSQL.\n\nStep 1 is accomplished by implementing a `mapper\nclass <https://github.com/mik3y/django-db-multitenant/blob/master/db_multitenant/mapper.py>`__.\nYour mapper takes a request object and returns a database name or tenant\nname, using whatever logic you like (translate hostname, inspect a HTTP\nheader, etc). The mapper result is saved in thread-local storage for\nlater use.\n\nStep 2 determines whether the desired database or schema has already\nbeen selected, and is skipped if so. This is implemented using a thin\ndatabase backend\nwrapper `for MySQL <https://github.com/mik3y/django-db-multitenant/blob/master/db_multitenant/db/backends/mysql/base.py>`__ and\n`for PostgreSQL <https://github.com/mik3y/django-db-multitenant/blob/master/db_multitenant/db/backends/postgresql/base.py>`__\nwhich must be set in ``settings.DATABASES`` as the backend.\n\nUsage\n-----\n\n1. Install\n~~~~~~~~~~\n\nInstall ``django-db-multitenant`` (or add it to your setup.py).\n\n::\n\n    $ pip install django-db-multitenant\n\n2. Implement a mapper\n~~~~~~~~~~~~~~~~~~~~~\n\nYou must implement a subclass of\n`db_multitenant.mapper <https://github.com/mik3y/django-db-multitenant/blob/master/db_multitenant/mapper.py>`__\nwhich determines the database name and cache prefix from the request.\n\nTo help you to write your mapper, the repository contains examples of mappers which extracts the hostname\nof URL to determine the tenant name (eg. in `https://foo.example.com/bar/`, `foo` will be the tenant name):\n\n-  `mapper for MySQL <https://github.com/mik3y/django-db-multitenant/blob/master/mapper_examples/mysql_hostname_tenant_mapper.py>`__,\n   which uses a portion of the hostname directly as the database name.\n\n-  `mapper for PostgreSQL <https://github.com/mik3y/django-db-multitenant/blob/master/mapper_examples/postgresql_hostname_tenant_mapper.py>`__,\n   which uses a portion of the hostname as search path (schema). PostgreSQL\n   allows complex setups with sharing of common tables (public accounts for example),\n   see the comment in the mapper for more details.\n\n-  `mapper for Redis <https://github.com/mik3y/django-db-multitenant/blob/master/mapper_examples/redis_hostname_tenant_mapper.py>`__,\n   which looks up the tenant using the hostname, throwing a 404 if unrecognized.\n\nFeel free to copy an example mapper in your project then adjust it to your needs.\n\n3. Update settings.py\n~~~~~~~~~~~~~~~~~~~~~\n\nSet the multitenant mapper by specifying the full dotted path to your\nimplementation (in this example, `mapper` is the name of file `mapper.py`):\n\n.. code:: python\n\n    MULTITENANT_MAPPER_CLASS = 'myapp.mapper.TenantMapper'\n\nInstall the multitenant middleware as the *first* middleware of the list (prior to Django\n1.10, you must use the ``MIDDLEWARE_CLASSES`` setting):\n\n.. code:: python\n\n    MIDDLEWARE = [\n        'db_multitenant.middleware.MultiTenantMiddleware',\n        ....\n    ]\n\nChange your database backend to the multitenant wrapper:\n\n.. code:: python\n\n    DATABASES = {\n        'default': {\n            'ENGINE': 'db_multitenant.db.backends.mysql',\n            'NAME': 'devnull',\n        }\n    }\n\n*Note*: the ``NAME`` is useless for MySQL but due to a current\nlimitation, the named database must exist. It may be empty and\nread-only.\n\nOr for PostgreSQL:\n\n.. code:: python\n\n    DATABASES = {\n        'default': {\n            'ENGINE': 'db_multitenant.db.backends.postgresql',\n            'NAME': 'mydb',\n        }\n    }\n\nOptionally, add the multitenant helper ``KEY_FUNCTION`` to your cache\ndefinition, which will cause cache keys to be prefixed with the value of\n``mapper.get_cache_prefix``:\n\n.. code:: python\n\n    CACHES = {\n      'default' : {\n            'LOCATION': '127.0.0.1:11211',\n            'BACKEND': 'django.core.cache.backends.memcached.MemcachedCache',\n            'KEY_FUNCTION': 'db_multitenant.cache.helper.multitenant_key_func'\n        }\n    }\n\nManagement Commands\n-------------------\n\nIn order to use management commands (like `migrate`) with the correct tenant,\ninject this little hack at the end of your `settings.py`:\n\n.. code:: python\n\n    from db_multitenant.utils import update_from_env\n    update_from_env(database_settings=DATABASES['default'],\n        cache_settings=CACHES['default'])\n\nIf you didn't set `CACHES` in your settings and you don't intend to use a cache system,\nyou don't have to pass the `cache_settings` argument to the function.\n\nYou can then export ``TENANT_DATABASE_NAME`` for MySQL or ``TENANT_NAME`` for PostgreSQL\nand ``TENANT_CACHE_PREFIX`` on the command line, for example:\n\n.. code:: bash\n\n    $ TENANT_DATABASE_NAME=example.com ./manage.py migrate\n\nDon't forget to create the database (MySQL) or the required schema first (PostgreSQL).\n\nThat\u2019s it. Because django-db-multitenant does not define any models,\nthere\u2019s no need to add it to ``INSTALLED_APPS``.\n\nAdvantages and Limitations\n--------------------------\n\nThere is no one-size-fits-all solution for a data modeling problem such\nas multi-tenancy (see \u2018Alternatives\u2019).\n\nAdvantages\n~~~~~~~~~~\n\n-  Compatibility: Your Django application doesn\u2019t need any awareness of\n   multi-tenancy. Database-level tools (such as ``mysqldump`` or ``pgdump``)\n   just work.\n-  Isolation: One tenant, one database means there\u2019s no intermingling of\n   tenant data (excepted if you share tables with PostgreSQL).\n-  Simplicity: Your application schemas don\u2019t need to be cluttered with\n   \u2018Tenant\u2019 foreign key relationships.\n-  Should work well with Django 1.6 connection persistence and\n   connection pooling.\n\nLimitations\n~~~~~~~~~~~\n\n-  Unorthodox. Django does not expect this kind of dynamic database\n   connection tinkering, and there could be unexpected bugs.\n-  Limited isolation. Since the same DB credentials are used for all\n   tenants, bugs in the mapper (or anywhere else in the app) could cause\n   data corruption.\n-  A valid database still needs to be specified in ``settings.DATABASE``\n   for use when the connection is first established with MySQL (this should be\n   fixed eventually).\n-  Overhead: requests may add up to one extra query (the\n   ``USE <dbname>`` statement for MySQL or the ``SET search_path TO <tenant>`` for PostgreSQL).\n\nAlternatives and Further Reading\n--------------------------------\n\n-  `django-tenant-schemas <https://github.com/bcarneiro/django-tenant-schemas>`__\n   implements a semi-isolated approach using PostgreSQL schemas (and\n   inspired this project, as well as the \u2018Overview\u2019 section above).\n\nCredits and License\n-------------------\n\nCopyright 2013 mike wakerly (opensource@hoho.com)\n\nLicensed under the Apache License, Version 2.0 (the \u201cLicense\u201d); you may\nnot use this file except in compliance with the License. You may obtain\na copy of the License at\n\nhttp://www.apache.org/licenses/LICENSE-2.0\n\nUnless required by applicable law or agreed to in writing, software\ndistributed under the License is distributed on an \u201cAS IS\u201d BASIS,\nWITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\nSee the License for the specific language governing permissions and\nlimitations under the License.\n\n\n",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/mik3y/django-db-multitenant",
+    "keywords": "",
+    "license": "Apache",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "db-multitenant",
+    "platform": "",
+    "project_url": "https://pypi.org/project/db-multitenant/",
+    "release_url": "https://pypi.org/project/db-multitenant/0.2.0/",
+    "requires_dist": [
+      "Django (>=1.8.0)"
+    ],
+    "requires_python": "",
+    "summary": "Multitenant support for Django, using one tenant per database.",
+    "version": "0.2.0"
+  },
+  "releases": {
+    "0.1.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "59d59b3e585a01321c31fd28276edec3",
+          "sha256": "bb68f7e21d950fef163557e9a46714d41dfe704bbdfe43e0fcd37e5f7b97781e"
+        },
+        "downloads": -1,
+        "filename": "db_multitenant-0.1.3-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "59d59b3e585a01321c31fd28276edec3",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 9332,
+        "upload_time": "2017-11-20T23:32:35",
+        "url": "https://files.pythonhosted.org/packages/33/dc/5f52617314d6f322d932cd6187d8d063204c54d899d5a42005d106844cb6/db_multitenant-0.1.3-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "645160bcd2fd3787ed25a26341e3cabe",
+          "sha256": "ebe166da691a5faa770002aa5968d43a72e371f2c2191dab92cb426258c994f0"
+        },
+        "downloads": -1,
+        "filename": "db_multitenant-0.1.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "645160bcd2fd3787ed25a26341e3cabe",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 17658,
+        "upload_time": "2017-11-20T23:32:37",
+        "url": "https://files.pythonhosted.org/packages/65/7b/03e605d226f721ed6a47ca4263cc0563c66b1c221d2fd74d1ba98a4f01dd/db_multitenant-0.1.3.tar.gz"
+      }
+    ],
+    "0.2.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d5eb562d22bf52460bffad3289ae4a7e",
+          "sha256": "efdaa7e72646ad14b14b4b037d36c1b6639d3ea9eaf5fe89a4c0fe3799bf939c"
+        },
+        "downloads": -1,
+        "filename": "db_multitenant-0.2.0-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "d5eb562d22bf52460bffad3289ae4a7e",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 9328,
+        "upload_time": "2017-11-20T23:34:00",
+        "url": "https://files.pythonhosted.org/packages/a7/d6/8fff262181d0bc2e6fc0ad2017e06eb7d091a1faaf4f2ba2733f43a8ac05/db_multitenant-0.2.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1594ec34c5f3872e227028558b1a5622",
+          "sha256": "5e45c11a4c5901bd74f761f9e3cd7c95bbde197eb5f29eaf3b1514fcfac52675"
+        },
+        "downloads": -1,
+        "filename": "db_multitenant-0.2.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "1594ec34c5f3872e227028558b1a5622",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 17659,
+        "upload_time": "2017-11-20T23:34:02",
+        "url": "https://files.pythonhosted.org/packages/dc/d9/f7d7a3a40dca9ce32bbef8112ef27a839749ffee8ac73d20e329ad76d44f/db_multitenant-0.2.0.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "d5eb562d22bf52460bffad3289ae4a7e",
+        "sha256": "efdaa7e72646ad14b14b4b037d36c1b6639d3ea9eaf5fe89a4c0fe3799bf939c"
+      },
+      "downloads": -1,
+      "filename": "db_multitenant-0.2.0-py2.py3-none-any.whl",
+      "has_sig": false,
+      "md5_digest": "d5eb562d22bf52460bffad3289ae4a7e",
+      "packagetype": "bdist_wheel",
+      "python_version": "py2.py3",
+      "size": 9328,
+      "upload_time": "2017-11-20T23:34:00",
+      "url": "https://files.pythonhosted.org/packages/a7/d6/8fff262181d0bc2e6fc0ad2017e06eb7d091a1faaf4f2ba2733f43a8ac05/db_multitenant-0.2.0-py2.py3-none-any.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "1594ec34c5f3872e227028558b1a5622",
+        "sha256": "5e45c11a4c5901bd74f761f9e3cd7c95bbde197eb5f29eaf3b1514fcfac52675"
+      },
+      "downloads": -1,
+      "filename": "db_multitenant-0.2.0.tar.gz",
+      "has_sig": false,
+      "md5_digest": "1594ec34c5f3872e227028558b1a5622",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 17659,
+      "upload_time": "2017-11-20T23:34:02",
+      "url": "https://files.pythonhosted.org/packages/dc/d9/f7d7a3a40dca9ce32bbef8112ef27a839749ffee8ac73d20e329ad76d44f/db_multitenant-0.2.0.tar.gz"
+    }
+  ]
+}
