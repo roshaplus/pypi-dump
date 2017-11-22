@@ -4,7 +4,7 @@
     "author_email": "opensource@seatgeek.com",
     "bugtrack_url": null,
     "classifiers": [],
-    "description": "=====\nCronQ\n=====\n\nA cron-like system to run your application tasks across any node, instead of one special snowflake. This is done by keeping your tasks in MySQL and publishing them over AMQP to workers that will run your tasks and eventually save the results back into the DB. This was started as a hackathon project at SeatGeek_\n\nRequirements\n============\n\n- Python 2.7\n- RabbitMQ 3.x\n- MySQL 5.x\n\nInstallation\n============\n\nUsing PIP via PyPi::\n\n    pip install cronq\n\nUsing PIP via Github::\n\n    pip install git+git://github.com/seatgeek/cronq.git@0.24.1#egg=cronq\n\nAdding to your ``requirements.txt`` file (run ``pip install -r requirements.txt`` afterwards)::\n\n    git+ssh://git@github.com/seatgeek/python-cronq.git@0.24.1#egg=cronq\n\nUsage\n=====\n\nThere are various workers that are used by Cronq, as well as a web admin.\n\ncronq-runner\n============\n\nThe ``runner`` executes tasks, and should be run on hosts that will actually perform work. There is no limit to the number of runners that can execute.\n\nThe runner requires ``/var/log/cronq/`` to exist and be writable by the user executing the runner. If it is not, logs will be written to ``/tmp``.\n\n.. code-block:: bash\n\n    # setup rabbitmq connection info\n    export RABBITMQ_URL=amqp://guest:guest@localhost/\n\n    # specify the rabbitmq queue to listen to\n    export CRONQ_QUEUE=cronq_jobs # `cronq_jobs` is the default queue\n\n    # log job output to stdout *as well as* /var/log/cronq\n    export CRONQ_RUNNER_LOG_TO_STDOUT=1\n\n    # run commands\n    cronq-runner\n\nWhen run, `cronq-runner` will:\n\n- Setup a rabbitmq connection\n- Listen to the `cronq_jobs` queue\n- Retrieve commands from the queue\n- Publish a message saying the command is started\n- Run the command in a shell subprocess\n- Publish a message on success/failure to the ``cronq`` exchange and ``cronq_results`` queue. This is not configurable.\n- Listen for more messages\n\ncronq-injector\n==============\n\n    The ``cronq-injector`` command will non-destructively create any necessary ``cronq`` tables, though it will need a database to perform this action against. Please note that if you do not have tables created, it is helpful to run the injector first.\n\nThe ``injector`` is used to retrieve jobs from the database and publish them to AMQP. Jobs are published in the following format:\n\n.. code-block:: python\n\n    # where job is a database record\n    {\n        'name': job.name,\n        'command': unicode(job.command),\n        'id': job.id,\n    }\n\nYou can ostensibly run as many injectors as necessary. MySQL isolation levels are used to attain locks on job records.\n\n.. code-block:: bash\n\n    # setup rabbitmq connection info\n    export RABBITMQ_URL=amqp://guest:guest@localhost/\n\n    # specify the database connection string\n    export DATABASE_URL=mysql+pymysql://cronq:cronq@localhost/cronq\n\n    # run the comand injector\n    cronq-injector\n\n``cronq-injector`` perform a 1 second sleep between job injections, but may perform an unlimited number of job injections in that time period.\n\nNote that jobs are not queued up at the *exact* time you specify in the database. Rather, jobs that matches the following heuristic are queued one-at-a-time until no jobs are left to be queued for that injection cycle::\n\n    Job.next_run < NOW() OR Job.run_now = 1\n\ncronq-results\n=============\n\nThe `results` aggregator listens to the ``cronq_results`` queue for the results of ``cronq-runner`` executions. You can run as many of these as possible, as they will retrieve results one-at-a-time from rabbitmq.\n\n.. code-block:: bash\n\n    # setup rabbitmq connection info\n    export RABBITMQ_URL=amqp://guest:guest@localhost/\n\n    # specify the database connection string\n    export DATABASE_URL=mysql+pymysql://cronq:cronq@localhost/cronq\n\n    # run the results-aggregator\n    cronq-results\n\nThese results can be viewed for particular commands within the web-admin, or by inspecting the database.\n\ncronq-web\n=========\n\nThe web view is a WSGI app run from ``cronq.web:app`` and requires only database access. The following is an example for running the web admin using webscale technologies:\n\n.. code-block:: bash\n\n    # install libevent-dev\n    sudo apt-get install libevent-dev\n\n    # install required python libraries\n    sudo pip install greenlet gevent gunicorn\n\n    # specify the database connection string\n    export DATABASE_URL=mysql+pymysql://cronq:cronq@localhost/cronq\n\n    # if you have an aggregated log dashboard, you can provide a search url\n    # template. it will be used in the web dashboard for linking to logs\n    # the following strings will be replaced:\n    #\n    # {job_id} : replaced with the job's job_id\n    # {run_id} : replaced with the job's run_id\n    # {start_time} : replaced with job's start time in ISO format url quoted\n    #                ex - \"2016-08-15T08%3A00%3A11.000Z\"\n    # {end_time} : replaced with job's end time, or now if job is still running, in ISO format url quoted\n                   ex - \"2016-08-15T08%3A00%3A31.999Z\"\n    export CRONQ_LOG_URL_TEMPLATE=\"https://logs.service/search?run_id={run_id}&from={start_time}&to={end_time}\"\n\n    # run the web admin\n    gunicorn --access-logfile - -w 2 --worker-class=gevent cronq.web:app\n\n    # access the panel on http://127.0.0.1:8000\n\nThe web admin will list available commands, their result history, and a button to allow you to immediately schedule a job.\n\nCategories Api\n==============\n\nThe web admin exposes a ``category`` endpoint which allows you to replace a set of jobs with a single API call\n\n.. code-block:: bash\n\n    curl -v 'localhost:5000/api/category/example' -f -XPUT -H 'content-type: application/json' -d '\n    {\n        \"category\": \"example\",\n        \"jobs\": [{\n            \"name\": \"Test Job\",\n            \"schedule\": \"R/2013-05-29T00:00:00/PT1M\",\n            \"command\": \"sleep 10\",\n            \"routing_key\": \"slow\"\n        }]\n    }'\n\nThis adds / updates a job named ``Test Job`` in the ``example`` category. The time format is ISO 8601. Any jobs no longer defined for the example category will be removed. This allows you to script job additions / removes in your VCS.\n\nConfiguration Validation\n------------------------\n\nBefore posting cronq configuration, you may wish to validate that the file is in the correct format. To do so, you can use the included ``cronq-validator`` console script.\n\n.. code-block:: bash\n\n    # looks for a cronq.config in the current directory by default\n    cronq-validator\n\n    # can be scoped to a specific file\n    cronq-validator --config cronq.json\n\nThis will check both json syntax as well as whether the contents pass the Cronq ``jsonschema``. We also include a ``cronq.validator`` module which contains the following methods:\n\n- ``cronq_schema``: Returns the jsonschema as a python dictionary\n- ``validate``: Takes a path to a config file and runs validation. May raise ``ValidationError``.\n\nLicense\n=======\n\nBSD\n\n.. _SeatGeek: https://seatgeek.com\n",
+    "description": "=====\nCronQ\n=====\n\nA cron-like system to run your application tasks across any node, instead of one special snowflake. This is done by keeping your tasks in MySQL and publishing them over AMQP to workers that will run your tasks and eventually save the results back into the DB. This was started as a hackathon project at SeatGeek_\n\nRequirements\n============\n\n- Python 2.7\n- RabbitMQ 3.x\n- MySQL 5.x\n\nInstallation\n============\n\nUsing PIP via PyPi::\n\n    pip install cronq\n\nUsing PIP via Github::\n\n    pip install git+git://github.com/seatgeek/cronq.git@0.25.3#egg=cronq\n\nAdding to your ``requirements.txt`` file (run ``pip install -r requirements.txt`` afterwards)::\n\n    git+ssh://git@github.com/seatgeek/python-cronq.git@0.25.3#egg=cronq\n\nUsage\n=====\n\nThere are various workers that are used by Cronq, as well as a web admin.\n\ncronq-runner\n============\n\nThe ``runner`` executes tasks, and should be run on hosts that will actually perform work. There is no limit to the number of runners that can execute.\n\nThe runner requires ``/var/log/cronq/`` to exist and be writable by the user executing the runner. If it is not, logs will be written to ``/tmp``.\n\n.. code-block:: bash\n\n    # setup rabbitmq connection info\n    export RABBITMQ_URL=amqp://guest:guest@localhost/\n\n    # specify the rabbitmq queue to listen to\n    export CRONQ_QUEUE=cronq_jobs # `cronq_jobs` is the default queue\n\n    # log job output to stdout *as well as* /var/log/cronq\n    export CRONQ_RUNNER_LOG_TO_STDOUT=1\n\n    # run commands\n    cronq-runner\n\nWhen run, `cronq-runner` will:\n\n- Setup a rabbitmq connection\n- Listen to the `cronq_jobs` queue\n- Retrieve commands from the queue\n- Publish a message saying the command is started\n- Run the command in a shell subprocess\n- Publish a message on success/failure to the ``cronq`` exchange and ``cronq_results`` queue. This is not configurable.\n- Listen for more messages\n\ncronq-injector\n==============\n\n    The ``cronq-injector`` command will non-destructively create any necessary ``cronq`` tables, though it will need a database to perform this action against. Please note that if you do not have tables created, it is helpful to run the injector first.\n\nThe ``injector`` is used to retrieve jobs from the database and publish them to AMQP. Jobs are published in the following format:\n\n.. code-block:: python\n\n    # where job is a database record\n    {\n        'name': job.name,\n        'command': unicode(job.command),\n        'id': job.id,\n    }\n\nYou can ostensibly run as many injectors as necessary. MySQL isolation levels are used to attain locks on job records.\n\n.. code-block:: bash\n\n    # setup rabbitmq connection info\n    export RABBITMQ_URL=amqp://guest:guest@localhost/\n\n    # specify the database connection string\n    export DATABASE_URL=mysql+pymysql://cronq:cronq@localhost/cronq\n\n    # run the comand injector\n    cronq-injector\n\n``cronq-injector`` perform a 1 second sleep between job injections, but may perform an unlimited number of job injections in that time period.\n\nNote that jobs are not queued up at the *exact* time you specify in the database. Rather, jobs that matches the following heuristic are queued one-at-a-time until no jobs are left to be queued for that injection cycle::\n\n    Job.next_run < NOW() OR Job.run_now = 1\n\ncronq-results\n=============\n\nThe `results` aggregator listens to the ``cronq_results`` queue for the results of ``cronq-runner`` executions. You can run as many of these as possible, as they will retrieve results one-at-a-time from rabbitmq.\n\n.. code-block:: bash\n\n    # setup rabbitmq connection info\n    export RABBITMQ_URL=amqp://guest:guest@localhost/\n\n    # specify the database connection string\n    export DATABASE_URL=mysql+pymysql://cronq:cronq@localhost/cronq\n\n    # run the results-aggregator\n    cronq-results\n\nThese results can be viewed for particular commands within the web-admin, or by inspecting the database.\n\ncronq-web\n=========\n\nThe web view is a WSGI app run from ``cronq.web:app`` and requires only database access. The following is an example for running the web admin using webscale technologies:\n\n.. code-block:: bash\n\n    # install libevent-dev\n    sudo apt-get install libevent-dev\n\n    # install required python libraries\n    sudo pip install greenlet gevent gunicorn\n\n    # specify the database connection string\n    export DATABASE_URL=mysql+pymysql://cronq:cronq@localhost/cronq\n\n    # if you have an aggregated log dashboard, you can provide a search url\n    # template. it will be used in the web dashboard for linking to logs\n    # the following strings will be replaced:\n    #\n    # {job_id} : replaced with the job's job_id\n    # {run_id} : replaced with the job's run_id\n    # {start_time} : replaced with job's start time in ISO format url quoted\n    #                ex - \"2016-08-15T08%3A00%3A11.000Z\"\n    # {end_time} : replaced with job's end time, or now if job is still running, in ISO format url quoted\n                   ex - \"2016-08-15T08%3A00%3A31.999Z\"\n    export CRONQ_LOG_URL_TEMPLATE=\"https://logs.service/search?run_id={run_id}&from={start_time}&to={end_time}\"\n\n    # run the web admin\n    gunicorn --access-logfile - -w 2 --bind :5000 --worker-class gevent cronq:make_application\\(\\) --error-logfile - --log-file -\n\n    # access the panel on http://127.0.0.1:5000\n\nThe web admin will list available commands, their result history, and a button to allow you to immediately schedule a job.\n\nCategories Api\n==============\n\nThe web admin exposes a ``category`` endpoint which allows you to replace a set of jobs with a single API call\n\n.. code-block:: bash\n\n    curl -v 'localhost:5000/api/category/example' -f -XPUT -H 'content-type: application/json' -d '\n    {\n        \"category\": \"example\",\n        \"jobs\": [{\n            \"name\": \"Test Job\",\n            \"schedule\": \"R/2013-05-29T00:00:00/PT1M\",\n            \"command\": \"sleep 10\",\n            \"routing_key\": \"slow\"\n        }]\n    }'\n\nThis adds / updates a job named ``Test Job`` in the ``example`` category. The time format is ISO 8601. Any jobs no longer defined for the example category will be removed. This allows you to script job additions / removes in your VCS.\n\nConfiguration Validation\n------------------------\n\nBefore posting cronq configuration, you may wish to validate that the file is in the correct format. To do so, you can use the included ``cronq-validator`` console script.\n\n.. code-block:: bash\n\n    # looks for a cronq.config in the current directory by default\n    cronq-validator\n\n    # can be scoped to a specific file\n    cronq-validator --config cronq.json\n\nThis will check both json syntax as well as whether the contents pass the Cronq ``jsonschema``. We also include a ``cronq.validator`` module which contains the following methods:\n\n- ``cronq_schema``: Returns the jsonschema as a python dictionary\n- ``validate``: Takes a path to a config file and runs validation. May raise ``ValidationError``.\n\nLicense\n=======\n\nBSD\n\n.. _SeatGeek: https://seatgeek.com\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -20,11 +20,11 @@
     "name": "cronq",
     "platform": "",
     "project_url": "https://pypi.org/project/cronq/",
-    "release_url": "https://pypi.org/project/cronq/0.24.1/",
+    "release_url": "https://pypi.org/project/cronq/0.25.3/",
     "requires_dist": [],
     "requires_python": "",
     "summary": "A Cron-like system for running tasks",
-    "version": "0.24.1"
+    "version": "0.25.3"
   },
   "releases": {
     "0.0.1": [
@@ -34,7 +34,7 @@
           "md5": "f87a677e6fd254df6fc3e632bb33160e",
           "sha256": "39df7be2765b8df2245305758f4c40a24df36864047214fd405a59886f0864e6"
         },
-        "downloads": 2876,
+        "downloads": -1,
         "filename": "cronq-0.0.1.tar.gz",
         "has_sig": false,
         "md5_digest": "f87a677e6fd254df6fc3e632bb33160e",
@@ -52,7 +52,7 @@
           "md5": "b2a7d6f8b89be030d48ebdf4c981d320",
           "sha256": "7a28cc53e4484e490d59672ffbb1b9c10b3501fad5c6017b6004cdcb5fd82875"
         },
-        "downloads": 2776,
+        "downloads": -1,
         "filename": "cronq-0.0.10.tar.gz",
         "has_sig": false,
         "md5_digest": "b2a7d6f8b89be030d48ebdf4c981d320",
@@ -70,7 +70,7 @@
           "md5": "0c0229918148792612b0927eacc4f669",
           "sha256": "faccb8f63d4124d53f7660453669894514563e8e8e7f1f82f9f37601c064549a"
         },
-        "downloads": 2753,
+        "downloads": -1,
         "filename": "cronq-0.0.11.tar.gz",
         "has_sig": false,
         "md5_digest": "0c0229918148792612b0927eacc4f669",
@@ -88,7 +88,7 @@
           "md5": "8436a7a4e375bc2220854d4c59e58752",
           "sha256": "4ae9a8e5c670ad79447fff46d1a14a27d02ccb07fba662899850bcaa64038ed3"
         },
-        "downloads": 2754,
+        "downloads": -1,
         "filename": "cronq-0.0.12.tar.gz",
         "has_sig": false,
         "md5_digest": "8436a7a4e375bc2220854d4c59e58752",
@@ -106,7 +106,7 @@
           "md5": "2d2ead24f223de7541f749f8891c2c21",
           "sha256": "26334788d759dd8c66d7a70ea12f565d928246bea2ce822587d2567f049c44f5"
         },
-        "downloads": 2729,
+        "downloads": -1,
         "filename": "cronq-0.0.13.tar.gz",
         "has_sig": false,
         "md5_digest": "2d2ead24f223de7541f749f8891c2c21",
@@ -124,7 +124,7 @@
           "md5": "6ceeddc3758e10d8347664c62fbab9e1",
           "sha256": "190b4650182bf4b0fc8fc9845c9d5da30f1e37004e9dbf1a01cae95712c0916b"
         },
-        "downloads": 2693,
+        "downloads": -1,
         "filename": "cronq-0.0.14.tar.gz",
         "has_sig": false,
         "md5_digest": "6ceeddc3758e10d8347664c62fbab9e1",
@@ -142,7 +142,7 @@
           "md5": "b6d038396731e27cf12466b2d2421113",
           "sha256": "f51c35dd160b6a857a5d39ccc8a841e55c8d22d3a21a66b928369ae7fc573759"
         },
-        "downloads": 2681,
+        "downloads": -1,
         "filename": "cronq-0.0.15.tar.gz",
         "has_sig": false,
         "md5_digest": "b6d038396731e27cf12466b2d2421113",
@@ -160,7 +160,7 @@
           "md5": "950c3e3e6b68a2b5f3cba8b1919f9018",
           "sha256": "425c8c090c7803c0e36d00ceab47decdd3a51d275f2d8523ecea6debd17805d7"
         },
-        "downloads": 2663,
+        "downloads": -1,
         "filename": "cronq-0.0.16.tar.gz",
         "has_sig": false,
         "md5_digest": "950c3e3e6b68a2b5f3cba8b1919f9018",
@@ -178,7 +178,7 @@
           "md5": "8b4b883479e805eec4149c930377fb91",
           "sha256": "14125c05ee965b164ba7f463b3a155d70d3941714889ffc7ffa857e482c63c7b"
         },
-        "downloads": 2654,
+        "downloads": -1,
         "filename": "cronq-0.0.17.tar.gz",
         "has_sig": false,
         "md5_digest": "8b4b883479e805eec4149c930377fb91",
@@ -196,7 +196,7 @@
           "md5": "b73eb40713380da98f2a032d7439e1aa",
           "sha256": "280eb5648cbba0aff4e94c2d8e9264149fb6f9c9e13018bc40ca317df50d1a75"
         },
-        "downloads": 2615,
+        "downloads": -1,
         "filename": "cronq-0.0.18.tar.gz",
         "has_sig": false,
         "md5_digest": "b73eb40713380da98f2a032d7439e1aa",
@@ -214,7 +214,7 @@
           "md5": "f568b892b2356ba70d18914df7527b08",
           "sha256": "fa2f85ae7d82fbd329f5260f971f3add99f673af60eef50d603e6204b32e599b"
         },
-        "downloads": 2576,
+        "downloads": -1,
         "filename": "cronq-0.0.19.tar.gz",
         "has_sig": false,
         "md5_digest": "f568b892b2356ba70d18914df7527b08",
@@ -232,7 +232,7 @@
           "md5": "b39783c1e7734aed02ffef360c65e931",
           "sha256": "edf87f1daab20ee5cad4321e254dced04f33dab8ef907cdc99e9f971804c9426"
         },
-        "downloads": 2866,
+        "downloads": -1,
         "filename": "cronq-0.0.2.tar.gz",
         "has_sig": false,
         "md5_digest": "b39783c1e7734aed02ffef360c65e931",
@@ -250,7 +250,7 @@
           "md5": "c6e737aa63a2fbdf7a27a07f5b94f1cc",
           "sha256": "e2f58e799b1effda87eca9628e8bc60e6dd3e8233d2a1d9ae3c38ef8bf830a52"
         },
-        "downloads": 2581,
+        "downloads": -1,
         "filename": "cronq-0.0.20.tar.gz",
         "has_sig": false,
         "md5_digest": "c6e737aa63a2fbdf7a27a07f5b94f1cc",
@@ -268,7 +268,7 @@
           "md5": "6ed35f72e1f4433eac71af733017db1d",
           "sha256": "ed87f39b46b3f9fda99b7489d4c4fa805de8e3e603b166520fc4aa1b40a1d4e3"
         },
-        "downloads": 2540,
+        "downloads": -1,
         "filename": "cronq-0.0.21.tar.gz",
         "has_sig": false,
         "md5_digest": "6ed35f72e1f4433eac71af733017db1d",
@@ -286,7 +286,7 @@
           "md5": "11945f7863df5c5c5eed6a00122145f8",
           "sha256": "ced5feb3725bfbb0788753f843aa85a89f049568af4f9ce66910202e5889facf"
         },
-        "downloads": 2246,
+        "downloads": -1,
         "filename": "cronq-0.0.22.tar.gz",
         "has_sig": false,
         "md5_digest": "11945f7863df5c5c5eed6a00122145f8",
@@ -304,7 +304,7 @@
           "md5": "9d049e7fbb0a50bca4e6b345fed7d3ce",
           "sha256": "04f398aa4cd06e50bc62d12999946bc551121bf8de276e1c0bc9169d320484f3"
         },
-        "downloads": 2255,
+        "downloads": -1,
         "filename": "cronq-0.0.23.tar.gz",
         "has_sig": false,
         "md5_digest": "9d049e7fbb0a50bca4e6b345fed7d3ce",
@@ -322,7 +322,7 @@
           "md5": "b9ddd5c1bec4b41adeb68ea107a2272f",
           "sha256": "7aeefb91cef6af380b2bd51a52e86932f1705c5b1421b1e1e75f09d83ae83417"
         },
-        "downloads": 2251,
+        "downloads": -1,
         "filename": "cronq-0.0.24.tar.gz",
         "has_sig": false,
         "md5_digest": "b9ddd5c1bec4b41adeb68ea107a2272f",
@@ -340,7 +340,7 @@
           "md5": "4cc8f9dd95b4b912e91e1ff424207faf",
           "sha256": "7a6aba06a20f904920b2e30360fe29ee852c493cd6f6d0ee24ed1957803537b9"
         },
-        "downloads": 2450,
+        "downloads": -1,
         "filename": "cronq-0.0.25.tar.gz",
         "has_sig": false,
         "md5_digest": "4cc8f9dd95b4b912e91e1ff424207faf",
@@ -358,7 +358,7 @@
           "md5": "51fcc488a43c2612dfda2d959f806428",
           "sha256": "6ba1d391bd9e67195c31ab244805e02f1db09bab4ea49352a0f8fd925b366319"
         },
-        "downloads": 2180,
+        "downloads": -1,
         "filename": "cronq-0.0.26.tar.gz",
         "has_sig": false,
         "md5_digest": "51fcc488a43c2612dfda2d959f806428",
@@ -376,7 +376,7 @@
           "md5": "01d1393e8ec966d4f2ff9befef2b3d9d",
           "sha256": "fd3d91fb8e8770038cce9b8ec4ed25b594f0caa4db2b5669f2e823ee9eb69197"
         },
-        "downloads": 2174,
+        "downloads": -1,
         "filename": "cronq-0.0.27.tar.gz",
         "has_sig": false,
         "md5_digest": "01d1393e8ec966d4f2ff9befef2b3d9d",
@@ -394,7 +394,7 @@
           "md5": "887c2ff71c346305ee0bc7b2e487ce26",
           "sha256": "e94543a11754f3ae7d2098e9b42971c4b86ff11e9bea910641f826361ec9454d"
         },
-        "downloads": 2347,
+        "downloads": -1,
         "filename": "cronq-0.0.28.tar.gz",
         "has_sig": false,
         "md5_digest": "887c2ff71c346305ee0bc7b2e487ce26",
@@ -412,7 +412,7 @@
           "md5": "4ae952394f522ee17fdb36fa25c42ce7",
           "sha256": "23572b62682080bebff5aec303f7dfa7b5cecba984f0cc0cb7fa1feeb68eee7d"
         },
-        "downloads": 1863,
+        "downloads": -1,
         "filename": "cronq-0.0.29.tar.gz",
         "has_sig": false,
         "md5_digest": "4ae952394f522ee17fdb36fa25c42ce7",
@@ -430,7 +430,7 @@
           "md5": "4a2a6af6783c4949bdb6554d6cb103df",
           "sha256": "06230ec7b2579f6bb1691140241375684794173ee47b6ca83d31c266c2ddfcde"
         },
-        "downloads": 2855,
+        "downloads": -1,
         "filename": "cronq-0.0.3.tar.gz",
         "has_sig": false,
         "md5_digest": "4a2a6af6783c4949bdb6554d6cb103df",
@@ -448,7 +448,7 @@
           "md5": "e95f3785b680433cca4f19f56f528912",
           "sha256": "6b2e85fdc38da03783e0baafa3f388c43ec57dc26a180776e28063e2b5fe556c"
         },
-        "downloads": 1858,
+        "downloads": -1,
         "filename": "cronq-0.0.30.tar.gz",
         "has_sig": false,
         "md5_digest": "e95f3785b680433cca4f19f56f528912",
@@ -466,7 +466,7 @@
           "md5": "f28c90851acec7c0b263a1d678788924",
           "sha256": "faacd44c009430e3dd02584d5b099c14c86e1d52cfb8d82800078161f239df89"
         },
-        "downloads": 1629,
+        "downloads": -1,
         "filename": "cronq-0.0.31.tar.gz",
         "has_sig": false,
         "md5_digest": "f28c90851acec7c0b263a1d678788924",
@@ -484,7 +484,7 @@
           "md5": "7ef81e0d19b3921ec33451028e1a056f",
           "sha256": "09c631f651998a67af63b20334cbd687aa9292386853311b0efceceeec11a2fc"
         },
-        "downloads": 1631,
+        "downloads": -1,
         "filename": "cronq-0.0.32.tar.gz",
         "has_sig": false,
         "md5_digest": "7ef81e0d19b3921ec33451028e1a056f",
@@ -502,7 +502,7 @@
           "md5": "13fe0d1e86629201164dd4c747536622",
           "sha256": "b918a4df9c8b08afbf89f5803d605488311fe7fdc70e71428849edb93a458e1d"
         },
-        "downloads": 1628,
+        "downloads": -1,
         "filename": "cronq-0.0.33.tar.gz",
         "has_sig": false,
         "md5_digest": "13fe0d1e86629201164dd4c747536622",
@@ -520,7 +520,7 @@
           "md5": "0999779d553670ac0ac30e574dd82330",
           "sha256": "2d79a56f16094942770933d1ab02051a1a36fb6d2b02696075c56862e1513c09"
         },
-        "downloads": 1612,
+        "downloads": -1,
         "filename": "cronq-0.0.34.tar.gz",
         "has_sig": false,
         "md5_digest": "0999779d553670ac0ac30e574dd82330",
@@ -538,7 +538,7 @@
           "md5": "6415a1d47635fc48245afe6c2a62bd1f",
           "sha256": "5f5f198ea983bbb7f76a9234e7dee3f55198e3abd010fd5d6b973e4ee5f9d297"
         },
-        "downloads": 1611,
+        "downloads": -1,
         "filename": "cronq-0.0.35.tar.gz",
         "has_sig": false,
         "md5_digest": "6415a1d47635fc48245afe6c2a62bd1f",
@@ -556,7 +556,7 @@
           "md5": "e09c3d7b12d5f37bf1320dc465b03ea3",
           "sha256": "423941c1cb7fbd9551d14b94e30c5e9826cf5f7179bf64730713590ddda7b289"
         },
-        "downloads": 1576,
+        "downloads": -1,
         "filename": "cronq-0.0.36.tar.gz",
         "has_sig": false,
         "md5_digest": "e09c3d7b12d5f37bf1320dc465b03ea3",
@@ -574,7 +574,7 @@
           "md5": "7013c22539c134f483b2fb9c221c11c9",
           "sha256": "9a909a2178d1875f39e574c831777aaaf8edb67592a54426265ec50ed55baaad"
         },
-        "downloads": 1581,
+        "downloads": -1,
         "filename": "cronq-0.0.37.tar.gz",
         "has_sig": false,
         "md5_digest": "7013c22539c134f483b2fb9c221c11c9",
@@ -592,7 +592,7 @@
           "md5": "6f076f6d70765f99f16e57e6f66ee123",
           "sha256": "fd606c1b853127b06994b62cafacfbe4fccd800cc24a13d1b2e12e997d3af63d"
         },
-        "downloads": 1576,
+        "downloads": -1,
         "filename": "cronq-0.0.38.tar.gz",
         "has_sig": false,
         "md5_digest": "6f076f6d70765f99f16e57e6f66ee123",
@@ -610,7 +610,7 @@
           "md5": "ab9fe0fc6310b2ae8be8c7dad7aff03f",
           "sha256": "ffaa62aba95971dff6e59b8df7d190dc6819d6bd22cf74863b32421f99621ddc"
         },
-        "downloads": 1564,
+        "downloads": -1,
         "filename": "cronq-0.0.39.tar.gz",
         "has_sig": false,
         "md5_digest": "ab9fe0fc6310b2ae8be8c7dad7aff03f",
@@ -628,7 +628,7 @@
           "md5": "8f689fc6cb49512fdab199b48e297403",
           "sha256": "bb9a1ab7830d260ad44108673b354a627eecc555a2956c307b1cd35244e4c14d"
         },
-        "downloads": 2849,
+        "downloads": -1,
         "filename": "cronq-0.0.4.tar.gz",
         "has_sig": false,
         "md5_digest": "8f689fc6cb49512fdab199b48e297403",
@@ -646,7 +646,7 @@
           "md5": "f194b222c6acd9b8fe9ba79b7c233c95",
           "sha256": "510bd4d6566f590cff2972a210c60d8cec406bbe2a3fdd189e86039d50aafc2b"
         },
-        "downloads": 1578,
+        "downloads": -1,
         "filename": "cronq-0.0.40.tar.gz",
         "has_sig": false,
         "md5_digest": "f194b222c6acd9b8fe9ba79b7c233c95",
@@ -664,7 +664,7 @@
           "md5": "97ef835a1aaca4dc09d2eb1d55e5ec6c",
           "sha256": "0da052fafb6c766afb0e68405b90510812c3445af0bb9c687d28650a861092d9"
         },
-        "downloads": 1573,
+        "downloads": -1,
         "filename": "cronq-0.0.41.tar.gz",
         "has_sig": false,
         "md5_digest": "97ef835a1aaca4dc09d2eb1d55e5ec6c",
@@ -682,7 +682,7 @@
           "md5": "87e0d8a6cb8951b96bbbfbf317627cfa",
           "sha256": "15170ac28a1073193c7101d9d96eba4e0e55e17e40345e120ce41bf1a6e90ab0"
         },
-        "downloads": 1547,
+        "downloads": -1,
         "filename": "cronq-0.0.42.tar.gz",
         "has_sig": false,
         "md5_digest": "87e0d8a6cb8951b96bbbfbf317627cfa",
@@ -700,7 +700,7 @@
           "md5": "d625eee95d985634bb0dd2096f25c895",
           "sha256": "551367b67639bb64ade02652810def73e195054bea1a068f733ac830397aea04"
         },
-        "downloads": 2847,
+        "downloads": -1,
         "filename": "cronq-0.0.5.tar.gz",
         "has_sig": false,
         "md5_digest": "d625eee95d985634bb0dd2096f25c895",
@@ -718,7 +718,7 @@
           "md5": "f32d2e1cc4d753e01cb6f9cf05757787",
           "sha256": "f57d022b37010db87feb6b809f2f4443714479ea84ea7323e67aed0ae66cc216"
         },
-        "downloads": 2839,
+        "downloads": -1,
         "filename": "cronq-0.0.6.tar.gz",
         "has_sig": false,
         "md5_digest": "f32d2e1cc4d753e01cb6f9cf05757787",
@@ -736,7 +736,7 @@
           "md5": "aa2b8135af98fb0174c9359e4697cb85",
           "sha256": "9935e96dca43824848c9b8268ced4fa778d23ce05b749bc800f8b28065b68d06"
         },
-        "downloads": 2858,
+        "downloads": -1,
         "filename": "cronq-0.0.7.tar.gz",
         "has_sig": false,
         "md5_digest": "aa2b8135af98fb0174c9359e4697cb85",
@@ -754,7 +754,7 @@
           "md5": "264d3ebb36b35685b74a4c8b2cd28529",
           "sha256": "7bbeca792bbec59e12e17c14ab4bc545c1e9dd8861a6fc4ae21baa115481f1a5"
         },
-        "downloads": 2796,
+        "downloads": -1,
         "filename": "cronq-0.0.8.tar.gz",
         "has_sig": false,
         "md5_digest": "264d3ebb36b35685b74a4c8b2cd28529",
@@ -772,7 +772,7 @@
           "md5": "46a84142bfb3a53aefc019cbf3dc77da",
           "sha256": "82481bc10b4819d10f1bac135685ce1cb772d17049902391a77a1747a6f73444"
         },
-        "downloads": 2808,
+        "downloads": -1,
         "filename": "cronq-0.0.9.tar.gz",
         "has_sig": false,
         "md5_digest": "46a84142bfb3a53aefc019cbf3dc77da",
@@ -790,7 +790,7 @@
           "md5": "ce09d6c11fd25e36475a1ae0cd5c7aa8",
           "sha256": "5334e475a949933c44a9edf446cc3cae5af35343f13ee8d154b42b70ade0af97"
         },
-        "downloads": 1390,
+        "downloads": -1,
         "filename": "cronq-0.1.0.tar.gz",
         "has_sig": false,
         "md5_digest": "ce09d6c11fd25e36475a1ae0cd5c7aa8",
@@ -808,7 +808,7 @@
           "md5": "28c5e05de049bb9097c3a82ef2c42104",
           "sha256": "0a77cc8a7b5e8775e30d53eea9ee4020571cfa3fe9ea470faec70075c127fe52"
         },
-        "downloads": 1328,
+        "downloads": -1,
         "filename": "cronq-0.1.1.tar.gz",
         "has_sig": false,
         "md5_digest": "28c5e05de049bb9097c3a82ef2c42104",
@@ -826,7 +826,7 @@
           "md5": "e8cacf902b8e84b925450a29d32dc883",
           "sha256": "a4024d3b0d422aeb9fa9d90067df55e484c9dba73279ed449dd224e0263bbb74"
         },
-        "downloads": 1265,
+        "downloads": -1,
         "filename": "cronq-0.1.2.tar.gz",
         "has_sig": false,
         "md5_digest": "e8cacf902b8e84b925450a29d32dc883",
@@ -844,7 +844,7 @@
           "md5": "d497ac7dea1f658426a6b981bf39cd4f",
           "sha256": "fd8c13a9a3ce17cad456cd9359faa671ead75944ded919231c994b2fd9de5703"
         },
-        "downloads": 1328,
+        "downloads": -1,
         "filename": "cronq-0.1.3.tar.gz",
         "has_sig": false,
         "md5_digest": "d497ac7dea1f658426a6b981bf39cd4f",
@@ -862,7 +862,7 @@
           "md5": "2f11795a7ac9f18b00bc1bf3211748f7",
           "sha256": "912286ba36e8890ad49da84a9a95f0ac6457b8db1448a4ca00b8b2a00207ca66"
         },
-        "downloads": 141,
+        "downloads": -1,
         "filename": "cronq-0.10.0-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "2f11795a7ac9f18b00bc1bf3211748f7",
@@ -878,7 +878,7 @@
           "md5": "df336908e7877a51a33749196c26aaae",
           "sha256": "21354f7045aa9bffc12da8afbaf8fd021aa30a2e13c67ce565eddb385fe36d16"
         },
-        "downloads": 151,
+        "downloads": -1,
         "filename": "cronq-0.10.0.tar.gz",
         "has_sig": false,
         "md5_digest": "df336908e7877a51a33749196c26aaae",
@@ -896,7 +896,7 @@
           "md5": "a74e7ef2517d1a11929b6ab5b71d490c",
           "sha256": "b3f56ef800cdcf16b5e2e66b241bdef13348fdab6a161c47dc15d2a1f99a518b"
         },
-        "downloads": 144,
+        "downloads": -1,
         "filename": "cronq-0.11.0-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "a74e7ef2517d1a11929b6ab5b71d490c",
@@ -912,7 +912,7 @@
           "md5": "e3d6cd71208cee9fdff9cabb3bd4fb55",
           "sha256": "f99558a2463b0c1ae76aa6b03969b0bc77c242502dc3ad4c5374a4d737283b27"
         },
-        "downloads": 158,
+        "downloads": -1,
         "filename": "cronq-0.11.0.tar.gz",
         "has_sig": false,
         "md5_digest": "e3d6cd71208cee9fdff9cabb3bd4fb55",
@@ -930,7 +930,7 @@
           "md5": "f70ac0cf25d6096ceadb46c8453f8c41",
           "sha256": "ea3287f1db8b106c44ded6792ae7dd12a492c0c05c42d367914b21241253a8f0"
         },
-        "downloads": 143,
+        "downloads": -1,
         "filename": "cronq-0.11.1-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "f70ac0cf25d6096ceadb46c8453f8c41",
@@ -946,7 +946,7 @@
           "md5": "748b3d502261f9bb1463b3f0df0777ea",
           "sha256": "daab83f4f5dd118fdfb50bd846abc6798bc0fe3134b033cedc5f51518a5569e9"
         },
-        "downloads": 145,
+        "downloads": -1,
         "filename": "cronq-0.11.1.tar.gz",
         "has_sig": false,
         "md5_digest": "748b3d502261f9bb1463b3f0df0777ea",
@@ -964,7 +964,7 @@
           "md5": "fc43bec977ebe6a0aa7c501c7f58e72f",
           "sha256": "b19fd12bc24334b0ed203696d39ca6787c6b631ad5f471d63963fadb3a351262"
         },
-        "downloads": 233,
+        "downloads": -1,
         "filename": "cronq-0.11.2-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "fc43bec977ebe6a0aa7c501c7f58e72f",
@@ -980,7 +980,7 @@
           "md5": "3f08078db6be8ad741daa998df635681",
           "sha256": "849f41d421613bfaf1e1abaee613c751ac90b8eb744690fe04c38a0d8b8cdfd6"
         },
-        "downloads": 225,
+        "downloads": -1,
         "filename": "cronq-0.11.2.tar.gz",
         "has_sig": false,
         "md5_digest": "3f08078db6be8ad741daa998df635681",
@@ -998,7 +998,7 @@
           "md5": "22ffac86147d4d8fb0aeb50f9016eafa",
           "sha256": "9f05caf37c9e4ac90017fc30b8db511aff62936919194ebf508c9e0ff4f9c953"
         },
-        "downloads": 162,
+        "downloads": -1,
         "filename": "cronq-0.12.0-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "22ffac86147d4d8fb0aeb50f9016eafa",
@@ -1014,7 +1014,7 @@
           "md5": "da2bc2a8c5bc83744ec8a292f6c02b33",
           "sha256": "b63177595e0a93c9d02d4f121c850a9d8fb044f5eb2353d3f2bd4ee9064f7f6b"
         },
-        "downloads": 177,
+        "downloads": -1,
         "filename": "cronq-0.12.0.tar.gz",
         "has_sig": false,
         "md5_digest": "da2bc2a8c5bc83744ec8a292f6c02b33",
@@ -1032,7 +1032,7 @@
           "md5": "e20fdbb6a1ccd95b7c60c0d3271ee28d",
           "sha256": "08594e8b1a9628252a9276875cddad6343ef96c96fd87b9879ccd0fd2d2c2b38"
         },
-        "downloads": 128,
+        "downloads": -1,
         "filename": "cronq-0.13.0-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "e20fdbb6a1ccd95b7c60c0d3271ee28d",
@@ -1048,7 +1048,7 @@
           "md5": "ef99ce7fe8a74503244adaa0524cd943",
           "sha256": "347bd69180c765834007d39e7507d1d34c851a2d7539f86da4b752a82f030206"
         },
-        "downloads": 127,
+        "downloads": -1,
         "filename": "cronq-0.13.0.tar.gz",
         "has_sig": false,
         "md5_digest": "ef99ce7fe8a74503244adaa0524cd943",
@@ -1066,7 +1066,7 @@
           "md5": "9f9db3c17e3825506eb0868216869d7a",
           "sha256": "8c39f57dbfd1bdf89e9ce650341dbea3f52979b223f17d8ecf46f080b591e9bd"
         },
-        "downloads": 180,
+        "downloads": -1,
         "filename": "cronq-0.14.0-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "9f9db3c17e3825506eb0868216869d7a",
@@ -1082,7 +1082,7 @@
           "md5": "4bbd9604ecf4ae69fe20950d295a1d2e",
           "sha256": "92bf996fdb759e9c5ba346fc173c92997ead8d8925446c5efd31298f9d25b481"
         },
-        "downloads": 183,
+        "downloads": -1,
         "filename": "cronq-0.14.0.tar.gz",
         "has_sig": false,
         "md5_digest": "4bbd9604ecf4ae69fe20950d295a1d2e",
@@ -1100,7 +1100,7 @@
           "md5": "0d077617971edf4dff67879cd6a261c6",
           "sha256": "835f90d0411df8b0dfe3b8e6a8b2df1d8175034b3e1beebc46a9c539d539acd8"
         },
-        "downloads": 180,
+        "downloads": -1,
         "filename": "cronq-0.15.0-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "0d077617971edf4dff67879cd6a261c6",
@@ -1116,7 +1116,7 @@
           "md5": "818760967d36b41673f2b97bbeac45a3",
           "sha256": "f7a81f37f7e9514ef2f8c3caacf446bc466bdaa6fbeded8016442b3469940b26"
         },
-        "downloads": 178,
+        "downloads": -1,
         "filename": "cronq-0.15.0.tar.gz",
         "has_sig": false,
         "md5_digest": "818760967d36b41673f2b97bbeac45a3",
@@ -1134,7 +1134,7 @@
           "md5": "bac6953f4fe38c601762a2c758387ab3",
           "sha256": "fa06a4ad9ec869f8d6cc5c94cba7e1ca4dbc292ba92097c8fc9ba65f32b226ae"
         },
-        "downloads": 183,
+        "downloads": -1,
         "filename": "cronq-0.15.1-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "bac6953f4fe38c601762a2c758387ab3",
@@ -1150,7 +1150,7 @@
           "md5": "eb7b842d641987048e1faeb7c679aecd",
           "sha256": "6682379f1fb1768d29d337a857a3dd13e26960dfea834fa3294e601c8a3bf10c"
         },
-        "downloads": 190,
+        "downloads": -1,
         "filename": "cronq-0.15.1.tar.gz",
         "has_sig": false,
         "md5_digest": "eb7b842d641987048e1faeb7c679aecd",
@@ -1168,7 +1168,7 @@
           "md5": "d6340b55addae345fb404eb8d391b47a",
           "sha256": "205675c0641c0c40a2437e01f7113382e407330977a76b67e85374ca1ea59d97"
         },
-        "downloads": 17,
+        "downloads": -1,
         "filename": "cronq-0.16.0-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "d6340b55addae345fb404eb8d391b47a",
@@ -1184,7 +1184,7 @@
           "md5": "7f11758f32fad3cba1d2ddab18d17b6f",
           "sha256": "735925af35c95f78933db98d8aa59fbbcaf5af8b9671053975668a05923b064a"
         },
-        "downloads": 15,
+        "downloads": -1,
         "filename": "cronq-0.16.0.tar.gz",
         "has_sig": false,
         "md5_digest": "7f11758f32fad3cba1d2ddab18d17b6f",
@@ -1202,7 +1202,7 @@
           "md5": "662c786c406c55cf12fc5ce75cab2de9",
           "sha256": "e18401eec96860496861fa56ef356ffad32afba41e2598e5f4a4d34880764657"
         },
-        "downloads": 27,
+        "downloads": -1,
         "filename": "cronq-0.17.0-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "662c786c406c55cf12fc5ce75cab2de9",
@@ -1218,7 +1218,7 @@
           "md5": "4967e55f13000a7ef75f2422e7f87388",
           "sha256": "292afd6aba136ca5fd843dfce9760cf0dbe3a89313b925367e6551cbbedc2706"
         },
-        "downloads": 14,
+        "downloads": -1,
         "filename": "cronq-0.17.0.tar.gz",
         "has_sig": false,
         "md5_digest": "4967e55f13000a7ef75f2422e7f87388",
@@ -1236,7 +1236,7 @@
           "md5": "4971b808b3764f81290e88d82297a1a3",
           "sha256": "4523078e71272863067baae0375a4988458fb1c2ede1e1129680e3613a5379e9"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cronq-0.17.1-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "4971b808b3764f81290e88d82297a1a3",
@@ -1252,7 +1252,7 @@
           "md5": "cc7bd970a00844649eb05722971445c9",
           "sha256": "23a336718d7d92876bb854b4790f3a4cbc3baf2cb127e4629988cc082e7360df"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cronq-0.17.1.tar.gz",
         "has_sig": false,
         "md5_digest": "cc7bd970a00844649eb05722971445c9",
@@ -1270,7 +1270,7 @@
           "md5": "1e6c2cf510b183f270869724d12d8eae",
           "sha256": "c795a3c0f1239b34e6cef173c9cb0d5d28acb3eb375bb1732f5b3873a33fbdca"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cronq-0.17.2-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "1e6c2cf510b183f270869724d12d8eae",
@@ -1286,7 +1286,7 @@
           "md5": "0411e3781a27d36733086a297cad8403",
           "sha256": "3e517350c24851bd1a59fc5035bc8560fb80cb688ed759a7efcd98a55741aceb"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cronq-0.17.2.tar.gz",
         "has_sig": false,
         "md5_digest": "0411e3781a27d36733086a297cad8403",
@@ -1304,7 +1304,7 @@
           "md5": "5fbd0bcc94bf88426a4a2274b61854b2",
           "sha256": "48760ec62ae0fbe30f988ce9c14acb72767af21bafe1aa7ac11b411514624251"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cronq-0.18.0-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "5fbd0bcc94bf88426a4a2274b61854b2",
@@ -1320,7 +1320,7 @@
           "md5": "e7edebd82fb34640fbdb988f735c4f93",
           "sha256": "df9c36172bd942716e349ffe2f001d38cbaf694158d31067e9ee972f65bc4569"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cronq-0.18.0.tar.gz",
         "has_sig": false,
         "md5_digest": "e7edebd82fb34640fbdb988f735c4f93",
@@ -1338,7 +1338,7 @@
           "md5": "15200391c28798d5d54b5fcccffd56b3",
           "sha256": "5b0d14a6a7e7787d845619d5f94686aaf31ec6eb24fab978b3eeb29f8a92de42"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cronq-0.19.0-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "15200391c28798d5d54b5fcccffd56b3",
@@ -1354,7 +1354,7 @@
           "md5": "dd54eb654c4bbff45eb995e8d3878a34",
           "sha256": "d33ff366708c86a8bfb464dcbfb2151ab4e7ce311984d78fab961ff1a9ac878e"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cronq-0.19.0.tar.gz",
         "has_sig": false,
         "md5_digest": "dd54eb654c4bbff45eb995e8d3878a34",
@@ -1372,7 +1372,7 @@
           "md5": "c95cd5d8f761ac874f591028dcef4d53",
           "sha256": "779b037330643543ea9a7ff127e6d3c9b69de4aabc88bd612e002413afbe51a6"
         },
-        "downloads": 1215,
+        "downloads": -1,
         "filename": "cronq-0.2.0.tar.gz",
         "has_sig": false,
         "md5_digest": "c95cd5d8f761ac874f591028dcef4d53",
@@ -1390,7 +1390,7 @@
           "md5": "aea8d120d589c0867f21e560b8469f8d",
           "sha256": "c1b511b75966ea5456c6b2299c1d3947a73e0ae0358225f61c2840b957502ef2"
         },
-        "downloads": 1205,
+        "downloads": -1,
         "filename": "cronq-0.2.1-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "aea8d120d589c0867f21e560b8469f8d",
@@ -1406,7 +1406,7 @@
           "md5": "bb6a1a1ffaed1b27ae69256a767019ca",
           "sha256": "8c7af08170d57e33bf3aedf81a0e0c0a9e60d3fff7bfe13a7c299a3451a4639c"
         },
-        "downloads": 803,
+        "downloads": -1,
         "filename": "cronq-0.2.1.tar.gz",
         "has_sig": false,
         "md5_digest": "bb6a1a1ffaed1b27ae69256a767019ca",
@@ -1424,7 +1424,7 @@
           "md5": "d9769576b8c89eee1ac86843bd0bd36e",
           "sha256": "b323cd1c5dc0aef5ef512149c7a11355dd713abd879b35ae2b57f237341638e3"
         },
-        "downloads": 703,
+        "downloads": -1,
         "filename": "cronq-0.2.2-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "d9769576b8c89eee1ac86843bd0bd36e",
@@ -1440,7 +1440,7 @@
           "md5": "56748ec86213c77147464c95c62f30dc",
           "sha256": "8f930abf16e0de2c52fcf364ce036313b21ffd8127b9058332ce50d96c12d83b"
         },
-        "downloads": 724,
+        "downloads": -1,
         "filename": "cronq-0.2.2.tar.gz",
         "has_sig": false,
         "md5_digest": "56748ec86213c77147464c95c62f30dc",
@@ -1458,7 +1458,7 @@
           "md5": "3215bbe3773c66bbe15a82760783aaa6",
           "sha256": "baa1a3d50e7f3395fa8e60a23c47c3dfe9bc06a1254d2502e2d744f1be13ec94"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cronq-0.20.0-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "3215bbe3773c66bbe15a82760783aaa6",
@@ -1474,7 +1474,7 @@
           "md5": "b768b720462afd33882a7a6e12ec357f",
           "sha256": "7031d17a037f57243f707e2958c8d827b403214c6440d556ddcaabe63998fefa"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cronq-0.20.0.tar.gz",
         "has_sig": false,
         "md5_digest": "b768b720462afd33882a7a6e12ec357f",
@@ -1492,7 +1492,7 @@
           "md5": "64fc5305249eb966fe543419d766f2d9",
           "sha256": "d671ee9681446af0060b186f55098a15099c3e3dd0a9784269fe69565df4dcfe"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cronq-0.21.0-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "64fc5305249eb966fe543419d766f2d9",
@@ -1508,7 +1508,7 @@
           "md5": "79d5f8fe6d34dfcbb6a6d0f9a1feb002",
           "sha256": "dd765f0f8e1081ab428238dba7d13144d7654c6b21529e946f0e92c03821a049"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cronq-0.21.0.tar.gz",
         "has_sig": false,
         "md5_digest": "79d5f8fe6d34dfcbb6a6d0f9a1feb002",
@@ -1526,7 +1526,7 @@
           "md5": "541462959713ccee4b2fdf90eda64407",
           "sha256": "f0d4fdbb85d6aa4acd868c9b53a2f7a230e6d04df5b4798a45b5d291a0a57566"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cronq-0.21.1-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "541462959713ccee4b2fdf90eda64407",
@@ -1542,7 +1542,7 @@
           "md5": "87c87d16bbbf3f288320d9a010cab019",
           "sha256": "6e99cab32bc04f5f21a07ae27a859fb364d1d1c14e531d03eb8a2932d3b64d6a"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cronq-0.21.1.tar.gz",
         "has_sig": false,
         "md5_digest": "87c87d16bbbf3f288320d9a010cab019",
@@ -1560,7 +1560,7 @@
           "md5": "738ac7dee8da0ecd5b8381855f10c1a8",
           "sha256": "3c525e0e518da83343aa1c990cbd0ea7eba6343fbd0ceefaf248cee6c2ced24a"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cronq-0.22.0-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "738ac7dee8da0ecd5b8381855f10c1a8",
@@ -1576,7 +1576,7 @@
           "md5": "2656d9c54e4e14f55620c7ed7a99f541",
           "sha256": "73b4079c25cb059dd52504edb247d2b9d8b752f8758518b02bcda7783c650c82"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cronq-0.22.0.tar.gz",
         "has_sig": false,
         "md5_digest": "2656d9c54e4e14f55620c7ed7a99f541",
@@ -1594,7 +1594,7 @@
           "md5": "8902f35c04167be9577f762d71c6b77f",
           "sha256": "7ead632ff826ec800e988a82ff0b54eb3d415a3d606d964f979e3ea873d7e176"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cronq-0.23.0-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "8902f35c04167be9577f762d71c6b77f",
@@ -1610,7 +1610,7 @@
           "md5": "52e557059d07495f1831402548a15e9c",
           "sha256": "b71a5e7e7a75960a55995018795f8dc93cd3d285f3d09e778f94d8b38ae81247"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cronq-0.23.0.tar.gz",
         "has_sig": false,
         "md5_digest": "52e557059d07495f1831402548a15e9c",
@@ -1628,7 +1628,7 @@
           "md5": "d1cd0f9473eed8d206b5134c3a97721b",
           "sha256": "20f21e56193f10b7749a31e8a0f1a36e7bc632914c6d566ce839a548bcd2d39f"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cronq-0.24.0-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "d1cd0f9473eed8d206b5134c3a97721b",
@@ -1644,7 +1644,7 @@
           "md5": "093e055c7213a0266b4043a1f795f9af",
           "sha256": "cb50d83914abb6a92a73c76d696171f63f06c8b08ef9a9efa2401c4e853403de"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cronq-0.24.0.tar.gz",
         "has_sig": false,
         "md5_digest": "093e055c7213a0266b4043a1f795f9af",
@@ -1662,7 +1662,7 @@
           "md5": "07142e9b5850763116f8d730604f8397",
           "sha256": "28ffaaf652b157d19b0a94388deb6e3f6d1cce5d925ccbe5e0b25cf543db878c"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cronq-0.24.1-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "07142e9b5850763116f8d730604f8397",
@@ -1678,7 +1678,7 @@
           "md5": "1fdf731d18935c1b9a1d7917abada70b",
           "sha256": "5a0cb835c7f583cb9ef0e09642340a11b84f587ad8104e8f79de61216bb81cee"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "cronq-0.24.1.tar.gz",
         "has_sig": false,
         "md5_digest": "1fdf731d18935c1b9a1d7917abada70b",
@@ -1689,6 +1689,142 @@
         "url": "https://files.pythonhosted.org/packages/42/5a/550ae362c736b771c3a4342951a8de069e378e9ecaa73f2eb64de174af65/cronq-0.24.1.tar.gz"
       }
     ],
+    "0.25.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "bb9af58375296c64ac95a66c9e640242",
+          "sha256": "9a1ff1a9c3bbd9feb4b0c5fb620b3cab7fb68d7125b1346613d9f278e3331560"
+        },
+        "downloads": -1,
+        "filename": "cronq-0.25.0-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "bb9af58375296c64ac95a66c9e640242",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 167145,
+        "upload_time": "2017-11-21T22:29:18",
+        "url": "https://files.pythonhosted.org/packages/8e/cc/d062ab1e4976eeca8818a351771719d2da64916837d89b04fadb96dfa132/cronq-0.25.0-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7fcc8df612062b15dcb4458e69d188a5",
+          "sha256": "ea48761f78555073a28c37421ed5ee678d60b82d99a9cd39e799d7698a5cc1ae"
+        },
+        "downloads": -1,
+        "filename": "cronq-0.25.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7fcc8df612062b15dcb4458e69d188a5",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 159353,
+        "upload_time": "2017-11-21T22:29:08",
+        "url": "https://files.pythonhosted.org/packages/80/c0/ad5c74463fc6bd4676d689adc3d426d2686cdb19591857e51793c79bcb90/cronq-0.25.0.tar.gz"
+      }
+    ],
+    "0.25.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "584a779e0e03875d61811a0cba3de6db",
+          "sha256": "37bc690fe0bc47887e53b1ddcdb8240b196fc92359a2236c247a63953f2ec52f"
+        },
+        "downloads": -1,
+        "filename": "cronq-0.25.1-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "584a779e0e03875d61811a0cba3de6db",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 167244,
+        "upload_time": "2017-11-21T23:18:54",
+        "url": "https://files.pythonhosted.org/packages/c3/c1/8d37b7d28381700fb6a786081883a2a4a65a1097a9a6124bdbc468039940/cronq-0.25.1-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e6ffcce68b8e9c829a0d5e2c13953fb7",
+          "sha256": "a4f07f475d707e285e5d2fec8f8aa94f2fb61f84dcc8bb3966795ad22a9baefa"
+        },
+        "downloads": -1,
+        "filename": "cronq-0.25.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e6ffcce68b8e9c829a0d5e2c13953fb7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 159482,
+        "upload_time": "2017-11-21T23:18:51",
+        "url": "https://files.pythonhosted.org/packages/17/51/f4768da83371471183184b8cd782c4d130433e196071f5f3777eb1668c69/cronq-0.25.1.tar.gz"
+      }
+    ],
+    "0.25.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6ab979d0704ae3eec629796f70375562",
+          "sha256": "015fe2614fbfce3681dab0010f947b4f7e9748fc0b7925cffbaa17b950b4c3ca"
+        },
+        "downloads": -1,
+        "filename": "cronq-0.25.2-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "6ab979d0704ae3eec629796f70375562",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 167406,
+        "upload_time": "2017-11-21T23:19:28",
+        "url": "https://files.pythonhosted.org/packages/6d/4e/a751c8ba87b5b36ce5ef576dc47005b63ab72e5e19f50b7556b32940c2fa/cronq-0.25.2-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c58874a5fecf40a10bf7534262292d8b",
+          "sha256": "2572123a4feb6217c416a5c4a0dbc29a4ec1427b8f09530bf7c19330be33aca0"
+        },
+        "downloads": -1,
+        "filename": "cronq-0.25.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c58874a5fecf40a10bf7534262292d8b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 159529,
+        "upload_time": "2017-11-21T23:19:26",
+        "url": "https://files.pythonhosted.org/packages/5c/9e/7875373bc311cb5bcaf44ca4c4a3132c7d491382865a517b8c346b8532cb/cronq-0.25.2.tar.gz"
+      }
+    ],
+    "0.25.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "be7bf3a01571f7687b06cd85689ae4bf",
+          "sha256": "62c40d8067252aaa91908de2c5da1ecdbe4481e583a98fa533ba690e7e7c77c7"
+        },
+        "downloads": -1,
+        "filename": "cronq-0.25.3-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "be7bf3a01571f7687b06cd85689ae4bf",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 167415,
+        "upload_time": "2017-11-21T23:42:24",
+        "url": "https://files.pythonhosted.org/packages/87/04/af5af7fb25555eab222c2910a79ddf808ab248d4e8b698d1b577567bf5ca/cronq-0.25.3-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9c9f6991a8b2a58999686c864ee3e8cb",
+          "sha256": "f04898e75a32a2c71df7cf90175899e50726d1b5848238be8319111e5397abdd"
+        },
+        "downloads": -1,
+        "filename": "cronq-0.25.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "9c9f6991a8b2a58999686c864ee3e8cb",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 159564,
+        "upload_time": "2017-11-21T23:42:21",
+        "url": "https://files.pythonhosted.org/packages/35/1f/1d7eced54c4d59abe6a4fa3576e7863b1b01c3cd3576c447a0cabe8b8cad/cronq-0.25.3.tar.gz"
+      }
+    ],
     "0.3.0": [
       {
         "comment_text": "",
@@ -1696,7 +1832,7 @@
           "md5": "4f07ea3b90322ffaf34aa20cf2c4f67b",
           "sha256": "45ddf55d736b594682985c6658c200cf649fb44db3a2101d2c8579b0aab8c46f"
         },
-        "downloads": 514,
+        "downloads": -1,
         "filename": "cronq-0.3.0-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "4f07ea3b90322ffaf34aa20cf2c4f67b",
@@ -1712,7 +1848,7 @@
           "md5": "2f2b98036ff0969b5c97588a33ed829e",
           "sha256": "ce0cd46dc2bb080bc033902087ccb8ea48d85e2a6172ea196758af566ad2774b"
         },
-        "downloads": 560,
+        "downloads": -1,
         "filename": "cronq-0.3.0.tar.gz",
         "has_sig": false,
         "md5_digest": "2f2b98036ff0969b5c97588a33ed829e",
@@ -1730,7 +1866,7 @@
           "md5": "764c290fe44a17d55109c50450675083",
           "sha256": "8ca77fbdfed3fb63dda124e40813d857b639140210e3c980cdbedfe162d37afc"
         },
-        "downloads": 619,
+        "downloads": -1,
         "filename": "cronq-0.3.1-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "764c290fe44a17d55109c50450675083",
@@ -1746,7 +1882,7 @@
           "md5": "8fc42260cfb08669df1943e436cdda25",
           "sha256": "321ca09e75596edb921c4ac0dcc949748ecc067d40a4d37a21f8e7a6eb0d9ab3"
         },
-        "downloads": 320,
+        "downloads": -1,
         "filename": "cronq-0.3.1.tar.gz",
         "has_sig": false,
         "md5_digest": "8fc42260cfb08669df1943e436cdda25",
@@ -1764,7 +1900,7 @@
           "md5": "d0ce803628a2288577968d6482733fb4",
           "sha256": "1d303ff1db551ba3161d14067ca45ee52dd4de31fad78ebcda39c8c5eb5ef072"
         },
-        "downloads": 152,
+        "downloads": -1,
         "filename": "cronq-0.4.0-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "d0ce803628a2288577968d6482733fb4",
@@ -1780,7 +1916,7 @@
           "md5": "3d9a73259f8fd2ecfdf5cb68bb2c550d",
           "sha256": "faed28787327168e1ea6ea99117fb96098a57e27962b7952901f5fe721025f4b"
         },
-        "downloads": 152,
+        "downloads": -1,
         "filename": "cronq-0.4.0.tar.gz",
         "has_sig": false,
         "md5_digest": "3d9a73259f8fd2ecfdf5cb68bb2c550d",
@@ -1798,7 +1934,7 @@
           "md5": "cd4cccfc5563d2460f8dcc905b315511",
           "sha256": "b6b8a8785e3d23285b430983582bc024236fbd33eb3995ad0bf41fb8c114534a"
         },
-        "downloads": 136,
+        "downloads": -1,
         "filename": "cronq-0.4.1-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "cd4cccfc5563d2460f8dcc905b315511",
@@ -1814,7 +1950,7 @@
           "md5": "af9fb51165a1dda2a297e7e7b6e2e0fb",
           "sha256": "b13e5ebe02f89f3c609896f73eb8950b282d33e5621ed193f02c66e945910cff"
         },
-        "downloads": 138,
+        "downloads": -1,
         "filename": "cronq-0.4.1.tar.gz",
         "has_sig": false,
         "md5_digest": "af9fb51165a1dda2a297e7e7b6e2e0fb",
@@ -1832,7 +1968,7 @@
           "md5": "5c51e8d86d7aafab3a1ead13ad11ea50",
           "sha256": "348cf9e7808da6808cd0873647b79afec01b85c9c0b0337d06213a589daf8786"
         },
-        "downloads": 149,
+        "downloads": -1,
         "filename": "cronq-0.4.2-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "5c51e8d86d7aafab3a1ead13ad11ea50",
@@ -1848,7 +1984,7 @@
           "md5": "21c391f0c6afe0184f3c05a3ff81a862",
           "sha256": "73cabb8e352c49fca716a1bf9b8ab0ecd5ed3e3b5fe3a88bb60fedc63eab42b8"
         },
-        "downloads": 146,
+        "downloads": -1,
         "filename": "cronq-0.4.2.tar.gz",
         "has_sig": false,
         "md5_digest": "21c391f0c6afe0184f3c05a3ff81a862",
@@ -1866,7 +2002,7 @@
           "md5": "f9cf0a197c42d76041247a31173f5def",
           "sha256": "6400eb09505bb46c593e0547471dc0411ab49cf4d9d233325176abea3f8e2871"
         },
-        "downloads": 137,
+        "downloads": -1,
         "filename": "cronq-0.4.3.tar.gz",
         "has_sig": false,
         "md5_digest": "f9cf0a197c42d76041247a31173f5def",
@@ -1884,7 +2020,7 @@
           "md5": "bfc7e7b64227e45b262a7072b43922cb",
           "sha256": "6bb3abe6ecfddbc0af0f45e13ca66f573daf523cfb67e3a416138ac1b11ce620"
         },
-        "downloads": 138,
+        "downloads": -1,
         "filename": "cronq-0.4.4.tar.gz",
         "has_sig": false,
         "md5_digest": "bfc7e7b64227e45b262a7072b43922cb",
@@ -1902,7 +2038,7 @@
           "md5": "2192e8ced1a04002fb7a6db883b8bf16",
           "sha256": "2bce2f566bc39679d724c30d2cd5becb05727168c5a93cc6053578c3f85a9c91"
         },
-        "downloads": 141,
+        "downloads": -1,
         "filename": "cronq-0.4.5-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "2192e8ced1a04002fb7a6db883b8bf16",
@@ -1918,7 +2054,7 @@
           "md5": "b5bdcf17fe278cd2c8e54a3c685307e9",
           "sha256": "40d275fb7d86616bbd7d3851a93b9e9bffb02616d88f344281fa616d97306bc5"
         },
-        "downloads": 144,
+        "downloads": -1,
         "filename": "cronq-0.4.5.tar.gz",
         "has_sig": false,
         "md5_digest": "b5bdcf17fe278cd2c8e54a3c685307e9",
@@ -1936,7 +2072,7 @@
           "md5": "bb640e4c1bdade830d542f53f334c463",
           "sha256": "b5628db478e4bf8a5be88c65fe3c21ba6a3d79bcd60f7b966cad76deb8198789"
         },
-        "downloads": 143,
+        "downloads": -1,
         "filename": "cronq-0.5.0-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "bb640e4c1bdade830d542f53f334c463",
@@ -1952,7 +2088,7 @@
           "md5": "d3c327db6f29d7410fa1893d045ee67a",
           "sha256": "26386c02a2e8f636b52f46dd506df070c80fdc15d03b08277c44a1d6a8ee8295"
         },
-        "downloads": 159,
+        "downloads": -1,
         "filename": "cronq-0.5.0.tar.gz",
         "has_sig": false,
         "md5_digest": "d3c327db6f29d7410fa1893d045ee67a",
@@ -1970,7 +2106,7 @@
           "md5": "8c9a878579db3015f58031d294cac617",
           "sha256": "be06534f10437ac36e9abd1a032ca2cc5acf83006151ff42b8426fe63d3814b8"
         },
-        "downloads": 136,
+        "downloads": -1,
         "filename": "cronq-0.6.0.tar.gz",
         "has_sig": false,
         "md5_digest": "8c9a878579db3015f58031d294cac617",
@@ -1988,7 +2124,7 @@
           "md5": "731a31d7e617cb7e244ba244020a5f53",
           "sha256": "07c93f5e9e0ef4101f38d1f7a5532bca1615e6ebad1b047cb52aae552aebcbe4"
         },
-        "downloads": 139,
+        "downloads": -1,
         "filename": "cronq-0.6.1-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "731a31d7e617cb7e244ba244020a5f53",
@@ -2004,7 +2140,7 @@
           "md5": "9922b87b48be4ab836311f8a1dfaca90",
           "sha256": "42313ec69fd72b73ec4afeaba02654f31dcd1eb6889607449d60f409f5c05a48"
         },
-        "downloads": 142,
+        "downloads": -1,
         "filename": "cronq-0.6.1.tar.gz",
         "has_sig": false,
         "md5_digest": "9922b87b48be4ab836311f8a1dfaca90",
@@ -2022,7 +2158,7 @@
           "md5": "f68f654b4848b64bd29db07f4164164c",
           "sha256": "345a96069d15c2b6a967a796ccd9320ce6e923a3cb66c34e8fe9a4afed0106fc"
         },
-        "downloads": 137,
+        "downloads": -1,
         "filename": "cronq-0.7.0-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "f68f654b4848b64bd29db07f4164164c",
@@ -2038,7 +2174,7 @@
           "md5": "599324f7690282da8aaca0300a64af41",
           "sha256": "14a56f682078dc1a2d4e72d80001c286186b17aba62da963733f4649d0640aa6"
         },
-        "downloads": 159,
+        "downloads": -1,
         "filename": "cronq-0.7.0.tar.gz",
         "has_sig": false,
         "md5_digest": "599324f7690282da8aaca0300a64af41",
@@ -2056,7 +2192,7 @@
           "md5": "30ff341ade826e413d1f027ec5937d3a",
           "sha256": "181f0da64b7e7ba3d595cff0471c651acc3d6f8ce874e516221eb9d728180094"
         },
-        "downloads": 139,
+        "downloads": -1,
         "filename": "cronq-0.7.1-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "30ff341ade826e413d1f027ec5937d3a",
@@ -2072,7 +2208,7 @@
           "md5": "2cf2b023bc9bbddcb90c29905faf4347",
           "sha256": "3f3e1d55d204ff89834b0cfa510418879f41102446d2b6b7802f8b46f40afdc9"
         },
-        "downloads": 140,
+        "downloads": -1,
         "filename": "cronq-0.7.1.tar.gz",
         "has_sig": false,
         "md5_digest": "2cf2b023bc9bbddcb90c29905faf4347",
@@ -2090,7 +2226,7 @@
           "md5": "40abe1cc844150a876e287652c3ffafe",
           "sha256": "4923ed617ae0dc10660c362fc3f8201276adae16fa815a0043a8def47f5bfd50"
         },
-        "downloads": 138,
+        "downloads": -1,
         "filename": "cronq-0.7.2-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "40abe1cc844150a876e287652c3ffafe",
@@ -2106,7 +2242,7 @@
           "md5": "fde74db02f5aaf6d6e3d084d22cf5b85",
           "sha256": "bfec9ae6dd10220049e668857820fa853abca6cf00ad48778d07de2cbdbf1271"
         },
-        "downloads": 153,
+        "downloads": -1,
         "filename": "cronq-0.7.2.tar.gz",
         "has_sig": false,
         "md5_digest": "fde74db02f5aaf6d6e3d084d22cf5b85",
@@ -2124,7 +2260,7 @@
           "md5": "47d59e5f8650759d322e5c3f2fad3769",
           "sha256": "cc341fa1caf2892b1038b04f2d300306a2978463c8cc02a3b66ccf810f502ae4"
         },
-        "downloads": 140,
+        "downloads": -1,
         "filename": "cronq-0.8.0-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "47d59e5f8650759d322e5c3f2fad3769",
@@ -2140,7 +2276,7 @@
           "md5": "cf23ae149fc652f078a914a96940218c",
           "sha256": "fccc868d9326ad2243e0bcfb22f757fbf043d37eb30ce903c9e1793fef5cdcf0"
         },
-        "downloads": 140,
+        "downloads": -1,
         "filename": "cronq-0.8.0.tar.gz",
         "has_sig": false,
         "md5_digest": "cf23ae149fc652f078a914a96940218c",
@@ -2158,7 +2294,7 @@
           "md5": "cb0ee2b8c8d4faa6728dadf81bc31fcf",
           "sha256": "1137fa0861b2927bc8bdb09e7fcde191bc5d30587c868ca408f61418f0cd9abc"
         },
-        "downloads": 136,
+        "downloads": -1,
         "filename": "cronq-0.8.1-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "cb0ee2b8c8d4faa6728dadf81bc31fcf",
@@ -2174,7 +2310,7 @@
           "md5": "ee0bc5a5ab43b4cd53c28ffb7e174d08",
           "sha256": "34800cefabb22ebaaef6180ff06f93f6cf6549a817b1e9af25f6610acd85731f"
         },
-        "downloads": 139,
+        "downloads": -1,
         "filename": "cronq-0.8.1.tar.gz",
         "has_sig": false,
         "md5_digest": "ee0bc5a5ab43b4cd53c28ffb7e174d08",
@@ -2192,7 +2328,7 @@
           "md5": "95936ee7cbab3425e8c5db54a55ba2de",
           "sha256": "7f0c3060caf43d4b6308d4aacabd66ddfd8965b1fc04dba68c9bfea0f2ac5683"
         },
-        "downloads": 147,
+        "downloads": -1,
         "filename": "cronq-0.9.0.tar.gz",
         "has_sig": false,
         "md5_digest": "95936ee7cbab3425e8c5db54a55ba2de",
@@ -2208,34 +2344,34 @@
     {
       "comment_text": "",
       "digests": {
-        "md5": "07142e9b5850763116f8d730604f8397",
-        "sha256": "28ffaaf652b157d19b0a94388deb6e3f6d1cce5d925ccbe5e0b25cf543db878c"
+        "md5": "be7bf3a01571f7687b06cd85689ae4bf",
+        "sha256": "62c40d8067252aaa91908de2c5da1ecdbe4481e583a98fa533ba690e7e7c77c7"
       },
-      "downloads": 0,
-      "filename": "cronq-0.24.1-py2-none-any.whl",
+      "downloads": -1,
+      "filename": "cronq-0.25.3-py2-none-any.whl",
       "has_sig": false,
-      "md5_digest": "07142e9b5850763116f8d730604f8397",
+      "md5_digest": "be7bf3a01571f7687b06cd85689ae4bf",
       "packagetype": "bdist_wheel",
       "python_version": "2.7",
-      "size": 166384,
-      "upload_time": "2017-08-30T20:37:51",
-      "url": "https://files.pythonhosted.org/packages/d0/11/4808585c88b6790a73d239e92c6852e68c45c0844b2edfdfb3babcd671f2/cronq-0.24.1-py2-none-any.whl"
+      "size": 167415,
+      "upload_time": "2017-11-21T23:42:24",
+      "url": "https://files.pythonhosted.org/packages/87/04/af5af7fb25555eab222c2910a79ddf808ab248d4e8b698d1b577567bf5ca/cronq-0.25.3-py2-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "1fdf731d18935c1b9a1d7917abada70b",
-        "sha256": "5a0cb835c7f583cb9ef0e09642340a11b84f587ad8104e8f79de61216bb81cee"
+        "md5": "9c9f6991a8b2a58999686c864ee3e8cb",
+        "sha256": "f04898e75a32a2c71df7cf90175899e50726d1b5848238be8319111e5397abdd"
       },
-      "downloads": 0,
-      "filename": "cronq-0.24.1.tar.gz",
+      "downloads": -1,
+      "filename": "cronq-0.25.3.tar.gz",
       "has_sig": false,
-      "md5_digest": "1fdf731d18935c1b9a1d7917abada70b",
+      "md5_digest": "9c9f6991a8b2a58999686c864ee3e8cb",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 158481,
-      "upload_time": "2017-08-30T20:37:49",
-      "url": "https://files.pythonhosted.org/packages/42/5a/550ae362c736b771c3a4342951a8de069e378e9ecaa73f2eb64de174af65/cronq-0.24.1.tar.gz"
+      "size": 159564,
+      "upload_time": "2017-11-21T23:42:21",
+      "url": "https://files.pythonhosted.org/packages/35/1f/1d7eced54c4d59abe6a4fa3576e7863b1b01c3cd3576c447a0cabe8b8cad/cronq-0.25.3.tar.gz"
     }
   ]
 }
