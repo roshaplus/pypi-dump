@@ -18,7 +18,7 @@
       "Programming Language :: Python :: 3.6",
       "Topic :: Utilities"
     ],
-    "description": "[![Build Status](https://travis-ci.org/seung-lab/cloud-volume.svg?branch=master)](https://travis-ci.org/seung-lab/cloud-volume)\n\n# cloud-volume\n\nPython client for reading and writing to Neuroglancer Precomputed volumes on cloud services. (https://github.com/google/neuroglancer/tree/master/src/neuroglancer/datasource/precomputed)\n\nWhen working with a particular dataset, say an EM scan of a mouse, fish, or fly brain, you'll typically store that as a grayscale data layer accessible to neuroglanger. You may store additional labellings and processing results as other layers.\n\n## Setup\n\nYou'll need to set up your cloud credentials as well as the main install.\n\n### Credentials\n\n```\nmkdir -p ~/.cloudvolume/secrets/\necho $GOOGLE_STORAGE_PROJECT > ~/.cloudvolume/project_name # needed for Google\nmv aws-secret.json ~/.cloudvolume/secrets/ # needed for Amazon\nmv google-secret.json ~/.cloudvolume/secrets/ # needed for Google\nmv boss-secret.json ~/.cloudvolume/secrets/ # needed for the BOSS\n```\n\n### pip\n\n```\npip install cloud-volume\n```\n\n### Manual\n```\ngit clone git@github.com:seung-lab/cloud-volume.git\ncd cloud-volume\nmkvirtualenv cloud-volume\nworkon cloud-volume\npip install -e .\n```\n\n## Other Languages\n\nJulia - https://github.com/seung-lab/CloudVolume.jl\n\n## Usage\n\nSupports reading and writing to neuroglancer data layers on Amazon S3, Google Storage, and the local file system.\n\nSupported URLs are of the forms:\n\n$PROTOCOL://$BUCKET/$DATASET/$LAYER  \n\n### Supported Protocols \n* gs:   Google Storage\n* s3:   Amazon S3\n* boss: The BOSS (https://docs.theboss.io/docs)\n* file: Local File System (absolute path)\n\n### Examples\n\n```\nvol = CloudVolume('gs://mybucket/retina/image') # Basic Example\nvol = CloudVolume('gs://buck/ds/chan', mip=0, bounded=True, fill_missing=False) # Using multiple initialization options\nvol = CloudVolume('gs://buck/ds/chan', info=info) # Creating a new volume's info file from scratch\nimage = vol[:,:,:] # Download the entire image stack into a numpy array\nlisting = vol.exists( np.s_[0:64, 0:128, 0:64] ) # get a report on which chunks actually exist\nlisting = vol.delete( np.s_[0:64, 0:128, 0:64] ) # delete this region (bbox must be chunk aligned)\nvol[64:128, 64:128, 64:128] = image # Write a 64^3 image to the volume\nvol.save_mesh(12345) # save 12345 as ./12345.obj\nvol.save_mesh([12345, 12346, 12347]) # merge three segments into one obj\n\n# Caching, located at $HOME/.cloudvolume/cache/$PROTOCOL/$BUCKET/$DATASET/$LAYER/$RESOLUTION\nvol = CloudVolume('gs://mybucket/retina/image', cache=True) # Basic Example\nimage = vol[0:10,0:10,0:10] # Download partial image and cache\nvol[0:10,0:10,0:10] = image # Upload partial image and cache\nvol.flush_cache() # Delete local cache for this layer at this mip level\n```\n\n### CloudVolume Constructor\n\n`CloudVolume(cloudpath, mip=0, bounded=True, fill_missing=False, cache=False, progress=INTERACTIVE, info=None)`  \n\n* mip - Which mip level to access\n* bounded - Whether access is allowed outside the bounds defined in the info file\n* fill_missing - If a chunk is missing, should it be zero filled or throw an EmptyVolumeException?\n* cache - Save uploads/downloads to disk. You can also provide a string path instead of a boolean to specify a custom cache location.\n* progress - Show progress bars. Defaults to True if in python interactive mode else default False.\n* info - Use this info object rather than pulling from the cloud (useful for creating new layers).\n\n\n### CloudVolume Methods\n\nBetter documentation coming later, but for now, here's a summary of the most useful method calls. Use help(cloudvolume.CloudVolume.$method) for more info.\n\n* create_new_info (class method) - Helper function for creating info files for creating new data layers.\n* refresh_info - Repull the info file.\n* refresh_provenance - Repull the provenance file.\n* slices_from_global_coords - Find the CloudVolume slice from MIP 0 coordinates if you're on a different MIP. Often used in combination with neuroglancer.\n* reset_scales - Delete mips other than 0 in the info file. Does not autocommit.\n* add_scale - Generate a new mip level in the info property. Does not autocommit.\n* commit_info - Push the current info property into the cloud as a JSON file.\n* commit_provenance - Push the current provenance property into the cloud as a JSON file.\n* get_mesh - Download an object and save it in `.obj` format. You can combine equivialences into a single object too.\n* exists - Generate a report on which chunks within a bounding box exist.\n* delete - Delete the chunks within this bounding box.\n\n\n### CloudVolume Properties\n\nAccessed as `vol.$PROPERTY` like `vol.mip`. Parens next to each property mean (data type:default, writability). (r) means read only, (w) means write only, (rw) means read/write.\n\n* mip (uint:0, rw) - Read from and write to this mip level (0 is highest res). Each additional increment in the number is typically a 2x reduction in resolution.\n* bounded (bool:True, rw) - If a region outside of volume bounds is accessed throw an error if True or Fill the region with black (useful for e.g. marching cubes's 1px boundary) if False.\n* fill_missing (bool:False, rw) - If a file inside volume bounds is unable to be fetched use a block of zeros if True, else throw an error.\n* cache (bool:False, rw) - If true, on reading, check local disk cache before downloading, and save downloaded chunks to cache. When writing, write to the cloud then save the chunks you wrote to cache. If false, bypass cache completely. The cache is located at `$HOME/.cloudvolume/cache`.\n* info (dict, rw) - Python dict representation of Neuroglancer info JSON file. You must call `vol.commit_info()` to save your changes to storage.\n* provenance (dict-like, rw) - Data layer provenance file representation. You must call `vol.commit_provenance()` to save your changes to storage.\n* available_mips (list of ints, r) - Query which mip levels are defined for reading and writing.\n* dataset_name (str, rw) - Which dataset (e.g. test_v0, snemi3d_v0) on S3, GS, or FS you're reading and writing to. Known as an \"experiment\" in BOSS terminology. Writing to this property triggers an info refresh.\n* layer (str, rw) - Which data layer (e.g. image, segmentation) on S3, GS, or FS you're reading and writing to. Known as a \"channel\" in BOSS terminology. Writing to this property triggers an info refresh.\n* base_cloudpath (str, r) - The cloud path to the dataset e.g. s3://bucket/dataset/\n* layer_cloudpath (str, r) - The cloud path to the data layer e.g. gs://bucket/dataset/image\n* info_cloudpath (str, r) - Generate the cloud path to this data layer's info file.\n* scales (dict, r) - Shortcut to the 'scales' property of the info object\n* scale (dict, r)\u2020 - Shortcut to the working scale of the current mip level\n* shape (Vec4, r)\u2020 - Like numpy.ndarray.shape for the entire data layer. \n* volume_size (Vec3, r)\u2020 - Like shape, but omits channel (x,y,z only). \n* num_channels (int, r) - The number of channels, the last element of shape. \n* layer_type (str, r) - The neuroglancer info type, 'image' or 'segmentation'.\n* dtype (str, r) - The info data_type of the volume, e.g. uint8, uint32, etc. Similar to numpy.ndarray.dtype.\n* encoding (str, r) - The neuroglancer info encoding. e.g. 'raw', 'jpeg', 'npz'\n* resolution (Vec3, r)\u2020 - The 3D physical resolution of a voxel in nanometers at the working mip level.\n* downsample_ratio (Vec3, r) - Ratio of the current resolution to the highest resolution mip available.\n* underlying (Vec3, r)\u2020 - Size of the underlying chunks that constitute the volume in storage. e.g. Vec(64, 64, 64)\n* key (str, r)\u2020 - The 'directory' we're accessing the current working mip level from within the data layer. e.g. '6_6_30'\n* bounds (Bbox, r)\u2020 - A Bbox object that represents the bounds of the entire volume.\n\n\u2020 These properties can also be accessed with a function named like `vol.mip_$PROPERTY($MIP)`. By default they return the current mip level assigned to the CloudVolume, but any mip level can be accessed via the corresponding `mip_` function. Example: `vol.mip_resolution(2)` would return the resolution of mip 2.\n\n### VolumeCutout Functions\n\nWhen you download an image using CloudVolume it gives you a `VolumeCutout`. These are `numpy.ndarray` subclasses that support a few extra properties to help make book keeping easier. The major advantage is `save_images()` which can help you debug your dataset.\n\n* `dataset_name` - The dataset this image came from.\n* `layer` - Which layer it came from.\n* `mip` - Which mip it came from\n* `layer_type` - \"image\" or \"segmentation\"\n* `bounds` - The bounding box of the cutout\n* `num_channels` - Alias for `vol.shape[3]`\n* `save_images()` - Save Z slice PNGs of the current image to `./saved_images` for manual inspection\n\n\n\n",
+    "description": "[![Build Status](https://travis-ci.org/seung-lab/cloud-volume.svg?branch=master)](https://travis-ci.org/seung-lab/cloud-volume)\n\n# cloud-volume\n\nPython client for reading and writing to Neuroglancer Precomputed volumes on cloud services. (https://github.com/google/neuroglancer/tree/master/src/neuroglancer/datasource/precomputed)\n\nWhen working with a particular dataset, say an EM scan of a mouse, fish, or fly brain, you'll typically store that as a grayscale data layer accessible to neuroglanger. You may store additional labellings and processing results as other layers.\n\n## Setup\n\nYou'll need to set up your cloud credentials as well as the main install.\n\n### Credentials\n\n```\nmkdir -p ~/.cloudvolume/secrets/\necho $GOOGLE_STORAGE_PROJECT > ~/.cloudvolume/project_name # needed for Google\nmv aws-secret.json ~/.cloudvolume/secrets/ # needed for Amazon\nmv google-secret.json ~/.cloudvolume/secrets/ # needed for Google\nmv boss-secret.json ~/.cloudvolume/secrets/ # needed for the BOSS\n```\n\n### pip\n\n```\npip install cloud-volume\n```\n\n### Manual\n```\ngit clone git@github.com:seung-lab/cloud-volume.git\ncd cloud-volume\nmkvirtualenv cloud-volume\nworkon cloud-volume\npip install -e .\n```\n\n## Other Languages\n\nJulia - https://github.com/seung-lab/CloudVolume.jl\n\n## Usage\n\nSupports reading and writing to neuroglancer data layers on Amazon S3, Google Storage, and the local file system.\n\nSupported URLs are of the forms:\n\n$PROTOCOL://$BUCKET/$DATASET/$LAYER  \n\n### Supported Protocols \n* gs:   Google Storage\n* s3:   Amazon S3\n* boss: The BOSS (https://docs.theboss.io/docs)\n* file: Local File System (absolute path)\n\n### Examples\n\n```\nvol = CloudVolume('gs://mybucket/retina/image') # Basic Example\nvol = CloudVolume('gs://buck/ds/chan', mip=0, bounded=True, fill_missing=False) # Using multiple initialization options\nvol = CloudVolume('gs://buck/ds/chan', info=info) # Creating a new volume's info file from scratch\nimage = vol[:,:,:] # Download the entire image stack into a numpy array\nlisting = vol.exists( np.s_[0:64, 0:128, 0:64] ) # get a report on which chunks actually exist\nlisting = vol.delete( np.s_[0:64, 0:128, 0:64] ) # delete this region (bbox must be chunk aligned)\nvol[64:128, 64:128, 64:128] = image # Write a 64^3 image to the volume\nvol.save_mesh(12345) # save 12345 as ./12345.obj\nvol.save_mesh([12345, 12346, 12347]) # merge three segments into one obj\n\n# Caching, located at $HOME/.cloudvolume/cache/$PROTOCOL/$BUCKET/$DATASET/$LAYER/$RESOLUTION\nvol = CloudVolume('gs://mybucket/retina/image', cache=True) # Basic Example\nimage = vol[0:10,0:10,0:10] # Download partial image and cache\nvol[0:10,0:10,0:10] = image # Upload partial image and cache\nvol.flush_cache() # Delete local cache for this layer at this mip level\n```\n\n### CloudVolume Constructor\n\n`CloudVolume(cloudpath, mip=0, bounded=True, fill_missing=False, cache=False, cdn_cache=False, progress=INTERACTIVE, info=None, provenance=None)`  \n\n* mip - Which mip level to access\n* bounded - Whether access is allowed outside the bounds defined in the info file\n* fill_missing - If a chunk is missing, should it be zero filled or throw an EmptyVolumeException?\n* cache - Save uploads/downloads to disk. You can also provide a string path instead of a boolean to specify a custom cache location.\n* cdn_cache - Set the HTTP Cache-Control header on uploaded image chunks.\n* progress - Show progress bars. Defaults to True if in python interactive mode else default False.\n* info - Use this info object rather than pulling from the cloud (useful for creating new layers).\n* provenance - Use this object as the provenance file.\n\n### CloudVolume Methods\n\nBetter documentation coming later, but for now, here's a summary of the most useful method calls. Use help(cloudvolume.CloudVolume.$method) for more info.\n\n* create_new_info (class method) - Helper function for creating info files for creating new data layers.\n* refresh_info - Repull the info file.\n* refresh_provenance - Repull the provenance file.\n* slices_from_global_coords - Find the CloudVolume slice from MIP 0 coordinates if you're on a different MIP. Often used in combination with neuroglancer.\n* reset_scales - Delete mips other than 0 in the info file. Does not autocommit.\n* add_scale - Generate a new mip level in the info property. Does not autocommit.\n* commit_info - Push the current info property into the cloud as a JSON file.\n* commit_provenance - Push the current provenance property into the cloud as a JSON file.\n* get_mesh - Download an object and save it in `.obj` format. You can combine equivialences into a single object too.\n* exists - Generate a report on which chunks within a bounding box exist.\n* delete - Delete the chunks within this bounding box.\n\n\n### CloudVolume Properties\n\nAccessed as `vol.$PROPERTY` like `vol.mip`. Parens next to each property mean (data type:default, writability). (r) means read only, (w) means write only, (rw) means read/write.\n\n* mip (uint:0, rw) - Read from and write to this mip level (0 is highest res). Each additional increment in the number is typically a 2x reduction in resolution.\n* bounded (bool:True, rw) - If a region outside of volume bounds is accessed throw an error if True or Fill the region with black (useful for e.g. marching cubes's 1px boundary) if False.\n* fill_missing (bool:False, rw) - If a file inside volume bounds is unable to be fetched use a block of zeros if True, else throw an error.\n* cache (bool:False, rw) - If true, on reading, check local disk cache before downloading, and save downloaded chunks to cache. When writing, write to the cloud then save the chunks you wrote to cache. If false, bypass cache completely. The cache is located at `$HOME/.cloudvolume/cache`.\n* info (dict, rw) - Python dict representation of Neuroglancer info JSON file. You must call `vol.commit_info()` to save your changes to storage.\n* provenance (dict-like, rw) - Data layer provenance file representation. You must call `vol.commit_provenance()` to save your changes to storage.\n* available_mips (list of ints, r) - Query which mip levels are defined for reading and writing.\n* dataset_name (str, rw) - Which dataset (e.g. test_v0, snemi3d_v0) on S3, GS, or FS you're reading and writing to. Known as an \"experiment\" in BOSS terminology. Writing to this property triggers an info refresh.\n* layer (str, rw) - Which data layer (e.g. image, segmentation) on S3, GS, or FS you're reading and writing to. Known as a \"channel\" in BOSS terminology. Writing to this property triggers an info refresh.\n* base_cloudpath (str, r) - The cloud path to the dataset e.g. s3://bucket/dataset/\n* layer_cloudpath (str, r) - The cloud path to the data layer e.g. gs://bucket/dataset/image\n* info_cloudpath (str, r) - Generate the cloud path to this data layer's info file.\n* scales (dict, r) - Shortcut to the 'scales' property of the info object\n* scale (dict, r)\u2020 - Shortcut to the working scale of the current mip level\n* shape (Vec4, r)\u2020 - Like numpy.ndarray.shape for the entire data layer. \n* volume_size (Vec3, r)\u2020 - Like shape, but omits channel (x,y,z only). \n* num_channels (int, r) - The number of channels, the last element of shape. \n* layer_type (str, r) - The neuroglancer info type, 'image' or 'segmentation'.\n* dtype (str, r) - The info data_type of the volume, e.g. uint8, uint32, etc. Similar to numpy.ndarray.dtype.\n* encoding (str, r) - The neuroglancer info encoding. e.g. 'raw', 'jpeg', 'npz'\n* resolution (Vec3, r)\u2020 - The 3D physical resolution of a voxel in nanometers at the working mip level.\n* downsample_ratio (Vec3, r) - Ratio of the current resolution to the highest resolution mip available.\n* underlying (Vec3, r)\u2020 - Size of the underlying chunks that constitute the volume in storage. e.g. Vec(64, 64, 64)\n* key (str, r)\u2020 - The 'directory' we're accessing the current working mip level from within the data layer. e.g. '6_6_30'\n* bounds (Bbox, r)\u2020 - A Bbox object that represents the bounds of the entire volume.\n\n\u2020 These properties can also be accessed with a function named like `vol.mip_$PROPERTY($MIP)`. By default they return the current mip level assigned to the CloudVolume, but any mip level can be accessed via the corresponding `mip_` function. Example: `vol.mip_resolution(2)` would return the resolution of mip 2.\n\n### VolumeCutout Functions\n\nWhen you download an image using CloudVolume it gives you a `VolumeCutout`. These are `numpy.ndarray` subclasses that support a few extra properties to help make book keeping easier. The major advantage is `save_images()` which can help you debug your dataset.\n\n* `dataset_name` - The dataset this image came from.\n* `layer` - Which layer it came from.\n* `mip` - Which mip it came from\n* `layer_type` - \"image\" or \"segmentation\"\n* `bounds` - The bounding box of the cutout\n* `num_channels` - Alias for `vol.shape[3]`\n* `save_images()` - Save Z slice PNGs of the current image to `./saved_images` for manual inspection\n\n\n\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -34,7 +34,7 @@
     "name": "cloud-volume",
     "platform": "",
     "project_url": "https://pypi.org/project/cloud-volume/",
-    "release_url": "https://pypi.org/project/cloud-volume/0.6.2/",
+    "release_url": "https://pypi.org/project/cloud-volume/0.6.3/",
     "requires_dist": [
       "urllib3[secure]",
       "tqdm (==4.19.4)",
@@ -58,7 +58,7 @@
     ],
     "requires_python": "",
     "summary": "Read and write neuroglancer Precomputed formats to cloud storage",
-    "version": "0.6.2"
+    "version": "0.6.3"
   },
   "releases": {
     "0.0.1.dev17": [
@@ -876,40 +876,74 @@
         "upload_time": "2017-11-25T00:46:20",
         "url": "https://files.pythonhosted.org/packages/56/5d/06f5d9cd1f693fb902ba7fc8e61b15e61827d1eb4f9e95ec326e1fb76d82/cloud-volume-0.6.2.tar.gz"
       }
+    ],
+    "0.6.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f39f1c34bf06ef1c9eca89a7ed4d6a0a",
+          "sha256": "78c369468c752bf3892ddbb0b5242851254d0832cf2127aeecaa49be056c6816"
+        },
+        "downloads": -1,
+        "filename": "cloud_volume-0.6.3-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "f39f1c34bf06ef1c9eca89a7ed4d6a0a",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 38988,
+        "upload_time": "2017-12-01T03:26:41",
+        "url": "https://files.pythonhosted.org/packages/48/83/4f7e9a35c5e7bc45edd7b7c72d46b8244ab4160e1e5397ac30b76ad76867/cloud_volume-0.6.3-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "448d679ddb303beeac2fd0226b168eb1",
+          "sha256": "ddd5e077c3d9612ce60437a8757357f9c6a976ffffed3ddfad012b20233a13f6"
+        },
+        "downloads": -1,
+        "filename": "cloud-volume-0.6.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "448d679ddb303beeac2fd0226b168eb1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 52625,
+        "upload_time": "2017-12-01T03:26:41",
+        "url": "https://files.pythonhosted.org/packages/15/bf/c8ff0bf4c14a2f448e92a296593f03063bbdd4582eb851f1522d47e63682/cloud-volume-0.6.3.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "98c8497475d2b9d5338482de4356ac62",
-        "sha256": "cface60bc0c45992ad164f92c1daab9d2eacab5957286cfe521d4c222fa634ad"
+        "md5": "f39f1c34bf06ef1c9eca89a7ed4d6a0a",
+        "sha256": "78c369468c752bf3892ddbb0b5242851254d0832cf2127aeecaa49be056c6816"
       },
       "downloads": -1,
-      "filename": "cloud_volume-0.6.2-py2.py3-none-any.whl",
+      "filename": "cloud_volume-0.6.3-py2.py3-none-any.whl",
       "has_sig": false,
-      "md5_digest": "98c8497475d2b9d5338482de4356ac62",
+      "md5_digest": "f39f1c34bf06ef1c9eca89a7ed4d6a0a",
       "packagetype": "bdist_wheel",
       "python_version": "py2.py3",
-      "size": 38457,
-      "upload_time": "2017-11-25T00:46:18",
-      "url": "https://files.pythonhosted.org/packages/8c/63/60ed632c4c67e21380742737d0eb24cf6eaac926bb869bb21e8b529238dd/cloud_volume-0.6.2-py2.py3-none-any.whl"
+      "size": 38988,
+      "upload_time": "2017-12-01T03:26:41",
+      "url": "https://files.pythonhosted.org/packages/48/83/4f7e9a35c5e7bc45edd7b7c72d46b8244ab4160e1e5397ac30b76ad76867/cloud_volume-0.6.3-py2.py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "35ec7ce370351dcf04e9c5f3bc964fed",
-        "sha256": "b7a54f7c87b02ba7a62b80fb6a41e124d37e8fc88c4e92563a6b06768ccd1935"
+        "md5": "448d679ddb303beeac2fd0226b168eb1",
+        "sha256": "ddd5e077c3d9612ce60437a8757357f9c6a976ffffed3ddfad012b20233a13f6"
       },
       "downloads": -1,
-      "filename": "cloud-volume-0.6.2.tar.gz",
+      "filename": "cloud-volume-0.6.3.tar.gz",
       "has_sig": false,
-      "md5_digest": "35ec7ce370351dcf04e9c5f3bc964fed",
+      "md5_digest": "448d679ddb303beeac2fd0226b168eb1",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 54430,
-      "upload_time": "2017-11-25T00:46:20",
-      "url": "https://files.pythonhosted.org/packages/56/5d/06f5d9cd1f693fb902ba7fc8e61b15e61827d1eb4f9e95ec326e1fb76d82/cloud-volume-0.6.2.tar.gz"
+      "size": 52625,
+      "upload_time": "2017-12-01T03:26:41",
+      "url": "https://files.pythonhosted.org/packages/15/bf/c8ff0bf4c14a2f448e92a296593f03063bbdd4582eb851f1522d47e63682/cloud-volume-0.6.3.tar.gz"
     }
   ]
 }
