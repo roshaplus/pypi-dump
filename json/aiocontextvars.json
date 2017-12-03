@@ -1,0 +1,92 @@
+{
+  "info": {
+    "author": "Fantix King",
+    "author_email": "fantix.king@gmail.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 4 - Beta",
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: BSD License",
+      "Natural Language :: English",
+      "Programming Language :: Python :: 3",
+      "Programming Language :: Python :: 3.6"
+    ],
+    "description": "==============\naiocontextvars\n==============\n\n.. image:: https://img.shields.io/pypi/v/aiocontextvars.svg\n        :target: https://pypi.python.org/pypi/aiocontextvars\n\n.. image:: https://img.shields.io/travis/fantix/aiocontextvars.svg\n        :target: https://travis-ci.org/fantix/aiocontextvars\n\nThis library offers the \"thread local\" for Python asyncio, also known as \"task\nlocal\".\n\n.. code-block:: python\n\n   import asyncio\n   from aiocontextvars import ContextVar\n\n   var = ContextVar('my_variable')\n\n   async def main():\n       var.set('main')\n       await sub()\n       assert var.get() == 'sub'\n\n   async def sub():\n       assert var.get() == 'main'\n       var.set('sub')\n       assert var.get() == 'sub'\n\n   loop = asyncio.get_event_loop()\n   loop.run_until_complete(main())\n\nIn above example, value ``main`` was stored in ``var``, and the following code\ncould then retrieve the value wherever ``var`` is available, without having to\npass this value around as parameter, e.g. in ``sub``. In the mean time, ``sub``\ncould also mutate the value, while being visible to its caller.\n\nDifferent than a global variable and similar to thread local, a ``ContextVar``\nkeeps the different values set in different tasks, without messing up:\n\n.. code-block:: python\n\n   import asyncio\n   from aiocontextvars import ContextVar\n\n   var = ContextVar('my_variable')\n\n   async def main(count):\n       var.set(count)\n       await asyncio.sleep(1)  # make sure all counts are set before assertion\n       await sub(count)\n       assert var.get() == count + 1\n\n   async def sub(count):\n       assert var.get() == count\n       var.set(count + 1)\n       assert var.get() == count + 1\n\n   loop = asyncio.get_event_loop()\n\n   tasks = []\n   for i in range(8):\n       tasks.append(loop.create_task(main(i)))\n\n   loop.run_until_complete(asyncio.gather(*tasks))\n\n\nWith such, it is usually used to store non-global but shared states, e.g.\nrequests or database connections.\n\n\nCompatibility\n-------------\n\nThis is a partial PEP-550 polyfill.\n\nPEP-550 proposed a consistent way across threads, generators and asyncio\n``Task`` s, to manage execution context, which is a kind of shared storage as\nthe context of such executions, with which one could share data within the same\nexecution without passing the data around as function parameters. A close\nexample of such context is ``threading.local``, which offers different data\nspace for different threads. It is obvious that ``threading.local`` cannot be\nused for e.g. ``Task`` because usually all coroutines are scheduled within the\nsame thread, generators are similar. That's the main motivation of PEP-550.\nHowever there's been so much discussion around this PEP about all kinds of\npossibilities and cases, and it couldn't get accepted in a short while, thus we\ndecided to come up with this project, trying to solve a subset of all the\nproblems PEP-550 tried to solve, which is, as its name indicates, to implement\na contextual storage for asyncio ``Task``. We tried to build API that is\ncompatible with the latest discussion and most possible direction, so that the\ncost to migrate code to future accepted PEP-550 may be minimized - just replace\nthe import with:\n\n.. code-block:: python\n\n   try:\n       from contextvars import ContextVar\n   except ImportError:\n       from aiocontextvars import ContextVar, enable_inherit\n       enable_inherit()\n\n\nInheritance\n-----------\n\nA key feature of ``ContextVar`` is the ability to inherit data across\n``Task``s. When creating a new ``Task`` within another ``Task`` which had a\n``ContextVar`` set, the new ``Task`` shall inherit the ``ContextVar`` values\nfrom the parent ``Task``. However any changes to the context variables made in\nthe parent task after the child task was spawned are not visible to the child\ntask. The reason is explained in PEP-550_ - common usage intent and backwards\ncompatibility. Please follow the link and read more there. Here's a simple\nexample of inheritance:\n\n.. code-block:: python\n\n   import asyncio\n   from aiocontextvars import ContextVar, enable_inherit\n\n   var = ContextVar('my_variable')\n\n   async def main():\n       var.set('main')\n       loop.create_task(sub())\n       assert var.get() == 'main'\n       var.set('main changed')\n       await asyncio.sleep(2)\n       assert var.get() == 'main changed'\n\n   async def sub():\n       assert var.get() == 'main'\n       await asyncio.sleep(1)\n       assert var.get() == 'main'\n       var.set('sub')\n\n   loop = asyncio.get_event_loop()\n   enable_inherit(loop)\n   loop.run_until_complete(main())\n\nPlease be noted that, the inheritance feature needs to be enabled explicitly\nwhen using aiocontextvars, while it is a builtin feature for PEP-550. Because\naiocontextvars needs to hack the task factory of a given loop to achieve\ninheritance, so if a custom task factory is needed, make sure it is installed\nbefore enabling inheritance. It is also possible to disable inheritance and\nremove the task factory hack by calling ``disable_inherit``. Meanwhile the\nreturn value of ``enable_inherit`` is a PEP-343 context, you can do something\nlike this to minimize the impact:\n\n.. code-block:: python\n\n   from aiocontextvars import enable_inherit\n\n   with enable_inherit():\n       loop.create_task(main())\n\nOr even ``aiocontextvars.create_task`` can be used as a short of this:\n\n.. code-block:: python\n\n   from aiocontextvars import create_task\n\n   create_task(main(), loop=loop)\n\nSometimes it is useful to know whether current ``ContextVar`` is inheriting\nfrom parent or not. This information is available through ``Context.inherited``:\n\n.. code-block:: python\n\n   from aiocontextvars import Context\n\n   if Context.current().inherited:\n       print('Inherited!')\n\n\nCredits\n-------\n\nFantix King is the author and maintainer of this library. ``var.py`` is\nmodified based on Guido's simpler.py_ about PEP-550. This library is open\nsource software under BSD license.\n\n.. _PEP-550: https://www.python.org/dev/peps/pep-0550/#coroutines-and-asynchronous-tasks\n.. _simpler.py: https://git.io/vbOeS\n\n\n=======\nHistory\n=======\n\n0.1.1 (2017-12-03)\n------------------\n\n* Fixed setup.py\n\n0.1.0 (2017-12-03)\n------------------\n\n* First release on PyPI.\n",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/fantix/aiocontextvars",
+    "keywords": "aiocontextvars",
+    "license": "BSD license",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "aiocontextvars",
+    "platform": "",
+    "project_url": "https://pypi.org/project/aiocontextvars/",
+    "release_url": "https://pypi.org/project/aiocontextvars/0.1.1/",
+    "requires_dist": [],
+    "requires_python": "",
+    "summary": "PEP-550 polyfill, execution context for asyncio.",
+    "version": "0.1.1"
+  },
+  "releases": {
+    "0.1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a4890f0a7cbfee2e565e566c416eedfd",
+          "sha256": "1a719bc387b5f52523c737fdcf843c30f1ca68c4f49cf5736577bddddd363cf7"
+        },
+        "downloads": -1,
+        "filename": "aiocontextvars-0.1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a4890f0a7cbfee2e565e566c416eedfd",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 15331,
+        "upload_time": "2017-12-03T08:41:48",
+        "url": "https://files.pythonhosted.org/packages/20/d1/84f209fd71db05314e9c4f354b109be83bc3d7ff564400cd4e7aadd6115a/aiocontextvars-0.1.0.tar.gz"
+      }
+    ],
+    "0.1.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c47730724e071e930db376be24d734cc",
+          "sha256": "847f96e9df8662c4922f81e3a4dd6698bc6617416d9ebe0ab7474b67176791ba"
+        },
+        "downloads": -1,
+        "filename": "aiocontextvars-0.1.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c47730724e071e930db376be24d734cc",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 15279,
+        "upload_time": "2017-12-03T08:49:25",
+        "url": "https://files.pythonhosted.org/packages/b4/f6/845b6b7db4dc46a24de439845395877058985fcadb703cb01ff551bc27ad/aiocontextvars-0.1.1.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "c47730724e071e930db376be24d734cc",
+        "sha256": "847f96e9df8662c4922f81e3a4dd6698bc6617416d9ebe0ab7474b67176791ba"
+      },
+      "downloads": -1,
+      "filename": "aiocontextvars-0.1.1.tar.gz",
+      "has_sig": false,
+      "md5_digest": "c47730724e071e930db376be24d734cc",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 15279,
+      "upload_time": "2017-12-03T08:49:25",
+      "url": "https://files.pythonhosted.org/packages/b4/f6/845b6b7db4dc46a24de439845395877058985fcadb703cb01ff551bc27ad/aiocontextvars-0.1.1.tar.gz"
+    }
+  ]
+}
