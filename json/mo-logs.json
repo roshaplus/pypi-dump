@@ -9,7 +9,7 @@
       "Topic :: Software Development :: Libraries",
       "Topic :: Software Development :: Libraries :: Python Modules"
     ],
-    "description": "More Logs - Structured Logging and Exception Handling\n=====================================================\n\nThis library provides two main features\n\n-  **Structured logging** - output is all JSON (with options to\n   serialize to text for humans)\n-  **Exception handling weaved in** - Good logs must represent what\n   happened, and that can not be done if the logging library is not\n   intimately familiar with the (exceptional) code paths taken.\n\nMotivation\n----------\n\nException handling and logging are undeniably linked. There are many\ninstances where exceptions are raised and must be logged, and others\nwhere the subsuming system can fully handle the exception, and no log\nshould be emitted. Exception handling semantics are great because they\ndecouple the cause from the solution, but this can be at odds with clean\nlogging - which couples raising and catching to make appropriate\ndecisions about what to emit to the log.\n\nThis logging module is additionally responsible for raising exceptions,\ncollecting the trace and context, and then deducing if it must be\nlogged, or if it can be ignored because something can handle it.\n\n**More Reading**\n\n-  **Structured Logging is Good** -\n   https://sites.google.com/site/steveyegge2/the-emacs-problem\n\nBasic Usage\n-----------\n\n**Use ``Log.note()`` for all logging**\n\n.. code:: python\n\n        Log.note(\"Hello, World!\")\n\nThere is no need to create logger objects. The ``Log`` module will keep\ntrack of what, where and who of every call.\n\n**Use named parameters**\n\nDo not use Python's formatting operator \"``%``\" nor it's ``format()``\nfunction. Using them will create a string at call time, which is a\nparsing nightmare for log analysis tools.\n\n.. code:: python\n\n        Log.note(\"Hello, {{name}}!\", name=\"World!\")\n\nAll logs are structured logs; the parameters will be included,\nunchanged, in the log structure. This library also expects all parameter\nvalues to be JSON- serializable so they can be stored/processed by\ndownstream JSON tools.\n\n.. code:: javascript\n\n        {//EXAMPLE STRUCTURED LOG\n            \"template\": \"Hello, {{name}}!\",\n            \"param\": {\"name\": \"World!\"},\n            \"timestamp\": 1429721745,\n            \"thread\": {\n                \"name\": \"Main thread\"\n            },\n            \"location\": {\n                \"line\": 3,\n                \"file\": \"hello.py\",\n                \"method\": \"hello\"\n            },\n            \"machine\": {\n                \"python\": \"CPython\",\n                \"os\": \"Windows10\",\n                \"name\": \"ekyle-win\"\n            }\n        }\n\n**Instead of ``raise`` use ``Log.error()``**\n\n.. code:: python\n\n        Log.error(\"This will throw an error\")\n\nThe actual call will always raise an exception, and it manipulates the\nstack trace to ensure the caller is appropriately blamed. Feel free to\nuse the ``raise`` keyword (as in ``raise Log.error(\"\")``), if that looks\nnicer to you.\n\n**Always chain your exceptions**\n\nThe ``cause`` parameter accepts an ``Exception``, or a list of\nexceptions. Chaining is generally good practice that helps you find the\nroot cause of a failure.\n\n.. code:: python\n\n        try:\n            # Do something that might raise exception\n        except Exception, e:\n            Log.error(\"Describe what you were trying to do\", cause=e)\n\n**Always catch all ``Exceptions``**\n\nCatching all exceptions is preferred over the\n*only-catch-what-you-can-handle* strategy. First, exceptions are not\nlost because we are chaining. Second, we catch unexpected ``Exceptions``\nearly and we annotate them with a description of what the local code was\nintending to do. This annotation effectively groups the possible errors\n(known, or not) into a class, which can be used by callers to decide on\nappropriate mitigation.\n\nTo repeat: When using dependency injection, callers can not reasonably\nbe expected to know about the types of failures that can happen deep\ndown the call chain. This makes it vitally important that methods\nsummarize all exceptions, both known and unknown, so their callers have\nthe information to make better decisions on appropriate action.\n\nFor example: An abstract document container, implemented on top of a SQL\ndatabase, should not emit SQLExceptions of any kind: A caller that uses\na document container should not need to know how to handle SQLExceptions\n(or any other implementation-specific exceptions). Rather, in this\nexample, the caller should be told it \"can not add a document\", or \"can\nnot remove a document\". This allows the caller to make reasonable\ndecisions when they do occur. The original cause (the SQLException) is\nin the causal chain.\n\nAnother example, involves *nested exceptions*: If you catch a particular\ntype of exception, you may not expect to catch the that same type of\nexception from deeper in the call chain. Narrow exception handling is an\nillusion. Broad exception handling will force you to consider a variety\nof failures early; what it means when a block of code fails, no matter\nthe reason.\n\n**Use named parameters in your error descriptions too**\n\nError logging accepts keyword parameters just like ``Log.note()`` does\n\n.. code:: python\n\n        def worker(value):\n            try:\n                Log.note(\"Start working with {{key1}}\", key1=value1)\n                # Do something that might raise exception\n            except Exception, e:\n                Log.error(\"Failure to work with {{key2}}\", key2=value2, cause=e)\n\n**No need to formally type your exceptions**\n\nAn exception can be uniquely identified by the first-parameter string\ntemplate it is given; exceptions raised with the same template are the\nsame type. You should have no need to create new exception sub-types.\n\n**Testing for exception \"types\"**\n\nThis library advocates chaining exceptions early and often, and this\nhides important exception types in a long causal chain. MoLogs allows\nyou to easily test if a type (or string, or template) can be found in\nthe causal chain by using the ``in`` keyword:\n\n.. code:: python\n\n        def worker(value):\n            try:\n                # Do something that might raise exception\n            except Exception, e:\n                if \"Failure to work with {{key2}}\" in e:\n                    # Deal with exception thrown in above code, no matter\n                    # how many other exception handlers where in the chain\n\n**If you can deal with an exception, then it will never be logged**\n\nWhen a caller catches an exception from a callee, it is the caller's\nresponsibility to handle that exception, or re-raise it. There are many\nsituations a caller can be expected to handle exceptions; and in those\ncases logging an error would be deceptive.\n\n.. code:: python\n\n        def worker(value):\n            try:\n                Log.error(\"Failure to work with {{key3}}\", key3=value3)\n            except Exception, e:\n                # Try something else\n\n**Use ``Log.warning()`` if your code can deal with an exception, but you\nstill want to log it as an issue**\n\n.. code:: python\n\n        def worker(value):\n            try:\n                Log.note(\"Start working with {{key4}}\", key4=value4)\n                # Do something that might raise exception\n            except Exception, e:\n                Log.warning(\"Failure to work with {{key4}}\", key4=value4, cause=e)\n\n**Don't loose your stack trace!**\n\nBe aware your ``except`` clause can also throw exceptions: In the event\nyou catch a vanilla Python Exception, you run the risk of loosing its\nstack trace. To prevent this, wrap your exception in an ``Except``\nobject, which will capture your trace for later use. Exceptions thrown\nfrom this ``Log`` library need not be wrapped because they already\ncaptured their trace. If you wrap an ``Except`` object, you simply get\nback the object you passed.\n\n``python     try:         # DO SOME WORK             except Exception, e:         e = Except.wrap(e)         # DO SOME FANCY ERROR RECOVERY``\n\nOther forms\n-----------\n\nAll the ``Log`` functions accept a ``default_params`` as a second\nparameter, like so:\n\n.. code:: python\n\n        Log.note(\"Hello, {{name}}!\", {\"name\": \"World!\"})\n\nthis is meant for the situation your code already has a bundled\nstructure you wish to use as a source of parameters. If keyword\nparameters are used, they will override the default values. Be careful\nwhen sending whole data structures, they will be logged!\n\n**Please, never use locals()**\n\n.. code:: python\n\n        def worker(value):\n            name = \"tout le monde!\"\n            password = \"123\"\n            Log.note(\"Hello, {{name}}\", locals())      # DO NOT DO THIS!\n\nDespite the fact using ``locals()`` is a wonderful shortcut for logging\nit is dangerous because it also picks up sensitive local variables. Even\nif ``{{name}}`` is the only value in the template, the whole\n``locals()`` dict will be sent to the structured loggers for recording.\n\nLog 'Levels'\n------------\n\nThe ``logs`` module has no concept of logging levels it is expected that\ndebug variables (variables prefixed with ``DEBUG_`` are used to control\nthe logging output.\n\n.. code:: python\n\n        # simple.py\n        DEBUG_SHOW_DETAIL = True\n\n        def worker():\n            if DEBUG_SHOW_DETAIL:\n                Log.note(\"Starting\")\n\n            # DO WORK HERE\n\n            if DEBUG_SHOW_DETAIL:\n                Log.note(\"Done\")\n\n        def main():\n            try:\n                settings = startup.read_settings()\n                Log.start(settings.debug)\n\n                # DO WORK HERE\n\n            except Exception, e:\n                Log.error(\"Complain, or not\", e)\n            finally:\n                Log.stop()\n\nThese debug variables can be set by configuration file:\n\n.. code:: javascript\n\n        // settings.json\n        {\n            \"debug\":{\n                \"constants\":{\"simple.DEBUG_SHOW_DETAILS\":false}\n            }\n        }\n\nConfiguration\n-------------\n\nThe ``logs`` module will log to the console by default.\n``Log.start(settings)`` will redirect the logging to other streams, as\ndefined by the settings:\n\n-  **log** - List of all log-streams and their parameters\n-  **trace** - Show more details in every log line (default False)\n-  **cprofile** - Used to enable the builtin python c-profiler (default\n   False)\n-  **profile** - Used to enable pyLibrary's simple profiling (default\n   False) (eg with Profiler(\"some description\"):)\n-  **constants** - Map absolute path of module constants to the values\n   that will be assigned. Used mostly to set debugging constants in\n   modules.\n\nOf course, logging should be the first thing to be setup (aside from\ndigesting settings of course). For this reason, applications should have\nthe following structure:\n\n.. code:: python\n\n        def main():\n            try:\n                settings = startup.read_settings()\n                Log.start(settings.debug)\n\n                # DO WORK HERE\n\n            except Exception, e:\n                Log.error(\"Complain, or not\", e)\n            finally:\n                Log.stop()\n\n::\n\n        \"log\": [\n            {\n                \"class\": \"logging.handlers.RotatingFileHandler\",\n                \"filename\": \"examples/logs/examples_etl.log\",\n                \"maxBytes\": 10000000,\n                \"backupCount\": 100,\n                \"encoding\": \"utf8\"\n            },\n            {\n                \"log_type\": \"email\",\n                \"from_address\": \"klahnakoski@mozilla.com\",\n                \"to_address\": \"klahnakoski@mozilla.com\",\n                \"subject\": \"[ALERT][DEV] Problem in ETL Spot\",\n                \"$ref\": \"file://~/private.json#email\"\n            },\n            {\n                \"log_type\": \"console\"\n            }\n        ]\n\nProblems with Python Logging\n----------------------------\n\n| `Python's default ``logging``\n  module <https://docs.python.org/2/library/logging.html#logging.debug>`__\n  comes close to doing the right thing, but fails:\n|  \\* It has keyword parameters, but they are expanded at call time so\n  the values are lost in a string.\n|  \\* It has ``extra`` parameters, but they are lost if not used by the\n  matching ``Formatter``.\n|  \\* It even has stack trace with ``exc_info`` parameter, but only if\n  an exception is being handled. \\* Python 2.x has no builtin exception\n  chaining, but `Python 3\n  does <https://www.python.org/dev/peps/pep-3134/>`__",
+    "description": "More Logs - Structured Logging and Exception Handling\n=====================================================\n\nThis library provides two main features\n\n-  **Structured logging** - output is all JSON (with options to\n   serialize to text for humans)\n-  **Exception handling weaved in** - Good logs must represent what\n   happened, and that can not be done if the logging library is not\n   intimately familiar with the (exceptional) code paths taken.\n\nMotivation\n----------\n\nException handling and logging are undeniably linked. There are many\ninstances where exceptions are raised and must be logged, and others\nwhere the subsuming system can fully handle the exception, and no log\nshould be emitted. Exception handling semantics are great because they\ndecouple the cause from the solution, but this can be at odds with clean\nlogging - which couples raising and catching to make appropriate\ndecisions about what to emit to the log.\n\nThis logging module is additionally responsible for raising exceptions,\ncollecting the trace and context, and then deducing if it must be\nlogged, or if it can be ignored because something can handle it.\n\nMore Reading\n~~~~~~~~~~~~\n\n-  **Structured Logging is Good** -\n   https://sites.google.com/site/steveyegge2/the-emacs-problem\n\nBasic Usage\n-----------\n\nUse ``Log.note()`` for all logging\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n.. code:: python\n\n        Log.note(\"Hello, World!\")\n\nThere is no need to create logger objects. The ``Log`` module will keep\ntrack of what, where and who of every call.\n\nUse named parameters\n~~~~~~~~~~~~~~~~~~~~\n\nDo not use Python's formatting operator \"``%``\\ \" nor it's ``format()``\nfunction. Using them will create a string at call time, which is a\nparsing nightmare for log analysis tools.\n\n.. code:: python\n\n        Log.note(\"Hello, {{name}}!\", name=\"World!\")\n\nAll logs are structured logs; the parameters will be included,\nunchanged, in the log structure. This library also expects all parameter\nvalues to be JSON- serializable so they can be stored/processed by\ndownstream JSON tools.\n\n.. code:: javascript\n\n        {//EXAMPLE STRUCTURED LOG\n            \"template\": \"Hello, {{name}}!\",\n            \"param\": {\"name\": \"World!\"},\n            \"timestamp\": 1429721745,\n            \"thread\": {\n                \"name\": \"Main thread\"\n            },\n            \"location\": {\n                \"line\": 3,\n                \"file\": \"hello.py\",\n                \"method\": \"hello\"\n            },\n            \"machine\": {\n                \"python\": \"CPython\",\n                \"os\": \"Windows10\",\n                \"name\": \"ekyle-win\"\n            }\n        }\n\nInstead of ``raise`` use ``Log.error()``\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n.. code:: python\n\n        Log.error(\"This will throw an error\")\n\nThe actual call will always raise an exception, and it manipulates the\nstack trace to ensure the caller is appropriately blamed. Feel free to\nuse the ``raise`` keyword (as in ``raise Log.error(\"\")``), if that looks\nnicer to you.\n\nAlways chain your exceptions\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nThe ``cause`` parameter accepts an ``Exception``, or a list of\nexceptions. Chaining is generally good practice that helps you find the\nroot cause of a failure.\n\n.. code:: python\n\n        try:\n            # Do something that might raise exception\n        except Exception, e:\n            Log.error(\"Describe what you were trying to do\", cause=e)\n\nAlways catch all ``Exceptions``\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nCatching all exceptions is preferred over the\n*only-catch-what-you-can-handle* strategy. First, exceptions are not\nlost because we are chaining. Second, we catch unexpected ``Exceptions``\nearly and we annotate them with a description of what the local code was\nintending to do. This annotation effectively groups the possible errors\n(known, or not) into a class, which can be used by callers to decide on\nappropriate mitigation.\n\nTo repeat: When using dependency injection, callers can not reasonably\nbe expected to know about the types of failures that can happen deep\ndown the call chain. This makes it vitally important that methods\nsummarize all exceptions, both known and unknown, so their callers have\nthe information to make better decisions on appropriate action.\n\nFor example: An abstract document container, implemented on top of a SQL\ndatabase, should not emit SQLExceptions of any kind: A caller that uses\na document container should not need to know how to handle SQLExceptions\n(or any other implementation-specific exceptions). Rather, in this\nexample, the caller should be told it \"can not add a document\", or \"can\nnot remove a document\". This allows the caller to make reasonable\ndecisions when they do occur. The original cause (the SQLException) is\nin the causal chain.\n\nAnother example, involves *nested exceptions*: If you catch a particular\ntype of exception, you may not expect to catch the that same type of\nexception from deeper in the call chain. Narrow exception handling is an\nillusion. Broad exception handling will force you to consider a variety\nof failures early; what it means when a block of code fails, no matter\nthe reason.\n\nUse named parameters in your error descriptions too\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nError logging accepts keyword parameters just like ``Log.note()`` does\n\n.. code:: python\n\n        def worker(value):\n            try:\n                Log.note(\"Start working with {{key1}}\", key1=value1)\n                # Do something that might raise exception\n            except Exception, e:\n                Log.error(\"Failure to work with {{key2}}\", key2=value2, cause=e)\n\nNo need to formally type your exceptions\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nAn exception can be uniquely identified by the first-parameter string\ntemplate it is given; exceptions raised with the same template are the\nsame type. You should have no need to create new exception sub-types.\n\nTesting for exception \"types\"\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nThis library advocates chaining exceptions early and often, and this\nhides important exception types in a long causal chain. MoLogs allows\nyou to easily test if a type (or string, or template) can be found in\nthe causal chain by using the ``in`` keyword:\n\n.. code:: python\n\n        def worker(value):\n            try:\n                # Do something that might raise exception\n            except Exception, e:\n                if \"Failure to work with {{key2}}\" in e:\n                    # Deal with exception thrown in above code, no matter\n                    # how many other exception handlers where in the chain\n\nIf you can deal with an exception, then it will never be logged\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nWhen a caller catches an exception from a callee, it is the caller's\nresponsibility to handle that exception, or re-raise it. There are many\nsituations a caller can be expected to handle exceptions; and in those\ncases logging an error would be deceptive.\n\n.. code:: python\n\n        def worker(value):\n            try:\n                Log.error(\"Failure to work with {{key3}}\", key3=value3)\n            except Exception, e:\n                # Try something else\n\nUse ``Log.warning()`` if your code can deal with an exception, but you still\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nwant to log it as an issue\n\n.. code:: python\n\n        def worker(value):\n            try:\n                Log.note(\"Start working with {{key4}}\", key4=value4)\n                # Do something that might raise exception\n            except Exception, e:\n                Log.warning(\"Failure to work with {{key4}}\", key4=value4, cause=e)\n\nDon't loose your stack trace!\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nBe aware your ``except`` clause can also throw exceptions: In the event\nyou catch a vanilla Python Exception, you run the risk of loosing its\nstack trace. To prevent this, wrap your exception in an ``Except``\nobject, which will capture your trace for later use. Exceptions thrown\nfrom this ``Log`` library need not be wrapped because they already\ncaptured their trace. If you wrap an ``Except`` object, you simply get\nback the object you passed.\n\n``python     try:         # DO SOME WORK             except Exception, e:         e = Except.wrap(e)         # DO SOME FANCY ERROR RECOVERY``\n\nOther forms\n-----------\n\nAll the ``Log`` functions accept a ``default_params`` as a second\nparameter, like so:\n\n.. code:: python\n\n        Log.note(\"Hello, {{name}}!\", {\"name\": \"World!\"})\n\nthis is meant for the situation your code already has a bundled\nstructure you wish to use as a source of parameters. If keyword\nparameters are used, they will override the default values. Be careful\nwhen sending whole data structures, they will be logged!\n\nPlease, never use locals()\n~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n.. code:: python\n\n        def worker(value):\n            name = \"tout le monde!\"\n            password = \"123\"\n            Log.note(\"Hello, {{name}}\", locals())      # DO NOT DO THIS!\n\nDespite the fact using ``locals()`` is a wonderful shortcut for logging\nit is dangerous because it also picks up sensitive local variables. Even\nif ``{{name}}`` is the only value in the template, the whole\n``locals()`` dict will be sent to the structured loggers for recording.\n\nLog 'Levels'\n------------\n\nThe ``logs`` module has no concept of logging levels it is expected that\ndebug variables (variables prefixed with ``DEBUG_`` are used to control\nthe logging output.\n\n.. code:: python\n\n        # simple.py\n        DEBUG_SHOW_DETAIL = True\n\n        def worker():\n            if DEBUG_SHOW_DETAIL:\n                Log.note(\"Starting\")\n\n            # DO WORK HERE\n\n            if DEBUG_SHOW_DETAIL:\n                Log.note(\"Done\")\n\n        def main():\n            try:\n                settings = startup.read_settings()\n                Log.start(settings.debug)\n\n                # DO WORK HERE\n\n            except Exception, e:\n                Log.error(\"Complain, or not\", e)\n            finally:\n                Log.stop()\n\nThese debug variables can be set by configuration file:\n\n.. code:: javascript\n\n        // settings.json\n        {\n            \"debug\":{\n                \"constants\":{\"simple.DEBUG_SHOW_DETAILS\":false}\n            }\n        }\n\nConfiguration\n-------------\n\nThe ``logs`` module will log to the console by default.\n``Log.start(settings)`` will redirect the logging to other streams, as\ndefined by the settings:\n\n-  **log** - List of all log-streams and their parameters\n-  **trace** - Show more details in every log line (default False)\n-  **cprofile** - Used to enable the builtin python c-profiler (default\n   False)\n-  **profile** - Used to enable pyLibrary's simple profiling (default\n   False) (eg with Profiler(\"some description\"):)\n-  **constants** - Map absolute path of module constants to the values\n   that will be assigned. Used mostly to set debugging constants in\n   modules.\n\nOf course, logging should be the first thing to be setup (aside from\ndigesting settings of course). For this reason, applications should have\nthe following structure:\n\n.. code:: python\n\n        def main():\n            try:\n                settings = startup.read_settings()\n                Log.start(settings.debug)\n\n                # DO WORK HERE\n\n            except Exception, e:\n                Log.error(\"Complain, or not\", e)\n            finally:\n                Log.stop()\n\n::\n\n        \"log\": [\n            {\n                \"class\": \"logging.handlers.RotatingFileHandler\",\n                \"filename\": \"examples/logs/examples_etl.log\",\n                \"maxBytes\": 10000000,\n                \"backupCount\": 100,\n                \"encoding\": \"utf8\"\n            },\n            {\n                \"log_type\": \"email\",\n                \"from_address\": \"klahnakoski@mozilla.com\",\n                \"to_address\": \"klahnakoski@mozilla.com\",\n                \"subject\": \"[ALERT][DEV] Problem in ETL Spot\",\n                \"$ref\": \"file://~/private.json#email\"\n            },\n            {\n                \"log_type\": \"console\"\n            }\n        ]\n\nProblems with Python Logging\n----------------------------\n\n| `Python's default ``logging``\nmodule <https://docs.python.org/2/library/logging.html#logging.debug>`__\ncomes close to doing the right thing, but fails:\n|  \\* It has keyword parameters, but they are expanded at call time so\nthe values are lost in a string.\n|  \\* It has ``extra`` parameters, but they are lost if not used by the\nmatching ``Formatter``.\n|  \\* It even has stack trace with ``exc_info`` parameter, but only if\nan exception is being handled. \\* Python 2.x has no builtin exception\nchaining, but `Python 3\ndoes <https://www.python.org/dev/peps/pep-3134/>`__",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -25,11 +25,11 @@
     "name": "mo-logs",
     "platform": "",
     "project_url": "https://pypi.org/project/mo-logs/",
-    "release_url": "https://pypi.org/project/mo-logs/1.4.17235/",
+    "release_url": "https://pypi.org/project/mo-logs/1.7.17339/",
     "requires_dist": [],
     "requires_python": "",
     "summary": "More Logs! Structured Logging and Exception Handling",
-    "version": "1.4.17235"
+    "version": "1.7.17339"
   },
   "releases": {
     "1.0.17029": [],
@@ -40,7 +40,7 @@
           "md5": "927db36d239e0639a11c9ef0ec61c831",
           "sha256": "341f45f2678e011409af525fadfd782d209ad06dd86d05bd89b4a6f7661160ec"
         },
-        "downloads": 14,
+        "downloads": -1,
         "filename": "mo_logs-1.0.17035-py2.7.egg",
         "has_sig": false,
         "md5_digest": "927db36d239e0639a11c9ef0ec61c831",
@@ -56,7 +56,7 @@
           "md5": "a31c2e4eb15f76cdfd5613b5fe7914bd",
           "sha256": "7117669dcfb6dfcd15191deccfb3cd2010c02f825a1f4592a74f4bb5f8b3fbe4"
         },
-        "downloads": 12,
+        "downloads": -1,
         "filename": "mo-logs-1.0.17035.zip",
         "has_sig": false,
         "md5_digest": "a31c2e4eb15f76cdfd5613b5fe7914bd",
@@ -74,7 +74,7 @@
           "md5": "a3d497ae0af5d78a39243a16cf2bd4e0",
           "sha256": "c6df30eecb11c68ff65a457660c4df01292043028566a21ab82a1f75c2cae505"
         },
-        "downloads": 12,
+        "downloads": -1,
         "filename": "mo_logs-1.1.17035-py2.7.egg",
         "has_sig": false,
         "md5_digest": "a3d497ae0af5d78a39243a16cf2bd4e0",
@@ -90,7 +90,7 @@
           "md5": "6557fa96d80f9cfcc2ac53681914ad77",
           "sha256": "4fecae0e93716bca13ea2d4f98c24282ca036940d7d831d69e609464e495d6a9"
         },
-        "downloads": 14,
+        "downloads": -1,
         "filename": "mo-logs-1.1.17035.zip",
         "has_sig": false,
         "md5_digest": "6557fa96d80f9cfcc2ac53681914ad77",
@@ -108,7 +108,7 @@
           "md5": "111886392b99500f8b01d3a387864354",
           "sha256": "534bf93f74fce0a3f71a32119b0d4afebdceee3a028ae8462f14714f14d5177c"
         },
-        "downloads": 14,
+        "downloads": -1,
         "filename": "mo_logs-1.1.17039-py2.7.egg",
         "has_sig": false,
         "md5_digest": "111886392b99500f8b01d3a387864354",
@@ -124,7 +124,7 @@
           "md5": "710ab4b0bedd1a11191cc7aee5516629",
           "sha256": "c67d0085cc80d8ad0a834d11c6878d1b76091b0ab6f1ea7f05c2951901736a35"
         },
-        "downloads": 12,
+        "downloads": -1,
         "filename": "mo-logs-1.1.17039.zip",
         "has_sig": false,
         "md5_digest": "710ab4b0bedd1a11191cc7aee5516629",
@@ -142,7 +142,7 @@
           "md5": "54dabe94f64fd5525e1508104500a0ed",
           "sha256": "8d7f7577fa300ab8c5a74e1a34622a9ebf951a60253e2f856b8c4ff7ca2ecabd"
         },
-        "downloads": 14,
+        "downloads": -1,
         "filename": "mo_logs-1.1.17041-py2.7.egg",
         "has_sig": false,
         "md5_digest": "54dabe94f64fd5525e1508104500a0ed",
@@ -158,7 +158,7 @@
           "md5": "61757709f388109311905d768f6347b9",
           "sha256": "54a39860c77348581c54164730b1c36a713d75d98d299a2f2f53ca043c6d5b5d"
         },
-        "downloads": 14,
+        "downloads": -1,
         "filename": "mo-logs-1.1.17041.zip",
         "has_sig": false,
         "md5_digest": "61757709f388109311905d768f6347b9",
@@ -176,7 +176,7 @@
           "md5": "08770277357050c06e176b1aabbb124e",
           "sha256": "7714295021831aee9c81d69d03408fcfe21e1c52b0e4aa0d7f4c74114b393441"
         },
-        "downloads": 12,
+        "downloads": -1,
         "filename": "mo_logs-1.1.17050-py2.7.egg",
         "has_sig": false,
         "md5_digest": "08770277357050c06e176b1aabbb124e",
@@ -194,7 +194,7 @@
           "md5": "51b89f72f9ec68abd513c7363c7d2080",
           "sha256": "1402ba92a88d4096d30ebd4880e0bfb00103c848e5210cc077524d09973260eb"
         },
-        "downloads": 17,
+        "downloads": -1,
         "filename": "mo_logs-1.1.17056-py2.7.egg",
         "has_sig": false,
         "md5_digest": "51b89f72f9ec68abd513c7363c7d2080",
@@ -210,7 +210,7 @@
           "md5": "ac9226db55e69f009955e6a157e1ad58",
           "sha256": "68730a438893d88fca642df028f9306415a2e6fdfd0189327807599c229a4378"
         },
-        "downloads": 15,
+        "downloads": -1,
         "filename": "mo-logs-1.1.17056.zip",
         "has_sig": false,
         "md5_digest": "ac9226db55e69f009955e6a157e1ad58",
@@ -228,7 +228,7 @@
           "md5": "e953732719b1fc27f139aba84bc5499c",
           "sha256": "253790902f908b502c3363a97abf2ec3b239caf4b0c3446aad3285a9dc78a466"
         },
-        "downloads": 15,
+        "downloads": -1,
         "filename": "mo_logs-1.1.17085-py2.7.egg",
         "has_sig": false,
         "md5_digest": "e953732719b1fc27f139aba84bc5499c",
@@ -244,7 +244,7 @@
           "md5": "9c0e4b3da35a822935a27fbda877e2e5",
           "sha256": "a63d17b20011b87b6401939cc0c7c4d6e5f4fdc0d4598df5a11b51aaa5c24a1b"
         },
-        "downloads": 16,
+        "downloads": -1,
         "filename": "mo-logs-1.1.17085.zip",
         "has_sig": false,
         "md5_digest": "9c0e4b3da35a822935a27fbda877e2e5",
@@ -262,7 +262,7 @@
           "md5": "25208cb6905a2608c2b98b06f9326337",
           "sha256": "e5945f7dfc6ff8ed1f5beda22384a740bc1417250d3596a979304b710f7dd4e6"
         },
-        "downloads": 28,
+        "downloads": -1,
         "filename": "mo-logs-1.1.17092.zip",
         "has_sig": false,
         "md5_digest": "25208cb6905a2608c2b98b06f9326337",
@@ -280,7 +280,7 @@
           "md5": "dc2248e7aabf62184d56deec1c3445aa",
           "sha256": "f655f9d1d1486fe2a66ad6d4c3d79f09dd396c4ac448077f1ee5b812cdfa3782"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "mo-logs-1.1.17101.zip",
         "has_sig": false,
         "md5_digest": "dc2248e7aabf62184d56deec1c3445aa",
@@ -298,7 +298,7 @@
           "md5": "e060b1fbfa2820f0662afa54ec46d3b6",
           "sha256": "2dea2a5a8d638c0132864d3ee7a15cd5aba3e4d6d9168afc99b688a0047e53a1"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "mo-logs-1.2.17102.zip",
         "has_sig": false,
         "md5_digest": "e060b1fbfa2820f0662afa54ec46d3b6",
@@ -316,7 +316,7 @@
           "md5": "3499a157948cb166f12e3d7cf9f9c26a",
           "sha256": "d646f12bad668fb70b9f9b8af7f971d19cb06f342e7702703eccdb81a9af8a3b"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "mo-logs-1.3.17102.zip",
         "has_sig": false,
         "md5_digest": "3499a157948cb166f12e3d7cf9f9c26a",
@@ -334,7 +334,7 @@
           "md5": "064d6bd6916e537019264d02a94518f4",
           "sha256": "8701d2fcac1084d2340107fe07e73c0cb8e2486ad3c2ef1e995981b3f81348d7"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "mo-logs-1.3.17131.zip",
         "has_sig": false,
         "md5_digest": "064d6bd6916e537019264d02a94518f4",
@@ -352,7 +352,7 @@
           "md5": "b8dcd55e89de50ac03d5a6331796d2b6",
           "sha256": "886290682fac0e03bd4d4e65b3a4faff109b4312786b47490a4d783ce64c7174"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "mo-logs-1.3.17147.zip",
         "has_sig": false,
         "md5_digest": "b8dcd55e89de50ac03d5a6331796d2b6",
@@ -370,7 +370,7 @@
           "md5": "c9f4982b14fb51e87abb122955aec362",
           "sha256": "c66882d8e8ef24fe339043d655a526f19184353ac075e6d936fb7e9452778449"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "mo-logs-1.3.17227.zip",
         "has_sig": false,
         "md5_digest": "c9f4982b14fb51e87abb122955aec362",
@@ -388,7 +388,7 @@
           "md5": "300dda055c7e7a45afbaad79add54fec",
           "sha256": "4d944fc0f08ea629665ce5d3e3611c7ed98cf5a6b6b69c3e23d96320d0623946"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "mo-logs-1.4.17235.zip",
         "has_sig": false,
         "md5_digest": "300dda055c7e7a45afbaad79add54fec",
@@ -398,24 +398,42 @@
         "upload_time": "2017-08-23T16:49:46",
         "url": "https://files.pythonhosted.org/packages/01/49/8685f4e8282616d33488e6c48988e342f5a5e07fb1316368d3060ed97219/mo-logs-1.4.17235.zip"
       }
+    ],
+    "1.7.17339": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b08d1c55d81614fb12a192bebd0aea49",
+          "sha256": "c66429f861596257154b2760360aa8fcab5ae234e1e40edecf501abbc5af8906"
+        },
+        "downloads": -1,
+        "filename": "mo-logs-1.7.17339.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b08d1c55d81614fb12a192bebd0aea49",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 31021,
+        "upload_time": "2017-12-05T01:58:25",
+        "url": "https://files.pythonhosted.org/packages/af/a5/008d7642afb61c31cf88084d1a8b1cde2a44861da298e660a10d3329d9de/mo-logs-1.7.17339.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "300dda055c7e7a45afbaad79add54fec",
-        "sha256": "4d944fc0f08ea629665ce5d3e3611c7ed98cf5a6b6b69c3e23d96320d0623946"
+        "md5": "b08d1c55d81614fb12a192bebd0aea49",
+        "sha256": "c66429f861596257154b2760360aa8fcab5ae234e1e40edecf501abbc5af8906"
       },
-      "downloads": 0,
-      "filename": "mo-logs-1.4.17235.zip",
+      "downloads": -1,
+      "filename": "mo-logs-1.7.17339.tar.gz",
       "has_sig": false,
-      "md5_digest": "300dda055c7e7a45afbaad79add54fec",
+      "md5_digest": "b08d1c55d81614fb12a192bebd0aea49",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 53932,
-      "upload_time": "2017-08-23T16:49:46",
-      "url": "https://files.pythonhosted.org/packages/01/49/8685f4e8282616d33488e6c48988e342f5a5e07fb1316368d3060ed97219/mo-logs-1.4.17235.zip"
+      "size": 31021,
+      "upload_time": "2017-12-05T01:58:25",
+      "url": "https://files.pythonhosted.org/packages/af/a5/008d7642afb61c31cf88084d1a8b1cde2a44861da298e660a10d3329d9de/mo-logs-1.7.17339.tar.gz"
     }
   ]
 }

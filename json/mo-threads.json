@@ -9,7 +9,7 @@
       "Topic :: Software Development :: Libraries",
       "Topic :: Software Development :: Libraries :: Python Modules"
     ],
-    "description": "More Threads!\n=============\n\nModule ``threads``\n------------------\n\nThe main distinction between this library and Python's is:\n\n1. **Multi-threaded queues do not use serialization** - Serialization is\n   great in the general case, where you may also be communicating\n   between processes, but it is a needless overhead for single-process\n   multi-threading. It is left to the programmer to ensure the messages\n   put on the queue are not changed, which is not ominous demand.\n2. **Shutdown order is deterministic and explicit** - Python's threading\n   library is missing strict conventions for controlled and orderly\n   shutdown. These conventions eliminate the need for ``interrupt()``\n   and ``abort()``, both of which are unstable idioms when using\n   resources. Each thread can shutdown on its own terms, but is expected\n   to do so expediently.\n\n-  All threads are required to accept a ``please_stop`` signal, and are\n   expected to test it in a timely manner and exit when signalled.\n-  All threads have a parent - The parent is responsible for ensuring\n   their children get the ``please_stop`` signal, and are dead, before\n   stopping themselves. This responsibility is baked into the thread\n   spawning process, so you need not deal with it unless you want.\n\n3. Uses `**Signals** <#the-signal-and-till-classes>`__ to simplify\n   logical dependencies among multiple threads, events, and timeouts.\n4. **Logging and Profiling is Integrated** - Logging and exception\n   handling is seamlessly integrated: This means logs are centrally\n   handled, and thread safe. Parent threads have access to uncaught\n   child thread exceptions, and the cProfiler properly aggregates\n   results from the multiple threads.\n\nWhat's it used for\n~~~~~~~~~~~~~~~~~~\n\nA good amount of time is spent waiting for underlying C libraries and OS\nservices to respond to network and file access requests. Multiple\nthreads can make your code faster, despite the GIL, when dealing with\nthose requests. For example, by moving logging off the main thread, we\ncan get up to 15% increase in overall speed because we no longer have\nthe main thread waiting for disk writes or remote logging posts. Please\nnote, this level of speed improvement can only be realized if there is\nno serialization happening at the multi-threaded queue.\n\nAsynch vs. Actors\n~~~~~~~~~~~~~~~~~\n\nMy personal belief is that\n`actors <http://en.wikipedia.org/wiki/Actor_model>`__ are easier to\nreason about than `asynch\ntasks <https://docs.python.org/3/library/asyncio-task.html>`__. Mixing\nregular methods and co-routines (with their ``yield from`` pollution) is\ndangerous because:\n\n1. calling styles between methods and co-routines can be easily confused\n2. actors can use blocking methods, co-routines can not\n3. there is no way to manage resource priority with co-routines.\n4. stack traces are lost with co-routines\n\nSynchronization Primitives\n--------------------------\n\nThere are three major aspects of a synchronization primitive:\n\n-  **Resource** - Monitors and locks can only be owned by one thread at\n   a time\n-  **Binary** - The primitive has only two states\n-  **Irreversible** - The state of the primitive can only be set, or\n   advanced, never reversed\n\nThe last, *irreversibility* is very useful, but ignored in many\nthreading libraries. The irreversibility allows us to model progression;\nand we can allow threads to poll for progress, or be notified of\nprogress.\n\nThese three aspects can be combined to give us 8 synchronization\nprimitives:\n\n-  ``- - -`` - Semaphore\n-  ``- B -`` - Binary Semaphore\n-  ``R - -`` - Monitor\n-  ``R B -`` - Lock\n-  ``- - I`` - Progress (not implemented)\n-  ``- B I`` - Signal\n-  ``R - I`` - ?limited usefulness?\n-  ``R B I`` - ?limited usefulness?\n\nThe ``Lock``\n------------\n\nLocks are identical to `threading\nmonitors <https://en.wikipedia.org/wiki/Monitor_(synchronization)>`__,\nexcept for two differences:\n\n1. The ``wait()`` method will **always acquire the lock before\n   returning**. This is an important feature; ensuring every line in a\n   code block has lock acquisition is easier to reason about.\n2. Exiting a lock via ``__exit__()`` will **always** signal any waiting\n   thread to resume immediately. This ensures no signals are missed, and\n   every thread gets an opportunity to react to possible change.\n\n   ::\n\n       lock = Lock()\n       todo = []\n\n       while not please_stop:\n           with lock:\n               while not todo:\n                   lock.wait(seconds=1)\n               # DO SOME WORK\n\nIn this example, we look for stuff ``todo``, and if there is none, we\nwait for a second. During that time others can acquire the ``lock`` and\nadd ``todo`` items. Upon releasing the the ``lock``, our example code\nwill immediately resume to see what's available, waiting again if\nnothing is found.\n\nThe ``Signal`` and ``Till`` Classes\n-----------------------------------\n\n`The ``Signal``\nclass <https://github.com/klahnakoski/pyLibrary/blob/dev/pyLibrary/thread/signal.py>`__\nis like a binary semaphore that can be signalled only once. It can be\nsignalled by any thread. Subsequent signals have no effect. Any thread\ncan wait on a ``Signal``; and once signalled, all waits are unblocked,\nincluding all subsequent waits. Its current state can be accessed by any\nthread without blocking. ``Signal`` is used to model thread-safe state\nadvancement. It initializes to ``False``, and when signalled (with\n``go()``) becomes ``True``. It can not be reversed.\n\n::\n\n    is_done = Signal()\n    yield is_done\n    # DO WORK\n    is_done.go()\n\nYou can attach methods to a ``Signal``, which will be run, just once,\nupon ``go()``\n\n::\n\n    is_done = Signal()\n    is_done.on_go(lambda: print(\"done\"))\n    return is_done\n\nYou may also wait on a ``Signal``, which will block the current thread\nuntil the ``Signal`` is a go\n\n::\n\n    is_done = worker_thread.stopped\n    is_done.wait()\n    is_done = print(\"worker thread is done\")\n\n`The ``Till``\nclass <https://github.com/klahnakoski/pyLibrary/blob/dev/pyLibrary/thread/till.py>`__\nis used to represent timeouts. They can serve as a ``sleep()``\nreplacement:\n\n::\n\n    Till(seconds=20).wait()\n    Till(till=Date(\"21 Jan 2016\").unix).wait()\n\nBecause ``Signals`` are first class, they can be passed around and\ncombined with other Signals. For example, using logical or (``|``):\n\n::\n\n    def worker(please_stop):\n        while not please_stop:\n            #DO WORK \n\n    user_cancel = get_user_cancel_signal()\n    worker(user_cancel | Till(seconds=360))\n\n``Signal``\\ s can also be combined using logical and (``&``):\n\n::\n\n    (workerA.stopped & workerB.stopped).wait()\n    print(\"both threads are done\")",
+    "description": "More Threads!\n=============\n\nModule ``threads``\n------------------\n\nThe main distinction between this library and Python's is:\n\n1. **Multi-threaded queues do not use serialization** - Serialization is\n   great in the general case, where you may also be communicating\n   between processes, but it is a needless overhead for single-process\n   multi-threading. It is left to the programmer to ensure the messages\n   put on the queue are not changed, which is not ominous demand.\n2. **Shutdown order is deterministic and explicit** - Python's threading\n   library is missing strict conventions for controlled and orderly\n   shutdown. These conventions eliminate the need for ``interrupt()``\n   and ``abort()``, both of which are unstable idioms when using\n   resources. Each thread can shutdown on its own terms, but is expected\n   to do so expediently.\n\n-  All threads are required to accept a ``please_stop`` signal, and are\n   expected to test it in a timely manner and exit when signalled.\n-  All threads have a parent - The parent is responsible for ensuring\n   their children get the ``please_stop`` signal, and are dead, before\n   stopping themselves. This responsibility is baked into the thread\n   spawning process, so you need not deal with it unless you want.\n\n3. Uses `**Signals** <#the-signal-and-till-classes>`__ to simplify\n   logical dependencies among multiple threads, events, and timeouts.\n4. **Logging and Profiling is Integrated** - Logging and exception\n   handling is seamlessly integrated: This means logs are centrally\n   handled, and thread safe. Parent threads have access to uncaught\n   child thread exceptions, and the cProfiler properly aggregates\n   results from the multiple threads.\n\nWhat's it used for\n~~~~~~~~~~~~~~~~~~\n\nA good amount of time is spent waiting for underlying C libraries and OS\nservices to respond to network and file access requests. Multiple\nthreads can make your code faster, despite the GIL, when dealing with\nthose requests. For example, by moving logging off the main thread, we\ncan get up to 15% increase in overall speed because we no longer have\nthe main thread waiting for disk writes or remote logging posts. Please\nnote, this level of speed improvement can only be realized if there is\nno serialization happening at the multi-threaded queue.\n\nAsynch vs. Actors\n~~~~~~~~~~~~~~~~~\n\nMy personal belief is that\n`actors <http://en.wikipedia.org/wiki/Actor_model>`__ are easier to\nreason about than `asynch\ntasks <https://docs.python.org/3/library/asyncio-task.html>`__. Mixing\nregular methods and co-routines (with their ``yield from`` pollution) is\ndangerous because:\n\n1. calling styles between methods and co-routines can be easily confused\n2. actors can use blocking methods, co-routines can not\n3. there is no way to manage resource priority with co-routines.\n4. stack traces are lost with co-routines\n5. asynch scope easily escapes lexical scope, which promotes bugs\n\nPython's asynch efforts are a still-immature re-invention of threading\nfunctionality by another name. Expect to experience a decade of problems\nthat are already solved by threading; `here is an\nexample <https://www.python.org/dev/peps/pep-0550/>`__\n\nSynchronization Primitives\n~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nThere are three major aspects of a synchronization primitive:\n\n-  **Resource** - Monitors and locks can only be owned by one thread at\n   a time\n-  **Binary** - The primitive has only two states\n-  **Irreversible** - The state of the primitive can only be set, or\n   advanced, never reversed\n\nThe last, *irreversibility* is very useful, but ignored in many\nthreading libraries. The irreversibility allows us to model progression;\nand we can allow threads to poll for progress, or be notified of\nprogress.\n\nThese three aspects can be combined to give us 8 synchronization\nprimitives:\n\n-  ``- - -`` - Semaphore\n-  ``- B -`` - Binary Semaphore\n-  ``R - -`` - Monitor\n-  ``R B -`` - Lock\n-  ``- - I`` - Progress (not implemented)\n-  ``- B I`` - Signal\n-  ``R - I`` - ?limited usefulness?\n-  ``R B I`` - ?limited usefulness?\n\nThe ``Lock``\n------------\n\nLocks are identical to `threading\nmonitors <https://en.wikipedia.org/wiki/Monitor_(synchronization)>`__,\nexcept for two differences:\n\n1. The ``wait()`` method will **always acquire the lock before\n   returning**. This is an important feature; ensuring every line in a\n   code block has lock acquisition is easier to reason about.\n2. Exiting a lock via ``__exit__()`` will **always** signal any waiting\n   thread to resume immediately. This ensures no signals are missed, and\n   every thread gets an opportunity to react to possible change.\n\n   ::\n\n       lock = Lock()\n       todo = []\n\n       while not please_stop:\n           with lock:\n               while not todo:\n                   lock.wait(seconds=1)\n               # DO SOME WORK\n\nIn this example, we look for stuff ``todo``, and if there is none, we\nwait for a second. During that time others can acquire the ``lock`` and\nadd ``todo`` items. Upon releasing the the ``lock``, our example code\nwill immediately resume to see what's available, waiting again if\nnothing is found.\n\nThe ``Signal`` and ``Till`` Classes\n-----------------------------------\n\n`The ``Signal``\nclass <https://github.com/klahnakoski/pyLibrary/blob/dev/pyLibrary/thread/signal.py>`__\nis like a binary semaphore that can be signalled only once. It can be\nsignalled by any thread. Subsequent signals have no effect. Any thread\ncan wait on a ``Signal``; and once signalled, all waiting threads are\nunblocked, including all subsequent waiting threads. A Signal's current\nstate can be accessed by any thread without blocking. ``Signal`` is used\nto model thread-safe state advancement. It initializes to ``False``, and\nwhen signalled (with ``go()``) becomes ``True``. It can not be reversed.\n\n::\n\n    is_done = Signal()\n    yield is_done  # give signal to another that wants to know when done\n    # DO WORK\n    is_done.go()\n\nYou can attach methods to a ``Signal``, which will be run, just once,\nupon ``go()``\n\n::\n\n    is_done = Signal()\n    is_done.on_go(lambda: print(\"done\"))\n    return is_done\n\nYou may also wait on a ``Signal``, which will block the current thread\nuntil the ``Signal`` is a go\n\n::\n\n    is_done = worker_thread.stopped\n    is_done.wait()\n    is_done = print(\"worker thread is done\")\n\n`The ``Till``\nclass <https://github.com/klahnakoski/pyLibrary/blob/dev/pyLibrary/thread/till.py>`__\nis used to represent timeouts. They can serve as a ``sleep()``\nreplacement:\n\n::\n\n    Till(seconds=20).wait()\n    Till(till=Date(\"21 Jan 2016\").unix).wait()\n\nBecause ``Signals`` are first class, they can be passed around and\ncombined with other Signals. For example, using logical or (``|``):\n\n::\n\n    def worker(please_stop):\n        while not please_stop:\n            #DO WORK \n\n    user_cancel = get_user_cancel_signal()\n    worker(user_cancel | Till(seconds=360))\n\n``Signal``\\ s can also be combined using logical and (``&``):\n\n::\n\n    (workerA.stopped & workerB.stopped).wait()\n    print(\"both threads are done\")",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -25,11 +25,11 @@
     "name": "mo-threads",
     "platform": "",
     "project_url": "https://pypi.org/project/mo-threads/",
-    "release_url": "https://pypi.org/project/mo-threads/1.2.17227/",
+    "release_url": "https://pypi.org/project/mo-threads/1.7.17339/",
     "requires_dist": [],
     "requires_python": "",
     "summary": "More Threads! Simpler and faster threading.",
-    "version": "1.2.17227"
+    "version": "1.7.17339"
   },
   "releases": {
     "1.0.17035": [
@@ -39,7 +39,7 @@
           "md5": "46a6da388ad35040930680bf7d312532",
           "sha256": "56e7cddf3a8ee5fbdb00d5148b6adc0168f2830ae3f98162b34a7ad266f5df29"
         },
-        "downloads": 12,
+        "downloads": -1,
         "filename": "mo_threads-1.0.17035-py2.7.egg",
         "has_sig": false,
         "md5_digest": "46a6da388ad35040930680bf7d312532",
@@ -55,7 +55,7 @@
           "md5": "23b29de700685ae65f804950b1cb7750",
           "sha256": "91fa912ce9e1f85894ee89b82d86c870fb3c0417f6a145a57cddf435f3871e66"
         },
-        "downloads": 10,
+        "downloads": -1,
         "filename": "mo-threads-1.0.17035.zip",
         "has_sig": false,
         "md5_digest": "23b29de700685ae65f804950b1cb7750",
@@ -73,7 +73,7 @@
           "md5": "28c5192bd28038f7e1a28f108814a270",
           "sha256": "e441ecaef710ed5f6abb3806e44cb730a6dbecd1fd0b845d89818065c937d781"
         },
-        "downloads": 11,
+        "downloads": -1,
         "filename": "mo_threads-1.0.17039-py2.7.egg",
         "has_sig": false,
         "md5_digest": "28c5192bd28038f7e1a28f108814a270",
@@ -89,7 +89,7 @@
           "md5": "73b4122fb221980f57d7e33e7ea078e2",
           "sha256": "eb195fae0858ec8f9b8e07a4fedb8d9bda20b9c30b6a854bd78969feb7571885"
         },
-        "downloads": 10,
+        "downloads": -1,
         "filename": "mo-threads-1.0.17039.zip",
         "has_sig": false,
         "md5_digest": "73b4122fb221980f57d7e33e7ea078e2",
@@ -107,7 +107,7 @@
           "md5": "d351385240f7666c41c8cb435593eb6a",
           "sha256": "3b366917f3f1c1160768f27387452c66b68e6637a039f8de02d9fcaaf30978ca"
         },
-        "downloads": 15,
+        "downloads": -1,
         "filename": "mo_threads-1.1.17040-py2.7.egg",
         "has_sig": false,
         "md5_digest": "d351385240f7666c41c8cb435593eb6a",
@@ -123,7 +123,7 @@
           "md5": "68095b37edd513797753b6a5b74bf5c2",
           "sha256": "0eaaddea11d426690e1e79bc06ea58b654d42ed14aeecdca3c6d1031096231f0"
         },
-        "downloads": 13,
+        "downloads": -1,
         "filename": "mo-threads-1.1.17040.zip",
         "has_sig": false,
         "md5_digest": "68095b37edd513797753b6a5b74bf5c2",
@@ -141,7 +141,7 @@
           "md5": "6c380f442d89ba58a46361a8eafa6b43",
           "sha256": "db290d35a0e6e4033a5ffc3c4fefacf38be56945e26ef29a67659788cf3bceb2"
         },
-        "downloads": 14,
+        "downloads": -1,
         "filename": "mo_threads-1.2.17040-py2.7.egg",
         "has_sig": false,
         "md5_digest": "6c380f442d89ba58a46361a8eafa6b43",
@@ -157,7 +157,7 @@
           "md5": "1250e0c2aa298ec72e3a4808290c7f55",
           "sha256": "e7631daad959db63d7c958cbda2e0746f435028ef4c49d005d430e1009897bf5"
         },
-        "downloads": 12,
+        "downloads": -1,
         "filename": "mo-threads-1.2.17040.zip",
         "has_sig": false,
         "md5_digest": "1250e0c2aa298ec72e3a4808290c7f55",
@@ -175,7 +175,7 @@
           "md5": "67c213e39f74b227d5ed90085d3b18c7",
           "sha256": "b139ff986f7da3228dfa71a56d519acb72bc4b001600ac0869c813c9c4ee36d3"
         },
-        "downloads": 10,
+        "downloads": -1,
         "filename": "mo_threads-1.2.17049-py2.7.egg",
         "has_sig": false,
         "md5_digest": "67c213e39f74b227d5ed90085d3b18c7",
@@ -191,7 +191,7 @@
           "md5": "97db8fc14a7455ff4480f5004f923f07",
           "sha256": "9bd7ef136c8f68f70149ea64c47ca8d6a733b3a49840ac052d80801552455430"
         },
-        "downloads": 14,
+        "downloads": -1,
         "filename": "mo-threads-1.2.17049.zip",
         "has_sig": false,
         "md5_digest": "97db8fc14a7455ff4480f5004f923f07",
@@ -209,7 +209,7 @@
           "md5": "ec4f379a2a46d2d8ef43cce42e03281e",
           "sha256": "32494312d9ae6b0ecaefa75317c2d748a7f9aa6b4a12d76d991b9e9885733ad0"
         },
-        "downloads": 15,
+        "downloads": -1,
         "filename": "mo_threads-1.2.17056-py2.7.egg",
         "has_sig": false,
         "md5_digest": "ec4f379a2a46d2d8ef43cce42e03281e",
@@ -225,7 +225,7 @@
           "md5": "0df0f271c0463feae52879fd5ddfb432",
           "sha256": "c8aaf14184b9bcbec972441ecc9258e1f5fcac388c558d272013dc47d61fca8a"
         },
-        "downloads": 13,
+        "downloads": -1,
         "filename": "mo-threads-1.2.17056.zip",
         "has_sig": false,
         "md5_digest": "0df0f271c0463feae52879fd5ddfb432",
@@ -243,7 +243,7 @@
           "md5": "6751df419f10810de216da1402fd80eb",
           "sha256": "85c968cba7a76bf519acbf11dae081bf863ca76dc2344d02890d0eac6cae705e"
         },
-        "downloads": 14,
+        "downloads": -1,
         "filename": "mo_threads-1.2.17085-py2.7.egg",
         "has_sig": false,
         "md5_digest": "6751df419f10810de216da1402fd80eb",
@@ -259,7 +259,7 @@
           "md5": "113c12249c22281c90149a30016b78ba",
           "sha256": "7d36763419c9363bf13e145c59f1feb64f3527fe98931ef28e96e5b8f494529a"
         },
-        "downloads": 20,
+        "downloads": -1,
         "filename": "mo-threads-1.2.17085.zip",
         "has_sig": false,
         "md5_digest": "113c12249c22281c90149a30016b78ba",
@@ -277,7 +277,7 @@
           "md5": "d08d1df4acd46b560a0b8bb541e15ddf",
           "sha256": "0c995aa600ed0c77af206d781a2688339fceb271585e17a6236de4d7ec6d2713"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "mo-threads-1.2.17131.zip",
         "has_sig": false,
         "md5_digest": "d08d1df4acd46b560a0b8bb541e15ddf",
@@ -295,7 +295,7 @@
           "md5": "93875b4a6717b52502555128abbd1da0",
           "sha256": "8845da88da6aff10b2bf9f4f9c325b1664bb1d8df6c177c8fe29109e3528193f"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "mo-threads-1.2.17227.zip",
         "has_sig": false,
         "md5_digest": "93875b4a6717b52502555128abbd1da0",
@@ -305,24 +305,42 @@
         "upload_time": "2017-08-15T12:55:27",
         "url": "https://files.pythonhosted.org/packages/a2/da/dfe96a55a53c10703e9da098ddf007d68f24923a718805ca30ac3d3a6d5d/mo-threads-1.2.17227.zip"
       }
+    ],
+    "1.7.17339": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e2721802d0b7c219eefae0537745de45",
+          "sha256": "a236c41c28097278d28f533d6221a19e4d1ed464f62ee181e8974f556960d66f"
+        },
+        "downloads": -1,
+        "filename": "mo-threads-1.7.17339.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e2721802d0b7c219eefae0537745de45",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 19274,
+        "upload_time": "2017-12-05T01:59:22",
+        "url": "https://files.pythonhosted.org/packages/12/f1/3894f1fe6eae49ccc3e94345facc2ba3947efa0391ea8089f3006ab68404/mo-threads-1.7.17339.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "93875b4a6717b52502555128abbd1da0",
-        "sha256": "8845da88da6aff10b2bf9f4f9c325b1664bb1d8df6c177c8fe29109e3528193f"
+        "md5": "e2721802d0b7c219eefae0537745de45",
+        "sha256": "a236c41c28097278d28f533d6221a19e4d1ed464f62ee181e8974f556960d66f"
       },
-      "downloads": 0,
-      "filename": "mo-threads-1.2.17227.zip",
+      "downloads": -1,
+      "filename": "mo-threads-1.7.17339.tar.gz",
       "has_sig": false,
-      "md5_digest": "93875b4a6717b52502555128abbd1da0",
+      "md5_digest": "e2721802d0b7c219eefae0537745de45",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 33173,
-      "upload_time": "2017-08-15T12:55:27",
-      "url": "https://files.pythonhosted.org/packages/a2/da/dfe96a55a53c10703e9da098ddf007d68f24923a718805ca30ac3d3a6d5d/mo-threads-1.2.17227.zip"
+      "size": 19274,
+      "upload_time": "2017-12-05T01:59:22",
+      "url": "https://files.pythonhosted.org/packages/12/f1/3894f1fe6eae49ccc3e94345facc2ba3947efa0391ea8089f3006ab68404/mo-threads-1.7.17339.tar.gz"
     }
   ]
 }
