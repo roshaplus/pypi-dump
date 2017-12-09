@@ -5,16 +5,14 @@
     "bugtrack_url": null,
     "classifiers": [
       "Framework :: Django",
-      "Framework :: Django :: 1.10",
       "Framework :: Django :: 1.11",
-      "Framework :: Django :: 1.9",
+      "Framework :: Django :: 2.0",
       "Intended Audience :: Developers",
       "License :: OSI Approved :: MIT License",
       "Operating System :: OS Independent",
       "Programming Language :: Python",
-      "Programming Language :: Python :: 2.7",
-      "Programming Language :: Python :: 3.4",
-      "Programming Language :: Python :: 3.5"
+      "Programming Language :: Python :: 3.5",
+      "Programming Language :: Python :: 3.6"
     ],
     "description": "[![Build Status](https://travis-ci.org/ambitioninc/django-entity.png)](https://travis-ci.org/ambitioninc/django-smart-manager)\nDjango Smart Manager\n==================\nDjango Smart Manager provides a simple framework for representing and managing Django models from serializable templates.\n\n\n# Problem Overview\n\nOftentimes what we model in Django spans multiple objects and tables. Managing a single object that is represented by multiple models can be quite cumbersome through the shell or through basic Django administration. This app provides a framework such that a user can write templates that represent many models and complex relationships.\n\nFor example, assume that you model a person. The ``Person`` model contains a unique identifier for that person, multiple ``PhoneNumber`` models that point to it, and multiple ``Address`` models. With Django Smart Manager, one can construct a template in the following manner:\n\n```python\n{\n    'unique_id': 'person_unique_id':\n    'phone_numbers': ['865-123-4985', '956-345-5678'],\n    'addresses': [{\n        'street': 'my street address1',\n        'city': 'my city',\n    }],\n}\n```\n\nUsing the framework (as shown soon), we can construct a parser for this template that maintains the appropriate model representation underneath while also providing a much simpler way to manage all of those underlying models. This management includes updates to the data in the template and deletions to objects in the template.\n\n# Building the Person Example\nBefore we show how to build the example just illustrated in the problem overview, the models in the example are laid out below:\n\n```python\nclass Person(models.Model):\n    unique_id = models.CharField(max_length=64, unique=True)\n\n\nclass PhoneNumber(models.Model):\n    person = models.ForeignKey(Person)\n    number = models.CharField(max_length=32)\n\n\nclass Address(models.Model):\n    person = models.ForeignKey(Person)\n    street = models.CharField(max_length=128)\n    city = models.CharField(max_length=128)\n```\n\nIn order to achieve the ability of specifying the ``Person`` model (and its related models) via a template as shown above, the user must create a model template class that inherits ``BaseSmartManager``. This class will be responsible for taking in the template and managing the object(s) represented by the template.\n\nFor the sake of example, let's assume we're going to build three model template classes: one to manage addresses, one to manage phone numbers, and one to manage a person and its associated addresses and phone numbers. We'll begin from the bottom up by building the ``Address`` model template. The code for this is shown below:\n\n```python\nfrom smart_manager import BaseSmartManager\n\n\nclass AddressSmartManager(BaseSmartManager):\n    def build(self):\n        self.build_obj(\n            person_id=self._template['person'],\n            street=self._template['street'],\n            city=self._template['city'],\n        )\n```\n\nNow that we have this class, it can be called in the following way to build its associated object:\n\n```python\nAddressSmartManager({\n    'person': 1,  # The pk of a Person object\n    'street': 'my street',\n    'city': 'my city',\n}).build()\n```\n\nUnderneath the hood, it is passing the parameters of build_obj to the ``upsert`` function [Django Manager Utils](https://github.com/ambitioninc/django-manager-utils) and also internally maintaining all of the objects that have been built.\n\nNow that the model template class has been created, a ``SmartManager`` model can be constructed as follows:\n\n```python\nfrom smart_manager import SmartManager\n\n\nmt = SmartManager.objects.create(smart_manager_class='path.to.AddressSmartManager', template={\n    'person': 1,\n    'street': 'my street',\n    'city': 'my city',\n})\n```\n\nOnce this model is created, it manages all of the objects associated with the template. If the user was to change the template and save the ``mt`` variable from the example, the underlying ``Address`` model would be updated. Similarly, the underlying ``Address`` model will also be deleted when ``mt`` is deleted. The deletion behavior can be turned off by specifying ``manages_deletions=False`` in the creation of the model template.\n\nWhile this example is trivial, the power of Django Smart Manager is unleashed when you start to build more and more complex objects that need ot be managed. Let's assume that the user can now build the associated ``PhoneNumberSmartManager`` class for creating ``PhoneNumber`` objects and move on to creating the ``PersonSmartManager`` model template class:\n\n```python\nclass PersonSmartManager(BaseSmartManager):\n    def build(self):\n        # Build the parent person object\n        person = self.build_obj(unique_id=self._template['unique_id'])\n\n        # Build its child phone number objects using the PhoneNumberSmartManager\n        for phone_number in self._template['phone_numbers']:\n            self.build_obj_using(PhoneSmartManager, {\n                'person': person.id,\n                'phone_number': phone_number\n            })\n\n        # Build its child address objects using the AddressSmartManager\n        for address in self._template['addresses']:\n            self.build_obj_using(AddressSmartManager, {\n                'person': person.id,\n                'street': address['street'],\n                'city': address['city'],\n            })\n```\n\nNote that the ``PersonSmartManager`` uses the ``build_obj_using`` function to build an object using another model template. This ensures that the objects managed by that model template are also managed by the calling model template.\n\nSimilarly, one can now make a ``SmartManager`` object using this model template class to manage a complete ``Person`` object.\n\n# Using Smart Managers Directly with Django Models and Managers\nSmart mangers can be directly used by models and managers in Django. All they need to do is inherit the ``SmartModelMixin`` or ``SmartManagerMixin``. If a model inherits ``SmartModelMixin``, it is provided a ``smart_upsert`` and ``smart_delete`` function. These function both take a smart manager class and template. The ``smart_upsert`` function upserts the template using the smart manager that linked to it (or creating a smart manager if it doesn't exist). The ``smart_delete`` function will delete the smart manager that is associated with the model, which in turn deletes all other objects managed by that smart manager.\n\nIf a Django model manager inherits ``SmartManagerMixin``, it is provided a ``smart_create`` function that takes a smart manager class and template. The objects are created using the template and a smart manager is returned.\n\nThese methods are meant as convenience methods so that a user can still interact with their models and not have to directly query smart managers.\n\nNote that all functions return a smart manager, and the mixins can be imported directly from ``smart_manager`` as so:\n\n```python\nfrom smart_manager import SmartModelMixin, SmartManagerMixin\n```\n\n# Caveats with Smart Managers\nIt is up to the programmer to ultimately define how a template manages its underlying objects. By default, Django Smart Manager will manage deletions of every object built using the ``build_obj`` function. This, however, can cause undesired side effects for some objects that simply should not be deleted if the template is deleted. If this is the case, a ``is_deletable`` kwarg can be passed to the ``build_obj`` function to override the default behavior of managing its deletion.\n\n\n",
     "docs_url": null,
@@ -32,15 +30,15 @@
     "name": "django-smart-manager",
     "platform": "",
     "project_url": "https://pypi.org/project/django-smart-manager/",
-    "release_url": "https://pypi.org/project/django-smart-manager/0.7.0/",
+    "release_url": "https://pypi.org/project/django-smart-manager/1.0.0/",
     "requires_dist": [
       "jsonfield (>=0.9.20)",
-      "django-manager-utils (>=0.13.0)",
-      "Django (>=1.9)"
+      "django-manager-utils (>=1.0.0)",
+      "Django (>=1.11)"
     ],
     "requires_python": "",
     "summary": "Make templates that manage models",
-    "version": "0.7.0"
+    "version": "1.0.0"
   },
   "releases": {
     "0.1.1": [
@@ -50,7 +48,7 @@
           "md5": "fda31180082911f453b4cdddbe4b3d62",
           "sha256": "022cf6e8a3c03c438dfc678ca39b17befcd7c9922aec89c77fed6f49f0c86d25"
         },
-        "downloads": 1777,
+        "downloads": -1,
         "filename": "django-smart-manager-0.1.1.tar.gz",
         "has_sig": false,
         "md5_digest": "fda31180082911f453b4cdddbe4b3d62",
@@ -68,7 +66,7 @@
           "md5": "d4d4add9ed18ed32b16b36ebefb1aacd",
           "sha256": "53597fa925162596c9e2f24c024c920b2a51503ec17955f0c28b2a672311a14a"
         },
-        "downloads": 1825,
+        "downloads": -1,
         "filename": "django-smart-manager-0.1.2.tar.gz",
         "has_sig": false,
         "md5_digest": "d4d4add9ed18ed32b16b36ebefb1aacd",
@@ -86,7 +84,7 @@
           "md5": "ea4b194dd8039e8c7cdae64f2aaad163",
           "sha256": "eabe4e2ab1edea130e5713ddba81ffe33230716dab68da18d01d317c0eba7b4e"
         },
-        "downloads": 1741,
+        "downloads": -1,
         "filename": "django-smart-manager-0.1.3.tar.gz",
         "has_sig": false,
         "md5_digest": "ea4b194dd8039e8c7cdae64f2aaad163",
@@ -104,7 +102,7 @@
           "md5": "4f26a6eabdbe0110df1038f1b4d7228a",
           "sha256": "324561189aee3574f4a409380e51b8e56687f8575afd98a20a7c469c31f20120"
         },
-        "downloads": 1713,
+        "downloads": -1,
         "filename": "django-smart-manager-0.1.4.tar.gz",
         "has_sig": false,
         "md5_digest": "4f26a6eabdbe0110df1038f1b4d7228a",
@@ -122,7 +120,7 @@
           "md5": "e85eabc8538893718e1a1ebaddc6b4e6",
           "sha256": "1ba09bd3965cf245936e08aaefcd133e576dbdf671cafbcc89431360a6ce7347"
         },
-        "downloads": 1705,
+        "downloads": -1,
         "filename": "django-smart-manager-0.1.5.tar.gz",
         "has_sig": false,
         "md5_digest": "e85eabc8538893718e1a1ebaddc6b4e6",
@@ -140,7 +138,7 @@
           "md5": "fc69e9259a92b4d1f8590f576c2db0d0",
           "sha256": "ec2f462fe1d967bddf4fbe6c43167fbb7429573018ec93e4fb12bfcc04f97e8d"
         },
-        "downloads": 1795,
+        "downloads": -1,
         "filename": "django-smart-manager-0.1.6.tar.gz",
         "has_sig": false,
         "md5_digest": "fc69e9259a92b4d1f8590f576c2db0d0",
@@ -158,7 +156,7 @@
           "md5": "fed3d8f4945185cf1de16a607d8d1ea9",
           "sha256": "8157eaf44fec78381be212cea3a06d72fade102a19879e1dec69afe39d8097ce"
         },
-        "downloads": 1647,
+        "downloads": -1,
         "filename": "django-smart-manager-0.2.0.tar.gz",
         "has_sig": false,
         "md5_digest": "fed3d8f4945185cf1de16a607d8d1ea9",
@@ -176,7 +174,7 @@
           "md5": "b74bf6ae76ef737634e84720817b3846",
           "sha256": "ff6b605f45b5e6cdf97e5e5592c0370e9d2d978d31bb2d8b1d304d23500663f9"
         },
-        "downloads": 1544,
+        "downloads": -1,
         "filename": "django-smart-manager-0.3.0.tar.gz",
         "has_sig": false,
         "md5_digest": "b74bf6ae76ef737634e84720817b3846",
@@ -194,7 +192,7 @@
           "md5": "a4a5b7ce979d165fa41330819ebb7f59",
           "sha256": "8fa6f9fb71da5d5cba7e638fb5740ceb01c8a15de1c1c8e2d84cd4e5f2b92660"
         },
-        "downloads": 1569,
+        "downloads": -1,
         "filename": "django-smart-manager-0.3.1.tar.gz",
         "has_sig": false,
         "md5_digest": "a4a5b7ce979d165fa41330819ebb7f59",
@@ -212,7 +210,7 @@
           "md5": "094da6d8a409fd8776bc7a1a76d7e4fb",
           "sha256": "679be08ef4d72c669412a7b826acd72705a29b358b6355ad5cc8aaf955d38383"
         },
-        "downloads": 1582,
+        "downloads": -1,
         "filename": "django-smart-manager-0.3.2.tar.gz",
         "has_sig": false,
         "md5_digest": "094da6d8a409fd8776bc7a1a76d7e4fb",
@@ -230,7 +228,7 @@
           "md5": "641c28edf717caf4f262a4f7f186bd9c",
           "sha256": "29bed7e39a62b74adc9096de65afca7494e032a77152f6889969f06edf7299e2"
         },
-        "downloads": 1747,
+        "downloads": -1,
         "filename": "django-smart-manager-0.3.3.tar.gz",
         "has_sig": false,
         "md5_digest": "641c28edf717caf4f262a4f7f186bd9c",
@@ -248,7 +246,7 @@
           "md5": "b1c770acbb79f420eddddbb5c35b155c",
           "sha256": "10d13c97ea78c18168ea183440432b76d2ebcabccef69c4405b76b9aa818fe9e"
         },
-        "downloads": 1065,
+        "downloads": -1,
         "filename": "django_smart_manager-0.3.4-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "b1c770acbb79f420eddddbb5c35b155c",
@@ -264,7 +262,7 @@
           "md5": "18d93b7689aca5a4450e0ed1516289c3",
           "sha256": "1f66beba66bcf13aa32e169629254d3ecec87976c3d967b5fc18600343e286e6"
         },
-        "downloads": 1840,
+        "downloads": -1,
         "filename": "django-smart-manager-0.3.4.tar.gz",
         "has_sig": false,
         "md5_digest": "18d93b7689aca5a4450e0ed1516289c3",
@@ -282,7 +280,7 @@
           "md5": "df2ad1ec5aed1f502ddde40750ef9a54",
           "sha256": "bcda090509cdf0ddb7ea08e6dac959abac39256a90441ce4550f96fa9bfb0379"
         },
-        "downloads": 977,
+        "downloads": -1,
         "filename": "django_smart_manager-0.4.0-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "df2ad1ec5aed1f502ddde40750ef9a54",
@@ -298,7 +296,7 @@
           "md5": "dc2baeb13f62ac19df3c8cade3e38bd5",
           "sha256": "5405f22f8325e9c12b8bb6d2214b8f8865db3f1c440d615f662b4e70c62f2107"
         },
-        "downloads": 1036,
+        "downloads": -1,
         "filename": "django-smart-manager-0.4.0.tar.gz",
         "has_sig": false,
         "md5_digest": "dc2baeb13f62ac19df3c8cade3e38bd5",
@@ -316,7 +314,7 @@
           "md5": "46d48fa054e11ac6ee79148a13e4676f",
           "sha256": "74f9228559b734398f3a5b43d3fda1a3aae3988b4e63137b08c17fb1540143e4"
         },
-        "downloads": 1010,
+        "downloads": -1,
         "filename": "django_smart_manager-0.4.1-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "46d48fa054e11ac6ee79148a13e4676f",
@@ -332,7 +330,7 @@
           "md5": "e3c8a3fbf81317cf9c76838fada4d1c8",
           "sha256": "20cd910e6e694eadaf43f8ccb4389812b07132ad8516b470c16aa1daa048431c"
         },
-        "downloads": 1183,
+        "downloads": -1,
         "filename": "django-smart-manager-0.4.1.tar.gz",
         "has_sig": false,
         "md5_digest": "e3c8a3fbf81317cf9c76838fada4d1c8",
@@ -350,7 +348,7 @@
           "md5": "566140642f49f26a385cfe43564c7f5c",
           "sha256": "40dd68a284b915b0865ccd2315094e3c3b73defcbc81234efd595591c5357702"
         },
-        "downloads": 169,
+        "downloads": -1,
         "filename": "django_smart_manager-0.5.0-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "566140642f49f26a385cfe43564c7f5c",
@@ -366,7 +364,7 @@
           "md5": "f0e2ae2720420f641c704ab31181f006",
           "sha256": "c2d1f10c82d66c7ee1c29f07392b70272cc9ad9590a6fa5e486b8a6ce5efd0be"
         },
-        "downloads": 474,
+        "downloads": -1,
         "filename": "django-smart-manager-0.5.0.tar.gz",
         "has_sig": false,
         "md5_digest": "f0e2ae2720420f641c704ab31181f006",
@@ -384,7 +382,7 @@
           "md5": "20e8be9525e17fd617dc5fba867ffaad",
           "sha256": "7ac6920f31afe817c6d7b8465ce49b93245a931db72c1143c115ce319b550b70"
         },
-        "downloads": 48,
+        "downloads": -1,
         "filename": "django_smart_manager-0.6.0-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "20e8be9525e17fd617dc5fba867ffaad",
@@ -400,7 +398,7 @@
           "md5": "d565716f3cd70d7aad222d51b1348a2c",
           "sha256": "848903ce85bae176d374a61879ad977eecad8e90cdf7e3c168818f07274f1634"
         },
-        "downloads": 44,
+        "downloads": -1,
         "filename": "django-smart-manager-0.6.0.tar.gz",
         "has_sig": false,
         "md5_digest": "d565716f3cd70d7aad222d51b1348a2c",
@@ -418,7 +416,7 @@
           "md5": "4e5eeba096e5f7aabcbb833f2959a4f5",
           "sha256": "f3a878c3310dc56ab1c4b4e3278d1f22ee930aec819f42252a4226f4b79aacce"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "django_smart_manager-0.7.0-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "4e5eeba096e5f7aabcbb833f2959a4f5",
@@ -434,7 +432,7 @@
           "md5": "fc7d4833a0102304d707d427c65311ba",
           "sha256": "04cd192662d1ec25fdc2ebb5d710a678001d5d4f82c4d563f14863a7b1b4c4a4"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "django-smart-manager-0.7.0.tar.gz",
         "has_sig": false,
         "md5_digest": "fc7d4833a0102304d707d427c65311ba",
@@ -444,40 +442,74 @@
         "upload_time": "2017-09-19T21:44:01",
         "url": "https://files.pythonhosted.org/packages/ec/fd/54f2bee6bdf626be83a6f282d6e06a1992e51e0142dfd8cf6863d944f68e/django-smart-manager-0.7.0.tar.gz"
       }
+    ],
+    "1.0.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5c975bf96e630a305138370d50fd2d90",
+          "sha256": "c03ff633568a3cbec68bf17a26b48c341756dc86908a02827b4131b8d2aa838a"
+        },
+        "downloads": -1,
+        "filename": "django_smart_manager-1.0.0-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "5c975bf96e630a305138370d50fd2d90",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 17915,
+        "upload_time": "2017-12-08T23:14:43",
+        "url": "https://files.pythonhosted.org/packages/fd/d1/2f239cc34f40fe587a121bfa5c815480dc6204371198c22afb41dbdcdfff/django_smart_manager-1.0.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "00c17d14f3b88bb6253758128545200f",
+          "sha256": "b75e26dc4e03ee2ce058c96e42c27b7379ffa74437c2db1ad5d63fb5378f1cf5"
+        },
+        "downloads": -1,
+        "filename": "django-smart-manager-1.0.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "00c17d14f3b88bb6253758128545200f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 11187,
+        "upload_time": "2017-12-08T23:14:45",
+        "url": "https://files.pythonhosted.org/packages/8a/66/fef15b32b753bb504241fda27d36c5e3b56c6df60578e9da9d86249599da/django-smart-manager-1.0.0.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "4e5eeba096e5f7aabcbb833f2959a4f5",
-        "sha256": "f3a878c3310dc56ab1c4b4e3278d1f22ee930aec819f42252a4226f4b79aacce"
+        "md5": "5c975bf96e630a305138370d50fd2d90",
+        "sha256": "c03ff633568a3cbec68bf17a26b48c341756dc86908a02827b4131b8d2aa838a"
       },
-      "downloads": 0,
-      "filename": "django_smart_manager-0.7.0-py2.py3-none-any.whl",
+      "downloads": -1,
+      "filename": "django_smart_manager-1.0.0-py2.py3-none-any.whl",
       "has_sig": false,
-      "md5_digest": "4e5eeba096e5f7aabcbb833f2959a4f5",
+      "md5_digest": "5c975bf96e630a305138370d50fd2d90",
       "packagetype": "bdist_wheel",
       "python_version": "py2.py3",
-      "size": 17888,
-      "upload_time": "2017-09-19T21:43:58",
-      "url": "https://files.pythonhosted.org/packages/d2/a6/20d2d4c3c9cb9f861a6cae8ff2cb19d46d5a0420af9e25eea36fb9771483/django_smart_manager-0.7.0-py2.py3-none-any.whl"
+      "size": 17915,
+      "upload_time": "2017-12-08T23:14:43",
+      "url": "https://files.pythonhosted.org/packages/fd/d1/2f239cc34f40fe587a121bfa5c815480dc6204371198c22afb41dbdcdfff/django_smart_manager-1.0.0-py2.py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "fc7d4833a0102304d707d427c65311ba",
-        "sha256": "04cd192662d1ec25fdc2ebb5d710a678001d5d4f82c4d563f14863a7b1b4c4a4"
+        "md5": "00c17d14f3b88bb6253758128545200f",
+        "sha256": "b75e26dc4e03ee2ce058c96e42c27b7379ffa74437c2db1ad5d63fb5378f1cf5"
       },
-      "downloads": 0,
-      "filename": "django-smart-manager-0.7.0.tar.gz",
+      "downloads": -1,
+      "filename": "django-smart-manager-1.0.0.tar.gz",
       "has_sig": false,
-      "md5_digest": "fc7d4833a0102304d707d427c65311ba",
+      "md5_digest": "00c17d14f3b88bb6253758128545200f",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 11178,
-      "upload_time": "2017-09-19T21:44:01",
-      "url": "https://files.pythonhosted.org/packages/ec/fd/54f2bee6bdf626be83a6f282d6e06a1992e51e0142dfd8cf6863d944f68e/django-smart-manager-0.7.0.tar.gz"
+      "size": 11187,
+      "upload_time": "2017-12-08T23:14:45",
+      "url": "https://files.pythonhosted.org/packages/8a/66/fef15b32b753bb504241fda27d36c5e3b56c6df60578e9da9d86249599da/django-smart-manager-1.0.0.tar.gz"
     }
   ]
 }
