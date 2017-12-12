@@ -4,7 +4,7 @@
     "author_email": "xd.deng.r@gmail.com",
     "bugtrack_url": null,
     "classifiers": [],
-    "description": "====================================================================\n*minimalcluster* - A Minimal Cluster Computing Framework with Python\n====================================================================\n\n\"**minimal**\" here means minimal dependency or platform requirements, as well as its nature of \"minimum viable product\". It's mainly for tackling straightforward \"embarrassingly parallel\" tasks using multiple commodity machines, also a good choice for experimental and learning purposes. The idea came from `Eli Bendersky's blog <https://eli.thegreenplace.net/2012/01/24/distributed-computing-in-python-with-multiprocessing>`_\n.\n\nminimalcluster is built only using plain Python and its standard libraries (mainly multiprocessing). This brought a few advantages: no additional installation or configuration is needed; 100% cross-platform (you can even have Linux, MacOS, and Windows nodes within a single cluster).\n\nThis package can be used with Python 2.7+ or 3.6+. But within a cluster, you can only choose a single version of Python, either 2 or 3.\n\nFor more frameworks for parallel or cluster computing, you may also want to refer to `Parallel Processing and Multiprocessing in Python <https://wiki.python.org/moin/ParallelProcessing>`_\n.\n\n\n******************\nUsage & Examples\n******************\n\nStep 1 - Install this package\n=============================\n\n`pip install minimalcluster`\n\nStep 2 - Start master node\n=============================\nOpen your Python terminal on your machine which will be used as **Master Node**, and run\n\n.. code:: python\n\n    from minimalcluster import MasterNode\n\n    your_host = '<your master node hostname or IP>'\n    # or use '0.0.0.0' if you have high enough privilege\n    your_port= <port to use>\n    your_authkey = '<the authkey for your cluster>'\n\n    master = MasterNode(HOST = your_host, PORT = your_port, AUTHKEY = your_authkey)\n    master.start_master_server()\n\n\nStep 3 - Start worker nodes\n=============================\n\nOn all your **Worker Nodes**, run the command below in your Python terminal\n\n.. code:: python\n\n    from minimalcluster import WorkerNode\n\n    your_host = '<your master node hostname or IP>'\n    your_port= <port to use>\n    your_authkey = '<the authkey for your cluster>'\n    N_processors_to_use = <how many processors on your worker node do you want to use>\n\n    worker = WorkerNode(your_host, your_port, your_authkey, nprocs = N_processors_to_use)\n\n    worker.join_cluster()\n\nNote: if your nprocs is bigger than the number of processors on your machine, it will be changed to be the number of processors.\n\nAfter the operations on the worker nodes, you can go back to your Master node and check the list of connected Worker nodes.\n\n.. code:: python\n\n    master.list_workers()\n\n\nStep 4 - Prepare environment to share with worker nodes\n=======================================================\n\nWe need to specify the task function (as well as its potential dependencies) and the arguments to share with worker nodes, including\n\n**Environment**: The environment is simply the codes that's going to run on worker nodes. There are two ways to set up environment. The first one is to prepare a separate .py file as environment file and declare all the functions you need inside, then use *master.load_envir('<path of the environment file>')* to load the environment. Another way is for simple cases. You can use *master.load_envir('<your statements>', from_file = False)* to load the environment, for example *master.load_envir(\"f = lambda x: x * 2\", from_file = False)*.\n\n**Task Function**: We need to register the task function using *master.register_target_function('<function name>')*, like *master.register_target_function(\"f\")*. Please note the task function itself must be declared in the environment file or statement.\n\n**Arguments**: The argument must be a list. It will be passed to the task function. Usage: *master.load_args(args)*. **Note the elements in list args must be unique.**\n\nStep 5 - Submit jobs\n====================\n\nNow your cluster is ready. you can try the examples below in your Python terminal on your Master node.\n\nExample 1 - Estimate value of Pi\n^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\n.. code:: python\n\n    envir_statement = '''\n    from random import random\n    example_pi_estimate_throw = lambda x: 1 if (random() * 2 - 1)**2 + (random() * 2 - 1)**2 < 1 else 0\n    '''\n    master.load_envir(envir_statement, from_file = False)\n    master.register_target_function(\"example_pi_estimate_throw\")\n\n    N = int(1e6)\n    master.load_args(range(N))\n\n    result = master.execute()\n\n    print(\"Pi is roughly %f\" % (4.0 * sum([x2 for x1, x2 in result.items()]) / N))\n\n\nExample 2 - Factorization\n^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\n.. code:: python\n\n    envir_statement = '''\n    # A naive factorization method. Take integer 'n', return list of factors.\n    # Ref: https://eli.thegreenplace.net/2012/01/24/distributed-computing-in-python-with-multiprocessing\n    def example_factorize_naive(n):\n        if n < 2:\n            return []\n        factors = []\n        p = 2\n        while True:\n            if n == 1:\n                return factors\n            r = n % p\n            if r == 0:\n                factors.append(p)\n                n = n / p\n            elif p * p >= n:\n                factors.append(n)\n                return factors\n            elif p > 2:\n                p += 2\n            else:\n                p += 1\n        assert False, \"unreachabl\n    '''\n\n    #Create N large numbers to factorize.\n    def make_nums(N):\n        nums = [999999999999]\n        for i in range(N):\n            nums.append(nums[-1] + 2)\n        return nums\n\n    master.load_args(make_nums(5000))\n    master.load_envir(envir_statement, from_file = False)\n    master.register_target_function(\"example_factorize_naive\")\n\n    result = master.execute()\n\n    for x in result.items()[:10]: # if running on Python 3, use `list(result.items())` rather than `result.items()`\n        print(x)\n\nExample 3 - Feed multiple arguments to target function\n^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nIt's possible that you need to feed multiple arguments to target function. A small trick will be needed here: you need to wrap your arguments into a tuple, then pass the tuple to the target function as a \"single\" argument. Within your argument function, you can \"unzip\" this tuple and obtain your arguments.\n\n.. code:: python\n\n    envir_statement = '''\n    f = lambda x:x[0]+x[1]\n    '''\n    master.load_envir(envir_statement, from_file = False)\n    master.register_target_function(\"f\")\n\n    master.load_args([(1,2), (3,4), (5, 6), (7, 8)])\n\n    result = master.execute()\n\n    print(result)\n\nStep 6 - Shutdown the cluster\n==============================\n\nYou can shutdown the cluster by running\n\n.. code:: python\n\n    master.shutdown()\n\n\n\n\n\n",
+    "description": "====================================================================\n*minimalcluster* - A Minimal Cluster Computing Framework with Python\n====================================================================\n\n\"**minimal**\" here means minimal dependency or platform requirements, as well as its nature of \"minimum viable product\". It's mainly for tackling straightforward \"embarrassingly parallel\" tasks using multiple commodity machines, also a good choice for experimental and learning purposes. The idea came from `Eli Bendersky's blog <https://eli.thegreenplace.net/2012/01/24/distributed-computing-in-python-with-multiprocessing>`_\n.\n\n**minimalcluster** is built only using plain Python and its standard libraries (mainly *multiprocessing*). This brings a few advantages, including\n\n- no additional installation or configuration is needed\n\n- 100% cross-platform (you can even have Linux, MacOS, and Windows nodes within a single cluster).\n\nThis package can be used with Python 2.7+ or 3.6+. But within a cluster, you can only choose a single version of Python, either 2 or 3.\n\nFor more frameworks for parallel or cluster computing, you may also want to refer to `Parallel Processing and Multiprocessing in Python <https://wiki.python.org/moin/ParallelProcessing>`_\n.\n\n\n******************\nUsage & Examples\n******************\n\nStep 1 - Install this package\n=============================\n\n.. code-block:: bash\n\n   pip install minimalcluster\n\nStep 2 - Start master node\n=============================\nOpen your Python terminal on your machine which will be used as **Master Node**, and run\n\n.. code:: python\n\n    from minimalcluster import MasterNode\n\n    your_host = '<your master node hostname or IP>'\n    # or use '0.0.0.0' if you have high enough privilege\n    your_port= <port to use>\n    your_authkey = '<the authkey for your cluster>'\n\n    master = MasterNode(HOST = your_host, PORT = your_port, AUTHKEY = your_authkey)\n    master.start_master_server()\n\n\nStep 3 - Start worker nodes\n=============================\n\nOn all your **Worker Nodes**, run the command below in your Python terminal\n\n.. code:: python\n\n    from minimalcluster import WorkerNode\n\n    your_host = '<your master node hostname or IP>'\n    your_port= <port to use>\n    your_authkey = '<the authkey for your cluster>'\n    N_processors_to_use = <how many processors on your worker node do you want to use>\n\n    worker = WorkerNode(your_host, your_port, your_authkey, nprocs = N_processors_to_use)\n\n    worker.join_cluster()\n\nNote: if your nprocs is bigger than the number of processors on your machine, it will be changed to be the number of processors.\n\nAfter the operations on the worker nodes, you can go back to your Master node and check the list of connected Worker nodes.\n\n.. code:: python\n\n    master.list_workers()\n\n\nStep 4 - Prepare environment to share with worker nodes\n=======================================================\n\nWe need to specify the task function (as well as its potential dependencies) and the arguments to share with worker nodes, including\n\n**Environment**: The environment is simply the codes that's going to run on worker nodes. There are two ways to set up environment. The first one is to prepare a separate .py file as environment file and declare all the functions you need inside, then use *master.load_envir('<path of the environment file>')* to load the environment. Another way is for simple cases. You can use *master.load_envir('<your statements>', from_file = False)* to load the environment, for example *master.load_envir(\"f = lambda x: x * 2\", from_file = False)*.\n\n**Task Function**: We need to register the task function using *master.register_target_function('<function name>')*, like *master.register_target_function(\"f\")*. Please note the task function itself must be declared in the environment file or statement.\n\n**Arguments**: The argument must be a list. It will be passed to the task function. Usage: *master.load_args(args)*. **Note the elements in list args must be unique.**\n\nStep 5 - Submit jobs\n====================\n\nNow your cluster is ready. you can try the examples below in your Python terminal on your Master node.\n\nExample 1 - Estimate value of Pi\n^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\n.. code:: python\n\n    envir_statement = '''\n    from random import random\n    example_pi_estimate_throw = lambda x: 1 if (random() * 2 - 1)**2 + (random() * 2 - 1)**2 < 1 else 0\n    '''\n    master.load_envir(envir_statement, from_file = False)\n    master.register_target_function(\"example_pi_estimate_throw\")\n\n    N = int(1e6)\n    master.load_args(range(N))\n\n    result = master.execute()\n\n    print(\"Pi is roughly %f\" % (4.0 * sum([x2 for x1, x2 in result.items()]) / N))\n\n\nExample 2 - Factorization\n^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\n.. code:: python\n\n    envir_statement = '''\n    # A naive factorization method. Take integer 'n', return list of factors.\n    # Ref: https://eli.thegreenplace.net/2012/01/24/distributed-computing-in-python-with-multiprocessing\n    def example_factorize_naive(n):\n        if n < 2:\n            return []\n        factors = []\n        p = 2\n        while True:\n            if n == 1:\n                return factors\n            r = n % p\n            if r == 0:\n                factors.append(p)\n                n = n / p\n            elif p * p >= n:\n                factors.append(n)\n                return factors\n            elif p > 2:\n                p += 2\n            else:\n                p += 1\n        assert False, \"unreachable\"\n    '''\n\n    #Create N large numbers to factorize.\n    def make_nums(N):\n        nums = [999999999999]\n        for i in range(N):\n            nums.append(nums[-1] + 2)\n        return nums\n\n    master.load_args(make_nums(5000))\n    master.load_envir(envir_statement, from_file = False)\n    master.register_target_function(\"example_factorize_naive\")\n\n    result = master.execute()\n\n    for x in result.items()[:10]: # if running on Python 3, use `list(result.items())` rather than `result.items()`\n        print(x)\n\nExample 3 - Feed multiple arguments to target function\n^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nIt's possible that you need to feed multiple arguments to target function. A small trick will be needed here: you need to wrap your arguments into a tuple, then pass the tuple to the target function as a \"single\" argument. Within your argument function, you can \"unzip\" this tuple and obtain your arguments.\n\n.. code:: python\n\n    envir_statement = '''\n    f = lambda x:x[0]+x[1]\n    '''\n    master.load_envir(envir_statement, from_file = False)\n    master.register_target_function(\"f\")\n\n    master.load_args([(1,2), (3,4), (5, 6), (7, 8)])\n\n    result = master.execute()\n\n    print(result)\n\nStep 6 - Shutdown the cluster\n==============================\n\nYou can shutdown the cluster by running\n\n.. code:: python\n\n    master.shutdown()\n\n\n\n\n\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -20,11 +20,11 @@
     "name": "minimalcluster",
     "platform": "",
     "project_url": "https://pypi.org/project/minimalcluster/",
-    "release_url": "https://pypi.org/project/minimalcluster/0.1.0.dev2/",
+    "release_url": "https://pypi.org/project/minimalcluster/0.1.0.dev5/",
     "requires_dist": [],
     "requires_python": "",
     "summary": "A minimal cluster computing framework",
-    "version": "0.1.0.dev2"
+    "version": "0.1.0.dev5"
   },
   "releases": {
     "0.1.0.dev1": [
@@ -62,24 +62,78 @@
         "upload_time": "2017-12-11T16:12:47",
         "url": "https://files.pythonhosted.org/packages/5a/ee/46f08e0d39add20a1cf3b92ebd8a89114c8ef34027dd19f58a9464af9bd1/minimalcluster-0.1.0.dev2-py2.py3-none-any.whl"
       }
+    ],
+    "0.1.0.dev3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "28f2317f85ffff51c27a5b17aa089a9b",
+          "sha256": "03f75ea4c6906e520855ed3165dbaea5865085e8dbc260ae4850a63d89fcbb36"
+        },
+        "downloads": -1,
+        "filename": "minimalcluster-0.1.0.dev3-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "28f2317f85ffff51c27a5b17aa089a9b",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 11942,
+        "upload_time": "2017-12-12T07:40:15",
+        "url": "https://files.pythonhosted.org/packages/c1/41/38d2abf468b0aae5a7d8ff538d2f72cbcc36ce56d18d43b5924b58723960/minimalcluster-0.1.0.dev3-py2.py3-none-any.whl"
+      }
+    ],
+    "0.1.0.dev4": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "bcc91f9c9c84fbd61625483e61021786",
+          "sha256": "70e9b1117cf57279235e9df7ebd22a3641ede7af2749ddac0f9a20eeb7d8ce26"
+        },
+        "downloads": -1,
+        "filename": "minimalcluster-0.1.0.dev4-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "bcc91f9c9c84fbd61625483e61021786",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 12233,
+        "upload_time": "2017-12-12T13:44:19",
+        "url": "https://files.pythonhosted.org/packages/97/38/8b048dde53125d551bf5c7f7f2909e62dfcbb531591e3bc4b0cec0644136/minimalcluster-0.1.0.dev4-py2.py3-none-any.whl"
+      }
+    ],
+    "0.1.0.dev5": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a83899be9dc60535ee042eb0356fb768",
+          "sha256": "8062ce84c363a654dec356d677cea0e16718a2a485727880aa0b1fd747e5691c"
+        },
+        "downloads": -1,
+        "filename": "minimalcluster-0.1.0.dev5-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "a83899be9dc60535ee042eb0356fb768",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 12238,
+        "upload_time": "2017-12-12T14:29:46",
+        "url": "https://files.pythonhosted.org/packages/11/7f/66b6dcddc17ee74ad48adaff5d74bc5f55241a842870d4440692c0d12b27/minimalcluster-0.1.0.dev5-py2.py3-none-any.whl"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "690ea95d5c4dd24423ed5408abfa5456",
-        "sha256": "f1d4701c29c3b1a4e21609f801bf201f1fda8e1b303ef913bde9f45f8d1eae72"
+        "md5": "a83899be9dc60535ee042eb0356fb768",
+        "sha256": "8062ce84c363a654dec356d677cea0e16718a2a485727880aa0b1fd747e5691c"
       },
       "downloads": -1,
-      "filename": "minimalcluster-0.1.0.dev2-py2.py3-none-any.whl",
+      "filename": "minimalcluster-0.1.0.dev5-py2.py3-none-any.whl",
       "has_sig": false,
-      "md5_digest": "690ea95d5c4dd24423ed5408abfa5456",
+      "md5_digest": "a83899be9dc60535ee042eb0356fb768",
       "packagetype": "bdist_wheel",
       "python_version": "py2.py3",
-      "size": 11877,
-      "upload_time": "2017-12-11T16:12:47",
-      "url": "https://files.pythonhosted.org/packages/5a/ee/46f08e0d39add20a1cf3b92ebd8a89114c8ef34027dd19f58a9464af9bd1/minimalcluster-0.1.0.dev2-py2.py3-none-any.whl"
+      "size": 12238,
+      "upload_time": "2017-12-12T14:29:46",
+      "url": "https://files.pythonhosted.org/packages/11/7f/66b6dcddc17ee74ad48adaff5d74bc5f55241a842870d4440692c0d12b27/minimalcluster-0.1.0.dev5-py2.py3-none-any.whl"
     }
   ]
 }
