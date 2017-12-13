@@ -22,7 +22,7 @@
       "Topic :: Internet :: WWW/HTTP",
       "Topic :: Internet :: WWW/HTTP :: Dynamic Content"
     ],
-    "description": "# adarnauth-esi\nDjango app for accessing the EVE Swagger Interface.\n\n## Quick Start\n\n1. Add `esi` to your `INSTALLED_APPS` setting:\n\n   `INSTALLED_APPS += 'esi'`\n\n2. Include the esi urlconf in your project's urls:\n\n    `url(r'^sso/', include('esi.urls'), namespace='esi'),`\n\n3. Register an application with the [EVE Developers site](https://developers.eveonline.com/applications)\n\n    If your application requires scopes, select `Authenticated API Access` and register all possible scopes your app can request. Otherwise `Authentication Only` will suffice.\n    Set the `Callback URL` to `https://example.com/sso/callback`\n\n4. Add SSO client settings to your project settings:\n\n    `ESI_SSO_CLIENT_ID = \"my client id\"`\n    \n    `ESI_SSO_CLIENT_SECRET = \"my client secret\"`\n    \n    `ESI_SSO_CALLBACK_URL = \"https://example.com/sso/callback\"`\n    \n\n5. Run `python manage.py migrate` to create models.\n\n## Usage in Views\n\nWhen views require a token, wrap with the `token_required` decorator and accept a `token` arg:\n\n    from esi.decorators import token_required\n\n    @token_required()\n    def my_view(request, token):\n        ...\n\nThis will prompt the user to either select a token from their current ones, or if none exist create a new one via SSO.\n\nTo specify scopes, add either a list of names or a space-delimited string:\n\n    @token_required(scopes=['esi-location.read_ship_type.v1', 'esi-location.read_location.v1'])\n    @token_required(scopes='esi-location.read_ship_type.v1 esi-location.read_location.v1')\n\nTo require a new token, such as for logging in, add the `new` argument:\n\n    @token_required(new=True)\n\nTo request all of a user's tokens which have the required scopes, wrap instead with the `tokens_required` decorator and accept a `tokens` arg:\n\n    @tokens_required(scopes='esi-location.read_ship_type.v1')\n    def my_view(request, tokens):\n        ...\n\nThis skips prompting for token selection and instead passes that responsibility to the view. Tokens are provided as a queryset.\n\n## Accessing the EVE Swagger Interface\n\nadarnauth-esi provides a convenience wrapper around the [bravado SwaggerClient](https://github.com/Yelp/bravado).\n\n### Getting a Client\n\nTo get a SwaggerClient configured for ESI, call the factory:\n\n    from esi.client import esi_client_factory\n    client = esi_client_factory()\n\n### Accessing Authenticated Endpoints\n \nTo get an authenticated SwaggerClient, add the token argument:\n\n    client = esi_client_factory(token=my_token)\n\nOr, get the client from the specific token model instead:\n\n    client = my_token.get_esi_client()\n\nAuthenticated clients will auto-renew tokens when needed, or raise a `TokenExpiredError` if they aren't renewable.\n\n### Specifying Resource Versions\n\nAs explained on the [EVE Developers Blog](https://developers.eveonline.com/blog/article/breaking-changes-and-you), it's best practice to call a specific version of the resource and allow the ESI router to map it to the correct route, being `legacy`, `latest` or `dev`. \n\nClient initialization begins with a base swagger spec. By default this is the version defined in settings (`ESI_API_VERSION`), but can be overridden with an extra argument to the factory:\n\n    client = esi_client_factory(version='v4')\n    client = token.get_esi_client(version='v4')\n\nOnly resources with the specified version number will be available. For instance, if you specify `v4` but `Universe` does not have a `v4` version, it will not be available to that specific client. Only `legacy`, `latest` and `dev` are guaranteed to have all resources available.\n\nIndividual resources are versioned and can be accessed by passing additional arguments to the factory:\n\n    client = esi_client_factory(Universe='v1', Character='v3')\n    client = token.get_esi_client(Universe='v1', Character='v3')\n\nA list of available resources is available on the [EVE Swagger Interface browser](https://esi.tech.ccp.is). If the resource is not available with the specified version, an `AttributeError` will be raised. \n\nThis version of the resource replaces the resource originally initialized. If the requested base version does not have the specified resource, it will be added.\n\nNote that only one old revision of each resource is kept available through the legacy route. Keep an eye on the [deployment timeline](https://github.com/ccpgames/esi-issues/projects/2/) for resource updates.\n\n### Using a Local Spec File\n\nSpecifying resource versions introduces one major problem for shared code: not all resources nor all their operations are available on any given version. This can be addressed by shipping a copy of the [versioned latest spec](https://esi.tech.ccp.is/_latest/swagger.json) with your app. **This is the preferred method for deployment.**\n\nTo build a client using this local spec, pass an additional kwarg `spec_file` which contains the path to your local swagger.json:\n\n    c = esi_client_factory(spec_file='/path/to/swagger.json')\n\nFor example, a swagger.json in the current file's directory would look like:\n\n    c = esi_client_factory(spec_file=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'swagger.json'))\n\nIf a `spec_file` is specified all other versioning is unavailable: ensure you ship a spec with resource versions your app can handle.\n\n### Accessing Alternate Datasources\n \nESI datasource can also be specified during client creation:\n \n    client = esi_client_factory(datasource='tranquility')\n \nAvailable datasources are `tranquility` and `singularity`.\n\n## Cleaning the Database\n\nTwo tasks are available:\n - `cleanup_callbackredirect` removes all `CallbackRedirect` models older than a specified age (in seconds). Default is 300.\n - `cleanup_token` checks all `Token` models, and if expired, attempts to refresh. If expired and cannot refresh, or fails to refresh, the model is deleted.\n\nTo schedule these automatically with celerybeat, add them to your settings.py `CELERYBEAT_SCHEDULE` dict like so:\n\n    from celery.schedules import crontab\n    \n    CELERYBEAT_SCHEDULE = {\n        ...\n        'esi_cleanup_callbackredirect': {\n            'task': 'esi.tasks.cleanup_callbackredirect',\n            'schedule': crontab(hour='*/4'),\n        },\n        'esi_cleanup_token': {\n            'task': 'esi.tasks.cleanup_token',\n            'schedule': crontab(day_of_month='*/1'),\n        },\n    }\n\nRecommended intervals are four hours for callback redirect cleanup and daily for token cleanup (token cleanup can get quite slow with a large database, so adjust as needed). If your app does not require background token validation, it may be advantageous to not schedule the token cleanup task, instead relying on the validation check when using `@token_required` decorators or adding `.require_valid()` to the end of a query.\n\n## Operating on Singularity\n By defalt, adarnauth-esi process all operations on the tranquility cluster. To operate on singularity instead, two settings need to be changed:\n  - `ESI_OAUTH_URL` should be set to `https://sisilogin.testeveonline.com/oauth`\n  - `ESI_API_DATASOURCE` should be set to `singularity`\n  \n  Note that tokens cannot be transferred between servers. Any tokens in the database before switching to singularity will be deleted next refresh.\n",
+    "description": "# adarnauth-esi\nDjango app for accessing the EVE Swagger Interface.\n\n## Quick Start\n\n1. Add `esi` to your `INSTALLED_APPS` setting:\n\n   `INSTALLED_APPS += 'esi'`\n\n2. Include the esi urlconf in your project's urls:\n\n    `url(r'^sso/', include('esi.urls', namespace='esi')),`\n\n3. Register an application with the [EVE Developers site](https://developers.eveonline.com/applications)\n\n    If your application requires scopes, select `Authenticated API Access` and register all possible scopes your app can request. Otherwise `Authentication Only` will suffice.\n    Set the `Callback URL` to `https://example.com/sso/callback`\n\n4. Add SSO client settings to your project settings:\n\n    `ESI_SSO_CLIENT_ID = \"my client id\"`\n    \n    `ESI_SSO_CLIENT_SECRET = \"my client secret\"`\n    \n    `ESI_SSO_CALLBACK_URL = \"https://example.com/sso/callback\"`\n    \n\n5. Run `python manage.py migrate` to create models.\n\n## Usage in Views\n\nWhen views require a token, wrap with the `token_required` decorator and accept a `token` arg:\n\n    from esi.decorators import token_required\n\n    @token_required()\n    def my_view(request, token):\n        ...\n\nThis will prompt the user to either select a token from their current ones, or if none exist create a new one via SSO.\n\nTo specify scopes, add either a list of names or a space-delimited string:\n\n    @token_required(scopes=['esi-location.read_ship_type.v1', 'esi-location.read_location.v1'])\n    @token_required(scopes='esi-location.read_ship_type.v1 esi-location.read_location.v1')\n\nTo require a new token, such as for logging in, add the `new` argument:\n\n    @token_required(new=True)\n\nTo request all of a user's tokens which have the required scopes, wrap instead with the `tokens_required` decorator and accept a `tokens` arg:\n\n    @tokens_required(scopes='esi-location.read_ship_type.v1')\n    def my_view(request, tokens):\n        ...\n\nThis skips prompting for token selection and instead passes that responsibility to the view. Tokens are provided as a queryset.\n\n## Accessing the EVE Swagger Interface\n\nadarnauth-esi provides a convenience wrapper around the [bravado SwaggerClient](https://github.com/Yelp/bravado).\n\n### Getting a Client\n\nTo get a SwaggerClient configured for ESI, call the factory:\n\n    from esi.clients import esi_client_factory\n    client = esi_client_factory()\n\n### Accessing Authenticated Endpoints\n \nTo get an authenticated SwaggerClient, add the token argument:\n\n    client = esi_client_factory(token=my_token)\n\nOr, get the client from the specific token model instead:\n\n    client = my_token.get_esi_client()\n\nAuthenticated clients will auto-renew tokens when needed, or raise a `TokenExpiredError` if they aren't renewable.\n\n### Specifying Resource Versions\n\nAs explained on the [EVE Developers Blog](https://developers.eveonline.com/blog/article/breaking-changes-and-you), it's best practice to call a specific version of the resource and allow the ESI router to map it to the correct route, being `legacy`, `latest` or `dev`. \n\nClient initialization begins with a base swagger spec. By default this is the version defined in settings (`ESI_API_VERSION`), but can be overridden with an extra argument to the factory:\n\n    client = esi_client_factory(version='v4')\n    client = token.get_esi_client(version='v4')\n\nOnly resources with the specified version number will be available. For instance, if you specify `v4` but `Universe` does not have a `v4` version, it will not be available to that specific client. Only `legacy`, `latest` and `dev` are guaranteed to have all resources available.\n\nIndividual resources are versioned and can be accessed by passing additional arguments to the factory:\n\n    client = esi_client_factory(Universe='v1', Character='v3')\n    client = token.get_esi_client(Universe='v1', Character='v3')\n\nA list of available resources is available on the [EVE Swagger Interface browser](https://esi.tech.ccp.is). If the resource is not available with the specified version, an `AttributeError` will be raised. \n\nThis version of the resource replaces the resource originally initialized. If the requested base version does not have the specified resource, it will be added.\n\nNote that only one old revision of each resource is kept available through the legacy route. Keep an eye on the [deployment timeline](https://github.com/ccpgames/esi-issues/projects/2/) for resource updates.\n\n### Using a Local Spec File\n\nSpecifying resource versions introduces one major problem for shared code: not all resources nor all their operations are available on any given version. This can be addressed by shipping a copy of the [versioned latest spec](https://esi.tech.ccp.is/_latest/swagger.json) with your app. **This is the preferred method for deployment.**\n\nTo build a client using this local spec, pass an additional kwarg `spec_file` which contains the path to your local swagger.json:\n\n    c = esi_client_factory(spec_file='/path/to/swagger.json')\n\nFor example, a swagger.json in the current file's directory would look like:\n\n    c = esi_client_factory(spec_file=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'swagger.json'))\n\nIf a `spec_file` is specified all other versioning is unavailable: ensure you ship a spec with resource versions your app can handle.\n\n### Accessing Alternate Datasources\n \nESI datasource can also be specified during client creation:\n \n    client = esi_client_factory(datasource='tranquility')\n \nAvailable datasources are `tranquility` and `singularity`.\n\n## Cleaning the Database\n\nTwo tasks are available:\n - `cleanup_callbackredirect` removes all `CallbackRedirect` models older than a specified age (in seconds). Default is 300.\n - `cleanup_token` checks all `Token` models, and if expired, attempts to refresh. If expired and cannot refresh, or fails to refresh, the model is deleted.\n\nTo schedule these automatically with celerybeat, add them to your settings.py `CELERYBEAT_SCHEDULE` dict like so:\n\n    from celery.schedules import crontab\n    \n    CELERYBEAT_SCHEDULE = {\n        ...\n        'esi_cleanup_callbackredirect': {\n            'task': 'esi.tasks.cleanup_callbackredirect',\n            'schedule': crontab(hour='*/4'),\n        },\n        'esi_cleanup_token': {\n            'task': 'esi.tasks.cleanup_token',\n            'schedule': crontab(day_of_month='*/1'),\n        },\n    }\n\nRecommended intervals are four hours for callback redirect cleanup and daily for token cleanup (token cleanup can get quite slow with a large database, so adjust as needed). If your app does not require background token validation, it may be advantageous to not schedule the token cleanup task, instead relying on the validation check when using `@token_required` decorators or adding `.require_valid()` to the end of a query.\n\n## Operating on Singularity\n By defalt, adarnauth-esi process all operations on the tranquility cluster. To operate on singularity instead, two settings need to be changed:\n  - `ESI_OAUTH_URL` should be set to `https://sisilogin.testeveonline.com/oauth`\n  - `ESI_API_DATASOURCE` should be set to `singularity`\n  \n  Note that tokens cannot be transferred between servers. Any tokens in the database before switching to singularity will be deleted next refresh.\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -38,11 +38,11 @@
     "name": "adarnauth-esi",
     "platform": "",
     "project_url": "https://pypi.org/project/adarnauth-esi/",
-    "release_url": "https://pypi.org/project/adarnauth-esi/1.4.2/",
+    "release_url": "https://pypi.org/project/adarnauth-esi/1.4.3/",
     "requires_dist": [],
     "requires_python": "",
     "summary": "Django app for accessing the EVE Swagger Interface.",
-    "version": "1.4.2"
+    "version": "1.4.3"
   },
   "releases": {
     "1.4": [
@@ -52,7 +52,7 @@
           "md5": "28414fa4f2577309f71b355811459f15",
           "sha256": "b741a7da4b9da9070251a83d293fd6c02de20300d08b7fa0ab4b9ce5bf3ac03f"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "adarnauth_esi-1.4-py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "28414fa4f2577309f71b355811459f15",
@@ -68,7 +68,7 @@
           "md5": "4984ae42fb80be654f6c9e30ad5101e9",
           "sha256": "3837c37849b0c218fbcb3ca5c42cd015ad045d7ef855f9d32f68f651737bb9d5"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "adarnauth-esi-1.4.tar.gz",
         "has_sig": false,
         "md5_digest": "4984ae42fb80be654f6c9e30ad5101e9",
@@ -86,7 +86,7 @@
           "md5": "e678d9bd58149df522413c5fed88cfe1",
           "sha256": "db38265de72f2585bc087791c9810ad5e58a52d9b51597eda99cb2504fc6fe8f"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "adarnauth_esi-1.4.1-py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "e678d9bd58149df522413c5fed88cfe1",
@@ -102,7 +102,7 @@
           "md5": "f635ad3636b1384cc3dfadf50783e226",
           "sha256": "09ddbbc6f0e25258eddf7d825db84ec0c109b04b9a73e55b1ac76ab508e5dd87"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "adarnauth-esi-1.4.1.tar.gz",
         "has_sig": false,
         "md5_digest": "f635ad3636b1384cc3dfadf50783e226",
@@ -120,7 +120,7 @@
           "md5": "236249185f3c0ed29580952b51083b30",
           "sha256": "f155a33213589b2583f3e5fffaf78a395c286ca169c2a6e48031152cb17bfe9c"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "adarnauth_esi-1.4.2-py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "236249185f3c0ed29580952b51083b30",
@@ -136,7 +136,7 @@
           "md5": "d00cd4faa5f5b2757a633552725aff0b",
           "sha256": "52104563fb51b5cb45047e40e04c2f60ed257bd99962519a6984f38a9c535339"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "adarnauth-esi-1.4.2.tar.gz",
         "has_sig": false,
         "md5_digest": "d00cd4faa5f5b2757a633552725aff0b",
@@ -146,40 +146,42 @@
         "upload_time": "2017-09-29T02:51:34",
         "url": "https://files.pythonhosted.org/packages/20/8f/27139809ad08c626664ce161395e9b98ffe63653ee1b4e1c102a64dc7527/adarnauth-esi-1.4.2.tar.gz"
       }
+    ],
+    "1.4.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "252bbc31971b7fcd279b3470c9d9653a",
+          "sha256": "09e3d02b106c25c1ee1ac4712eb3283e8ecd2185aad3365839bc8613b1face56"
+        },
+        "downloads": -1,
+        "filename": "adarnauth-esi-1.4.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "252bbc31971b7fcd279b3470c9d9653a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 39833,
+        "upload_time": "2017-12-13T00:49:19",
+        "url": "https://files.pythonhosted.org/packages/57/2f/a6cc0cfc73b4cceaeab46deb2629bee107ed9261551de38767519fe0f881/adarnauth-esi-1.4.3.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "236249185f3c0ed29580952b51083b30",
-        "sha256": "f155a33213589b2583f3e5fffaf78a395c286ca169c2a6e48031152cb17bfe9c"
+        "md5": "252bbc31971b7fcd279b3470c9d9653a",
+        "sha256": "09e3d02b106c25c1ee1ac4712eb3283e8ecd2185aad3365839bc8613b1face56"
       },
-      "downloads": 0,
-      "filename": "adarnauth_esi-1.4.2-py3-none-any.whl",
+      "downloads": -1,
+      "filename": "adarnauth-esi-1.4.3.tar.gz",
       "has_sig": false,
-      "md5_digest": "236249185f3c0ed29580952b51083b30",
-      "packagetype": "bdist_wheel",
-      "python_version": "3.4",
-      "size": 34846,
-      "upload_time": "2017-09-29T02:51:35",
-      "url": "https://files.pythonhosted.org/packages/26/26/042431c6b37d8fc4b0103dd465429bec4a11f31bb6805d2157d465bbb00f/adarnauth_esi-1.4.2-py3-none-any.whl"
-    },
-    {
-      "comment_text": "",
-      "digests": {
-        "md5": "d00cd4faa5f5b2757a633552725aff0b",
-        "sha256": "52104563fb51b5cb45047e40e04c2f60ed257bd99962519a6984f38a9c535339"
-      },
-      "downloads": 0,
-      "filename": "adarnauth-esi-1.4.2.tar.gz",
-      "has_sig": false,
-      "md5_digest": "d00cd4faa5f5b2757a633552725aff0b",
+      "md5_digest": "252bbc31971b7fcd279b3470c9d9653a",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 39800,
-      "upload_time": "2017-09-29T02:51:34",
-      "url": "https://files.pythonhosted.org/packages/20/8f/27139809ad08c626664ce161395e9b98ffe63653ee1b4e1c102a64dc7527/adarnauth-esi-1.4.2.tar.gz"
+      "size": 39833,
+      "upload_time": "2017-12-13T00:49:19",
+      "url": "https://files.pythonhosted.org/packages/57/2f/a6cc0cfc73b4cceaeab46deb2629bee107ed9261551de38767519fe0f881/adarnauth-esi-1.4.3.tar.gz"
     }
   ]
 }
