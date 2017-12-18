@@ -14,26 +14,27 @@
       "Topic :: Software Development :: Interpreters",
       "Topic :: Software Development :: Libraries :: Python Modules"
     ],
-    "description": "# BARF : Binary Analysis and Reverse engineering Framework\n\nThe analysis of binary code is a crucial activity in many areas of the computer sciences and software engineering disciplines ranging from software security and program analysis to reverse engineering. Manual binary analysis is a difficult and time-consuming task and there are software tools that seek to automate or assist human analysts. However, most of these tools have several technical and commercial restrictions that limit access and use by a large portion of the academic and practitioner communities. *BARF* is an open source binary analysis framework that aims to support a wide range of binary code analysis tasks that are common in the information security discipline. It is a scriptable platform that supports instruction lifting from multiple architectures, binary translation to an intermediate representation, an extensible framework for code analysis plugins and interoperation with external tools such as debuggers, SMT solvers and instrumentation tools. The framework is designed primarily for human-assisted analysis but it can be fully automated.\n\nThe *BARF project* includes *BARF* and related tools and packages. So far the\nproject is composed of the following items:\n\n* **BARF** : A multiplatform open source Binary Analysis and Reverse engineering Framework\n* **PyAsmJIT** : A JIT for the Intel x86_64 and ARM architecture.\n* Tools built upon *BARF*:\n    * **BARFgadgets** : Lets you *search*, *classifiy* and *verify* ROP gadgets inside a binary program.\n    * **BARFcfg** : Lets you recover the control-flow graph of the functions of a binary program.\n    * **BARFcg** : Lets you recover the call graph of the functions of a binary program.\n\nFor more information, see:\n\n* *BARF: A multiplatform open source Binary Analysis and Reverse engineering Framework* (Whitepaper) [[en](./doc/papers/barf.pdf)]\n* *BARFing Gadgets* (ekoparty2014 presentation) [[es](./doc/presentations/barfing-gadgets.ekoparty2014.es.pdf)]\n\nCurrent status:\n\n| **Latest Release** | v0.4.0                                                                 |\n|-------------------:|:-----------------------------------------------------------------------|\n|            **URL** | https://github.com/programa-stic/barf-project/releases/tag/v0.4.0      |\n|     **Change Log** | https://github.com/programa-stic/barf-project/blob/v0.4.0/CHANGELOG.md |\n\n> All packages were tested on Ubuntu 16.04 (x86_64).\n\n## BARF\n\n*BARF* is a Python package for binary analysis and reverse engineering. It can:\n\n* Load binary programs in different formats (``ELF``, ``PE``, etc),\n* It supports the Intel x86 architecture for 32 and 64 bits,\n* It supports the ARM architecture for 32 bits,\n* It operates on an intermediate language ([REIL]) thus all analysis algorithm are architecture-agnostic,\n* It has integration with [Z3] and [CVC4] SMT solvers which means that you can express fragments of code as formulae and check restrictions on them.\n\nIt is currently *under development*.\n\n### Installation\n\n*BARF* depends on the following SMT solvers:\n\n* [Z3] : A high-performance theorem prover being developed at Microsoft Research.\n* [CVC4] : An efficient open-source automatic theorem prover for satisfiability modulo theories (SMT) problems.\n\nThe following command installs *BARF* on your system:\n\n```bash\n$ sudo python setup.py install\n```\n\nYou can also install it locally:\n\n```bash\n$ sudo python setup.py install --user\n```\n\n#### Notes\n\n* Only one SMT solver is needed in order to work. You may choose between Z3 and CVC4 or install both. You can use the [``barf-install-solver.sh``](./scripts) script which downloads and install both solver.\n* To run some tests you need to install PyAsmJIT first.\n* You may need to install [Graphviz]: ``sudo apt-get install graphviz``\n\n### Quickstart\n\nThis is a very simple example which shows how to open a binary file and print each instruction with its translation to the intermediate language (*REIL*).\n\n```python\nfrom barf import BARF\n\n# Open binary file.\nbarf = BARF(\"examples/bin/x86/branch1\")\n\n# Print assembly instruction.\nfor addr, asm_instr, reil_instrs in barf.translate():\n    print(\"0x{addr:08x} {instr}\".format(addr=addr, instr=asm_instr))\n\n    # Print REIL translation.\n    for reil_instr in reil_instrs:\n        print(\"{indent:11s} {instr}\".format(indent=\"\", instr=reil_instr))\n```\n\nWe can also recover the CFG and save it to a ``.dot`` file.\n\n```python\n# Recover CFG.\ncfg = barf.recover_cfg()\n\n# Save CFG to a .dot file.\ncfg.save(\"branch1_cfg\")\n```\n\nWe can check restrictions on code using a SMT solver. For instance, suppose you have the following code:\n\n```\n 80483ed:       55                      push   ebp\n 80483ee:       89 e5                   mov    ebp,esp\n 80483f0:       83 ec 10                sub    esp,0x10\n 80483f3:       8b 45 f8                mov    eax,DWORD PTR [ebp-0x8]\n 80483f6:       8b 55 f4                mov    edx,DWORD PTR [ebp-0xc]\n 80483f9:       01 d0                   add    eax,edx\n 80483fb:       83 c0 05                add    eax,0x5\n 80483fe:       89 45 fc                mov    DWORD PTR [ebp-0x4],eax\n 8048401:       8b 45 fc                mov    eax,DWORD PTR [ebp-0x4]\n 8048404:       c9                      leave\n 8048405:       c3                      ret\n```\n\nAnd you want to know what values you have to assign to memory locations ``ebp-0x4``, ``ebp-0x8`` and ``ebp-0xc`` in order to obtain a specific value in ``eax`` register after executing the code.\n\nFirst, we add the instructions to the analyzer component.\n\n```python\nfrom barf import BARF\n\n# Open ELF file\nbarf = BARF(\"examples/bin/x86/constraint1\")\n\n# Add instructions to analyze.\nfor addr, asm_instr, reil_instrs in barf.translate(0x80483ed, 0x8048401):\n    for reil_instr in reil_instrs:\n        barf.code_analyzer.add_instruction(reil_instr)\n```\n\nThen, we generate expressions for each variable of interest\n\n```python\n# Get smt expression for eax and ebp registers\neap = barf.code_analyzer.get_register_expr(\"eax\")\nebp = barf.code_analyzer.get_register_expr(\"ebp\")\n\n# Get smt expressions for memory locations (each one of 4 bytes)\na = barf.code_analyzer.get_memory_expr(ebp-0x8, 4)\nb = barf.code_analyzer.get_memory_expr(ebp-0xc, 4)\nc = barf.code_analyzer.get_memory_expr(ebp-0x4, 4)\n```\n\nAnd add the desired restrictions on them.\n\n```python\n# Set range for variables\nbarf.code_analyzer.set_preconditions([a >= 2, a <= 100])\nbarf.code_analyzer.set_preconditions([b >= 2, b <= 100])\n\n# Set desired value for the result\nbarf.code_analyzer.set_postcondition(c == 13)\n```\n\nFinally, we check is the restrictions we establish can be resolved.\n\n```python\n# Check satisfiability.\nif barf.code_analyzer.check() == 'sat':\n    print(\"SAT!\")\n\n    # Get concrete value for expressions.\n    eax_val = barf.code_analyzer.get_expr_value(eax)\n    a_val = barf.code_analyzer.get_expr_value(a)\n    b_val = barf.code_analyzer.get_expr_value(b)\n    c_val = barf.code_analyzer.get_expr_value(c)\n\n    # Print values.\n    print(\"eax : 0x{0:%08x} ({0})\".format(eax_val))\n    print(\"ebp : 0x{0:%08x} ({0})\".format(ebp_val))\n    print(\"  a : 0x{0:%08x} ({0})\".format(a_val))\n    print(\"  b : 0x{0:%08x} ({0})\".format(b_val))\n    print(\"  c : 0x{0:%08x} ({0})\".format(c_val))\nelse:\n    print(\"UNSAT!\")\n```\n\nYou can see these and more examples in the [examples](./examples) directory.\n\n### Overview\n\nThe framework is divided in three main components: **core**, **arch** and **analysis**.\n\n#### Core\n\nThis component contains essential modules:\n\n* ``REIL`` : Provides definitions for the REIL language. It, also, implements an *emulator* and a *parser*.\n* ``SMT`` : Provides means to interface with *Z3* SMT solver. Also, it provides functionality to translate REIL instructions to SMT expressions.\n* ``BI`` : The *Binary Interface* module is responsible for loading binary files for processing (it uses [PEFile] and [PyELFTools].)\n\n#### Arch\n\nEach supported architecture is provided as a subcomponent which contains the following modules.\n\n* ``Architecture`` : Describes the architecture, i.e., registers, memory address size.\n* ``Translator`` : Provides translators to REIL for each supported instruction.\n* ``Disassembler`` : Provides disassembling functionalities (it uses Capstone.)\n* ``Parser`` : Transforms instruction in string to object form (provided by the *Instruction* module.)\n\n#### Analysis\n\nSo far this component consists of two modules: *Control-Flow Graph*, *Call Graph* and *Code Analyzer*. The first two, provides functionality for CFG and CG recovery, respectively. The latter, its a high-level interface to the SMT-solver-related functionalities.\n\n### Directory Structure\n\n```\nbarf/       Framework's main directory.\ndoc/        Documentation.\nexamples/   Basic example scripts that show various functionalities.\nscripts/    Installation scripts.\ntests/      BARF package tests.\ntools/      Tools build upon BARF.\n```\n\n### Notes\n\nSMT solver interfacing is provided by the file ``core/smt/smtlibv2.py`` taken from [PySymEmu].\n\n## Tools\n\n### BARFgadgets\n\n``BARFgadgets`` is a Python script built upon BARF that lets you *search*, *classifiy* and *verify* ROP gadgets inside a binary program. The *search* stage finds all ``ret``-, ``jmp``- and ``call``-ended gadgets inside the binary. The *classification* stage classifies previously found gadgets according to the following types:\n\n* No-Operation,\n* Move Register,\n* Load Constant,\n* Arithmetic/Logical Operation,\n* Load Memory,\n* Store Memory,\n* Arithmetic/Logical Load,\n* Arithmetic/Logical Store and\n* Undefined.\n\nThis is done through instruction emulation. Finally, the *verification* stage consists of using a SMT solver to verify the semantic assigned to each gadget in the second stage.\n\n```\nusage: BARFgadgets [-h] [--version] [--bdepth BDEPTH] [--idepth IDEPTH] [-u]\n                   [-c] [-v] [-o OUTPUT] [-t] [--sort {addr,depth}] [--color]\n                   [--show-binary] [--show-classification] [--show-invalid]\n                   [--summary SUMMARY] [-r {8,16,32,64}]\n                   filename\n\nTool for finding, classifying and verifying ROP gadgets.\n\npositional arguments:\n  filename              Binary file name.\n\noptional arguments:\n  -h, --help            show this help message and exit\n  --version             Display version.\n  --bdepth BDEPTH       Gadget depth in number of bytes.\n  --idepth IDEPTH       Gadget depth in number of instructions.\n  -u, --unique          Remove duplicate gadgets (in all steps).\n  -c, --classify        Run gadgets classification.\n  -v, --verify          Run gadgets verification (includes classification).\n  -o OUTPUT, --output OUTPUT\n                        Save output to file.\n  -t, --time            Print time of each processing step.\n  --sort {addr,depth}   Sort gadgets by address or depth (number of\n                        instructions) in ascending order.\n  --color               Format gadgets with ANSI color sequences, for output\n                        in a 256-color terminal or console.\n  --show-binary         Show binary code for each gadget.\n  --show-classification\n                        Show classification for each gadget.\n  --show-invalid        Show invalid gadget, i.e., gadgets that were\n                        classified but did not pass the verification process.\n  --summary SUMMARY     Save summary to file.\n  -r {8,16,32,64}       Filter verified gadgets by operands register size.\n```\n\nFor more information, see [README](./tools/gadgets/README.md).\n\n### BARFcfg\n\n``BARFcfg`` is a Python script built upon BARF that lets you recover the\ncontrol-flow graph of a binary program.\n\n```\nusage: BARFcfg [-h] [-s SYMBOL_FILE] [-f {txt,pdf,png,dot}] [-t]\n               [-d OUTPUT_DIR] [-b] [--show-reil]\n               [--immediate-format {hex,dec}] [-a | -r RECOVER]\n               filename\n\nTool for recovering CFG of a binary.\n\npositional arguments:\n  filename              Binary file name.\n\noptional arguments:\n  -h, --help            show this help message and exit\n  -s SYMBOL_FILE, --symbol-file SYMBOL_FILE\n                        Load symbols from file.\n  -f {txt,pdf,png,dot}, --format {txt,pdf,png,dot}\n                        Output format.\n  -t, --time            Print process time.\n  -d OUTPUT_DIR, --output-dir OUTPUT_DIR\n                        Output directory.\n  -b, --brief           Brief output.\n  --show-reil           Show REIL translation.\n  --immediate-format {hex,dec}\n                        Output format.\n  -a, --recover-all     Recover all functions.\n  -r RECOVER, --recover RECOVER\n                        Recover specified functions by address (comma\n                        separated).\n```\n\nFor more information, see [README](./tools/cfg/README.md).\n\n### BARFcg\n\n``BARFcg`` is a Python script built upon BARF that lets you recover the\ncall graph of a binary program.\n\n```\nusage: BARFcg [-h] [-s SYMBOL_FILE] [-f {pdf,png,dot}] [-t] [-a | -r RECOVER]\n              filename\n\nTool for recovering CG of a binary.\n\npositional arguments:\n  filename              Binary file name.\n\noptional arguments:\n  -h, --help            show this help message and exit\n  -s SYMBOL_FILE, --symbol-file SYMBOL_FILE\n                        Load symbols from file.\n  -f {pdf,png,dot}, --format {pdf,png,dot}\n                        Output format.\n  -t, --time            Print process time.\n  -a, --recover-all     Recover all functions.\n  -r RECOVER, --recover RECOVER\n                        Recover specified functions by address (comma\n                        separated).\n```\n\nFor more information, see [README](./tools/cg/README.md).\n\n## PyAsmJIT\n\n*PyAsmJIT* is a Python package for x86_64/ARM assembly code generation and execution.\n\nThis package was developed in order to test BARF instruction translation from x86_64/ARM to REIL. The main idea is to be able to run fragments of code natively. Then, the same fragment is translated to REIL and executed in a REIL VM. Finally, both final contexts (the one obtained through native execution and the one from emulation) are compare for differences.\n\nFor more information, see [PyAsmJIT].\n\n## License\n\nThe BSD 2-Clause License. For more information, see [LICENSE](./LICENSE).\n\n[CVC4]: http://cvc4.cs.nyu.edu/web/\n[Capstone]: http://www.capstone-engine.org\n[PyAsmJIT]: https://github.com/programa-stic/pyasmjit\n[PySymEmu]: https://github.com/feliam/pysymemu\n[REIL]: http://www.usenix.org/legacy/event/woot10/tech/full_papers/Dullien.pdf\n[Z3]: https://github.com/Z3Prover/z3\n[Graphviz]: http://graphviz.org/\n",
+    "description": "",
     "docs_url": null,
-    "download_url": "https://github.com/programa-stic/barf-project/tarball/v0.4.0",
+    "download_url": "https://github.com/programa-stic/barf-project/tarball/v0.5.0",
     "downloads": {
       "last_day": 0,
       "last_month": 0,
       "last_week": 0
     },
     "home_page": "http://github.com/programa-stic/barf-project",
-    "keywords": null,
+    "keywords": "",
     "license": "BSD 2-Clause",
-    "maintainer": null,
-    "maintainer_email": null,
+    "maintainer": "",
+    "maintainer_email": "",
     "name": "barf",
-    "platform": "UNKNOWN",
+    "platform": "",
     "project_url": "https://pypi.org/project/barf/",
-    "release_url": "https://pypi.org/project/barf/0.4.0/",
-    "requires_python": null,
+    "release_url": "https://pypi.org/project/barf/0.5.0/",
+    "requires_dist": [],
+    "requires_python": "",
     "summary": "A multiplatform open source Binary Analysis and Reverse engineering Framework",
-    "version": "0.4.0"
+    "version": "0.5.0"
   },
   "releases": {
     "0.3": [
@@ -43,7 +44,7 @@
           "md5": "d29d96374843239f4da5b68118ece0df",
           "sha256": "639fb3da49ee5ddfbead0e6242ee32000ccac745305e354f9c64c246110ce535"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "barf-0.3.tar.gz",
         "has_sig": false,
         "md5_digest": "d29d96374843239f4da5b68118ece0df",
@@ -61,7 +62,7 @@
           "md5": "f801598f3ce830d0901e83f6f9192d7c",
           "sha256": "ee7237a491196037d5ee96a4bc6b542a0c5863b6ac222499e6bbe922555c9f51"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "barf-0.4.0.tar.gz",
         "has_sig": false,
         "md5_digest": "f801598f3ce830d0901e83f6f9192d7c",
@@ -71,24 +72,42 @@
         "upload_time": "2017-04-10T20:53:23",
         "url": "https://files.pythonhosted.org/packages/b2/45/7b5ed1fe2e2d7c9882655899b406871e6334d8813ed3c23b124fe1efad52/barf-0.4.0.tar.gz"
       }
+    ],
+    "0.5.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "cd311339f85f33165cf2627f2e334bb2",
+          "sha256": "62e6cabcac401e1a31eb803aad8aa147f00b74a14ab9de6d683ee3fedf7e569b"
+        },
+        "downloads": -1,
+        "filename": "barf-0.5.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "cd311339f85f33165cf2627f2e334bb2",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 106214,
+        "upload_time": "2017-12-18T17:27:36",
+        "url": "https://files.pythonhosted.org/packages/26/03/381c8b1c151e57fed9669abde91e2d011ca14543d66b1fa2385930a3e93f/barf-0.5.0.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "f801598f3ce830d0901e83f6f9192d7c",
-        "sha256": "ee7237a491196037d5ee96a4bc6b542a0c5863b6ac222499e6bbe922555c9f51"
+        "md5": "cd311339f85f33165cf2627f2e334bb2",
+        "sha256": "62e6cabcac401e1a31eb803aad8aa147f00b74a14ab9de6d683ee3fedf7e569b"
       },
-      "downloads": 0,
-      "filename": "barf-0.4.0.tar.gz",
+      "downloads": -1,
+      "filename": "barf-0.5.0.tar.gz",
       "has_sig": false,
-      "md5_digest": "f801598f3ce830d0901e83f6f9192d7c",
+      "md5_digest": "cd311339f85f33165cf2627f2e334bb2",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 113993,
-      "upload_time": "2017-04-10T20:53:23",
-      "url": "https://files.pythonhosted.org/packages/b2/45/7b5ed1fe2e2d7c9882655899b406871e6334d8813ed3c23b124fe1efad52/barf-0.4.0.tar.gz"
+      "size": 106214,
+      "upload_time": "2017-12-18T17:27:36",
+      "url": "https://files.pythonhosted.org/packages/26/03/381c8b1c151e57fed9669abde91e2d011ca14543d66b1fa2385930a3e93f/barf-0.5.0.tar.gz"
     }
   ]
 }
