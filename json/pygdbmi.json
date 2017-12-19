@@ -17,7 +17,7 @@
       "Programming Language :: Python :: 3.6",
       "Programming Language :: Python :: Implementation :: PyPy"
     ],
-    "description": ".. image:: https://travis-ci.org/cs01/pygdbmi.svg?branch=master\n  :target: https://travis-ci.org/cs01/pygdbmi\n\n.. image:: https://img.shields.io/badge/pypi-v0.7.4.5-blue.svg\n  :target: https://pypi.python.org/pypi/pygdbmi/\n\n.. image:: https://img.shields.io/badge/python-2.7,3.3,3.4,3.5,3.6,pypy-blue.svg\n  :target: https://pypi.python.org/pypi/pygdbmi/\n\npygdbmi - Get Structured Output from GDB's Machine Interface\n============================================================\n\n`API Documentation <http://grassfedcode.com/pygdbmi/>`_\n\nParse gdb machine interface string output and return structured data\ntypes (Python dicts) that are JSON serializable. Useful for writing the\nbackend to a gdb frontend. For example,\n`gdbgui <https://github.com/cs01/gdbgui>`__ uses pygdbmi on the backend.\n\nAlso implements a class to control gdb, ``GdbController``, which allows\nprogrammatic control of gdb using Python, which is also useful if\ncreating a front end.\n\nTo get `machine\ninterface <https://sourceware.org/gdb/onlinedocs/gdb/GDB_002fMI.html>`_\noutput from gdb, run gdb with the ``--interpreter=mi2`` flag.\n\nInstallation\n------------\n\n::\n\n    pip install pygdbmi\n\nCompatibility\n-------------\n\nOperating Systems\n^^^^^^^^^^^^^^^^^\n\nUbuntu 14.04+\n\nmacOS\nNote: macOS users must also codesign gdb. Follow [these\ninstructions](http://andresabino.com/2015/04/14/codesign-gdb-on-mac-os-x-yosemite-10-10-2/). This will fix the error\n`please check gdb is codesigned - see taskgated(8)`.\n\ngdb versions\n^^^^^^^^^^^^\n\ngdb 7.7+\n\nExamples\n--------\n\ngdb mi defines a syntax for its output that is suitable for machine readability and scripting: `example\noutput <https://sourceware.org/gdb/onlinedocs/gdb/GDB_002fMI-Simple-Examples.html#GDB_002fMI-Simple-Examples>`__:\n\n::\n\n     -> -break-insert main\n     <- ^done,bkpt={number=\"1\",type=\"breakpoint\",disp=\"keep\",\n         enabled=\"y\",addr=\"0x08048564\",func=\"main\",file=\"myprog.c\",\n         fullname=\"/home/myprog.c\",line=\"68\",thread-groups=[\"i1\"],\n         times=\"0\"}\n     <- (gdb)\n\nUse ``pygdbmi.gdbmiparser.parse_response`` to turn that string output\ninto a JSON serializable dictionary\n\n::\n\n    from pygdbmi import gdbmiparser\n    from pprint import pprint\n    response = gdbmiparser.parse_response('^done,bkpt={number=\"1\",type=\"breakpoint\",disp=\"keep\", enabled=\"y\",addr=\"0x08048564\",func=\"main\",file=\"myprog.c\",fullname=\"/home/myprog.c\",line=\"68\",thread-groups=[\"i1\"],times=\"0\"')\n    pprint(response)\n    > {'message': 'done',\n     'payload': {'bkpt': {'addr': '0x08048564',\n                          'disp': 'keep',\n                          'enabled': 'y',\n                          'file': 'myprog.c',\n                          'fullname': '/home/myprog.c',\n                          'func': 'main',\n                          'line': '68',\n                          'number': '1',\n                          'thread-groups': ['i1'],\n                          'times': '0',\n                          'type': 'breakpoint'}},\n     'type': 'result'}\n\nProgrammatic Control Over gdb\n-----------------------------\n\nBut how do you get the gdb output into Python in the first place? If you\nwant, ``pygdbmi`` also has a class to control gdb as subprocess. You can\nwrite commands, and get structured output back:\n\n::\n\n    from pygdbmi.gdbcontroller import GdbController\n    from pprint import pprint\n\n    # Start gdb process\n    gdbmi = GdbController()\n\n    # Load binary a.out and get structured response\n    response = gdbmi.write('-file-exec-file a.out')\n    pprint(response)\n    [{'message': u'thread-group-added',\n      'payload': {u'id': u'i1'},\n      'type': 'notify'},\n     {'message': u'done', 'payload': None, 'type': 'result'}]\n\nNow do whatever you want with gdb. All gdb commands, as well as gdb\n`machine interface\ncommands <(https://sourceware.org/gdb/onlinedocs/gdb/GDB_002fMI-Input-Syntax.html#GDB_002fMI-Input-Syntax)>`__\nare acceptable. gdb mi commands give better structured output that is\nmachine readable, rather than gdb console output. mi commands begin with\na ``-``.\n\n::\n\n    response = gdbmi.write('-break-insert main')\n    response = gdbmi.write('break main')\n    response = gdbmi.write('-exec-run')\n    response = gdbmi.write('run')  # normal gdb command is okay too\n    response = gdbmi.write('-exec-next')\n    response = gdbmi.write('next')\n    response = gdbmi.write('-exec-continue')\n    response = gdbmi.write('continue')\n    response = gdbmi.exit()\n\n\nParsed Output Description\n-------------------------\n\nEach parsed gdb response consists of a list of dictionaries. Each\ndictionary has keys ``message``, ``payload``, ``token``, and ``type``.\n\n-  ``message`` contains a textual message from gdb, which is not always\n   present. When missing, this is ``None``.\n\n-  ``payload`` contains the content of gdb's output, which can contain\n   any of the following: ``dictionary``, ``list``, ``string``. This too\n   is not always present, and can be ``None`` depending on the response.\n\n-  ``token`` If an input command was prefixed with a (optional) token then the corresponding output for that command will also be prefixed by that same token. This field is only present for pygdbmi output types ``nofity`` and ``result``. When missing, this is ``None``.\n\nThe ``type`` is defined based on gdb's various `mi output record\ntypes <(https://sourceware.org/gdb/onlinedocs/gdb/GDB_002fMI-Output-Records.html#GDB_002fMI-Output-Records)>`__,\nand can be\n\n-  result - the result of a gdb command, such as ``done``, ``running``,\n   ``error``, etc.\n-  notify - additional async changes that have occurred, such as\n   breakpoint modified\n-  console - textual responses to cli commands\n-  log - debugging messages from gdb's internals\n-  output - output from target\n-  target - output from remote target\n-  done - when gdb has finished its output\n\nContributing\n------------\n\nSet up a new virtual environment, then clone this repo and run\n``pip install -r requirements.txt`` and ``pip install -r dev_requirements.txt``.\n\nConfirm unit tests are working with\n``make test``, then begin development.\n\nUpdate unit tests as necessary at ``pygdbmi/tests/test\\_app.py``.\n\n\n\nProjects Using pygdbmi\n----------------------\n\n-  `gdbgui <https://github.com/cs01/gdbgui>`__ implements a\n   browser-based frontend to gdb, using pygdbmi on the backend\n-  `PINCE <https://github.com/korcankaraokcu/PINCE>`__ is a\n   gdb frontend that aims to provide a reverse engineering tool\n   and a reusable library focused on games. It uses pygdbmi to\n   parse gdb/mi based output for some functions\n-  `avatar\u00b2 <https://github.com/avatartwo/avatar2>`__ is an orchestration\n   framework for reversing and analysing firmware of embedded devices.\n   It utilizes pygdbmi for internal communication to different analysis\n   targets.\n- Know of another project? Create a PR and add it here.\n\n\n\n",
+    "description": ".. image:: https://travis-ci.org/cs01/pygdbmi.svg?branch=master\n  :target: https://travis-ci.org/cs01/pygdbmi\n\n.. image:: https://img.shields.io/badge/pypi-v0.8.0.0-blue.svg\n  :target: https://pypi.python.org/pypi/pygdbmi/\n\n.. image:: https://img.shields.io/badge/python-2.7,3.3,3.4,3.5,3.6,pypy-blue.svg\n  :target: https://pypi.python.org/pypi/pygdbmi/\n\npygdbmi - Get Structured Output from GDB's Machine Interface\n============================================================\n\n`API Documentation <http://grassfedcode.com/pygdbmi/>`_\n\nWhat's in the box?\n\n1. Parse gdb machine interface string output and return structured data types (Python dicts) that are JSON serializable. Useful for writing the backend to a gdb frontend. For example, `gdbgui <https://github.com/cs01/gdbgui>`__ uses pygdbmi on the backend.\n\n2. Control gdb as a subprocess using Python with the ``GdbController`` class.\n\nTo get `machine interface <https://sourceware.org/gdb/onlinedocs/gdb/GDB_002fMI.html>`_ output from gdb, run gdb with the ``--interpreter=mi2`` flag like so: ``gdb --interpreter=mi2``.\n\nInstallation\n------------\n\n::\n\n    pip install pygdbmi\n\nCompatibility\n-------------\n\nOperating Systems\n^^^^^^^^^^^^^^^^^\n\n- Linux/Unix\n\n  Ubuntu 14.04 and 16.04 have been tested to work. Other versions likely work as well.\n\n- macOS\n\n  Note: the error ``please check gdb is codesigned - see taskgated(8)`` can be fixed by codesigning gdb with `these instructions <http://andresabino.com/2015/04/14/codesign-gdb-on-mac-os-x-yosemite-10-10-2/>`_. If the error is not fixed, please `create an issue in github <https://github.com/cs01/pygdbmi/issues>`_.\n\n- Windows\n\n  Windows 10 under cygwin has been tested to work.\n\ngdb versions\n^^^^^^^^^^^^\n\n- gdb 7.7+ has been tested. Older versions may work as well.\n\nExamples\n--------\n\ngdb mi defines a syntax for its output that is suitable for machine readability and scripting: `example\noutput <https://sourceware.org/gdb/onlinedocs/gdb/GDB_002fMI-Simple-Examples.html#GDB_002fMI-Simple-Examples>`__:\n\n::\n\n     -> -break-insert main\n     <- ^done,bkpt={number=\"1\",type=\"breakpoint\",disp=\"keep\",\n         enabled=\"y\",addr=\"0x08048564\",func=\"main\",file=\"myprog.c\",\n         fullname=\"/home/myprog.c\",line=\"68\",thread-groups=[\"i1\"],\n         times=\"0\"}\n     <- (gdb)\n\nUse ``pygdbmi.gdbmiparser.parse_response`` to turn that string output\ninto a JSON serializable dictionary\n\n::\n\n    from pygdbmi import gdbmiparser\n    from pprint import pprint\n    response = gdbmiparser.parse_response('^done,bkpt={number=\"1\",type=\"breakpoint\",disp=\"keep\", enabled=\"y\",addr=\"0x08048564\",func=\"main\",file=\"myprog.c\",fullname=\"/home/myprog.c\",line=\"68\",thread-groups=[\"i1\"],times=\"0\"')\n    pprint(response)\n    > {'message': 'done',\n     'payload': {'bkpt': {'addr': '0x08048564',\n                          'disp': 'keep',\n                          'enabled': 'y',\n                          'file': 'myprog.c',\n                          'fullname': '/home/myprog.c',\n                          'func': 'main',\n                          'line': '68',\n                          'number': '1',\n                          'thread-groups': ['i1'],\n                          'times': '0',\n                          'type': 'breakpoint'}},\n     'type': 'result'}\n\nProgrammatic Control Over gdb\n-----------------------------\n\nBut how do you get the gdb output into Python in the first place? If you\nwant, ``pygdbmi`` also has a class to control gdb as subprocess. You can\nwrite commands, and get structured output back:\n\n::\n\n    from pygdbmi.gdbcontroller import GdbController\n    from pprint import pprint\n\n    # Start gdb process\n    gdbmi = GdbController()\n\n    # Load binary a.out and get structured response\n    response = gdbmi.write('-file-exec-file a.out')\n    pprint(response)\n    [{'message': u'thread-group-added',\n      'payload': {u'id': u'i1'},\n      'type': 'notify'},\n     {'message': u'done', 'payload': None, 'type': 'result'}]\n\nNow do whatever you want with gdb. All gdb commands, as well as gdb\n`machine interface\ncommands <(https://sourceware.org/gdb/onlinedocs/gdb/GDB_002fMI-Input-Syntax.html#GDB_002fMI-Input-Syntax)>`__\nare acceptable. gdb mi commands give better structured output that is\nmachine readable, rather than gdb console output. mi commands begin with\na ``-``.\n\n::\n\n    response = gdbmi.write('-break-insert main')  # machine interface (MI) commands start with a '-'\n    response = gdbmi.write('break main')  # normal gdb commands work too, but the return value is slightly different\n    response = gdbmi.write('-exec-run')\n    response = gdbmi.write('run')\n    response = gdbmi.write('-exec-next', timeout_sec=0.1)  # the wait time can be modified from the default of 1 second\n    response = gdbmi.write('next')\n    response = gdbmi.write('-exec-continue')\n    response = gdbmi.write('continue')\n    response = gdbmi.exit()\n\n\nParsed Output Format\n-------------------------\n\nEach parsed gdb response consists of a list of dictionaries. Each\ndictionary has keys ``message``, ``payload``, ``token``, and ``type``.\n\n-  ``message`` contains a textual message from gdb, which is not always\n   present. When missing, this is ``None``.\n\n-  ``payload`` contains the content of gdb's output, which can contain\n   any of the following: ``dictionary``, ``list``, ``string``. This too\n   is not always present, and can be ``None`` depending on the response.\n\n-  ``token`` If an input command was prefixed with a (optional) token then the corresponding output for that command will also be prefixed by that same token. This field is only present for pygdbmi output types ``nofity`` and ``result``. When missing, this is ``None``.\n\nThe ``type`` is defined based on gdb's various `mi output record\ntypes <(https://sourceware.org/gdb/onlinedocs/gdb/GDB_002fMI-Output-Records.html#GDB_002fMI-Output-Records)>`__,\nand can be\n\n-  ``result`` - the result of a gdb command, such as ``done``, ``running``,\n   ``error``, etc.\n-  ``notify`` - additional async changes that have occurred, such as\n   breakpoint modified\n-  ``console`` - textual responses to cli commands\n-  ``log`` - debugging messages from gdb's internals\n-  ``output`` - output from target\n-  ``target`` - output from remote target\n-  ``done`` - when gdb has finished its output\n\nContributing\n------------\nDocumentation fixes, bug fixes, performance improvements, and functional improvements are welcome. You may want to create an issue before beginning work to make sure I am interested in merging it to the master branch.\n\n\nTo develop, set up a new virtual environment, then clone this repo and run\n``pip install -r requirements.txt`` and ``pip install -r dev_requirements.txt``.\n\nConfirm unit tests are working with ``make test``, then begin development.\n\nUpdate unit tests as necessary at ``pygdbmi/tests/test_app.py``.\n\n\n\nProjects Using pygdbmi\n----------------------\n\n-  `gdbgui <https://github.com/cs01/gdbgui>`__ implements a\n   browser-based frontend to gdb, using pygdbmi on the backend\n-  `PINCE <https://github.com/korcankaraokcu/PINCE>`__ is a\n   gdb frontend that aims to provide a reverse engineering tool\n   and a reusable library focused on games. It uses pygdbmi to\n   parse gdb/mi based output for some functions\n-  `avatar\u00b2 <https://github.com/avatartwo/avatar2>`__ is an orchestration\n   framework for reversing and analysing firmware of embedded devices.\n   It utilizes pygdbmi for internal communication to different analysis\n   targets.\n- Know of another project? Create a PR and add it here.\n\n\n\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -33,11 +33,11 @@
     "name": "pygdbmi",
     "platform": "",
     "project_url": "https://pypi.org/project/pygdbmi/",
-    "release_url": "https://pypi.org/project/pygdbmi/0.7.4.5/",
+    "release_url": "https://pypi.org/project/pygdbmi/0.8.0.0/",
     "requires_dist": [],
     "requires_python": "",
     "summary": "Parse gdb machine interface output with Python",
-    "version": "0.7.4.5"
+    "version": "0.8.0.0"
   },
   "releases": {
     "0.7": [
@@ -307,40 +307,74 @@
         "upload_time": "2017-11-26T20:08:43",
         "url": "https://files.pythonhosted.org/packages/89/50/6e537f25c6c2f4eb1f9c1106a5177262a1352e6ce198add7b20d11f70209/pygdbmi-0.7.4.5.tar.gz"
       }
+    ],
+    "0.8.0.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ae0aa99ec132952e6e4fb8c714a3174e",
+          "sha256": "290a01deefcbc006a61e4173e66355f2f5728a2def40fc3f18b3df5a8acb822d"
+        },
+        "downloads": -1,
+        "filename": "pygdbmi-0.8.0.0-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "ae0aa99ec132952e6e4fb8c714a3174e",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 22255,
+        "upload_time": "2017-12-19T04:32:54",
+        "url": "https://files.pythonhosted.org/packages/73/f3/5757b10d57d483f8396c538b4660407c4df006c1ee8c46b63715b3297fce/pygdbmi-0.8.0.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "28f87e84eaa82221dd6ababb6f1af8be",
+          "sha256": "eb81670ca19d4ada507f04a1c2549ca39e9961ac58a49facf30e4fd520466a95"
+        },
+        "downloads": -1,
+        "filename": "pygdbmi-0.8.0.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "28f87e84eaa82221dd6ababb6f1af8be",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 19596,
+        "upload_time": "2017-12-19T04:32:55",
+        "url": "https://files.pythonhosted.org/packages/17/13/923fe0fd81820e2b0ed96933c82df22c3f6b50c8c3be3b015d91f11f8ffc/pygdbmi-0.8.0.0.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "cd3c3d29bd6bd85d01d317ce92658628",
-        "sha256": "223fcd8dc6f04ada0fb4fbeeb78eca07e7ac355d3a543c1f699ad0fd281d9474"
+        "md5": "ae0aa99ec132952e6e4fb8c714a3174e",
+        "sha256": "290a01deefcbc006a61e4173e66355f2f5728a2def40fc3f18b3df5a8acb822d"
       },
       "downloads": -1,
-      "filename": "pygdbmi-0.7.4.5-py2.py3-none-any.whl",
+      "filename": "pygdbmi-0.8.0.0-py2.py3-none-any.whl",
       "has_sig": false,
-      "md5_digest": "cd3c3d29bd6bd85d01d317ce92658628",
+      "md5_digest": "ae0aa99ec132952e6e4fb8c714a3174e",
       "packagetype": "bdist_wheel",
       "python_version": "py2.py3",
-      "size": 19745,
-      "upload_time": "2017-11-26T20:08:41",
-      "url": "https://files.pythonhosted.org/packages/ed/ba/9326eaf06ec62e454c5d5dd8c7fc145403972108c19b0e0d9a2c0ee60755/pygdbmi-0.7.4.5-py2.py3-none-any.whl"
+      "size": 22255,
+      "upload_time": "2017-12-19T04:32:54",
+      "url": "https://files.pythonhosted.org/packages/73/f3/5757b10d57d483f8396c538b4660407c4df006c1ee8c46b63715b3297fce/pygdbmi-0.8.0.0-py2.py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "bca1f3d36c5461d4800ef804977851d2",
-        "sha256": "2b69faeebff795a45d031a62cc441144b679e7a31c351ad15d9f685d30603572"
+        "md5": "28f87e84eaa82221dd6ababb6f1af8be",
+        "sha256": "eb81670ca19d4ada507f04a1c2549ca39e9961ac58a49facf30e4fd520466a95"
       },
       "downloads": -1,
-      "filename": "pygdbmi-0.7.4.5.tar.gz",
+      "filename": "pygdbmi-0.8.0.0.tar.gz",
       "has_sig": false,
-      "md5_digest": "bca1f3d36c5461d4800ef804977851d2",
+      "md5_digest": "28f87e84eaa82221dd6ababb6f1af8be",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 16928,
-      "upload_time": "2017-11-26T20:08:43",
-      "url": "https://files.pythonhosted.org/packages/89/50/6e537f25c6c2f4eb1f9c1106a5177262a1352e6ce198add7b20d11f70209/pygdbmi-0.7.4.5.tar.gz"
+      "size": 19596,
+      "upload_time": "2017-12-19T04:32:55",
+      "url": "https://files.pythonhosted.org/packages/17/13/923fe0fd81820e2b0ed96933c82df22c3f6b50c8c3be3b015d91f11f8ffc/pygdbmi-0.8.0.0.tar.gz"
     }
   ]
 }
