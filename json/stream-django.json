@@ -15,26 +15,27 @@
       "Topic :: Internet :: WWW/HTTP",
       "Topic :: Internet :: WWW/HTTP :: Dynamic Content"
     ],
-    "description": "## Stream Django\n[![Build Status](https://travis-ci.org/GetStream/stream-django.svg?branch=master)](https://travis-ci.org/GetStream/stream-django) [![Coverage Status](https://coveralls.io/repos/github/GetStream/stream-django/badge.svg?branch=master)](https://coveralls.io/github/GetStream/stream-django?branch=master) [![PyPI version](https://badge.fury.io/py/stream-django.svg)](http://badge.fury.io/py/stream-django)\n\n[stream-django](https://github.com/GetStream/stream-django) is a Django client for [Stream](https://getstream.io/), it supports Django from 1.5 up to and including 1.11 and Python 2.7 and 3.4+.\n\nYou can sign up for a Stream account at https://getstream.io/get_started.\n\nNote there is also a lower level [Python - Stream integration](https://github.com/getstream/stream-python) library which is suitable for all Python applications.\n\n### Build activity streams & news feeds\n\n<p align=\"center\">\n  <img src=\"https://dvqg2dogggmn6.cloudfront.net/images/mood-home.png\" alt=\"Examples of what you can build\" title=\"What you can build\"/>\n</p>\n\nYou can build:\n\n* Activity streams such as seen on Github\n* A twitter style newsfeed\n* A feed like instagram/ pinterest\n* Facebook style newsfeeds\n* A notification system\n\n### Example apps\n\nYou can check out our example apps built using this library (you can deploy them directly to Heroku with 1 click):\n\n* [Pinterest-like example app](https://github.com/GetStream/Stream-Example-Py)\n* [Twitter for scientists example app](https://github.com/GetStream/django_twitter)\n\n### Table of Contents\n<!-- START doctoc generated TOC please keep comment here to allow auto update -->\n<!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->\n\n- [What can you build?](#what-can-you-build)\n- [Demo](#demo)\n- [Installation](#installation)\n- [Model integration](#model-integration)\n- [Feed manager](#feed-manager)\n- [Showing the newsfeed](#showing-the-newsfeed)\n  - [Activity enrichment](#activity-enrichment)\n  - [Templating](#templating)\n- [Settings](#settings)\n- [Temporarily disabling the signals](#temporarily-disabling-the-signals)\n- [Customizing enrichment](#customizing-enrichment)\n- [Low level APIs access](#low-level-apis-access)\n\n<!-- END doctoc generated TOC please keep comment here to allow auto update -->\n\n### Update from <1.3\n\nStream default names for feeds changed from flat and aggregated to timeline and timeline_aggregated. The default configuration of stream_django changed\nto match the new names. If you did you not override the `STREAM_NEWS_FEEDS` settings and want to upgrade to 1.3 or later, make sure that you add this to your Django setting:\n\n```python\nSTREAM_NEWS_FEEDS = {'flat':'flat', 'aggregated':'aggregated'}\n```\n\n### Installation\n\nInstall stream_django package with pip:\n\n```pip install stream_django```\n\nadd stream_django to your ```INSTALLED_APPS```\n\n```python\nINSTALLED_APPS = [\n    ...\n    'stream_django'\n]\n\nSTREAM_API_KEY = 'my_api_key'\nSTREAM_API_SECRET = 'my_api_secret_key'\n\n```\n\nLogin with Github on getstream.io and add\n```STREAM_API_KEY``` and ```STREAM_API_SECRET``` to your Django settings module (you can find them in the dashboard).\n\n### Model integration\n\nStream Django can automatically publish new activities to your feed. Simple mixin the Activity class on the models you want to publish.\n\n```python\nfrom stream_django.activity import Activity\n\nclass Tweet(models.Model, Activity):\n    ...\n\nclass Like(models.Model, Activity):\n    ...\n```\n\nEvery time a Tweet is created it will be added to the user's feed. Users which follow the given user will also automatically get the new tweet in their feeds.\n\n#### Activity fields\n\nModels are stored in feeds as activities. An activity is composed of at least the following fields: **actor**, **verb**, **object**, **time**. You can also add more custom data if needed.\nThe Activity mixin will try to set things up automatically:\n\n**object** is a reference to the model instance\n**actor** is a reference to the user attribute of the instance\n**verb** is a string representation of the class name\n\nBy default the actor field will look for an attribute called user or actor and a field called created_at to track creation time.\nIf you're user field is called differently you'll need to tell us where to look for it.\nBelow shows an example how to set things up if your user field is called author.\n\n```python\nclass Tweet(models.Model, Activity):\n    created_at = models.DateTimeField(auto_now_add=True)\n    author = models.ForeignKey(settings.AUTH_USER_MODEL)\n\n    @property\n    def activity_actor_attr(self):\n        return self.author\n\n```\n\n#### Activity extra data\n\nOften you'll want to store more data than just the basic fields. You achieve this by implementing the extra_activity_data method in the model.\n\nNOTE: you should only return data that json.dumps can handle (datetime instances are supported too).\n\n```python\nclass Tweet(models.Model, Activity):\n\n    @property\n    def extra_activity_data(self):\n        return {'is_retweet': self.is_retweet }\n\n```\n\n\n### Feed manager\n\nDjango Stream comes with a feed_manager class that helps with all common feed operations.\n\n#### Feeds bundled with feed_manager\n\nTo get you started the manager has 4 feeds pre configured. You can add more feeds if your application needs it.\nThe three feeds are divided in three categories.\n\n##### User feed:\nThe user feed stores all activities for a user. Think of it as your personal Facebook page. You can easily get this feed from the manager.\n```python\nfrom stream_django.feed_manager import feed_manager\n\nfeed_manager.get_user_feed(user_id)\n```\n##### News feeds:\nThe news feeds (or timelines) store the activities from the people you follow.\nThere is both a simple timeline newsfeed (similar to twitter) and an aggregated version (like facebook).\n\n```python\ntimeline = feed_manager.get_news_feeds(user_id)['timeline']\ntimeline_aggregated = feed_manager.get_news_feeds(user_id)['timeline_aggregated']\n\n```\n##### Notification feed:\nThe notification feed can be used to build notification functionality.\n\n<p align=\"center\">\n  <img src=\"http://feedly.readthedocs.org/en/latest/_images/fb_notification_system.png\" alt=\"Notification feed\" title=\"Notification feed\"/>\n\nBelow we show an example of how you can read the notification feed.\n```python\nnotification_feed = feed_manager.get_notification_feed(user_id)\n\n```\nBy default the notification feed will be empty. You can specify which users to notify when your model gets created. In the case of a retweet you probably want to notify the user of the parent tweet.\n\n```python\nclass Tweet(models.Model, Activity):\n\n    @property\n    def activity_notify(self):\n        if self.is_retweet and self.parent_tweet.author != self.author:\n            target_feed = feed_manager.get_notification_feed(self.parent_tweet.author_id)\n            return [target_feed]\n\n```\n\nAnother example would be following a user. You would commonly want to notify the user which is being followed.\n\n```python\nclass Follow(models.Model, Activity):\n\n    @property\n    def activity_notify(self):\n        return [feed_manager.get_notification_feed(self.target_user.id)]\n\n```\n\n\n#### Follow a feed\nThe create the newsfeeds you need to notify the system about follow relationships. The manager comes with APIs to let a user's news feeds follow another user's feed. This code lets the current user's timeline and timeline_aggregated feeds follow the target_user's personal feed.\n\n```python\nfeed_manager.follow_user(request.user.id, target_user)\n\n```\n\n### Showing the newsfeed\n\n#### Activity enrichment\n\nWhen you read data from feeds, a like activity will look like this:\n\n```python\n{'actor': 'core.User:1', 'verb': 'like', 'object': 'core.Like:42'}\n```\n\nThis is far from ready for usage in your template. We call the process of loading the references from the database enrichment. An example is shown below:\n\n```python\nfrom stream_django.enrich import Enrich\n\nenricher = Enrich()\nfeed = feed_manager.get_feed('timeline', request.user.id)\nactivities = feed.get(limit=25)['results']\nenriched_activities = enricher.enrich_activities(activities)\n```\n\n\n\n#### Templating\n\nNow that you've enriched the activities you can render the template.\nFor convenience we include the render activity template tag:\n\n```\n{% load activity_tags %}\n\n{% for activity in activities %}\n    {% render_activity activity %}\n{% endfor %}\n\n```\n\nThe render_activity template tag will render the template activity/[aggregated]/[verb].html with the activity as context.\n\nFor example activity/tweet.html will be used to render an normal activity with verb tweet\n\n```\n{{ activity.actor.username }} said \"{{ activity.object.body }} {{ activity.created_at|timesince }} ago\"\n```\n\nand activity/aggregated/like.html for an aggregated activity with verb like\n\n```\n{{ activity.actor_count }} user{{ activity.actor_count|pluralize }} liked {% render_activity activity.activities.0 %}\n```\n\nIf you need to support different kind of templates for the same activity, you can send a third parameter to change the template selection.\n\nThe example below will use the template activity/[aggregated]/homepage_%(verb)s.html\n```\n{% render_activity activity 'homepage' %}\n```\n\n\n### Settings\n\n**STREAM_API_KEY**\nYour stream site api key. Default ```''```\n\n**STREAM_API_SECRET**\nYour stream site api key secret. Default ```''```\n\n**STREAM_LOCATION**\nThe location API endpoint the client will connect to. Eg: ```STREAM_LOCATION='us-east'```\n\n**STREAM_TIMEOUT**\nThe connection timeout (in seconds) for the API client.  Default ```6.0```\n\n**STREAM_FEED_MANAGER_CLASS**\nThe path to the feed manager class. Default ```'stream_django.managers.FeedManager'```\n\n**STREAM_USER_FEED**\nThe name of the feed (as it is configured in your GetStream.io Dasboard) where activities are stored. Default ```'user'```\n\n**STREAM_NEWS_FEEDS**\nThe name of the news feed (as they are configured in your GetStream.io Dasboard) where activities from followed feeds are stored. Default ```{'timeline':'timeline', 'timeline_aggregated':'timeline_aggregated'}```\n\n**STREAM_NOTIFICATION_FEED**\nThe name of the feed (as it is configured in your GetStream.io Dasboard) where activity notifications are stored. Default ```'notification'```\n\n**STREAM_DISABLE_MODEL_TRACKING**\nDisable automatic tracking of Activity models. Default ```False```\n\n### Temporarily disabling the signals\n\nModel syncronization is disabled during schema/data migrations runs, syncdb and fixture loading (and during django test runs).\nYou can completely disable feed publishing via the ```STREAM_DISABLE_MODEL_TRACKING``` django setting.\n\n\n### Customizing enrichment\n\nSometimes you'll want to customize how enrichment works. The documentation will show you several common options.\n\n#### Enrich extra fields\n\nIf you store references to model instances in the activity extra_data you can use the Enrich class to take care of it for you\n\n```python\nfrom stream_django.activity import create_model_reference\n\nclass Tweet(models.Model, Activity):\n\n    @property\n    def extra_activity_data(self):\n        ref = create_model_reference(self.parent_tweet)\n        return {'parent_tweet': ref }\n\n\n# instruct the enricher to enrich actor, object and parent_tweet fields\nenricher = Enrich(fields=['actor', 'object', 'parent_tweet'])\nfeed = feed_manager.get_feed('timeline', request.user.id)\nactivities = feed.get(limit=25)['results']\nenriched_activities = enricher.enrich_activities(activities)\n```\n\n#### Change how models are retrieved\n\nThe enrich class that comes with the packages tries to minimise the amount of database queries. The models are grouped by their class and then retrieved with a pk__in query. You can implement a different approach to retrieve the instances of a model subclassing the ```stream_django.enrich.Enrich``` class.\n\nTo change the retrieval for every model you should override the ```fetch_model_instances``` method; in alternative you can change how certain models' are retrieved by implementing the hook function ```fetch_<model_name>_instances```\n\n```python\nclass MyEnrich(Enrich):\n    '''\n    Overwrites how model instances are fetched from the database\n    '''\n\n    def fetch_model_instances(self, modelClass, pks):\n        '''\n        returns a dict {id:modelInstance} with instances of model modelClass\n        and pk in pks\n        '''\n        ...\n\nclass AnotherEnrich(Enrich):\n    '''\n    Overwrites how Likes instances are fetched from the database\n    '''\n\n    def fetch_like_instances(self, pks):\n        return {l.id: l for l in Like.objects.cached_likes(ids)}\n\n```\n\n\n#### Preload related data\n\nYou will commonly access related objects such as activity['object'].user. To prevent your newsfeed to run N queries you can instruct the manager to load related objects. The manager will use Django's select_related functionality. (https://docs.djangoproject.com/en/dev/ref/models/querysets/#select-related).\n\n```python\nclass Tweet(models.Model, Activity):\n\n    @classmethod\n    def activity_related_models(cls):\n        return ['user']\n\n```\n\n### Full documentation and Low level APIs access\n\nWhen needed you can also use the [low level Python API](https://github.com/getstream/stream-python) directly. Documentation is available at the [Stream website](https://getstream.io/docs/?language=python).\n\n```python\nfrom stream_django.client import stream_client\n\nspecial_feed = stream_client.feed('special:42')\nspecial_feed.follow('timeline:60')\n\n```\n\n### Copyright and License Information\n\nCopyright (c) 2014-2017 Stream.io Inc, and individual contributors. All rights reserved.\n\nSee the file \"LICENSE\" for information on the history of this software, terms & conditions for usage, and a DISCLAIMER OF ALL WARRANTIES.",
+    "description": "## Stream Django\n[![Build Status](https://travis-ci.org/GetStream/stream-django.svg?branch=master)](https://travis-ci.org/GetStream/stream-django) [![Coverage Status](https://coveralls.io/repos/github/GetStream/stream-django/badge.svg?branch=master)](https://coveralls.io/github/GetStream/stream-django?branch=master) [![PyPI version](https://badge.fury.io/py/stream-django.svg)](http://badge.fury.io/py/stream-django)\n\n[stream-django](https://github.com/GetStream/stream-django) is a Django client for [Stream](https://getstream.io/), it supports Django from 1.5 up to and including 2.0 using Python 2.7 and 3.4, 3.5 and 3.6.\n\nYou can sign up for a Stream account at https://getstream.io/get_started.\n\nNote there is also a lower level [Python - Stream integration](https://github.com/getstream/stream-python) library which is suitable for all Python applications.\n\n### Build activity streams & news feeds\n\n<p align=\"center\">\n  <img src=\"https://dvqg2dogggmn6.cloudfront.net/images/mood-home.png\" alt=\"Examples of what you can build\" title=\"What you can build\"/>\n</p>\n\nYou can build:\n\n* Activity streams such as seen on Github\n* A twitter style newsfeed\n* A feed like instagram/ pinterest\n* Facebook style newsfeeds\n* A notification system\n\n### Example apps\n\nYou can check out our example apps built using this library (you can deploy them directly to Heroku with 1 click):\n\n* [Pinterest-like example app](https://github.com/GetStream/Stream-Example-Py)\n* [Twitter for scientists example app](https://github.com/GetStream/django_twitter)\n\n### Table of Contents\n<!-- START doctoc generated TOC please keep comment here to allow auto update -->\n<!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->\n\n- [What can you build?](#what-can-you-build)\n- [Demo](#demo)\n- [Installation](#installation)\n- [Model integration](#model-integration)\n- [Feed manager](#feed-manager)\n- [Showing the newsfeed](#showing-the-newsfeed)\n  - [Activity enrichment](#activity-enrichment)\n  - [Templating](#templating)\n- [Settings](#settings)\n- [Temporarily disabling the signals](#temporarily-disabling-the-signals)\n- [Customizing enrichment](#customizing-enrichment)\n- [Low level APIs access](#low-level-apis-access)\n\n<!-- END doctoc generated TOC please keep comment here to allow auto update -->\n\n### Installation\n\nInstall stream_django package with pip:\n\n```pip install stream_django```\n\nadd stream_django to your ```INSTALLED_APPS```\n\n```python\nINSTALLED_APPS = [\n    ...\n    'stream_django'\n]\n\nSTREAM_API_KEY = 'my_api_key'\nSTREAM_API_SECRET = 'my_api_secret_key'\n\n```\n\nLogin with Github on getstream.io and add\n```STREAM_API_KEY``` and ```STREAM_API_SECRET``` to your Django settings module (you can find them in the dashboard).\n\n### Model integration\n\nStream Django can automatically publish new activities to your feed. Simple mixin the Activity class on the models you want to publish.\n\n```python\nfrom stream_django.activity import Activity\n\nclass Tweet(models.Model, Activity):\n    ...\n\nclass Like(models.Model, Activity):\n    ...\n```\n\nEvery time a Tweet is created it will be added to the user's feed. Users which follow the given user will also automatically get the new tweet in their feeds.\n\n#### Activity fields\n\nModels are stored in feeds as activities. An activity is composed of at least the following fields: **actor**, **verb**, **object**, **time**. You can also add more custom data if needed.\nThe Activity mixin will try to set things up automatically:\n\n**object** is a reference to the model instance\n**actor** is a reference to the user attribute of the instance\n**verb** is a string representation of the class name\n\nBy default the actor field will look for an attribute called user or actor and a field called created_at to track creation time.\nIf you're user field is called differently you'll need to tell us where to look for it.\nBelow shows an example how to set things up if your user field is called author.\n\n```python\nclass Tweet(models.Model, Activity):\n    created_at = models.DateTimeField(auto_now_add=True)\n    author = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)\n\n    @property\n    def activity_actor_attr(self):\n        return self.author\n\n```\n\n#### Activity extra data\n\nOften you'll want to store more data than just the basic fields. You achieve this by implementing the extra_activity_data method in the model.\n\nNOTE: you should only return data that json.dumps can handle (datetime instances are supported too).\n\n```python\nclass Tweet(models.Model, Activity):\n\n    @property\n    def extra_activity_data(self):\n        return {'is_retweet': self.is_retweet }\n\n```\n\n\n### Feed manager\n\nDjango Stream comes with a feed_manager class that helps with all common feed operations.\n\n#### Feeds bundled with feed_manager\n\nTo get you started the manager has 4 feeds pre configured. You can add more feeds if your application needs it.\nThe three feeds are divided in three categories.\n\n##### User feed:\nThe user feed stores all activities for a user. Think of it as your personal Facebook page. You can easily get this feed from the manager.\n```python\nfrom stream_django.feed_manager import feed_manager\n\nfeed_manager.get_user_feed(user_id)\n```\n##### News feeds:\nThe news feeds (or timelines) store the activities from the people you follow.\nThere is both a simple timeline newsfeed (similar to twitter) and an aggregated version (like facebook).\n\n```python\ntimeline = feed_manager.get_news_feeds(user_id)['timeline']\ntimeline_aggregated = feed_manager.get_news_feeds(user_id)['timeline_aggregated']\n\n```\n##### Notification feed:\nThe notification feed can be used to build notification functionality.\n\n<p align=\"center\">\n  <img src=\"http://feedly.readthedocs.org/en/latest/_images/fb_notification_system.png\" alt=\"Notification feed\" title=\"Notification feed\"/>\n\nBelow we show an example of how you can read the notification feed.\n```python\nnotification_feed = feed_manager.get_notification_feed(user_id)\n\n```\nBy default the notification feed will be empty. You can specify which users to notify when your model gets created. In the case of a retweet you probably want to notify the user of the parent tweet.\n\n```python\nclass Tweet(models.Model, Activity):\n\n    @property\n    def activity_notify(self):\n        if self.is_retweet and self.parent_tweet.author != self.author:\n            target_feed = feed_manager.get_notification_feed(self.parent_tweet.author_id)\n            return [target_feed]\n\n```\n\nAnother example would be following a user. You would commonly want to notify the user which is being followed.\n\n```python\nclass Follow(models.Model, Activity):\n\n    @property\n    def activity_notify(self):\n        return [feed_manager.get_notification_feed(self.target_user.id)]\n\n```\n\n\n#### Follow a feed\nThe create the newsfeeds you need to notify the system about follow relationships. The manager comes with APIs to let a user's news feeds follow another user's feed. This code lets the current user's timeline and timeline_aggregated feeds follow the target_user's personal feed.\n\n```python\nfeed_manager.follow_user(request.user.id, target_user)\n\n```\n\n### Showing the newsfeed\n\n#### Activity enrichment\n\nWhen you read data from feeds, a like activity will look like this:\n\n```python\n{'actor': 'core.User:1', 'verb': 'like', 'object': 'core.Like:42'}\n```\n\nThis is far from ready for usage in your template. We call the process of loading the references from the database enrichment. An example is shown below:\n\n```python\nfrom stream_django.enrich import Enrich\n\nenricher = Enrich()\nfeed = feed_manager.get_feed('timeline', request.user.id)\nactivities = feed.get(limit=25)['results']\nenriched_activities = enricher.enrich_activities(activities)\n```\n\n\n\n#### Templating\n\nNow that you've enriched the activities you can render the template.\nFor convenience we include the render activity template tag:\n\n```\n{% load activity_tags %}\n\n{% for activity in activities %}\n    {% render_activity activity %}\n{% endfor %}\n\n```\n\nThe render_activity template tag will render the template activity/[aggregated]/[verb].html with the activity as context.\n\nFor example activity/tweet.html will be used to render an normal activity with verb tweet\n\n```\n{{ activity.actor.username }} said \"{{ activity.object.body }} {{ activity.created_at|timesince }} ago\"\n```\n\nand activity/aggregated/like.html for an aggregated activity with verb like\n\n```\n{{ activity.actor_count }} user{{ activity.actor_count|pluralize }} liked {% render_activity activity.activities.0 %}\n```\n\nIf you need to support different kind of templates for the same activity, you can send a third parameter to change the template selection.\n\nThe example below will use the template activity/[aggregated]/homepage_%(verb)s.html\n```\n{% render_activity activity 'homepage' %}\n```\n\n\n### Settings\n\n**STREAM_API_KEY**\nYour stream site api key. Default ```''```\n\n**STREAM_API_SECRET**\nYour stream site api key secret. Default ```''```\n\n**STREAM_LOCATION**\nThe location API endpoint the client will connect to. Eg: ```STREAM_LOCATION='us-east'```\n\n**STREAM_TIMEOUT**\nThe connection timeout (in seconds) for the API client.  Default ```6.0```\n\n**STREAM_FEED_MANAGER_CLASS**\nThe path to the feed manager class. Default ```'stream_django.managers.FeedManager'```\n\n**STREAM_USER_FEED**\nThe name of the feed (as it is configured in your GetStream.io Dasboard) where activities are stored. Default ```'user'```\n\n**STREAM_NEWS_FEEDS**\nThe name of the news feed (as they are configured in your GetStream.io Dasboard) where activities from followed feeds are stored. Default ```{'timeline':'timeline', 'timeline_aggregated':'timeline_aggregated'}```\n\n**STREAM_NOTIFICATION_FEED**\nThe name of the feed (as it is configured in your GetStream.io Dasboard) where activity notifications are stored. Default ```'notification'```\n\n**STREAM_DISABLE_MODEL_TRACKING**\nDisable automatic tracking of Activity models. Default ```False```\n\n### Temporarily disabling the signals\n\nModel syncronization is disabled during schema/data migrations runs, syncdb and fixture loading (and during django test runs).\nYou can completely disable feed publishing via the ```STREAM_DISABLE_MODEL_TRACKING``` django setting.\n\n\n### Customizing enrichment\n\nSometimes you'll want to customize how enrichment works. The documentation will show you several common options.\n\n#### Enrich extra fields\n\nIf you store references to model instances in the activity extra_data you can use the Enrich class to take care of it for you\n\n```python\nfrom stream_django.activity import create_model_reference\n\nclass Tweet(models.Model, Activity):\n\n    @property\n    def extra_activity_data(self):\n        ref = create_model_reference(self.parent_tweet)\n        return {'parent_tweet': ref }\n\n\n# instruct the enricher to enrich actor, object and parent_tweet fields\nenricher = Enrich(fields=['actor', 'object', 'parent_tweet'])\nfeed = feed_manager.get_feed('timeline', request.user.id)\nactivities = feed.get(limit=25)['results']\nenriched_activities = enricher.enrich_activities(activities)\n```\n\n#### Change how models are retrieved\n\nThe enrich class that comes with the packages tries to minimise the amount of database queries. The models are grouped by their class and then retrieved with a pk__in query. You can implement a different approach to retrieve the instances of a model subclassing the ```stream_django.enrich.Enrich``` class.\n\nTo change the retrieval for every model you should override the ```fetch_model_instances``` method; in alternative you can change how certain models' are retrieved by implementing the hook function ```fetch_<model_name>_instances```\n\n```python\nclass MyEnrich(Enrich):\n    '''\n    Overwrites how model instances are fetched from the database\n    '''\n\n    def fetch_model_instances(self, modelClass, pks):\n        '''\n        returns a dict {id:modelInstance} with instances of model modelClass\n        and pk in pks\n        '''\n        ...\n\nclass AnotherEnrich(Enrich):\n    '''\n    Overwrites how Likes instances are fetched from the database\n    '''\n\n    def fetch_like_instances(self, pks):\n        return {l.id: l for l in Like.objects.cached_likes(ids)}\n\n```\n\n\n#### Preload related data\n\nYou will commonly access related objects such as activity['object'].user. To prevent your newsfeed to run N queries you can instruct the manager to load related objects. The manager will use Django's select_related functionality. (https://docs.djangoproject.com/en/dev/ref/models/querysets/#select-related).\n\n```python\nclass Tweet(models.Model, Activity):\n\n    @classmethod\n    def activity_related_models(cls):\n        return ['user']\n\n```\n\n### Full documentation and Low level APIs access\n\nWhen needed you can also use the [low level Python API](https://github.com/getstream/stream-python) directly. Documentation is available at the [Stream website](https://getstream.io/docs/?language=python).\n\n```python\nfrom stream_django.client import stream_client\n\nspecial_feed = stream_client.feed('special:42')\nspecial_feed.follow('timeline:60')\n\n```\n\n### Copyright and License Information\n\nCopyright (c) 2014-2017 Stream.io Inc, and individual contributors. All rights reserved.\n\nSee the file \"LICENSE\" for information on the history of this software, terms & conditions for usage, and a DISCLAIMER OF ALL WARRANTIES.\n",
     "docs_url": null,
-    "download_url": "UNKNOWN",
+    "download_url": "",
     "downloads": {
       "last_day": 0,
       "last_month": 0,
       "last_week": 0
     },
     "home_page": "https://getstream.io/",
-    "keywords": null,
+    "keywords": "",
     "license": "BSD License",
-    "maintainer": null,
-    "maintainer_email": null,
+    "maintainer": "",
+    "maintainer_email": "",
     "name": "stream-django",
-    "platform": "UNKNOWN",
+    "platform": "",
     "project_url": "https://pypi.org/project/stream-django/",
-    "release_url": "https://pypi.org/project/stream-django/1.3.3/",
-    "requires_python": null,
+    "release_url": "https://pypi.org/project/stream-django/1.4.0/",
+    "requires_dist": [],
+    "requires_python": "",
     "summary": "A Django app to build activity, news and notification feeds.",
-    "version": "1.3.3"
+    "version": "1.4.0"
   },
   "releases": {
     "0.1": [
@@ -44,7 +45,7 @@
           "md5": "60aefbe3191f51b3682a8f26e8877fb5",
           "sha256": "2723826eccf196efe632eb120685ee37d015166c0025630578c7fc328306e8e8"
         },
-        "downloads": 1339,
+        "downloads": -1,
         "filename": "stream-django-0.1.tar.gz",
         "has_sig": false,
         "md5_digest": "60aefbe3191f51b3682a8f26e8877fb5",
@@ -62,7 +63,7 @@
           "md5": "f1f2967f0eb2207ef0bf3b6fbc5309e9",
           "sha256": "4ed30e782480a153bfd07d893b3254b8ce6b8f820cefe3a07d3d69c55b343d35"
         },
-        "downloads": 1318,
+        "downloads": -1,
         "filename": "stream-django-0.2.tar.gz",
         "has_sig": false,
         "md5_digest": "f1f2967f0eb2207ef0bf3b6fbc5309e9",
@@ -80,7 +81,7 @@
           "md5": "3e1d200f86652d096b5e50ae2e9ced2a",
           "sha256": "6998922ea5f570cc9acd75cebd821a549eb5be3970f4765a9517648e56c6f2ae"
         },
-        "downloads": 1292,
+        "downloads": -1,
         "filename": "stream-django-0.3.1.tar.gz",
         "has_sig": false,
         "md5_digest": "3e1d200f86652d096b5e50ae2e9ced2a",
@@ -98,7 +99,7 @@
           "md5": "afd3cb91875298cae57418caff6a9bcd",
           "sha256": "b8aec0bc19f99d73ee940b386852bbff7b2b03ce87d257d1bb6432299b392087"
         },
-        "downloads": 1282,
+        "downloads": -1,
         "filename": "stream-django-0.3.2.tar.gz",
         "has_sig": false,
         "md5_digest": "afd3cb91875298cae57418caff6a9bcd",
@@ -116,7 +117,7 @@
           "md5": "6a0b1769617f40358c5e836a6efadbbb",
           "sha256": "6a8f47a931aba6d1dd045a9b7ac75e106e72a164e7d5b152707f16ac000ecf9e"
         },
-        "downloads": 1264,
+        "downloads": -1,
         "filename": "stream-django-0.3.3.tar.gz",
         "has_sig": false,
         "md5_digest": "6a0b1769617f40358c5e836a6efadbbb",
@@ -134,7 +135,7 @@
           "md5": "88e7436122d51ed980d3627e08f2c18a",
           "sha256": "4abc371c2cf9d4b97a6539c015e0d3156c913aa26641c999d8de52ec77397fd5"
         },
-        "downloads": 1293,
+        "downloads": -1,
         "filename": "stream-django-0.4.0.tar.gz",
         "has_sig": false,
         "md5_digest": "88e7436122d51ed980d3627e08f2c18a",
@@ -152,7 +153,7 @@
           "md5": "a6ae8c1ccced2e8b0daa0b3be077fdf7",
           "sha256": "8d9aef0b8db9a65fd719b290b832521ae87ee3bb40bbec80f6de86bb02c569c8"
         },
-        "downloads": 1124,
+        "downloads": -1,
         "filename": "stream-django-1.0.0.tar.gz",
         "has_sig": false,
         "md5_digest": "a6ae8c1ccced2e8b0daa0b3be077fdf7",
@@ -170,7 +171,7 @@
           "md5": "0c3cf9b3524088bc13f9a7da4d26fdc1",
           "sha256": "77262e4969e11e66131834f049467d2fe2c21366ee9da9463adf43d5eb245314"
         },
-        "downloads": 1168,
+        "downloads": -1,
         "filename": "stream-django-1.0.1.tar.gz",
         "has_sig": false,
         "md5_digest": "0c3cf9b3524088bc13f9a7da4d26fdc1",
@@ -188,7 +189,7 @@
           "md5": "d600aabeef0be528e8178d539d1088fd",
           "sha256": "5a7ad0cba6353d756a7bc2beb0f38268c7122eb0d5eaea06b7002b7d23568f82"
         },
-        "downloads": 1132,
+        "downloads": -1,
         "filename": "stream-django-1.0.2.tar.gz",
         "has_sig": false,
         "md5_digest": "d600aabeef0be528e8178d539d1088fd",
@@ -206,7 +207,7 @@
           "md5": "8a0da43a568555cf6fd018c5058958a1",
           "sha256": "471eead4b3b3c38efb8f6216c7eb060acecbf07bf184e51b1f49ed8726bdf913"
         },
-        "downloads": 1134,
+        "downloads": -1,
         "filename": "stream-django-1.0.3.tar.gz",
         "has_sig": false,
         "md5_digest": "8a0da43a568555cf6fd018c5058958a1",
@@ -224,7 +225,7 @@
           "md5": "066433278b12a60bba1024faf0749b5a",
           "sha256": "3c62b9a68de2031f85321372e9279c2cc615d246b6654df2248584a84f5dd9ad"
         },
-        "downloads": 1209,
+        "downloads": -1,
         "filename": "stream-django-1.0.4.tar.gz",
         "has_sig": false,
         "md5_digest": "066433278b12a60bba1024faf0749b5a",
@@ -242,7 +243,7 @@
           "md5": "06e2799ee368545c9c416db6c3bf119d",
           "sha256": "60b8e98ad2927fe03361e861be6b1562781e3cb7226c287296f65a82b66559a7"
         },
-        "downloads": 1218,
+        "downloads": -1,
         "filename": "stream-django-1.0.5.tar.gz",
         "has_sig": false,
         "md5_digest": "06e2799ee368545c9c416db6c3bf119d",
@@ -260,7 +261,7 @@
           "md5": "c7072901380ca2e1a73c744214cd12ae",
           "sha256": "cedb98636bff5672add9564e14da2d0763ebfdb8662306c63f9e39f31727e9be"
         },
-        "downloads": 1210,
+        "downloads": -1,
         "filename": "stream-django-1.0.6.tar.gz",
         "has_sig": false,
         "md5_digest": "c7072901380ca2e1a73c744214cd12ae",
@@ -278,7 +279,7 @@
           "md5": "e69f87622ed2b3428ced36dbda9d35f4",
           "sha256": "c9809288be8e6fb52c6d73816fe32ad53d868f58cb50ad5e5b4b05335f87ac7e"
         },
-        "downloads": 1236,
+        "downloads": -1,
         "filename": "stream-django-1.0.7.tar.gz",
         "has_sig": false,
         "md5_digest": "e69f87622ed2b3428ced36dbda9d35f4",
@@ -296,7 +297,7 @@
           "md5": "b0b999868aeaf77886c0accbcfc0a7da",
           "sha256": "781e49a0896b42dfde2dc68ee34b9afcaf0341ff11a9eb5429b08c7472b436b7"
         },
-        "downloads": 1119,
+        "downloads": -1,
         "filename": "stream-django-1.1.0.tar.gz",
         "has_sig": false,
         "md5_digest": "b0b999868aeaf77886c0accbcfc0a7da",
@@ -314,7 +315,7 @@
           "md5": "0dd37a95888105f7930a7fffbf02ccff",
           "sha256": "e4db48f3268cdf476846dcb48a5ecdca5bc26a7f39f51bdc3669580dacd891ed"
         },
-        "downloads": 1768,
+        "downloads": -1,
         "filename": "stream-django-1.1.1.tar.gz",
         "has_sig": false,
         "md5_digest": "0dd37a95888105f7930a7fffbf02ccff",
@@ -332,7 +333,7 @@
           "md5": "c9624730950521a356fd1744b5b435b5",
           "sha256": "ad8a7dca3241a5cfca77cf6281ca8a92d6963eb24ca9bafbd63bc100222c42b5"
         },
-        "downloads": 2079,
+        "downloads": -1,
         "filename": "stream-django-1.2.0.tar.gz",
         "has_sig": false,
         "md5_digest": "c9624730950521a356fd1744b5b435b5",
@@ -350,7 +351,7 @@
           "md5": "a786c01d0b5def4e0535c7fabedde459",
           "sha256": "8554e042356f8c3f3ebc40733570c0ff68bb71e9cf8670d9c3fbbfe84918c508"
         },
-        "downloads": 1101,
+        "downloads": -1,
         "filename": "stream-django-1.2.1.tar.gz",
         "has_sig": false,
         "md5_digest": "a786c01d0b5def4e0535c7fabedde459",
@@ -368,7 +369,7 @@
           "md5": "b0eb4236089d26af3169c2dd524e5575",
           "sha256": "9ddea29f1ae9025353e6c527bf73c5cea5ab14c287f00a9c4dc278a6339fba6d"
         },
-        "downloads": 798,
+        "downloads": -1,
         "filename": "stream-django-1.2.2.tar.gz",
         "has_sig": false,
         "md5_digest": "b0eb4236089d26af3169c2dd524e5575",
@@ -386,7 +387,7 @@
           "md5": "a5c26f5ecf4851506b0341bf6fbe6281",
           "sha256": "a2f071a8f0b5ecf3694fb8d47471ff17853f0a0f7a9e09f1a9dcc579eb1ff5c7"
         },
-        "downloads": 782,
+        "downloads": -1,
         "filename": "stream-django-1.2.3.tar.gz",
         "has_sig": false,
         "md5_digest": "a5c26f5ecf4851506b0341bf6fbe6281",
@@ -404,7 +405,7 @@
           "md5": "e8caedb54a2ebbdfa2b5bfb282811f91",
           "sha256": "262b06918e59f79f8d5697d98182ebc460054f95d751c0f3a2aa5533d9119c64"
         },
-        "downloads": 3411,
+        "downloads": -1,
         "filename": "stream-django-1.2.4.tar.gz",
         "has_sig": false,
         "md5_digest": "e8caedb54a2ebbdfa2b5bfb282811f91",
@@ -422,7 +423,7 @@
           "md5": "def458290fa49b806f01f62396a04d44",
           "sha256": "fb1343e5f2499a3164e0af8ca866287c8738e5441ccb04d3bbf7319b510e8475"
         },
-        "downloads": 1311,
+        "downloads": -1,
         "filename": "stream-django-1.2.5.tar.gz",
         "has_sig": false,
         "md5_digest": "def458290fa49b806f01f62396a04d44",
@@ -440,7 +441,7 @@
           "md5": "df57c6899e6ed4b3cb9c369956be1ac7",
           "sha256": "f5f2b7bf366937163bc59831b770e72abdade51dd86c80e9b46ffe4aa871660e"
         },
-        "downloads": 1926,
+        "downloads": -1,
         "filename": "stream-django-1.2.6.tar.gz",
         "has_sig": false,
         "md5_digest": "df57c6899e6ed4b3cb9c369956be1ac7",
@@ -458,7 +459,7 @@
           "md5": "572e62c9aed974456a69fb4235245c2c",
           "sha256": "44ef8b50015c5aa49678a54758850d1661d06c65c8bcdf2998e087c4be807589"
         },
-        "downloads": 132,
+        "downloads": -1,
         "filename": "stream-django-1.3.0.tar.gz",
         "has_sig": false,
         "md5_digest": "572e62c9aed974456a69fb4235245c2c",
@@ -476,7 +477,7 @@
           "md5": "e5fc122cf423466331165d44022683cf",
           "sha256": "92854db3bcf9357c0c3eb5114a8f4ecc24b89e55e9f545c3e30d3f5a825878cc"
         },
-        "downloads": 583,
+        "downloads": -1,
         "filename": "stream-django-1.3.1.tar.gz",
         "has_sig": false,
         "md5_digest": "e5fc122cf423466331165d44022683cf",
@@ -494,7 +495,7 @@
           "md5": "c61a06a9f106bab9a9de5183030e042f",
           "sha256": "fc49d7cbccf17142d40d366c51adae65f7632e8989ab52b707b84349874cd36f"
         },
-        "downloads": 37,
+        "downloads": -1,
         "filename": "stream-django-1.3.2.tar.gz",
         "has_sig": false,
         "md5_digest": "c61a06a9f106bab9a9de5183030e042f",
@@ -512,7 +513,7 @@
           "md5": "f3232fd8a11f004f7052f62e1b05b613",
           "sha256": "74b80a5a9e90c405211563a30a8b760502611db61ec008c5e2ed9b3eda960ab5"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "stream-django-1.3.3.tar.gz",
         "has_sig": false,
         "md5_digest": "f3232fd8a11f004f7052f62e1b05b613",
@@ -522,24 +523,42 @@
         "upload_time": "2017-05-02T13:08:43",
         "url": "https://files.pythonhosted.org/packages/59/e7/e1ebb1ee3b3544176cf306906e321231c0f7ee43197a3a55f26f43d67ba0/stream-django-1.3.3.tar.gz"
       }
+    ],
+    "1.4.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "11a09cbbe31f87d99307dec53139ffa6",
+          "sha256": "e9f6a6e6e1f520b495c0a9b460ee9af0d278722d7ac9fb88c8795bf2d15dd8e8"
+        },
+        "downloads": -1,
+        "filename": "stream-django-1.4.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "11a09cbbe31f87d99307dec53139ffa6",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 13726,
+        "upload_time": "2017-12-22T12:02:26",
+        "url": "https://files.pythonhosted.org/packages/84/a5/5c3fa80c9b82304af7b224685a9b336d2744df1acff35869b0ac17100b25/stream-django-1.4.0.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "f3232fd8a11f004f7052f62e1b05b613",
-        "sha256": "74b80a5a9e90c405211563a30a8b760502611db61ec008c5e2ed9b3eda960ab5"
+        "md5": "11a09cbbe31f87d99307dec53139ffa6",
+        "sha256": "e9f6a6e6e1f520b495c0a9b460ee9af0d278722d7ac9fb88c8795bf2d15dd8e8"
       },
-      "downloads": 0,
-      "filename": "stream-django-1.3.3.tar.gz",
+      "downloads": -1,
+      "filename": "stream-django-1.4.0.tar.gz",
       "has_sig": false,
-      "md5_digest": "f3232fd8a11f004f7052f62e1b05b613",
+      "md5_digest": "11a09cbbe31f87d99307dec53139ffa6",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 17371,
-      "upload_time": "2017-05-02T13:08:43",
-      "url": "https://files.pythonhosted.org/packages/59/e7/e1ebb1ee3b3544176cf306906e321231c0f7ee43197a3a55f26f43d67ba0/stream-django-1.3.3.tar.gz"
+      "size": 13726,
+      "upload_time": "2017-12-22T12:02:26",
+      "url": "https://files.pythonhosted.org/packages/84/a5/5c3fa80c9b82304af7b224685a9b336d2744df1acff35869b0ac17100b25/stream-django-1.4.0.tar.gz"
     }
   ]
 }
