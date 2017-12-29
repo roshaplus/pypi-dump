@@ -1,0 +1,70 @@
+{
+  "info": {
+    "author": "Andy Peace",
+    "author_email": "andrew.peace@gmail.com",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 2 - Pre-Alpha",
+      "License :: OSI Approved :: MIT License"
+    ],
+    "description": "The BoilerIO Software Thermostat\n================================\n\nBoilerIO can control heating in a zone of your home. Code is provided\nhere to connect with Danfoss RF receivers though other implementations\ncould easily be added, and to receive temperature updates over MQTT in a\nformat described later in this README.\n\nThis has been tested with the Danfoss RF transciever code in the\nthermostat.git repository at https://github.com/adpeace/thermostat.git.\n\nNo warranty is provided: please be careful if you are messing with your\nown heating system.\n\nFor more information, please see https://hackingathome.wordpress.com.\n\nInstallation\n------------\n\nCheck out the repository, then install using ``pip``:\n\n::\n\n    $ git clone https://github.com/adpeace/boilerio.git\n    $ cd boilerio\n    $ pip install .\n\nUse ``-e`` to ``pip`` to install in development mode (i.e. just link to\nthe checked-out source instead of installing it).\n\nThe scheduler\n-------------\n\nThe scheduler comes in four parts:\n\n1. The database. You need to be running postgres; once you have\n   installed postgres you can create a database user and database for\n   the scheduler, then user scheduler.sql to create the requisite\n   tables. (This currently assumes the databsae and a role exists called\n   ``scheduler``.)\n\n2. The controller. This is the ``scheduler`` Python script. Ensure this\n   daemon is running to push target temperature updates to the boiler\n   controller (the maintaintemp script) and update the cache of the\n   current temperature in the backend web app.\n\n3. The web app. This is the ``schedulerweb`` Flask app. The recommended\n   configuration is for this to be proxied through nginx and run inside\n   uwsgi.\n\n4. The web-based UI. This talks to the schedulerweb app and presents a\n   UI where the current temperature and schedule can be configured.\n\nYou'll need to the running the ``maintaintemp`` service also described\nbelow to issue commands to your boiler.\n\nExample uWSGI configuration for ``schedulerweb`` (assuming you have the\nPython package installed) - this can be placed in\n``/etc/uwsgi/apps-available`` on Ubuntu's version of uwsgi:\n\n::\n\n    [uwsgi]\n    socket = /var/www/boilerio/thermostat.sock\n    module = boilerio.schedulerweb:app\n    logto = /var/log/uwsgi/boilerio/thermostat.log\n    uid = boilerio\n    gid = www-data\n    chmod-socket = 664\n\nboiler\\_to\\_mqtt\n----------------\n\nThe ``boiler_to_mqtt`` script implements an MQTT-topic based interface\non top of the serial protocol provided in the thermostat.git repository.\nIn short: it turns the boiler on and off via MQTT. The serial interface\nin thermostat.git is designed to interact with a Danfoss RF thermostat\nreceiver; if you wanted to use a different receiver you can substitute a\ndifferent service.\n\nOrdinarily you'd leave this service running so that other services can\nturn the boiler on/off as needed.\n\nThis service and others in this repository use a common configuration\nfile. See below for more information.\n\nmaintaintemp\n------------\n\nThis is the main script and implements a PID controller to maintain a\ngiven set temperature.\n\nExample usage:\n\n::\n\n    $ maintaintemp emon_sensors/emonth5 0xBAB1\n\nThe first argument is an MQTT topic from which to get temperature\nupdates. These updates should have a JSON payload with an object with at\nleast a ``temperature`` value. The temperature updates can be at any\nfrequency, but I've mostly tested with updates being sent every minute.\n\nThe second argument is the thermostat ID to use in messages to the\nboiler. For the Danfoss RF receiver I've been testing with, you will\nindependently need to send a 'learn' command; this should be transmitted\nrepeatedly (with the correct thermostat ID) while you hold the 'PROG'\nand 'CH1/2' button and wait until the light flashes green on the\ncontroller.\n\nYou can send learn packets in a loop with a simple shell loop, if you\nhave the mosquitto clients installed and are running the\n``boiler_to_mqtt.py`` script:\n\n::\n\n    echo -n \"Learning mode - program boiler then hit enter... \"\n    while ! read -t 1 ; do\n        mosquitto_pub -h <host> -u <username> -P <passwd> -t heating/zone/demand \\\n                      -m '{\"command\": \"L\", \"thermostat\": 47793}'\n    done\n\nThe ``heating/deamnd`` topic should match the configuration file you set\nup - see below for more information.\n\nThe scheduler, mentioend above, will issue commands to this script to\nset the target temperature. If you don't want to use the scheduler, you\ncan publish messages to the MQTT topic listed as the\n``target_temp_topic`` in your configuration file. These should be of the\nform:\n\n::\n\n    {target: 19.5}\n\nFor a broad description of the behaviour of this program, please see the\nblog entry on the website mentioned above.\n\nboilersim\n---------\n\nThis is a trivial simulator intended to help debug and improve\n``maintaintemp``. It follows a really simple heating/cooling model and\ngenerates a table as output.\n\nTo run, use a command-line such as:\n\n::\n\n    $ boilersim -r 18 19.5 600\n\nThe ``-r`` option introduces some random noise into the temperature\nreadings generated by the simulation when passing them to the\ncontroller.\n\nThe first positional argument is the starting indoor temperature to\nsimulate. The second argument is the target temperature. The third\nargument is the simulated runtime in minutes.\n\nThis program produces logging output to stderr, and a space-separated\noutput to stdout. The output is similar to:\n\n::\n\n    ...\n    1.0 0 0 17.9964773317 17.9876417779 0 0 0\n    ...\n\nThe columns are:\n\n1. The time into the simulation, in minutes\n2. The amount of time in that minute that the boiler was on for in the\n   simulation.\n3. The current duty cycle of the boiler in the simulation.\n4. The current simulated room temperature\n5. The fake temperature reading passed to the controller including any\n   error introduced by the ``-r`` option.\n6. The current value of the proportional term of the PID controller.\n7. The current value of the integral term of the PID controller.\n8. The current value of the differential term of the PID controller.\n\nYou can use the ``plot\\_sim.gpi`` gnuplot script to plot the output of\nthe simulation. E.g.:\n\n::\n\n    $ boilersim -r 18 19.5 600  2>log >sim_data\n    $ gnuplot plot_sim.gpi\n\nThe gnuplot script assumes the simulation output is saved to a file\ncalled ``sim\\_data``.\n\nConfig file\n===========\n\nOther than ``boilersim``, a config file is needed for the programs here.\nThis is to help make them usable as daemons.\n\nHere is a sample configuration file, to be placed in\n``/etc/sensors/config``:\n\n::\n\n    [mqtt]\n    host = mqtt.lan\n    user = user\n    password = imnottellingyou\n\n    [heating]\n    # Various MQTT topic names to use.  These can be anything but are specified in\n    # the config in case you have other software that constrains your choices, and\n    # ensures they are consistent across apps.\n    info_basetopic = heating/zone/info\n    demand_request_topic = heating/zone/demand\n    temperature_sensor_topic = emon_sensors/emonth5\n    target_temp_topic = heating/thermostat/target_temp\n    thermostat_status_topic = heating/thermostat/status\n    thermostat_schedule_change_topic = heating/thermostat_control/update\n\n    scheduler_db_host = hub.lan\n    scheduler_db_name = scheduler\n    scheduler_db_user = scheduler\n    scheduler_db_password = imnottellingyou\n\n    scheduler_url = http://localhost/api\n\n    # Optional username and password.  If provided, they are used with HTTP basic\n    # auth to talk to the scheduler.\n    scheduler_username = username\n    scheduler_password = imnottellingyou",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "https://github.com/adpeace/boilerio.git",
+    "keywords": "",
+    "license": "MIT",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "boilerio",
+    "platform": "",
+    "project_url": "https://pypi.org/project/boilerio/",
+    "release_url": "https://pypi.org/project/boilerio/0.0.1/",
+    "requires_dist": [],
+    "requires_python": "",
+    "summary": "A software thermostat and heating control system",
+    "version": "0.0.1"
+  },
+  "releases": {
+    "0.0.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d64d82731353ced9f3ab098edc45fe34",
+          "sha256": "5a3f045871f24344a98803fb27fb1544e51443b38d42a52b8065ac4516e1b918"
+        },
+        "downloads": -1,
+        "filename": "boilerio-0.0.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d64d82731353ced9f3ab098edc45fe34",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 17756,
+        "upload_time": "2017-12-28T22:39:24",
+        "url": "https://files.pythonhosted.org/packages/88/bd/0a901a3c5a6949ec152a1ad81c0a3b132c7125f194892a593f3a939b5cba/boilerio-0.0.1.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "d64d82731353ced9f3ab098edc45fe34",
+        "sha256": "5a3f045871f24344a98803fb27fb1544e51443b38d42a52b8065ac4516e1b918"
+      },
+      "downloads": -1,
+      "filename": "boilerio-0.0.1.tar.gz",
+      "has_sig": false,
+      "md5_digest": "d64d82731353ced9f3ab098edc45fe34",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 17756,
+      "upload_time": "2017-12-28T22:39:24",
+      "url": "https://files.pythonhosted.org/packages/88/bd/0a901a3c5a6949ec152a1ad81c0a3b132c7125f194892a593f3a939b5cba/boilerio-0.0.1.tar.gz"
+    }
+  ]
+}
