@@ -12,7 +12,7 @@
       "Topic :: Internet",
       "Topic :: Software Development :: Libraries"
     ],
-    "description": "# Kinesis Python\n\nThe [official Kinesis python library](https://github.com/awslabs/amazon-kinesis-client-python) requires the use of\nAmazon's \"MultiLangDaemon\", which is a Java executable that operates by piping messages over STDIN/STDOUT.\n\n\u0ca0\\_\u0ca0\n\nWhile the desire to have a single implementation of the client library from a maintenance standpoint makes sense for\nthe team responsible for the KPL, requiring the JRE to be installed and having to account for the overhead of the\nstream being consumed by Java and Python is not desireable for teams working in environments without Java.\n\nThis is a pure-Python implementation of Kinesis producer and consumer classes that leverages Python's multiprocessing\nmodule to spawn a process per shard and then sends the messages back to the main process via a Queue.  It only depends\non the boto3 library.\n\n\n# Overview\n\nAll of the functionality is wrapped in two classes: `KinesisConsumer` and `KinesisProducer`\n\n## Consumer\n\nThe consumer works by launching a process per shard in the stream and then implementing the Python iterator protocol.\n\n```python\nfrom kinesis.consumer import KinesisConsumer\n\nconsumer = KinesisConsumer(stream_name='my-stream')\nfor message in consumer:\n    print \"Received message: {0}\".format(message)\n```\n\nMessages received from each of the shard processes are passed back to the main process through a Python Queue where\nthey are yielded for processing.  Messages are not strictly ordered, but this is a property of Kinesis and not this \nimplementation.\n\n\n### Locking, Checkpointing & Multi-instance consumption\n\nWhen deploying an application with multiple instances DynamoDB can be leveraged as a way to coordinate which instance\nis responsible for which shard, as it is not desirable to have each instance process all records.\n\nWith or without multiple nodes it is also desirable to checkpoint the stream as you process records so that you can\npickup from where you left off if you restart the consumer.\n\nA \"state\" backend that leverages DynamoDB allows consumers to coordinate which node is responsible which shards and\nwhere in the stream we are currently reading from.\n\n```python\nfrom kinesis.consumer import KinesisConsumer\nfrom kinesis.state import DynamoDB\n\nconsumer = KinesisConsumer(stream_name='my-stream', state=DynamoDB(table_name='my-kinesis-state'))\nfor message in consumer:\n    print \"Received message: {0}\".format(message)\n```\n\n\n## Producer\n\nThe producer works by launching a single process for accumulation and publishing to the stream.\n\n```python\nfrom kinesis.producer import KinesisProducer\n\nproducer = KinesisProducer(stream_name='my-stream')\nproducer.put('Hello World from Python')\n```\n\nBy default the accumulation buffer time is 500ms, or the max record size of 1Mb, whichever occurs first.  You can\nchange the buffer time when you instantiate the producer via the `buffer_time` kwarg, specified in seconds.  For\nexample, if your primary concern is budget and not performance you could accumulate over a 60 second duration.\n\n```python\nproducer = KinesisProducer(stream_name='my-stream', buffer_time=60)\n```\n\nThe background process takes precaution to ensure that any accumulated messages are flushed to the stream at\nshutdown time through signal handlers and the python atexit module, but it is not fully durable and if you were to\nsend a `kill -9` to the producer process any accumulated messages would be lost.\n\n\n",
+    "description": "Kinesis Python\n==============\n\n.. image:: https://img.shields.io/travis/NerdWalletOSS/kinesis-python.svg\n           :target: https://travis-ci.org/NerdWalletOSS/kinesis-python\n\n.. image:: https://img.shields.io/codecov/c/github/NerdWalletOSS/kinesis-python.svg\n           :target: https://codecov.io/github/NerdWalletOSS/kinesis-python\n\n.. image:: https://img.shields.io/pypi/v/kinesis-python.svg\n           :target: https://pypi.python.org/pypi/kinesis-python\n           :alt: Latest PyPI version\n\n\nThe `official Kinesis python library`_ requires the use of Amazon's \"MultiLangDaemon\", which is a Java executable that\noperates by piping messages over STDIN/STDOUT.\n\n.. code-block::\n\n    \u0ca0_\u0ca0\n\nWhile the desire to have a single implementation of the client library from a maintenance standpoint makes sense for\nthe team responsible for the KPL, requiring the JRE to be installed and having to account for the overhead of the\nstream being consumed by Java and Python is not desireable for teams working in environments without Java.\n\nThis is a pure-Python implementation of Kinesis producer and consumer classes that leverages Python's multiprocessing\nmodule to spawn a process per shard and then sends the messages back to the main process via a Queue.  It only depends\non `boto3`_ (AWS SDK), `offspring`_ (Subprocess implementation) and `six`_ (py2/py3 compatibility).\n\nIt also includes a DynamoDB state back-end that allows for multi-instance consumption of multiple shards, and stores the\ncheckpoint data so that you can resume where you left off in a stream following restarts or crashes.\n\n.. _boto3: https://pypi.python.org/pypi/boto3\n.. _offspring: https://pypi.python.org/pypi/offspring\n.. _six: https://pypi.python.org/pypi/six\n.. _official Kinesis python library: https://github.com/awslabs/amazon-kinesis-client-python\n\n\nOverview\n--------\n\nAll of the functionality is wrapped in two classes: ``KinesisConsumer`` and ``KinesisProducer``\n\nConsumer\n~~~~~~~~\n\nThe consumer works by launching a process per shard in the stream and then implementing the Python iterator protocol.\n\n.. code-block:: python\n\n    from kinesis.consumer import KinesisConsumer\n\n    consumer = KinesisConsumer(stream_name='my-stream')\n    for message in consumer:\n        print \"Received message: {0}\".format(message)\n\nMessages received from each of the shard processes are passed back to the main process through a Python Queue where they\nare yielded for processing.  Messages are not strictly ordered, but this is a property of Kinesis and not this\nimplementation.\n\n\nLocking, Checkpointing & Multi-instance consumption\n^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nWhen deploying an application with multiple instances DynamoDB can be leveraged as a way to coordinate which instance\nis responsible for which shard, as it is not desirable to have each instance process all records.\n\nWith or without multiple nodes it is also desirable to checkpoint the stream as you process records so that you can\npickup from where you left off if you restart the consumer.\n\nA \"state\" backend that leverages DynamoDB allows consumers to coordinate which node is responsible which shards and\nwhere in the stream we are currently reading from.\n\n.. code-block:: python\n\n    from kinesis.consumer import KinesisConsumer\n    from kinesis.state import DynamoDB\n\n    consumer = KinesisConsumer(stream_name='my-stream', state=DynamoDB(table_name='my-kinesis-state'))\n    for message in consumer:\n        print \"Received message: {0}\".format(message)\n\n\nThe DynamoDB table must already exist and must have a ``HASH`` key of ``shard``, with type ``S`` (string).\n\n\nProducer\n~~~~~~~~\n\nThe producer works by launching a single process for accumulation and publishing to the stream.\n\n.. code-block:: python\n\n    from kinesis.producer import KinesisProducer\n\n    producer = KinesisProducer(stream_name='my-stream')\n    producer.put('Hello World from Python')\n\n\nBy default the accumulation buffer time is 500ms, or the max record size of 1Mb, whichever occurs first.  You can\nchange the buffer time when you instantiate the producer via the ``buffer_time`` kwarg, specified in seconds.  For\nexample, if your primary concern is budget and not performance you could accumulate over a 60 second duration.\n\n.. code-block:: python\n\n    producer = KinesisProducer(stream_name='my-stream', buffer_time=60)\n\n\nThe background process takes precaution to ensure that any accumulated messages are flushed to the stream at\nshutdown time through signal handlers and the python atexit module, but it is not fully durable and if you were to\nsend a ``kill -9`` to the producer process any accumulated messages would be lost.\n\n\n\nAWS Permissions\n---------------\n\nBy default the producer, consumer & state classes all use the default `boto3 credentials chain`_.  If you wish to alter\nthis you can instantiate your own ``boto3.Session`` object and pass it into the constructor via the ``boto3_session``\nkeyword argument of ``KinesisProducer``, ``KinesisConsumer`` or ``DynamoDB``.\n\n.. _boto3 credentials chain: http://boto3.readthedocs.io/en/latest/guide/configuration.html#configuring-credentials\n\n\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -28,7 +28,7 @@
     "name": "kinesis-python",
     "platform": "",
     "project_url": "https://pypi.org/project/kinesis-python/",
-    "release_url": "https://pypi.org/project/kinesis-python/0.1.5/",
+    "release_url": "https://pypi.org/project/kinesis-python/0.1.6/",
     "requires_dist": [
       "six (<2.0,>=1.11.0)",
       "offspring (<1.0,>=0.0.3)",
@@ -36,7 +36,7 @@
     ],
     "requires_python": "",
     "summary": "Low level, multiprocessing based AWS Kinesis producer & consumer library",
-    "version": "0.1.5"
+    "version": "0.1.6"
   },
   "releases": {
     "0.0.4": [
@@ -156,56 +156,106 @@
         "upload_time": "2017-12-31T21:29:42",
         "url": "https://files.pythonhosted.org/packages/cb/15/68817ac1f497ecc3e6711d848d325237881270e9cc4832df762fcde8fc00/kinesis-python-0.1.5.tar.gz"
       }
+    ],
+    "0.1.6": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ec61753fb01099f5597a90dcd5db4347",
+          "sha256": "e3c1581bcd434261dae0390138102c10fb6b33e7372c8a1c0ec603f6dfe0ae67"
+        },
+        "downloads": -1,
+        "filename": "kinesis_python-0.1.6-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "ec61753fb01099f5597a90dcd5db4347",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2",
+        "size": 13179,
+        "upload_time": "2018-01-02T01:19:26",
+        "url": "https://files.pythonhosted.org/packages/69/2c/a6cd5e012151fd5cae8f932d64d5ce2a4b2f3ea7bea6c3b1d13cf1c53f51/kinesis_python-0.1.6-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d83cc70ada4750b7ec91e0735937e8ac",
+          "sha256": "c741b642eff75f41e1ee11edd47664b7f6f4b9e52532a751f3de4a49f7b2d90a"
+        },
+        "downloads": -1,
+        "filename": "kinesis_python-0.1.6-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "d83cc70ada4750b7ec91e0735937e8ac",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "size": 13179,
+        "upload_time": "2018-01-02T01:17:30",
+        "url": "https://files.pythonhosted.org/packages/8f/e6/34aaf989bc1b59b581153a973ba1999fabf9104d9248424b0bc1121b4cd6/kinesis_python-0.1.6-py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "99dbb693a53914a59dbf790367407e91",
+          "sha256": "b78f3c01599ab3730cc2c86f635dac95296aa708dce7707905b22f6ee7d6ad0b"
+        },
+        "downloads": -1,
+        "filename": "kinesis-python-0.1.6.tar.gz",
+        "has_sig": false,
+        "md5_digest": "99dbb693a53914a59dbf790367407e91",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9384,
+        "upload_time": "2018-01-02T01:17:31",
+        "url": "https://files.pythonhosted.org/packages/59/9f/2afe56e91cc8c82c07c027fec3d733498db4a9fd03baa9840d8973baacd1/kinesis-python-0.1.6.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "35323cb36a8478f2708c38e870f74bf5",
-        "sha256": "87edabb4568f2c0c9c156e8281ebebab173f645081e790b7c4cb854eba2a3830"
+        "md5": "ec61753fb01099f5597a90dcd5db4347",
+        "sha256": "e3c1581bcd434261dae0390138102c10fb6b33e7372c8a1c0ec603f6dfe0ae67"
       },
       "downloads": -1,
-      "filename": "kinesis_python-0.1.5-py2-none-any.whl",
+      "filename": "kinesis_python-0.1.6-py2-none-any.whl",
       "has_sig": false,
-      "md5_digest": "35323cb36a8478f2708c38e870f74bf5",
+      "md5_digest": "ec61753fb01099f5597a90dcd5db4347",
       "packagetype": "bdist_wheel",
       "python_version": "py2",
-      "size": 12071,
-      "upload_time": "2017-12-31T21:29:40",
-      "url": "https://files.pythonhosted.org/packages/75/c9/bf9a3c05801b2c12476a83dac39657978a6cc03a333abbcc6ea5a499b0c1/kinesis_python-0.1.5-py2-none-any.whl"
+      "size": 13179,
+      "upload_time": "2018-01-02T01:19:26",
+      "url": "https://files.pythonhosted.org/packages/69/2c/a6cd5e012151fd5cae8f932d64d5ce2a4b2f3ea7bea6c3b1d13cf1c53f51/kinesis_python-0.1.6-py2-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "1d73932a0c5c848ca07c32d7bf4dbaf1",
-        "sha256": "654a6be32911635f67a3299862e84a399eb7dc7249be82b288176eef22c57425"
+        "md5": "d83cc70ada4750b7ec91e0735937e8ac",
+        "sha256": "c741b642eff75f41e1ee11edd47664b7f6f4b9e52532a751f3de4a49f7b2d90a"
       },
       "downloads": -1,
-      "filename": "kinesis_python-0.1.5-py3-none-any.whl",
+      "filename": "kinesis_python-0.1.6-py3-none-any.whl",
       "has_sig": false,
-      "md5_digest": "1d73932a0c5c848ca07c32d7bf4dbaf1",
+      "md5_digest": "d83cc70ada4750b7ec91e0735937e8ac",
       "packagetype": "bdist_wheel",
       "python_version": "py3",
-      "size": 12070,
-      "upload_time": "2017-12-31T21:30:52",
-      "url": "https://files.pythonhosted.org/packages/a5/f2/1d0a17cf6351e0703cef03edbce0c6d18d835be7196e2670bd6ab775f3b9/kinesis_python-0.1.5-py3-none-any.whl"
+      "size": 13179,
+      "upload_time": "2018-01-02T01:17:30",
+      "url": "https://files.pythonhosted.org/packages/8f/e6/34aaf989bc1b59b581153a973ba1999fabf9104d9248424b0bc1121b4cd6/kinesis_python-0.1.6-py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "c14efadb64aab08b3fbf775fb554c97d",
-        "sha256": "6de1bcfdb439033e3bf9b7d1e6398e576a62964cb12049cd585732c4efcb63f1"
+        "md5": "99dbb693a53914a59dbf790367407e91",
+        "sha256": "b78f3c01599ab3730cc2c86f635dac95296aa708dce7707905b22f6ee7d6ad0b"
       },
       "downloads": -1,
-      "filename": "kinesis-python-0.1.5.tar.gz",
+      "filename": "kinesis-python-0.1.6.tar.gz",
       "has_sig": false,
-      "md5_digest": "c14efadb64aab08b3fbf775fb554c97d",
+      "md5_digest": "99dbb693a53914a59dbf790367407e91",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 8751,
-      "upload_time": "2017-12-31T21:29:42",
-      "url": "https://files.pythonhosted.org/packages/cb/15/68817ac1f497ecc3e6711d848d325237881270e9cc4832df762fcde8fc00/kinesis-python-0.1.5.tar.gz"
+      "size": 9384,
+      "upload_time": "2018-01-02T01:17:31",
+      "url": "https://files.pythonhosted.org/packages/59/9f/2afe56e91cc8c82c07c027fec3d733498db4a9fd03baa9840d8973baacd1/kinesis-python-0.1.6.tar.gz"
     }
   ]
 }
