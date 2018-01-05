@@ -6,14 +6,13 @@
     "classifiers": [
       "Intended Audience :: Developers",
       "License :: OSI Approved :: MIT License",
-      "Natural Language :: English",
       "Operating System :: OS Independent",
       "Programming Language :: Python :: 3.6",
       "Topic :: System :: Monitoring"
     ],
-    "description": "UNKNOWN",
+    "description": "prometheus_metrics_proto\n########################\n\nThe ``prometheus_metrics_proto`` package provides Prometheus Protobuf data\nstructures and a set of helper function to assist generating Prometheus\nProtocol Buffer format metrics and serializing them in preparation for\nnetwork transfer.\n\nThe collection of metrics and the management of Summary Quantiles and\nHistogram Buckets are outside the scope of functionality provided by\nthis package.\n\nAn example of a project using ``prometheus_metrics_proto`` this is\n`aioprometheus <https://github.com/claws/aioprometheus>`_ which uses it\nwithin the the BinaryFormatter.\n\nThe Protocol Buffer specification used by ``prometheus_metrics_proto`` was\nobtained from the Prometheus `client model <https://github.com/prometheus/client_model/blob/master/metrics.proto>`_ repo.\n\n\nInstall\n-------\n\n.. code-block:: console\n\n    $ pip install prometheus_metrics_proto\n\n\nBackground\n----------\n\nCreating metrics that can be ingested by Prometheus is relatively simple,\nbut does require knowledge of how they are composed.\n\nThe Prometheus server expects to ingest ``MetricsFamily`` objects when it\nscrapes an endpoint exposing Protocol Buffer format data.\n\nA ``MetricFamily`` object is a container that holds the metric name, a help\nstring and ``Metric`` objects. Each ``MetricFamily`` within the same\nexposition must have a unique name.\n\nA ``Metric`` object is a container for a single instance of a specific metric\ntype. Valid metric types are Counter, Gauge, Histogram and Summary. Each\n``Metric`` within the same ``MetricFamily`` must have a unique set of\n``LabelPair`` fields. This is commonly referred to as multi-dimensional metrics.\n\n\nExample\n-------\n\nThe ``prometheus_metrics_proto`` package provides helper functions to assist with\ngenerating Prometheus metrics objects.\n\nThe example below shows how these functions can be used to construct metrics\nand encode them into a format suitable to send to Prometheus server in a\nresponse.\n\n.. code:: python\n\n    #!/usr/bin/env python\n    '''\n    This script demonstrates the high level helper functions used to assist\n    creating various metrics kinds as well as how to encode the metrics into\n    a form that can be sent to Prometheus server.\n    '''\n\n    import prometheus_metrics_proto as pmp\n\n\n    def main():\n\n        # Define some labels that we want added to all metrics. These labels are\n        # independent of the instance labels that define a metric as unique.\n        # These could be used to add hostname, app name, etc.\n        const_labels = {'host': 'examplehost', 'app': 'my_app'}\n\n        # Create a Counter metric to track logged in users. This counter has\n        # 5 separate instances.\n        # We'll make use of the optional const_labels argument to add extra\n        # constant labels.\n        # We will also add a timestamp to the metric instances.\n        # We will request that the labels be sorted.\n        cm = pmp.create_counter(\n            'logged_users_total',\n            'Logged users in the application.',\n            (\n                ({'country': \"sp\", \"device\": \"desktop\"}, 520),\n                ({'country': \"us\", \"device\": \"mobile\"}, 654),\n                ({'country': \"uk\", \"device\": \"desktop\"}, 1001),\n                ({'country': \"de\", \"device\": \"desktop\"}, 995),\n                ({'country': \"zh\", \"device\": \"desktop\"}, 520),\n            ),\n            timestamp=True,\n            const_labels=const_labels,\n            ordered=True)\n\n        # Create a Gauge metric, similar to the counter above.\n        gm = pmp.create_gauge(\n            'logged_users_total',\n            'Logged users in the application.',\n            (\n                ({'country': \"sp\", \"device\": \"desktop\"}, 520),\n                ({'country': \"us\", \"device\": \"mobile\"}, 654),\n                ({'country': \"uk\", \"device\": \"desktop\"}, 1001),\n                ({'country': \"de\", \"device\": \"desktop\"}, 995),\n                ({'country': \"zh\", \"device\": \"desktop\"}, 520),\n            ),\n            timestamp=True,\n            const_labels=const_labels,\n            ordered=True)\n\n        # Now lets create a Summary and Histogram metric object. These forms\n        # of metrics are slightly more complicated.\n        #\n        # Remember, the collection of metrics and the management of Summary\n        # Quantiles and Histogram Buckets are outside the scope of\n        # functionality provided by this package.\n        #\n        # The following examples assume they are taking the data values from\n        # a management library that can also emit the sum and count fields\n        # expected for both Summary and Histogram metrics.\n\n        # Create a Summary metric. The values for a summary are slightly\n        # different to a Counter or Gauge. They are composed of a dict representing\n        # the various quantile values of the metric. The count and sum are\n        # expected to be present in this dict.\n        sm = pmp.create_summary(\n            'request_payload_size_bytes',\n            'Request payload size in bytes.',\n            (\n                ({'route': '/'}, {0.5: 4.0, 0.9: 5.2, 0.99: 5.2, 'sum': 25.2, 'count': 4}),\n                ({'route': '/data'}, {0.5: 4.0, 0.9: 5.2, 0.99: 5.2, 'sum': 25.2, 'count': 4}),\n            ),\n            timestamp=True,\n            const_labels=const_labels,\n            ordered=True)\n\n        # Create a Histogram metric. The values for a histogram are slightly\n        # different to a Counter or Gauge. They are composed of a dict representing\n        # the various bucket values of the metric. The cumulative count and sum\n        # values are expected to be present in this dict.\n        #\n        # Libraries manageing buckets typically have add a POS_INF upper bound to\n        # catch values beyond the largest bucket bound. Simulate this behavior in\n        # the data below.\n        POS_INF = float(\"inf\")\n\n        hm = pmp.create_histogram(\n            'request_latency_seconds',\n            'Request latency in seconds.',\n            (\n                ({'route': '/'}, {5.0: 3, 10.0: 2, 15.0: 1, POS_INF: 0, 'count': 6, 'sum': 46.0}),\n                ({'route': '/data'}, {5.0: 3, 10.0: 2, 15.0: 1, POS_INF: 0, 'count': 6, 'sum': 46.0}),\n            ),\n            timestamp=True,\n            const_labels=const_labels,\n            ordered=True)\n\n        # Serialize a sequence of metrics into a payload suitable for network\n        # transmission.\n        input_metrics = (cm, gm, sm, hm)\n        payload = pmp.encode(*input_metrics)\n        assert isinstance(payload, bytes)\n\n        # De-serialize the payload into a sequence of MetricsFamily objects.\n        recovered_metrics = pmp.decode(payload)\n\n        # Confirm that the round trip re-produced the same number of metrics\n        # and that the metrics are identical.\n        assert len(recovered_metrics) == len(input_metrics)\n        for recovered_metric, input_metric in zip(recovered_metrics, input_metrics):\n            assert recovered_metric == input_metric\n\n        for metric in input_metrics:\n            print(metric)\n\n    if __name__ == '__main__':\n        main()\n\n\nIf you simply want to access the Prometheus Protocol Buffer objects directly\nand generate instances yourself simply import them from the package as\nfollows:\n\n.. code:: python\n\n    from prometheus_metrics_proto import (\n        COUNTER,\n        GAUGE,\n        SUMMARY,\n        HISTOGRAM,\n        Bucket,\n        Counter,\n        Gauge,\n        Histogram,\n        LabelPair,\n        Metric,\n        MetricFamily,\n        Summary,\n        Quantile)\n\n\nLicense\n-------\n\n`prometheus_metrics_proto` is released under the MIT license.\n\n\nDevelopment\n-----------\n\nCheck code style using:\n\n.. code-block:: console\n\n    (myenv) $ make style\n\nRun unit tests.\n\n.. code-block:: console\n\n    $ make test\n\nCheck code coverage using:\n\n.. code-block:: console\n\n    (myenv) $ make coverage\n\nThen open `results <htmlcov/index.html>`_ to review coverage.\n\nThe project has placed the code stub (``prometheus_metrics_pb2.py``),\ngenerated by the Google Protocol Buffers code generation tool, under source\ncontrol.\n\nIf this file needs to be regenerated in the future use the following procedure:\n\n.. code-block:: console\n\n    (myenv) $ make regenerate\n\n\nRelease Process\n---------------\n\nThe following steps are used to make a new software release:\n\n- Ensure that the version label in ``__init__.py`` is updated.\n\n- Create the distribution. This project produces an artefact called a pure\n  Python wheel. Only Python3 is supported by this package.\n\n  .. code-block:: console\n\n      make dist\n\n- Test distribution. This involves creating a virtual environment, installing\n  the distribution in it and running the tests. These steps have been captured\n  for convenience in a Makefile rule.\n\n  .. code-block:: console\n\n      make dist.test\n\n- Upload to PyPI.\n\n  .. code-block:: console\n\n      make dist.upload\n\n- Create and push a repo tag to Github.\n\n  .. code-block:: console\n\n      git tag YY.MM.MICRO -m \"A meaningful release tag comment\"\n      git tag  # check release tag is in list\n      git push --tags origin master\n\n  - Github will create a release tarball at:\n\n    ::\n\n        https://github.com/{username}/{repo}/tarball/{tag}.tar.gz\n\n\n\n",
     "docs_url": null,
-    "download_url": null,
+    "download_url": "",
     "downloads": {
       "last_day": 0,
       "last_month": 0,
@@ -22,15 +21,18 @@
     "home_page": "https://github.com/claws/prometheus_metrics_proto",
     "keywords": "prometheus,monitoring,metrics",
     "license": "MIT",
-    "maintainer": null,
-    "maintainer_email": null,
+    "maintainer": "",
+    "maintainer_email": "",
     "name": "prometheus_metrics_proto",
-    "platform": "UNKNOWN",
+    "platform": "",
     "project_url": "https://pypi.org/project/prometheus_metrics_proto/",
-    "release_url": "https://pypi.org/project/prometheus_metrics_proto/17.2.1/",
-    "requires_python": null,
+    "release_url": "https://pypi.org/project/prometheus_metrics_proto/18.1.1/",
+    "requires_dist": [
+      "protobuf"
+    ],
+    "requires_python": "",
     "summary": "Prometheus binary format metrics data structures for Python client libraries",
-    "version": "17.2.1"
+    "version": "18.1.1"
   },
   "releases": {
     "17.2.1": [
@@ -40,7 +42,7 @@
           "md5": "52f307959b750a94e0ed6ab3a280ac42",
           "sha256": "9c7a7eee74f31d378b2b19bebb3c6ebe8a35e527bce212b874ac0218b9be264e"
         },
-        "downloads": 24,
+        "downloads": -1,
         "filename": "prometheus_metrics_proto-17.2.1.tar.gz",
         "has_sig": false,
         "md5_digest": "52f307959b750a94e0ed6ab3a280ac42",
@@ -50,24 +52,42 @@
         "upload_time": "2017-02-12T11:10:29",
         "url": "https://files.pythonhosted.org/packages/de/68/bad7ee68c993f6145cb7140c7dede2e33bcdd75f4f7f9e71d6f9044f32e3/prometheus_metrics_proto-17.2.1.tar.gz"
       }
+    ],
+    "18.1.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b9f673b003f2dbcd2cb5a9244350acb8",
+          "sha256": "f105139596373a0346462b71c49f5165d76f64c944e5b4b195aa701202095463"
+        },
+        "downloads": -1,
+        "filename": "prometheus_metrics_proto-18.1.1-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "b9f673b003f2dbcd2cb5a9244350acb8",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "size": 16209,
+        "upload_time": "2018-01-04T09:36:48",
+        "url": "https://files.pythonhosted.org/packages/43/74/f17ba3774139689c1bd3c0cdb9277b78e894d800a2df3d9bcf8d01e2698d/prometheus_metrics_proto-18.1.1-py3-none-any.whl"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "52f307959b750a94e0ed6ab3a280ac42",
-        "sha256": "9c7a7eee74f31d378b2b19bebb3c6ebe8a35e527bce212b874ac0218b9be264e"
+        "md5": "b9f673b003f2dbcd2cb5a9244350acb8",
+        "sha256": "f105139596373a0346462b71c49f5165d76f64c944e5b4b195aa701202095463"
       },
-      "downloads": 24,
-      "filename": "prometheus_metrics_proto-17.2.1.tar.gz",
+      "downloads": -1,
+      "filename": "prometheus_metrics_proto-18.1.1-py3-none-any.whl",
       "has_sig": false,
-      "md5_digest": "52f307959b750a94e0ed6ab3a280ac42",
-      "packagetype": "sdist",
-      "python_version": "source",
-      "size": 6782,
-      "upload_time": "2017-02-12T11:10:29",
-      "url": "https://files.pythonhosted.org/packages/de/68/bad7ee68c993f6145cb7140c7dede2e33bcdd75f4f7f9e71d6f9044f32e3/prometheus_metrics_proto-17.2.1.tar.gz"
+      "md5_digest": "b9f673b003f2dbcd2cb5a9244350acb8",
+      "packagetype": "bdist_wheel",
+      "python_version": "py3",
+      "size": 16209,
+      "upload_time": "2018-01-04T09:36:48",
+      "url": "https://files.pythonhosted.org/packages/43/74/f17ba3774139689c1bd3c0cdb9277b78e894d800a2df3d9bcf8d01e2698d/prometheus_metrics_proto-18.1.1-py3-none-any.whl"
     }
   ]
 }
