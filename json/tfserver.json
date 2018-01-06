@@ -11,7 +11,7 @@
       "Programming Language :: Python :: 3",
       "Topic :: Scientific/Engineering :: Artificial Intelligence"
     ],
-    "description": "==========================================\nTensorflow gRPC and RESTful API Server\n==========================================\n\n\ntfserver is an example for serving Tensorflow model with `Skitai App Engine`_.\n\nIt can be accessed by gRPC and JSON RESTful API.\n\n\nSaving Tensoflw Model\n---------------------------\n\nSee `tf.saved_model.builder.SavedModelBuilder`_\n\n.. _`tf.saved_model.builder.SavedModelBuilder`: https://www.tensorflow.org/api_docs/python/tf/saved_model/builder/SavedModelBuilder\n.. _`Skitai App Engine`: https://pypi.python.org/pypi/skitai\n\n\nTensorflow Server\n----------------------\n\nExample of api.py\n\n.. code:: python\n  \n  import tfserver\n  import skitai\n  import dnn\n  import tensorflow as tf\n\n  pref = skitai.pref ()\n  \n  pref.debug = True\n  pref.use_reloader = True\n\n  tf.reset_default_graph()\n  net = dnn.make_mlp_network (phase_train=False)\n\n  pref.config.tf_config = tf.ConfigProto(\n    gpu_options=tf.GPUOptions (per_process_gpu_memory_fraction = 0.2), \n    log_device_placement = False\n  )\n  pref.config.tf_model_dir = \"./exported/2\"\n  pref.config.tf_predict_op = net [\"pred\"]\n  pref.config.tf_x = net [\"x\"]\n\n  skitai.mount (\"/\", tfserver, pref = pref)\n  skitai.run (port = 5000)\n\nAnd run,\n\n.. code:: bash\n\n  python api.py  \n  \n\ngRPC Client\n--------------\n\nUsing grpc,\n\n.. code:: python\n\n  from tfserver import cli\n  from tensorflow.python.framework import tensor_util\n  import numpy as np\n\t\n  stub = cli.Proxy (\"localhost\", 5000)\n  x = np.array ([1.0, 2.0])\n\n  resp = stub.predict (\n    'model_name',\n    'signature_name', \n    tensor_util.make_tensor_proto(x.astype('float32'), shape=x.shape)\n  )\n  resp.y\n  >> [-1.5, 1.6]\n\n\nUsing aquests,\n\n.. code:: python\n  \n  import aquests\n  from tfserver import cli\n  from tensorflow.python.framework import tensor_util\n  import numpy as np\n  \n  def print_result (resp):\n    cli.Response (resp.data).y\n    >> [-1.5, 1.6]\n    \n  stub = aquests.grpc (\"http://localhost:5000\", callback = print_result)\n  x = np.array ([1.0, 2.0])\n  \n  request = cli.build_request (\n    'model_name',\n    'signature_name', \n    tensor_util.make_tensor_proto(x.astype('float32'), shape=x.shape)\n  )\n  stub.Predict (request, 10.0)\n\n  aquests.fetchall ()\n\nBut aquests' grpc is not stable yet.\n  \nREST API\n----------\n\nUsing requests,\n\n.. code:: python\n  \n  import requests\n  \n  api = requests.session ()\n  resp = api.post (\n    \"http://localhost:5000/predict\",\n    json.dumps ({\"x\": getone ().astype (\"float32\").tolist()}), \n    headers = {\"Content-Type\": \"application/json\"}\n  )\n  data = json.loads (resp.text)\n  data [\"y\"]\n  >> [-1.5, 1.6]\n\nAnother,\n  \n.. code:: python\n\n  from aquests.lib import siesta\n  \n  x = np.array ([1.0, 2.0])\n  \n  api = siesta.API (\"http://localhost:5000\")\n  resp = api.predict ().post ({\"x\": x.astype (\"float32\").tolist()})\n  resp.data.y  \n  >> [-1.5, 1.6]\n",
+    "description": "==========================================\nTensorflow gRPC and RESTful API Server\n==========================================\n\n**tfserver** is an example for serving Tensorflow model with `Skitai App Engine`_.\n\nIt can be accessed by gRPC and JSON RESTful API.\n\nThis project is inspired by `issue #176`_.\n\n.. _`issue #176` : https://github.com/tensorflow/serving/issues/176\n.. _`Skitai App Engine`: https://pypi.python.org/pypi/skitai\n\n\n.. contents:: Table of Contents\n\nSaving Tensorflow Model\n---------------------------\n\nSee `tf.saved_model.builder.SavedModelBuilder`_, but for example:\n\n.. code:: python\n  \n  import dnn\n  import tensorflow as tf\n  \n  net = dnn.build (phase_train=False)\n  \n  sess = tf.Session()\n  sess.run (tf.global_variables_initializer())\n  \n  # restoring checkpoint\n  saver = tf.train.Saver (tf.global_variables())\n  saver.restore (sess, \"./models/model.cpkt-1000\")\n  \n  # save model with builder  \n  builder = tf.saved_model.builder.SavedModelBuilder (\"exported/1/\")\n  \n  prediction_signature = (\n    tf.saved_model.signature_def_utils.build_signature_def(\n      inputs = {'x': tf.saved_model.utils.build_tensor_info (net.x)},\n      outputs = {'y': tf.saved_model.utils.build_tensor_info (net.predict)])},\n      method_name = tf.saved_model.signature_constants.PREDICT_METHOD_NAME)\n  )  \n  # Remember 'x', 'y' for I/O\n  \n  legacy_init_op = tf.group (tf.tables_initializer (), name = 'legacy_init_op')\n  builder.add_meta_graph_and_variables(\n    sess, \n    [ tf.saved_model.tag_constants.SERVING ],\n    signature_def_map = {'signature_def_name': prediction_signature},\n    legacy_init_op = legacy_init_op\n  )\n  # Remember 'signature_def_name'\n  \n  builder.save()\n\n.. _`tf.saved_model.builder.SavedModelBuilder`: https://www.tensorflow.org/api_docs/python/tf/saved_model/builder/SavedModelBuilder\n\n\nRun Tensorflow Server\n------------------------\n\nExample of api.py\n\n.. code:: python\n  \n  import tfserver\n  import skitai\n  import tensorflow as tf\n\n  pref = skitai.pref ()\n  pref.config.tf_model_dir = \"./exported/1\"\n  pref.config.tf_config = tf.ConfigProto(\n    gpu_options=tf.GPUOptions (per_process_gpu_memory_fraction = 0.2), \n    log_device_placement = False\n  )\n  \n  # If you want to activate gRPC, should mount on '/'\n  skitai.mount (\"/\", tfserver, pref = pref)\n  skitai.run (port = 5000)\n\nAnd run,\n\n.. code:: bash\n\n  python3 api.py  \n  \n\ngRPC Client\n--------------\n\nUsing grpcio library,\n\n.. code:: python\n\n  from tfserver import cli\n  from tensorflow.python.framework import tensor_util\n  import numpy as np\n  \n  stub = cli.Proxy (\"localhost\", 5000)\n  problem = np.array ([1.0, 2.0])\n  \n  # put problem as 'x', and 'signature_def_name'\n  # ignore 'model_name' for now\n  resp = stub.predict (\n    'model_name',\n    'signature_def_name', \n    x = tensor_util.make_tensor_proto(problem.astype('float32'), shape=problem.shape)\n  )\n  # then get 'y'\n  resp.y\n  >> [-1.5, 1.6]\n\nUsing aquests for async request,\n\n.. code:: python\n  \n  import aquests\n  from tfserver import cli\n  from tensorflow.python.framework import tensor_util\n  import numpy as np\n  \n  def print_result (resp):\n    cli.Response (resp.data).y\n    >> [-1.5, 1.6]\n    \n  stub = aquests.grpc (\"http://localhost:5000\", callback = print_result)\n  problem = np.array ([1.0, 2.0])\n  \n  request = cli.build_request (\n    'model_name',\n    'signature_def_name', \n    x = tensor_util.make_tensor_proto(problem.astype('float32'), shape=problem.shape)\n  )\n  stub.Predict (request, 10.0)\n\n  aquests.fetchall ()\n\nBut aquests' grpc is not stable yet.\n  \nRESTful API\n-------------\n\nUsing requests,\n\n.. code:: python\n  \n  import requests\n  \n  problem = np.array ([1.0, 2.0])\n  api = requests.session ()\n  resp = api.post (\n    \"http://localhost:5000/predict\",\n    json.dumps ({\"x\": problem.astype (\"float32\").tolist()}), \n    headers = {\"Content-Type\": \"application/json\"}\n  )\n  data = json.loads (resp.text)\n  data [\"y\"]\n  >> [-1.5, 1.6]\n\nAnother,\n  \n.. code:: python\n\n  from aquests.lib import siesta\n  \n  problem = np.array ([1.0, 2.0])  \n  api = siesta.API (\"http://localhost:5000\")\n  resp = api.predict.post ({\"x\": problem.astype (\"float32\").tolist()})\n  resp.data.y  \n  >> [-1.5, 1.6]\n\n  \nPerformance Note Comparing with Proto Buffer and JSON\n---------------------------------------------------------\n\nTest Environment\n```````````````````````\n\n- Input: \n\n  - dtype: Float 32\n  - shape: Various, From (50, 1025) To (300, 1025), Prox. Average (100, 1025)\n \n- Output: \n  \n  - dtype: Float 32\n  - shape: (60,)\n  \n- Request Threads: 16\n- Requests Per Thread: 100\n- Total Requests: 1,600\n\nResults\n`````````\n\n- gRPC with Proto Buffer: \n  \n  - Use grpcio\n  - 11 seconds\n\n- RESTful API with JSON\n\n  - Use requests\n  - 83 seconds and 5 fails\n\n\nTODO\n----------\n\n- Multiple model serving\n\n\nRelease History\n-------------------\n\n- 0.1a (2018. 1. 4)\n\n  - Alpha release\n  ",
     "docs_url": null,
     "download_url": "https://pypi.python.org/pypi/tfserver",
     "downloads": {
@@ -27,11 +27,11 @@
     "name": "tfserver",
     "platform": "posix",
     "project_url": "https://pypi.org/project/tfserver/",
-    "release_url": "https://pypi.org/project/tfserver/0.1a10/",
+    "release_url": "https://pypi.org/project/tfserver/0.1a23/",
     "requires_dist": [],
     "requires_python": "",
     "summary": "Tensor Flow Model Server",
-    "version": "0.1a10"
+    "version": "0.1a23"
   },
   "releases": {
     "0.1a1": [
@@ -70,6 +70,168 @@
         "url": "https://files.pythonhosted.org/packages/9e/36/3d07d83ef7ace1ad57e13c38801a2c1bfddb70452ec6f263284edae7c827/tfserver-0.1a10.tar.gz"
       }
     ],
+    "0.1a11": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "98570fb432213ee3df8892345b5f06f1",
+          "sha256": "1055e6403115d2a923bd3a89a9f9af61d4e243f7ea157c34b34f1091215698ae"
+        },
+        "downloads": -1,
+        "filename": "tfserver-0.1a11.tar.gz",
+        "has_sig": false,
+        "md5_digest": "98570fb432213ee3df8892345b5f06f1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 8970,
+        "upload_time": "2018-01-06T07:13:01",
+        "url": "https://files.pythonhosted.org/packages/3b/a4/017db361a6432a0fd283b29721c710c1c5b858287022913f4a655cb6b715/tfserver-0.1a11.tar.gz"
+      }
+    ],
+    "0.1a12": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "eedb01c5e91adbbb7f65c688aa5b6d98",
+          "sha256": "ae74f1c44e19fb2f4f2fee2708a163ca1e4b98f53ba53f70c13c3e554dd2c1f2"
+        },
+        "downloads": -1,
+        "filename": "tfserver-0.1a12.tar.gz",
+        "has_sig": false,
+        "md5_digest": "eedb01c5e91adbbb7f65c688aa5b6d98",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9053,
+        "upload_time": "2018-01-06T07:26:39",
+        "url": "https://files.pythonhosted.org/packages/c2/bd/d7bcd597f6fd840bbd887f981f3590af5e248878f081bb6e135926eec1d3/tfserver-0.1a12.tar.gz"
+      }
+    ],
+    "0.1a13": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "af6c9baff3ecd7c72550637a955b65d9",
+          "sha256": "fb2936443fee428729324342aa16c455c61066f2b7206fcfc92b4360a820b06f"
+        },
+        "downloads": -1,
+        "filename": "tfserver-0.1a13.tar.gz",
+        "has_sig": false,
+        "md5_digest": "af6c9baff3ecd7c72550637a955b65d9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9089,
+        "upload_time": "2018-01-06T07:32:49",
+        "url": "https://files.pythonhosted.org/packages/20/fb/f4cb0bfa998aae9547a9cdb01e812ca004f927a5191d854275eed10d447b/tfserver-0.1a13.tar.gz"
+      }
+    ],
+    "0.1a14": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2cbeba983715de83ad20862fdffc98e8",
+          "sha256": "a91e6ff7be92d243e8f8166dee48ccbc32f7d94647ce79531ecb743d7c439d45"
+        },
+        "downloads": -1,
+        "filename": "tfserver-0.1a14.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2cbeba983715de83ad20862fdffc98e8",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9555,
+        "upload_time": "2018-01-06T08:38:40",
+        "url": "https://files.pythonhosted.org/packages/a1/83/eeeb5c7d0d32d76169d2c9b5fb43b7ff592044c0067fca90185e80256714/tfserver-0.1a14.tar.gz"
+      }
+    ],
+    "0.1a15": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0caf53abaab27d7b5913a82cfb648bd4",
+          "sha256": "462addaea3ec8b79ef2fcbdcb708caca190bf85d22b5a550373da1078d67a897"
+        },
+        "downloads": -1,
+        "filename": "tfserver-0.1a15.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0caf53abaab27d7b5913a82cfb648bd4",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9535,
+        "upload_time": "2018-01-06T08:45:47",
+        "url": "https://files.pythonhosted.org/packages/4f/30/48c6a42b9e4ff266f16c5a0b8df82b9f51a3852c5a726faa02c4fc96affb/tfserver-0.1a15.tar.gz"
+      }
+    ],
+    "0.1a16": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "21335bcf53082ed1b0a9554840a5bb7a",
+          "sha256": "2494183135f517e235dedc4c98a95d6d12f754084d181dae80d5ef5a9ccc9413"
+        },
+        "downloads": -1,
+        "filename": "tfserver-0.1a16.tar.gz",
+        "has_sig": false,
+        "md5_digest": "21335bcf53082ed1b0a9554840a5bb7a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9540,
+        "upload_time": "2018-01-06T08:52:16",
+        "url": "https://files.pythonhosted.org/packages/a9/04/79edfed11fed773df53cbb40f2e5826a6b2b5a8132161f50e9d82fc287d7/tfserver-0.1a16.tar.gz"
+      }
+    ],
+    "0.1a17": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "52d46c8519cee561e5c31b7235a8f858",
+          "sha256": "716dcb9a37846c86707d40e61cb989fb8d70f37167702ae6ba209667d5ca2e0a"
+        },
+        "downloads": -1,
+        "filename": "tfserver-0.1a17.tar.gz",
+        "has_sig": false,
+        "md5_digest": "52d46c8519cee561e5c31b7235a8f858",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9549,
+        "upload_time": "2018-01-06T08:59:29",
+        "url": "https://files.pythonhosted.org/packages/5d/a7/947dcca98c10242e9dbcda96990374df16d922dff89f66475d1399dfe8c2/tfserver-0.1a17.tar.gz"
+      }
+    ],
+    "0.1a18": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "fac24340b50c8591eda3474082578395",
+          "sha256": "90bc6dd0d8bb97996f10bc3684d70dc1e3e1ce5ac77a53e5454075b5d30cf8a4"
+        },
+        "downloads": -1,
+        "filename": "tfserver-0.1a18.tar.gz",
+        "has_sig": false,
+        "md5_digest": "fac24340b50c8591eda3474082578395",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9564,
+        "upload_time": "2018-01-06T09:00:33",
+        "url": "https://files.pythonhosted.org/packages/2c/79/eebec6ad5006beaba1131961249fb73ec7188ffd3bdd3232b855917c73a5/tfserver-0.1a18.tar.gz"
+      }
+    ],
+    "0.1a19": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5eec1c07b69cd3b01dd72ad8a85df6a1",
+          "sha256": "52433b068e7660f0c380a9aa1a63c3142aca70d46cb7a95a80867e0a046e800c"
+        },
+        "downloads": -1,
+        "filename": "tfserver-0.1a19.tar.gz",
+        "has_sig": false,
+        "md5_digest": "5eec1c07b69cd3b01dd72ad8a85df6a1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9564,
+        "upload_time": "2018-01-06T09:04:36",
+        "url": "https://files.pythonhosted.org/packages/fd/b8/21c63f08228636b0ceee1fed0618196300c18523eb43c4dc7a6b1a45cadd/tfserver-0.1a19.tar.gz"
+      }
+    ],
     "0.1a2": [
       {
         "comment_text": "",
@@ -86,6 +248,78 @@
         "size": 7630,
         "upload_time": "2018-01-05T12:37:14",
         "url": "https://files.pythonhosted.org/packages/08/0b/e78825ae0db30acf1dfb03a75650bd92af81bb8c47cee2b23a3d916f845b/tfserver-0.1a2.tar.gz"
+      }
+    ],
+    "0.1a20": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "361aaa203b58339e1e25ff14d669790e",
+          "sha256": "ff53a7d80870c40dbd517da7a899a0d64a4a025c5429a9cc4026636c2a5c138c"
+        },
+        "downloads": -1,
+        "filename": "tfserver-0.1a20.tar.gz",
+        "has_sig": false,
+        "md5_digest": "361aaa203b58339e1e25ff14d669790e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9678,
+        "upload_time": "2018-01-06T09:57:45",
+        "url": "https://files.pythonhosted.org/packages/cd/d0/4ce6fd1b9b678bf7bc84e06a1e571210088d1ad944fab59628f329b23064/tfserver-0.1a20.tar.gz"
+      }
+    ],
+    "0.1a21": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e14e3b686f0193295201e8b4287dcd87",
+          "sha256": "102724829423f4f0be274b302b010fa436ae50e5ab123bbb3e28d828bfec4f94"
+        },
+        "downloads": -1,
+        "filename": "tfserver-0.1a21.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e14e3b686f0193295201e8b4287dcd87",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9716,
+        "upload_time": "2018-01-06T09:59:35",
+        "url": "https://files.pythonhosted.org/packages/57/0d/48e20581552a0c691c5f0a6d278304c6ffde7d2e4ca89cda7facb5e8dbf4/tfserver-0.1a21.tar.gz"
+      }
+    ],
+    "0.1a22": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "eecd2891c440443d8dc7207988a1a60c",
+          "sha256": "cf8cd889d4d556de330c36dc3ef0f40e1d3ad0e8d76fac2880ffdcc4626d9dda"
+        },
+        "downloads": -1,
+        "filename": "tfserver-0.1a22.tar.gz",
+        "has_sig": false,
+        "md5_digest": "eecd2891c440443d8dc7207988a1a60c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9715,
+        "upload_time": "2018-01-06T10:07:19",
+        "url": "https://files.pythonhosted.org/packages/ce/71/22e13cb1838c866ae7c2861921d4aa2b13c0995990c6b1305e29b23f8941/tfserver-0.1a22.tar.gz"
+      }
+    ],
+    "0.1a23": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d06ea876eb5b13dbcc951107eb0136c1",
+          "sha256": "7ea63d72c055bf3008f5470984d7068dd16fa2ae70dda2f40eae123c3436495c"
+        },
+        "downloads": -1,
+        "filename": "tfserver-0.1a23.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d06ea876eb5b13dbcc951107eb0136c1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 9705,
+        "upload_time": "2018-01-06T10:27:56",
+        "url": "https://files.pythonhosted.org/packages/56/b9/b467665fc1872ffa1be30ef630bdf210f41af52fbfacaa2656ce5bec995c/tfserver-0.1a23.tar.gz"
       }
     ],
     "0.1a3": [
@@ -219,18 +453,18 @@
     {
       "comment_text": "",
       "digests": {
-        "md5": "08ec37e5ef9792f987da38aca7872680",
-        "sha256": "0d77e586db2e998315eb20c3993674adc0a560ef715410c634b33bb8c31d63cf"
+        "md5": "d06ea876eb5b13dbcc951107eb0136c1",
+        "sha256": "7ea63d72c055bf3008f5470984d7068dd16fa2ae70dda2f40eae123c3436495c"
       },
       "downloads": -1,
-      "filename": "tfserver-0.1a10.tar.gz",
+      "filename": "tfserver-0.1a23.tar.gz",
       "has_sig": false,
-      "md5_digest": "08ec37e5ef9792f987da38aca7872680",
+      "md5_digest": "d06ea876eb5b13dbcc951107eb0136c1",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 7976,
-      "upload_time": "2018-01-05T13:02:41",
-      "url": "https://files.pythonhosted.org/packages/9e/36/3d07d83ef7ace1ad57e13c38801a2c1bfddb70452ec6f263284edae7c827/tfserver-0.1a10.tar.gz"
+      "size": 9705,
+      "upload_time": "2018-01-06T10:27:56",
+      "url": "https://files.pythonhosted.org/packages/56/b9/b467665fc1872ffa1be30ef630bdf210f41af52fbfacaa2656ce5bec995c/tfserver-0.1a23.tar.gz"
     }
   ]
 }

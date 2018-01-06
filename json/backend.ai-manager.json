@@ -16,7 +16,7 @@
       "Topic :: Scientific/Engineering",
       "Topic :: Software Development"
     ],
-    "description": "Backend.AI Manager with API Gateway\n===================================\n\nPackage Structure\n-----------------\n\n* ai.backend\n\n  * manager: Abstraction of agents and computation kernels\n\n  * gateway: RESTful API gateway based on aiohttp\n\nInstallation\n------------\n\nBackend.AI Agent requires Python 3.6 or higher.  We highly recommend to use\n`pyenv <https://github.com/yyuu/pyenv>`_ for an isolated setup of custom Python\nversions that might be different from default installations managed by your OS\nor Linux distros.\n\n.. code-block:: sh\n\n   pip install backend.ai-manager\n\nTo use optional monitoring service (Datadog and Sentry) supports, add ``monitor``\nextras tag to the pip command:\n\n.. code-block:: sh\n\n   pip install 'backend.ai-manager[monitor]'\n\n\nFor development\n~~~~~~~~~~~~~~~\n\nWe recommend to use virtual environments in Python.\nYou may share a virtual environment with other Backend.AI projects.\n\n.. code-block:: sh\n\n   git clone https://github.com/lablup/backend.ai-manager.git\n   python -m venv /home/user/venv\n   source /home/user/venv/bin/activate\n   pip install -U pip setuptools   # ensure latest versions\n   pip install -U -r requirements-dev.txt\n\nThe above example shows a standalone installation process for the manager, but\nnormally you would want to install all other depedencies like agents and\ndatabases for integration tests.\n\nRunning and Deployment\n----------------------\n\nPrepare databases\n~~~~~~~~~~~~~~~~~\n\n* An RDBMS (PostgreSQL)\n\n* An etcd (v3) server\n\n* A Redis server\n\n  - The manager uses the following `database IDs <http://redis.io/commands/SELECT>`_\n\n    - 0 (default): to track realtime performance metrics and statistics of computing sessions\n\n    - 1: to track realtime request rate-limits of each API access key\n\nCheck out `README on the meta-repo <https://github.com/lablup/backend.ai>`_ for the\ndocker-compose example to run above databases with a single command.\n\nConfiguration\n~~~~~~~~~~~~~\n\nYou need to specify configuration parameters using either CLI arguments or environment\nvariables.  The default values are for development settings so you should set most of them\nexplicitly in production.\nFor details about arguments and their equivalent environment variable names,\nrun the server module with ``--help``.\n\n.. code-block:: console\n\n   $ cp alembic.ini.sample alembic.ini\n   $ edit alembic.ini\n   $ python -m ai.backend.manager.cli schema oneshot head\n   Creating tables...\n   Stamping alembic version to ...\n\nOptionally you can populate pre-defined fixtures.\nYou may add your own ones in fixtures directory for deployment.\n``example_keypair`` fixture is required to run the test suite.\n\n.. code-block:: console\n\n   $ python -m ai.backend.manager.cli fixture populate example_keypair\n   populating fixture 'example_keypair'\n\nRunning the API gateway server\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n.. code-block:: console\n\n   $ python -m ai.backend.gateway.server \\\n            --etcd-addr localhost:2379 \\\n            --namespace my-cluster \\\n            --redis-addr localhost:6379 \\\n            --db-addr localhost:5432 \\\n            --db-name my-cluster \\\n            --db-user dbuser \\\n            --db-password dbpass \\\n            --docker-registry docker.example.com:5000 \\\n            --service-ip 127.0.0.1 \\\n            --service-port 8080 \\\n            --events-port 5002\n\n\nThe gateway server can directly serve the public traffic, either via plain HTTP\nor HTTPS (with ``--ssl-cert`` and ``--ssl-key`` options), but we recommend to\nuse a dedicated reverse-proxy such as `nginx <https://nginx.org/en/>`_ for\nadvanced HTTPS handling (e.g., SNI).\nNote that the gateway itself can fully utilize all the CPU cores in the system\nwithout limits from GIL (global interpreter lock).\n\nPlease check out ``--help`` to see more options and their defaults.\n\nExample configs\n~~~~~~~~~~~~~~~\n\n``/etc/supervisor/conf.d/manager.conf``:\n\n.. code-block:: dosini\n\n   [program:backend.ai-manager]\n   user = user\n   stopsignal = TERM\n   stopasgroup = true\n   command = /home/user/run-manager.sh\n\n``/home/user/run-manager.sh``:\n\n.. code-block:: sh\n\n   #!/bin/sh\n   source /home/user/venv/bin/activate\n   # AWS API keypair for S3 file uploads (optional)\n   export AWS_ACCESS_KEY_ID=\"...\"\n   export AWS_SECRET_ACCESS_KEY=\"...\"\n   # Datadog monitoring (optional)\n   export DATADOG_API_KEY=\"...\"\n   export DATADOG_APP_KEY=\"...\"\n   # Sentry monitoring (optional)\n   export RAVEN_URI=\"...\"\n   # the main command\n   exec python -m ai.backend.gateway.server \\\n        --etcd-addr localhost:2379 \\\n        --namespace my-cluster \\\n        --redis-addr localhost:6379 \\\n        # ... other options ...\n        --service-ip 127.0.0.1 \\\n        --service-port 8080\n\n``/etc/nginx/sites-enabled/gateway``:\n\n.. code-block:: text\n\n   ssl_session_cache shared:SSL:10m;\n   ssl_session_timeout 10m;\n   ssl_protocols TLSv1 TLSv1.1 TLSv1.2;\n   ssl_prefer_server_ciphers on;\n   ssl_ciphers EECDH+CHACHA20:EECDH+AES128:RSA+AES128:EECDH+AES256:RSA+AES256:EECDH+3DES:RSA+3DES:!MD5;\n\n   map $http_connection $connection_upgrade {\n       default upgrade;\n       ''      close;\n   }\n\n   server {\n       listen 443 ssl;\n       server_name my-cluster.example.com;\n       charset utf-8;\n       client_max_body_size 32M;\n\n       ssl_certificate /path/to/ssl.crt\n       ssl_certificate_key /path/to/ssl.key\n       add_header Strict-Transport-Security \"max-age=31536000; includeSubdomains\";\n\n       location / {\n           proxy_pass http://127.0.0.1:8080;\n           proxy_pass_request_headers on;\n           proxy_set_header Host \"my-cluster.example.com\";\n           proxy_redirect off;\n           proxy_buffering off;\n           proxy_read_timeout 600s;\n       }\n\n       location ~ ^/v\\d+/stream/ {\n           proxy_pass http://127.0.0.1:8080;\n           proxy_pass_request_headers on;\n           proxy_set_header Host \"my-cluster.example.com\";\n           proxy_redirect off;\n           proxy_buffering off;\n           proxy_read_timeout 60s;\n\n           proxy_http_version 1.1;\n           proxy_set_header Upgrade $http_upgrade;\n           proxy_set_header Connection $connection_upgrade;\n       }\n   }\n\n\nNetworking\n~~~~~~~~~~\n\nThe manager and agent should run in the same local network or different\nnetworks reachable via VPNs.\n\nYou need to check the firewall settings to allow the following access patterns\n(all ports are TCP):\n\n* The manager's service port: open to the reverse-proxy or the public Internet\n* The manager's events port: open to the agents\n* The etcd's service port: open to the manager and agents\n* The redis' service port: open to the manager and agents\n* The (optional) private docker registry's service port: open to the manager and agents\n* The database's service port: open to the manager\n* The agents' ALL ports: open to the manager\n\nNote that etcd/redis server may run on different physical servers or cloud\ninstances as long as the manager and agents can access them.\nThe PostgreSQL database is only accessed by the manager.\n\n\n",
+    "description": "Backend.AI Manager with API Gateway\n===================================\n\nPackage Structure\n-----------------\n\n* ``ai.backend``\n\n  * ``manager``: Abstraction of agents and computation kernels\n\n  * ``gateway``: User and Admin API (REST/GraphQL) gateway based on aiohttp\n\nInstallation\n------------\n\nPlease visit `the installation guides <https://github.com/lablup/backend.ai/wiki>`_.\n\n\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -32,7 +32,7 @@
     "name": "backend.ai-manager",
     "platform": "",
     "project_url": "https://pypi.org/project/backend.ai-manager/",
-    "release_url": "https://pypi.org/project/backend.ai-manager/1.0.4/",
+    "release_url": "https://pypi.org/project/backend.ai-manager/1.1.0/",
     "requires_dist": [
       "flake8; extra == 'test'",
       "codecov; extra == 'test'",
@@ -58,7 +58,6 @@
       "backend.ai-common (~=1.0.3)",
       "uvloop (>=0.8)",
       "SQLAlchemy (~=1.1.14)",
-      "simplejson",
       "pyzmq (>=16.0)",
       "PyYAML",
       "pytz",
@@ -66,7 +65,7 @@
       "psycopg2 (~=2.7.0)",
       "namedlist",
       "iso8601",
-      "graphene (>=2.0.dev)",
+      "graphene (~=2.0.1)",
       "ConfigArgParse",
       "coloredlogs (>=5.2)",
       "alembic (~=0.9.2)",
@@ -80,7 +79,7 @@
     ],
     "requires_python": ">=3.6",
     "summary": "Backend.AI Manager",
-    "version": "1.0.4"
+    "version": "1.1.0"
   },
   "releases": {
     "1.0.0": [
@@ -252,40 +251,74 @@
         "upload_time": "2017-12-19T14:10:05",
         "url": "https://files.pythonhosted.org/packages/34/fa/53dce5eee285c935af829e111ae5bae37f08ba34abccabaf4d762e1978d3/backend.ai-manager-1.0.4.tar.gz"
       }
+    ],
+    "1.1.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "53dd8e468b5b5a6b307210789f47d287",
+          "sha256": "3a24bfcdf6c292f5f36fd5d2312923b8a59e494cd1ed3ba972c8a85223a0de28"
+        },
+        "downloads": -1,
+        "filename": "backend.ai_manager-1.1.0-py36-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "53dd8e468b5b5a6b307210789f47d287",
+        "packagetype": "bdist_wheel",
+        "python_version": "py36",
+        "size": 51863,
+        "upload_time": "2018-01-06T09:10:42",
+        "url": "https://files.pythonhosted.org/packages/06/38/3dc220b366c64cddda238da4b69e1e549173f61393e91b07a6cace69aadb/backend.ai_manager-1.1.0-py36-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "88f6abd0cf4da0707a9b5e4f3658ef1c",
+          "sha256": "7fdb9f3e0904ed082ac7758abc2c0b5568ab0b34cfda734db05ecc006c30e69d"
+        },
+        "downloads": -1,
+        "filename": "backend.ai-manager-1.1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "88f6abd0cf4da0707a9b5e4f3658ef1c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 38878,
+        "upload_time": "2018-01-06T09:10:43",
+        "url": "https://files.pythonhosted.org/packages/e8/d4/6565f2f67085e9787ad39228eecc0d39f1a7b1a608d435f6832af4860a30/backend.ai-manager-1.1.0.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "7e867b692c9fd5a1a89d1eea28b7bd80",
-        "sha256": "5a2463352e7be7222645e52d7e3d7270fb9bb9897680b1bf979f6a48dacc35dd"
+        "md5": "53dd8e468b5b5a6b307210789f47d287",
+        "sha256": "3a24bfcdf6c292f5f36fd5d2312923b8a59e494cd1ed3ba972c8a85223a0de28"
       },
       "downloads": -1,
-      "filename": "backend.ai_manager-1.0.4-py36-none-any.whl",
+      "filename": "backend.ai_manager-1.1.0-py36-none-any.whl",
       "has_sig": false,
-      "md5_digest": "7e867b692c9fd5a1a89d1eea28b7bd80",
+      "md5_digest": "53dd8e468b5b5a6b307210789f47d287",
       "packagetype": "bdist_wheel",
       "python_version": "py36",
-      "size": 56145,
-      "upload_time": "2017-12-19T14:10:04",
-      "url": "https://files.pythonhosted.org/packages/30/89/8a642000f8d78f27c3c0efecdfb678338f59125c737fba0ec919e815aa56/backend.ai_manager-1.0.4-py36-none-any.whl"
+      "size": 51863,
+      "upload_time": "2018-01-06T09:10:42",
+      "url": "https://files.pythonhosted.org/packages/06/38/3dc220b366c64cddda238da4b69e1e549173f61393e91b07a6cace69aadb/backend.ai_manager-1.1.0-py36-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "7502da9da9828d64d2986822009b01cf",
-        "sha256": "e3b1cb991a4e98273281e9c5cc3df9695514b7323b2dc49cb1d239890610b399"
+        "md5": "88f6abd0cf4da0707a9b5e4f3658ef1c",
+        "sha256": "7fdb9f3e0904ed082ac7758abc2c0b5568ab0b34cfda734db05ecc006c30e69d"
       },
       "downloads": -1,
-      "filename": "backend.ai-manager-1.0.4.tar.gz",
+      "filename": "backend.ai-manager-1.1.0.tar.gz",
       "has_sig": false,
-      "md5_digest": "7502da9da9828d64d2986822009b01cf",
+      "md5_digest": "88f6abd0cf4da0707a9b5e4f3658ef1c",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 43073,
-      "upload_time": "2017-12-19T14:10:05",
-      "url": "https://files.pythonhosted.org/packages/34/fa/53dce5eee285c935af829e111ae5bae37f08ba34abccabaf4d762e1978d3/backend.ai-manager-1.0.4.tar.gz"
+      "size": 38878,
+      "upload_time": "2018-01-06T09:10:43",
+      "url": "https://files.pythonhosted.org/packages/e8/d4/6565f2f67085e9787ad39228eecc0d39f1a7b1a608d435f6832af4860a30/backend.ai-manager-1.1.0.tar.gz"
     }
   ]
 }

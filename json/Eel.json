@@ -1,10 +1,10 @@
 {
   "info": {
     "author": "Chris Knott",
-    "author_email": "",
+    "author_email": "chrisknott@hotmail.co.uk",
     "bugtrack_url": null,
     "classifiers": [],
-    "description": "# Eel\nEel is a little Python library for making simple Electron-like offline HTML/JS GUI apps, with full access to Python capabilities and libraries.\n\n**It hosts a local webserver, then lets you annotate functions in Python so that they can be called from Javascript, and vice versa.**\n\nIt is designed to take the hassle out of writing short and simple GUI applications. If you are familiar with Python and web development, probably just jump to [this example](https://github.com/ChrisKnott/Eel/tree/master/examples/04%20-%20file_access) which picks random file names out of the given folder (something that is impossible from a browser).\n\n<p align=\"center\"><img src=\"examples/04%20-%20file_access/Screenshot.png\" ></p>\n\n### Intro\n\nThere are several options for making GUI apps in Python, but if you want to use HTML/JS (in order to use jQueryUI or Bootstrap, for example) then you generally have to write a lot of boilerplate code to communicate from the Client (Javascript) side to the Server (Python) side.\n\nThe closest Python equivalent to Electron (to my knowledge) is [cefpython](https://github.com/cztomczak/cefpython). It is a bit heavy weight for what I wanted.\n\nEel is not a fully-fledged as Electron or cefpython - it is probably not suitable for making full blown applications like Atom - but it is very suitable for making the GUI equivalent of little utility scrips that you use yourself.\n\n### Install\n\nInstall from pypi with `pip`:\n\n    pip install eel\n\n### Usage\n\n#### Structure\n\nAn Eel application will be split into a frontend consisting of various web-technology files (.html, .js, .css) and a backend consisting of various Python scripts.\n\nAll the frontend files should be put in a single directory (they can be further divided into folders inside this if necessary).\n\n```\nmy_python_script.py     <-- Python scripts\nother_python_module.py\nstatic_web_folder/      <-- Web folder\n  main_page.html\n  css/\n    style.css\n  img/\n    logo.png\n```\n\n#### Starting the app\n\nSuppose you put all the frontend files in a directory called `web`, including your start page `main.html`, then the app is started like this;\n\n```python\nimport eel\neel.init('web')\neel.start('main.html')\n```\n\nThis will start a webserver on the default settings (http://localhost:8000) and open a browser to http://localhost:8000/index.html.\n\nIf Chrome or Chromium is installed then by default it will open in that in App Mode (with the `--app` cmdline flag), regardless of what the OS's default browser is set to (it is possible to override this behaviour).\n\n#### Exposing functions\n\nIn addition to the files in the frontend folder, a Javascript library will be served at `/eel.js`. You should include this in any pages:\n\n```html\n<script type=\"text/javascript\" src=\"/eel.js\"></script>\n```\nIncluding this library creates an `eel` object which can be used to communicate with the Python side.\n\nAny functions in the Python code which are decorated with `@eel.expose` like this...\n```python\n@eel.expose\ndef my_python_function(a, b):\n    print(a, b, a + b)\n```\n...will appear as methods on the `eel` object on the Javascript side, like this...\n```javascript\nconsole.log('Calling Python...');\neel.my_python_function(1, 2);   // This calls the Python function that was decorated\n```\n\nSimilarly, any Javascript functions which are exposed like this...\n```javascript\neel.expose(my_javascript_function);\nfunction my_javascript_function(a, b, c, d) {\n  if(a < b){\n    console.log(c * d);\n  }\n}\n```\ncan be called from the Python side like this...\n```python\nprint('Calling Javascript...')\neel.my_javascript_function(1, 2, 3, 4)  # This calls the Javascript function\n```\nWhen passing complex objects as arguments, bear in mind that internally they are converted to JSON and sent down a websocket.\n\n#### Eello, World!\n\nPutting this together into a **Hello, World!** example, we have a short HTML page, `web/hello.html`:\n```html\n<!DOCTYPE html>\n<html>\n    <head>\n        <title>Hello, World!</title>\n        \n        <!-- Include eel.js - note this file doesn't exist in the 'web' directory -->\n        <script type=\"text/javascript\" src=\"/eel.js\"></script>\n        <script type=\"text/javascript\">\n        \n        eel.expose(say_hello_js);               // Expose this function to Python\n        function say_hello_js(x) {\n            console.log(\"Hello from \" + x);\n        }\n        \n        say_hello_js(\"Javascript World!\");\n        eel.say_hello_py(\"Javascript World!\");  // Call a Python function\n        \n        </script>\n    </head>\n    \n    <body>\n        Hello, World!\n    </body>\n</html>\n```\n\nand a short Python script `hello.py`:\n```python\nimport eel\n\neel.init('web')                     # Give folder containing web files\n\n@eel.expose                         # Expose this function to Javascript\ndef say_hello_py(x):\n    print('Hello from %s' % x)\n\nsay_hello_py('Python World!')\neel.say_hello_js('Python World!')   # Call a Javascript function\n\neel.start('hello.html')             # Start (this blocks and enters loop)\n```\n\nIf we run the Python script (`python hello.py`), then a browser window will open displaying `hello.html`, and we will see...\n```\nHello from Python World!\nHello from Javascript World!\n```\n...in the terminal, and...\n```\nHello from Javascript World!\nHello from Python World!\n```\n...in the browser console (press F12 to open). \n\nYou will notice that in the Python code, the Javascript function is called before the browser window is even started - any early calls like this are queued up and then sent once the websocket has been established.\n\n#### Return values\n\nWhile we want to think of our code as comprising a single application, the Python interpreter and the browser window run in separate processes. This can make communicating back and forth between them a bit of a mess, especially if we always had to explicitly *send* values from one side to the other.\n\nEel supports two ways of retrieving *return values* from the other side of the app, which helps keep the code concise.\n\n##### Callbacks\n\nWhen you call an exposed function, you can immeadiately pass a callback function afterwards. This callback will automatically be called asynchrounously with the return value when the function has finished executing on the other side.\n\nFor example, if we have the following function defined and exposed in Javascript:\n```javascript\neel.expose(js_random);\nfunction js_random() {\n  return Math.random();\n}\n```\nThen in Python we can retrieve random values from the Javascript side like so:\n```python\ndef print_num(n):\n    print('Got this from Javascript:', n)\n\n# Call Javascript function, and pass explicit callback function    \neel.js_random()(print_num)\n\n# Do the same with an inline lambda as callback\neel.js_random()(lambda n: print('Got this from Javascript:', n))\n```\n(It works exactly the same the other way around).\n\n##### Synchronous returns\n\nIn most situations, the calls to the other side are to quickly retrieve some piece of data, such as the state of a widget or contents of an input field. In these cases it is more convenient to just synchronously wait a few milliseconds then continue with your code, rather than breaking the whole thing up into callbacks.\n\nTo synchronously retrieve the return value, simply pass nothing to the second set of brackets. So in Python we would write:\n```python\nn = eel.js_random()()  # This immeadiately returns the value\nprint('Got this from Javascript:', n)\n```\nYou can only perform synchronous returns after the browser window has started (after calling `eel.start()`), otherwise obviously the call with hang.\n\nIn Javascript, the language doesn't allow to us block while we wait for a callback, except by using `await` from inside an `async` function. So the equivalent code from the Javascript side would be:\n```javascript\nasync function run() {\n  // Inside a function marked 'async' we can use the 'await' keyword.\n  \n  let n = await eel.py_random()();    // Must prefix call with 'await', otherwise it's the same syntax\n  console.log('Got this from Python: ' + n);\n}\n\nrun();\n```\n\n### Asynchronous Python\n\nEel is built on Bottle and Gevent. If you use Python's built in `thread.sleep()` you will block the entire interpreter globally. Instead you should use the methods provided by Gevent. For simplicity, the two most commonly needed methods, `sleep()` and `spawn()` are provided directly from Eel.\n\nFor example:\n```python\nimport eel\neel.init('web')\n\ndef my_other_thread():\n    while True:\n        print(\"I'm a thread\")\n        eel.sleep(1.0)                  # Must use eel.sleep()\n    \neel.spawn(my_other_thread)\n\neel.start('main.html', block=False)     # Don't block on this call\n\nwhile True:\n    print(\"I'm a main loop\")\n    eel.sleep(1.0)                      # Must use eel.sleep()\n```\nWe would then have three threads (greenlets) running;\n1. Eel's internal thread for serving the web folder\n2. The `my_other_thread` method, repeatedly printing **\"I'm a thread\"**\n3. The main Python thread, which would be stuck in the final `while` loop, repeatedly printing **\"I'm a main loop\"**\n",
+    "description": "Eel is a little Python library for making simple Electron-like offline HTML/JS GUI apps, with full access to Python capabilities and libraries.\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -20,11 +20,11 @@
     "name": "Eel",
     "platform": "",
     "project_url": "https://pypi.org/project/Eel/",
-    "release_url": "https://pypi.org/project/Eel/0.3.0/",
+    "release_url": "https://pypi.org/project/Eel/0.7.0/",
     "requires_dist": [],
     "requires_python": "",
-    "summary": "",
-    "version": "0.3.0"
+    "summary": "For little HTML GUI applications, with easy Python/JS interop",
+    "version": "0.7.0"
   },
   "releases": {
     "0.1.0": [
@@ -80,24 +80,114 @@
         "upload_time": "2018-01-01T22:08:37",
         "url": "https://files.pythonhosted.org/packages/33/ba/7859c70e80ac597676d9442511d57163104dedf8ed6743436cd8ed97725e/Eel-0.3.0.tar.gz"
       }
+    ],
+    "0.5.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f8b93bb8a5d9809610323260ce222453",
+          "sha256": "e44d24369a86220b345d1662f1965c18c5e8bdb93569997fc629e51437baf6db"
+        },
+        "downloads": -1,
+        "filename": "Eel-0.5.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f8b93bb8a5d9809610323260ce222453",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 4724,
+        "upload_time": "2018-01-06T17:00:32",
+        "url": "https://files.pythonhosted.org/packages/cb/8f/e453c245d7afb4f9026c52dddcb6758986d195d0adf3fba55a78939f2ac4/Eel-0.5.0.tar.gz"
+      }
+    ],
+    "0.5.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "86f826736d3835c767633313a38024b1",
+          "sha256": "2f34a170c1181452739b10d04eba72a1655f314980a16b72f466110937bba62f"
+        },
+        "downloads": -1,
+        "filename": "Eel-0.5.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "86f826736d3835c767633313a38024b1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 4758,
+        "upload_time": "2018-01-06T17:08:20",
+        "url": "https://files.pythonhosted.org/packages/91/9e/c1df93aece303bde7c757a79f3393ab17ffc2503623f282c47f8356d5471/Eel-0.5.1.tar.gz"
+      }
+    ],
+    "0.6.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "beb258bb0649b68b1b60fc3909acf474",
+          "sha256": "bfc5b97e9cb59d861cebb4b3e2a0443ec9b82ffabf4b407e81be61d877e8c1ac"
+        },
+        "downloads": -1,
+        "filename": "Eel-0.6.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "beb258bb0649b68b1b60fc3909acf474",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 4815,
+        "upload_time": "2018-01-06T17:12:40",
+        "url": "https://files.pythonhosted.org/packages/f0/0b/029f6ec7338316134590b9957e32f503f5524744db364570342d84fc440c/Eel-0.6.0.tar.gz"
+      }
+    ],
+    "0.6.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "580b9d120a6f00952e9a99ec7f84d9a5",
+          "sha256": "9a2cc4ced32d920bb490e603490893dae86926de7a8d17877a41f79bcfe53ccd"
+        },
+        "downloads": -1,
+        "filename": "Eel-0.6.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "580b9d120a6f00952e9a99ec7f84d9a5",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 8358,
+        "upload_time": "2018-01-06T17:13:57",
+        "url": "https://files.pythonhosted.org/packages/36/76/92c008ecdee0066abef41a412925ea99dc282ae70d3e709cc04ab720c3cc/Eel-0.6.1.tar.gz"
+      }
+    ],
+    "0.7.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c373c45ab2ef5ca8d607624017f10a54",
+          "sha256": "629f3bcac997fa37448069ef841ccffaea4d21c5a7eaa9a3e10e397c2798adde"
+        },
+        "downloads": -1,
+        "filename": "Eel-0.7.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "c373c45ab2ef5ca8d607624017f10a54",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 8359,
+        "upload_time": "2018-01-06T18:07:39",
+        "url": "https://files.pythonhosted.org/packages/1a/e0/47ae39d16fef24b04e1005819b0cf4dec83277479471221aceb3395d14a9/Eel-0.7.0.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "6a4972fdcd8f2622ef66c15630ab2b6d",
-        "sha256": "3cd875ad0fef04d3f2a9612b7dabc24f2b2c6abef8848af0046c28182b5506ef"
+        "md5": "c373c45ab2ef5ca8d607624017f10a54",
+        "sha256": "629f3bcac997fa37448069ef841ccffaea4d21c5a7eaa9a3e10e397c2798adde"
       },
       "downloads": -1,
-      "filename": "Eel-0.3.0.tar.gz",
+      "filename": "Eel-0.7.0.tar.gz",
       "has_sig": false,
-      "md5_digest": "6a4972fdcd8f2622ef66c15630ab2b6d",
+      "md5_digest": "c373c45ab2ef5ca8d607624017f10a54",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 8386,
-      "upload_time": "2018-01-01T22:08:37",
-      "url": "https://files.pythonhosted.org/packages/33/ba/7859c70e80ac597676d9442511d57163104dedf8ed6743436cd8ed97725e/Eel-0.3.0.tar.gz"
+      "size": 8359,
+      "upload_time": "2018-01-06T18:07:39",
+      "url": "https://files.pythonhosted.org/packages/1a/e0/47ae39d16fef24b04e1005819b0cf4dec83277479471221aceb3395d14a9/Eel-0.7.0.tar.gz"
     }
   ]
 }
