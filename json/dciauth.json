@@ -12,7 +12,7 @@
       "Programming Language :: Python :: 3",
       "Topic :: Security :: Cryptography"
     ],
-    "description": "# python-dciauth\n\nDCI authentication module used by dci-control-server and python-dciclient\n\n## Summary of signing steps\n\nTo create a signed request, complete the following:\n\n * Task 1: Hash payload you want to send\n\n * Task 2: Create a string to sign\n\n   Create a string to sign with the request and extra information such as the request date, and the payload (hash) of the request.\n\n * Task 3: Calculate the signature for DCI\n\n   Derive a signing key by performing a succession of keyed hash operations (HMAC operations) on the string to sign, with your API secret.\n\n * Task 4: Add the Signing Information to the Request\n\n   After you calculate the signature, add it to an HTTP header or to the query string of the request.\n\n## Summary of the validation steps\n\n * Task 1: Hash payload you received\n\n * Task 2: Create a string to sign\n\n   Create a string to sign with the request and extra information such as the request date **header**, and the payload (hash) of the request.\n\n * Task 3: Calculate the signature for DCI\n\n   Derive a signing key by performing a succession of keyed hash operations (HMAC operations) on the string to sign, with user's API secret.\n\n * Task 4: Compare signature calculated with signature send\n\n   After you calculate the signature, compare it to an HTTP header.\n\n * Task 5: Reject any request older than 5 minutes\n\n## Signing example:\n\n```python\n    from dciauth import signature\n\n    secret = \"Y4efRHLzw2bC2deAZNZvxeeVvI46Cx8XaLYm47Dc019S6bHKejSBVJiGAfHbZLIN\"\n    method = \"GET\"\n    content_type = 'application/json'\n    url = \"/api/v1/jobs\"\n    query_string = \"limit=100&offset=1\"\n    payload = {}\n    headers = signature.generate_headers_with_secret(\n        secret,\n        method,\n        content_type,\n        url,\n        query_string,\n        payload)\n\n    # headers == {\n    #     'Authorization': 'DCI-HMAC-SHA256 811f7ceb089872cd264fc5859cffcd6ddfbe8ce851f0743199ad4c96470c6b6b',\n    #     'Content-Type: 'application/json',\n    #     'DCI-Datetime': '20171103T162727Z'\n    # }\n```\n\n## Validation example\n\n```python\n    from dciauth import signature\n\n    secret = \"Y4efRHLzw2bC2deAZNZvxeeVvI46Cx8XaLYm47Dc019S6bHKejSBVJiGAfHbZLIN\"\n    method = \"GET\"\n    headers = {\n        'Authorization': 'DCI-HMAC-SHA256 811f7ceb089872cd264fc5859cffcd6ddfbe8ce851f0743199ad4c96470c6b6b',\n        'DCI-Datetime': '20171103T162727Z',\n        'Content-type': 'application/json'\n    }\n    url = \"/api/v1/jobs\"\n    query_string = \"limit=100&offset=1\"\n    payload = {}\n    expected_signature = signature.calculate_signature(\n        secret,\n        method,\n        headers,\n        url,\n        query_string,\n        payload)\n    dci_signature = signature.get_signature_from_headers(headers)\n\n    if signature.equals(expected_signature, dci_signature):\n        raise Exception(\"Authentication failed: signature invalid\")\n\n    if signature.is_expired(headers):\n        raise Exception(\"Authentication failed: signature expired\")\n\n```\n\n## Validation example with flask request\n\n```python\n    from dciauth import signature\n    from flask import request\n\n    secret = \"Y4efRHLzw2bC2deAZNZvxeeVvI46Cx8XaLYm47Dc019S6bHKejSBVJiGAfHbZLIN\"\n    headers = request.headers\n    expected_signature = signature.calculate_signature(\n        secret,\n        method = request.method,\n        headers = headers,\n        url = request.path,\n        query_string = request.query_string.decode('utf-8'),\n        payload = request.get_json(silent=True)\n    )\n    dci_signature = signature.get_signature_from_headers(headers)\n\n    if signature.equals(expected_signature, dci_signature):\n        raise Exception(\"Authentication failed: signature invalid\")\n\n    if signature.is_expired(headers):\n        raise Exception(\"Authentication failed: signature expired\")\n\n```\n\n## Implementation details\n\nAlong each request, the client must add the three following HTTP headers:\n\n * `Authorization`\n * `Content-Type`\n * `DCI-Datetime`\n\nThey are build as following\n\n### Content-Type\n\n`Content-Type` (e.g.: `application/json`) of the request\n\n### DCI-Datetime\n\n`DCI-Datetime` is the current client timestamp in UTC timezone with the following format: `%Y%m%dT%H%M%SZ` (e.g.: `20170612T142917Z`)\n\n### Authorization\n\nThe signature header `Authorization:<algorithm> <signature>` is obtained with:\n\n * `<algorithm>`: only `DCI-HMAC-SHA256`\n * `<signature>`: `hexdigest( HMAC-SHA256( <api secret>, <string_to_sign>.encode('utf-8') ) )`\n * `<string_to_sign>`:\n\n        <HTTP Verb> + \"\\n\"\n        <Content-Type> + \"\\n\"\n        <timestamp> + \"\\n\"\n        <url> + \"\\n\"\n        <query_string> + \"\\n\"\n        <payload hash>\n\n     * `<HTTP Verb>`: the HTTP method used in uppercase\n     * `<Content-Type>`: Usually `application/json` for API calls\n     * `<timestamp>`: as previously, the client timestamp in UTC timezone with the following format: `%Y%m%dT%H%M%SZ`\n     * `<url>`: the resource path, without query string\n     * `<query_string>`: the parameter passed when querying (the part after the `?` in the full URL)\n     * `<payload hash>`: `hexdigest( SHA256( payload ) )`\n\nSee `tests/test_signature.py` for some detailed examples\n\n## License\n\nApache 2.0\n\n\n## Author Information\n\nDistributed-CI Team  <distributed-ci@redhat.com>\n\n\n",
+    "description": "# python-dciauth\n\nDCI authentication module used by dci-control-server and python-dciclient\n\nThis section shows example programs written in python that illustrate how to work with Signature Version 4 in DCI. The algorithm used by dciauth is similar to [Signature Version 4 in AWS](http://docs.aws.amazon.com/general/latest/gr/sigv4-signed-request-examples.html).\n\n## Signing example:\n\n```python\nimport requests\n\nfrom dciauth.signature import Signature\nfrom dciauth.request import AuthRequest\n\nauth_request = AuthRequest(endpoint='/api/v1/jobs')\nheaders = Signature(request=auth_request).generate_headers('remoteci', 'client_id', 'secret')\nr = requests.get('http://127.0.0.1:5000/api/v1/jobs', headers=headers)\nassert r.status_code == 200\n```\n\nHere we are signing the GET request with `secret` and generate headers used by `requests` module.\n\n## Validation example\n\n\n```python\n    from flask import request\n\n    from dciauth.signature import Signature\n    from dciauth.request import AuthRequest\n\n    auth_request = AuthRequest(\n        method=request.method,\n        endpoint=request.path,\n        payload=request.get_json(silent=True),\n        headers=request.headers,\n        params=request.args.to_dict(flat=True)\n    )\n    signature = Signature(request=auth_request)\n    if not signature.is_valid('secret'):\n        raise Exception(\"Authentication failed: signature invalid\")\n    if signature.is_expired():\n        raise Exception(\"Authentication failed: signature expired\")\n```\n\n## License\n\nApache 2.0\n\n\n## Author Information\n\nDistributed-CI Team  <distributed-ci@redhat.com>\n\n\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -28,11 +28,11 @@
     "name": "dciauth",
     "platform": "",
     "project_url": "https://pypi.org/project/dciauth/",
-    "release_url": "https://pypi.org/project/dciauth/1.0.1/",
+    "release_url": "https://pypi.org/project/dciauth/2.0.1/",
     "requires_dist": [],
     "requires_python": "",
     "summary": "DCI authentication module used by dci-control-server and python-dciclient",
-    "version": "1.0.1"
+    "version": "2.0.1"
   },
   "releases": {
     "0.1.0": [
@@ -170,40 +170,108 @@
         "upload_time": "2017-11-16T14:32:15",
         "url": "https://files.pythonhosted.org/packages/39/a1/ffb426bddce6a3604b830da2714f05ff291270145438375679eb3fc11af4/dciauth-1.0.1.tar.gz"
       }
+    ],
+    "2.0.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "5ea5546199af628d302d7618bc5b99a3",
+          "sha256": "3094b716936761357b009cb5fe1934166e4734f4c50bc96d694386b44def3a5e"
+        },
+        "downloads": -1,
+        "filename": "dciauth-2.0.0-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "5ea5546199af628d302d7618bc5b99a3",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2",
+        "size": 6915,
+        "upload_time": "2018-01-08T09:29:20",
+        "url": "https://files.pythonhosted.org/packages/1e/54/f5ee03444275a1db0f19c62c34b8b1839f95f9512faf5314110b0d291b34/dciauth-2.0.0-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e0fb699222c2fd1e8da99821b795f662",
+          "sha256": "2c2bec1ce6168ab4ac47e11b027835f43c248e9c2888a9bca2ce2f9e9b27e3ca"
+        },
+        "downloads": -1,
+        "filename": "dciauth-2.0.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e0fb699222c2fd1e8da99821b795f662",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 7711,
+        "upload_time": "2018-01-08T09:29:22",
+        "url": "https://files.pythonhosted.org/packages/7e/12/b83493b9d6a6e8e0ab37571cd5b48c9bfd6f6fddc54e2eb68d24b13e9409/dciauth-2.0.0.tar.gz"
+      }
+    ],
+    "2.0.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "682f7a5c8252e63ca0a4e0521acb2abe",
+          "sha256": "4f186ab3df73efa032246c57c6fc2f9db046f9e089eea7607575f2b68226d22a"
+        },
+        "downloads": -1,
+        "filename": "dciauth-2.0.1-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "682f7a5c8252e63ca0a4e0521acb2abe",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2",
+        "size": 6927,
+        "upload_time": "2018-01-08T12:08:58",
+        "url": "https://files.pythonhosted.org/packages/34/4e/b745133e29c516ffcf6242bbaf8d8c628ebd8f045aee6f9255a1eb6c5e46/dciauth-2.0.1-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "40893e261025b11a09e8ccef59613959",
+          "sha256": "26e9152cef26bb31999c644046783e45d5b1ebdf28697ec8a78cee8e4a8dc0db"
+        },
+        "downloads": -1,
+        "filename": "dciauth-2.0.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "40893e261025b11a09e8ccef59613959",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 7714,
+        "upload_time": "2018-01-08T12:08:59",
+        "url": "https://files.pythonhosted.org/packages/a7/12/87c1b4e2558fd914ef38bcc87e4f5a428c97e0eec2c66f582c1298912868/dciauth-2.0.1.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "b85edfdc77b5945e02b274de1b6a7695",
-        "sha256": "368496f5ffb3a99e279e0b703c60543fc62f43a338afbe62b44d9d6aec899f0c"
+        "md5": "682f7a5c8252e63ca0a4e0521acb2abe",
+        "sha256": "4f186ab3df73efa032246c57c6fc2f9db046f9e089eea7607575f2b68226d22a"
       },
       "downloads": -1,
-      "filename": "dciauth-1.0.1-py2-none-any.whl",
+      "filename": "dciauth-2.0.1-py2-none-any.whl",
       "has_sig": false,
-      "md5_digest": "b85edfdc77b5945e02b274de1b6a7695",
+      "md5_digest": "682f7a5c8252e63ca0a4e0521acb2abe",
       "packagetype": "bdist_wheel",
       "python_version": "py2",
-      "size": 7437,
-      "upload_time": "2017-11-16T14:32:13",
-      "url": "https://files.pythonhosted.org/packages/3b/06/d9aebe66ecc1c1484d464ff325c5fc7db1df2e0573d6d5d37d6922470954/dciauth-1.0.1-py2-none-any.whl"
+      "size": 6927,
+      "upload_time": "2018-01-08T12:08:58",
+      "url": "https://files.pythonhosted.org/packages/34/4e/b745133e29c516ffcf6242bbaf8d8c628ebd8f045aee6f9255a1eb6c5e46/dciauth-2.0.1-py2-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "a5107fec8e3d2cc9ab7b1caad2f7a9a4",
-        "sha256": "2ad7bd2f29f66927ecba7ab328a6868b7abb22e44b23288c61e9d0dcf5f74716"
+        "md5": "40893e261025b11a09e8ccef59613959",
+        "sha256": "26e9152cef26bb31999c644046783e45d5b1ebdf28697ec8a78cee8e4a8dc0db"
       },
       "downloads": -1,
-      "filename": "dciauth-1.0.1.tar.gz",
+      "filename": "dciauth-2.0.1.tar.gz",
       "has_sig": false,
-      "md5_digest": "a5107fec8e3d2cc9ab7b1caad2f7a9a4",
+      "md5_digest": "40893e261025b11a09e8ccef59613959",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 8356,
-      "upload_time": "2017-11-16T14:32:15",
-      "url": "https://files.pythonhosted.org/packages/39/a1/ffb426bddce6a3604b830da2714f05ff291270145438375679eb3fc11af4/dciauth-1.0.1.tar.gz"
+      "size": 7714,
+      "upload_time": "2018-01-08T12:08:59",
+      "url": "https://files.pythonhosted.org/packages/a7/12/87c1b4e2558fd914ef38bcc87e4f5a428c97e0eec2c66f582c1298912868/dciauth-2.0.1.tar.gz"
     }
   ]
 }
