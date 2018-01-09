@@ -13,7 +13,7 @@
     ],
     "description": "TFMesos \n========\n\n.. image:: https://badges.gitter.im/douban/tfmesos.svg\n   :alt: Join the chat at https://gitter.im/douban/tfmesos\n   :target: https://gitter.im/douban/tfmesos?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge\n\n.. image:: https://img.shields.io/travis/douban/tfmesos.svg\n    :target: https://travis-ci.org/douban/tfmesos/\n.. image:: https://img.shields.io/pypi/v/tfmesos.svg\n    :target: https://pypi.python.org/pypi/tfmesos\n.. image:: https://img.shields.io/docker/automated/tfmesos/tfmesos.svg\n    :target: https://hub.docker.com/r/tfmesos/tfmesos/\n\n``TFMesos`` is a lightweight framework to help running distributed `Tensorflow <https://www.tensorflow.org>`_ Machine Learning tasks on `Apache Mesos <http://mesos.apache.org>`_ within `Docker <https://www.docker.com>`_ and `Nvidia-Docker <https://github.com/NVIDIA/nvidia-docker/>`_ .\n\n``TFMesos`` dynamically allocates resources from a ``Mesos`` cluster, builds a distributed training cluster for ``Tensorflow``, and makes different training tasks mangeed and isolated in the shared ``Mesos`` cluster with the help of ``Docker``.\n\n\nPrerequisites\n--------------\n\n* For ``Mesos >= 1.0.0``:\n\n1. ``Mesos`` Cluster (cf: `Mesos Getting Started <http://mesos.apache.org/documentation/latest/getting-started>`_). All nodes in the cluster should be reachable using their hostnames, and all nodes have identical ``/etc/passwd`` and ``/etc/group``.\n\n2. Setup ``Mesos Agent`` to enable `Mesos Containerizer <http://mesos.apache.org/documentation/container-image/>`_ and `Mesos Nvidia GPU Support <https://issues.apache.org/jira/browse/MESOS-4626>`_ (optional). eg: ``mesos-agent --containerizers=mesos --image_providers=docker --isolation=filesystem/linux,docker/runtime,cgroups/devices,gpu/nvidia``\n\n3. (optional) A Distributed Filesystem (eg: `MooseFS <https://moosefs.com>`_)\n\n4. Ensure latest ``TFMesos`` docker image (`tfmesos/tfmesos <https://hub.docker.com/r/tfmesos/tfmesos/>`_) is pulled across the whole cluster\n\n* For ``Mesos < 1.0.0``:\n\n1. ``Mesos`` Cluster (cf: `Mesos Getting Started <http://mesos.apache.org/documentation/latest/getting-started>`_). All nodes in the cluster should be reachable using their hostnames, and all nodes have identical ``/etc/passwd`` and ``/etc/group``.\n\n2. ``Docker`` (cf: `Docker Get Start Tutorial <https://docs.docker.com/engine/installation/linux/>`_)\n\n3. ``Mesos Docker Containerizer Support`` (cf: `Mesos Docker Containerizer <http://mesos.apache.org/documentation/latest/docker-containerizer/>`_)\n\n4. (optional) ``Nvidia-docker`` installation (cf: `Nvidia-docker installation <https://github.com/NVIDIA/nvidia-docker/wiki/Installation>`_) and make sure nvidia-plugin is accessible from remote host (with ``-l 0.0.0.0:3476``)\n\n5. (optional) A Distributed Filesystem (eg: `MooseFS <https://moosefs.com>`_)\n\n6. Ensure latest ``TFMesos`` docker image (`tfmesos/tfmesos <https://hub.docker.com/r/tfmesos/tfmesos/>`_) is pulled across the whole cluster\n\nIf you are using ``AWS G2`` instance, here is a `sample <https://github.com/douban/tfmesos/blob/master/misc/setup-aws-g2.sh>`_ script to setup most of there prerequisites.\n\n\nRunning simple Test\n------------------------\nAfter setting up the mesos and pulling the docker image on a single node (or a cluser), you should be able to use the following command to run a simple test.\n\n.. code:: bash\n\n    $ docker run -e MESOS_MASTER=mesos-master:5050 \\\n        -e DOCKER_IMAGE=tfmesos/tfmesos \\\n        --net=host \\\n        -v /path-to-your-tfmesos-code/tfmesos/examples/plus.py:/tmp/plus.py \\\n        --rm \\\n        -it \\\n        tfmesos/tfmesos \\\n        python /tmp/plus.py mesos-master:5050\n\nSuccessfully running the test should result in an output of 42 on the console.\n\n\nRunning in replica mode\n------------------------\nThis mode is called `Between-graph replication` in official `Distributed Tensorflow Howto <https://github.com/tensorflow/tensorflow/blob/master/tensorflow/g3doc/how_tos/distributed/index.md#replicated-training>`_\n\nMost distributed training models that Google has open sourced (such as `mnist_replica <https://github.com/tensorflow/tensorflow/blob/master/tensorflow/tools/dist_test/python/mnist_replica.py>`_ and `inception <https://github.com/tensorflow/models/blob/master/inception/inception/inception_distributed_train.py>`_) are using this mode. In this mode, two kind of Jobs are defined with the names `'ps'` and `'worker'`. `'ps'` tasks act as `'Parameter Server'` and `'worker'` tasks run the actual training process.\n\nHere we use our modified `'mnist_replica' <https://github.com/douban/tfmesos/blob/master/examples/mnist/mnist_replica.py>`_ as example:\n\n1. Checkout the `mnist` example codes into a directory in shared filesystem, eg: `/nfs/mnist`\n2. Assume Mesos master is `mesos-master:5050`\n3. Now we can launch this script using following commands:\n\nCPU:\n\n.. code:: bash\n\n    $ docker run --rm -it -e MESOS_MASTER=mesos-master:5050 \\\n                 --net=host \\\n                 -v /nfs/mnist:/nfs/mnist \\\n                 -v /etc/passwd:/etc/passwd:ro \\\n                 -v /etc/group:/etc/group:ro \\\n                 -u `id -u` \\\n                 -w /nfs/mnist \\\n                 tfmesos/tfmesos \\\n                 tfrun -w 1 -s 1  \\\n                 -V /nfs/mnist:/nfs/mnist \\\n                 -- python mnist_replica.py \\\n                 --ps_hosts {ps_hosts} --worker_hosts {worker_hosts} \\\n                 --job_name {job_name} --worker_index {task_index}\n\nGPU (1 GPU per worker):\n\n.. code:: bash\n\n    $ nvidia-docker run --rm -it -e MESOS_MASTER=mesos-master:5050 \\\n                 --net=host \\\n                 -v /nfs/mnist:/nfs/mnist \\\n                 -v /etc/passwd:/etc/passwd:ro \\\n                 -v /etc/group:/etc/group:ro \\\n                 -u `id -u` \\\n                 -w /nfs/mnist \\\n                 tfmesos/tfmesos \\\n                 tfrun -w 1 -s 1 -Gw 1 -- python mnist_replica.py \\\n                 --ps_hosts {ps_hosts} --worker_hosts {worker_hosts} \\\n                 --job_name {job_name} --worker_index {task_index}\n\n\nNote:\n\nIn this mode, `tfrun` is used to prepare the cluster and launch the training script on each node, and worker #0 (the chief worker) will be launched in the local container.\n`tfrun` will substitute `{ps_hosts}`, `{worker_hosts}`, `{job_name}`, `{task_index}` with corresponding values of each task.\n\n\nRunning in fine-grained mode\n-----------------------------\n\nThis mode is called `In-graph replication` in official `Distributed Tensorflow Howto <https://github.com/tensorflow/tensorflow/blob/master/tensorflow/g3doc/how_tos/distributed/index.md#replicated-training>`_\n\nIn this mode, we have more control over the cluster spec. All nodes in the cluster is remote and just running a `Grpc` server. Each worker is driven by a local thread to run the training task.\n\nHere we use our modified `mnist <https://github.com/douban/tfmesos/blob/master/examples/mnist/mnist.py>`_ as example:\n\n1. Checkout the `mnist` example codes into a directory, eg: `/tmp/mnist`\n2. Assume Mesos master is `mesos-master:5050`\n3. Now we can launch this script using following commands:\n\nCPU:\n\n.. code:: bash\n\n    $ docker run --rm -it -e MESOS_MASTER=mesos-master:5050 \\\n                 --net=host \\\n                 -v /tmp/mnist:/tmp/mnist \\\n                 -v /etc/passwd:/etc/passwd:ro \\\n                 -v /etc/group:/etc/group:ro \\\n                 -u `id -u` \\\n                 -w /tmp/mnist \\\n                 tfmesos/tfmesos \\\n                 python mnist.py \n\nGPU (1 GPU per worker):\n\n.. code:: bash\n\n    $ nvidia-docker run --rm -it -e MESOS_MASTER=mesos-master:5050 \\\n                 --net=host \\\n                 -v /tmp/mnist:/tmp/mnist \\\n                 -v /etc/passwd:/etc/passwd:ro \\\n                 -v /etc/group:/etc/group:ro \\\n                 -u `id -u` \\\n                 -w /tmp/mnist \\\n                 tfmesos/tfmesos \\\n                 python mnist.py --worker-gpus 1\n\n\n",
     "docs_url": null,
-    "download_url": "https://github.com/douban/tfmesos/archive/0.0.6.tar.gz",
+    "download_url": "https://github.com/douban/tfmesos/archive/0.0.8.tar.gz",
     "downloads": {
       "last_day": 0,
       "last_month": 0,
@@ -27,7 +27,7 @@
     "name": "tfmesos",
     "platform": "",
     "project_url": "https://pypi.org/project/tfmesos/",
-    "release_url": "https://pypi.org/project/tfmesos/0.0.6/",
+    "release_url": "https://pypi.org/project/tfmesos/0.0.8/",
     "requires_dist": [
       "tensorflow-gpu (>=0.8.0); extra == 'gpu'",
       "tensorflow (>=0.8.0); extra == 'cpu'",
@@ -37,7 +37,7 @@
     ],
     "requires_python": "",
     "summary": "Tensorflow on Mesos",
-    "version": "0.0.6"
+    "version": "0.0.8"
   },
   "releases": {
     "0.0.1": [
@@ -47,7 +47,7 @@
           "md5": "38aeaa96a7ab1f1415f4678ea86401b8",
           "sha256": "36aa581b675ec377bb3a577db99be6709727dde7444594583f41a471e0cb4a84"
         },
-        "downloads": 50,
+        "downloads": -1,
         "filename": "tfmesos-0.0.1-py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "38aeaa96a7ab1f1415f4678ea86401b8",
@@ -63,7 +63,7 @@
           "md5": "42147f368e698f885378abc7c556cbb7",
           "sha256": "0f2f1162bacc2de4371fc7ed77809ed4e89512ccc3859eade252d594f24393c1"
         },
-        "downloads": 54,
+        "downloads": -1,
         "filename": "tfmesos-0.0.1.tar.gz",
         "has_sig": false,
         "md5_digest": "42147f368e698f885378abc7c556cbb7",
@@ -81,7 +81,7 @@
           "md5": "572f92ec43d46920ad4ad5add32a4b76",
           "sha256": "15d9566310016cc29153c094cfa95755815c52a6f3e5696f2908cad06072aa3c"
         },
-        "downloads": 186,
+        "downloads": -1,
         "filename": "tfmesos-0.0.2-py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "572f92ec43d46920ad4ad5add32a4b76",
@@ -97,7 +97,7 @@
           "md5": "51f7fb825c6f9b00870b2b30ad72c244",
           "sha256": "75c79d33934c21d1f5d5c84ea72d83e176bdc5f415c385da8e48263bfdeb15e5"
         },
-        "downloads": 197,
+        "downloads": -1,
         "filename": "tfmesos-0.0.2.tar.gz",
         "has_sig": false,
         "md5_digest": "51f7fb825c6f9b00870b2b30ad72c244",
@@ -115,7 +115,7 @@
           "md5": "483c5c749244687d2f252f27acf94f3b",
           "sha256": "af9bcf4ba2359235b0cac8d4596bc0c3092c1eb1e66822b8fe6f4e6bfce477fd"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "tfmesos-0.0.3-py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "483c5c749244687d2f252f27acf94f3b",
@@ -131,7 +131,7 @@
           "md5": "ba8b4be897c4d7a8765e1107939e5474",
           "sha256": "e709a913d0fd0640d98d45becd370866cfcb2e0746c1cd91834d282c731902e8"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "tfmesos-0.0.3.tar.gz",
         "has_sig": false,
         "md5_digest": "ba8b4be897c4d7a8765e1107939e5474",
@@ -149,7 +149,7 @@
           "md5": "27abd1332cdb0ef8bb35116646e9ba7d",
           "sha256": "8f576c266f6c7bbfcf549ad828c917e163422dc920503e839282a9a6a30b98c1"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "tfmesos-0.0.4-py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "27abd1332cdb0ef8bb35116646e9ba7d",
@@ -165,7 +165,7 @@
           "md5": "18c09e06fc6b7e3693f1a807434a5520",
           "sha256": "cbce3c182353feae1860c3a51f180d801c98fc376903fa04bf29ea6ef00fce0b"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "tfmesos-0.0.4.tar.gz",
         "has_sig": false,
         "md5_digest": "18c09e06fc6b7e3693f1a807434a5520",
@@ -183,7 +183,7 @@
           "md5": "807760f5e137db92a19ec3d73d4f78b2",
           "sha256": "35da5f97c4d3ec62d16dbf0b2b260fad96b5e74e819c27f9416e3db983d0309f"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "tfmesos-0.0.5-py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "807760f5e137db92a19ec3d73d4f78b2",
@@ -199,7 +199,7 @@
           "md5": "9eca1ec4a34c5563ef076ea8a56b32ec",
           "sha256": "c42c6e367f989a518cafc55556ddfca5dfb37f02b9b6c66d3eac1c07233ae01c"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "tfmesos-0.0.5.tar.gz",
         "has_sig": false,
         "md5_digest": "9eca1ec4a34c5563ef076ea8a56b32ec",
@@ -217,7 +217,7 @@
           "md5": "b50d9d3725c2e65908378de7abc66eba",
           "sha256": "84b2f7bb12e26cc46527ddde06ea863a295ee3e6e90795ed3237e9f2de3fbccb"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "tfmesos-0.0.6-py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "b50d9d3725c2e65908378de7abc66eba",
@@ -233,7 +233,7 @@
           "md5": "7372ea6c5ccdcbd1157ddddc82df607d",
           "sha256": "a325bb67606c96bd41533c8060a86e7366b075597d3d32a606fa4ef45f1fc92c"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "tfmesos-0.0.6.tar.gz",
         "has_sig": false,
         "md5_digest": "7372ea6c5ccdcbd1157ddddc82df607d",
@@ -243,40 +243,74 @@
         "upload_time": "2017-08-16T06:11:30",
         "url": "https://files.pythonhosted.org/packages/e0/2c/9f0906c2bb7dbf1a13f936841ab9e39d457596d2638939711dac4cb7bbd4/tfmesos-0.0.6.tar.gz"
       }
+    ],
+    "0.0.8": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4fb0e06da1e8729c386f8bff19363643",
+          "sha256": "a31572bb46d7eee41fb31a01dc1e0b68155c8ba65471bb974f2cbecc22dc3774"
+        },
+        "downloads": -1,
+        "filename": "tfmesos-0.0.8-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "4fb0e06da1e8729c386f8bff19363643",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "size": 14466,
+        "upload_time": "2018-01-09T08:09:21",
+        "url": "https://files.pythonhosted.org/packages/0e/c1/8f32cc81fbd232410ce0848bb6c95c0952bff94f8c11273e9fa7f547dc97/tfmesos-0.0.8-py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ecba884174bc93171db1db0299f3cc10",
+          "sha256": "5ef381b500331aed188a8373da170c6a67a8d3d75bb69d15776eb786bc783bba"
+        },
+        "downloads": -1,
+        "filename": "tfmesos-0.0.8.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ecba884174bc93171db1db0299f3cc10",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10482,
+        "upload_time": "2018-01-09T08:09:22",
+        "url": "https://files.pythonhosted.org/packages/e9/e2/a7a21b2b3a272c774426ae5b66934ba41dcd133c8ba1581c810d8b367b55/tfmesos-0.0.8.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "b50d9d3725c2e65908378de7abc66eba",
-        "sha256": "84b2f7bb12e26cc46527ddde06ea863a295ee3e6e90795ed3237e9f2de3fbccb"
+        "md5": "4fb0e06da1e8729c386f8bff19363643",
+        "sha256": "a31572bb46d7eee41fb31a01dc1e0b68155c8ba65471bb974f2cbecc22dc3774"
       },
-      "downloads": 0,
-      "filename": "tfmesos-0.0.6-py3-none-any.whl",
+      "downloads": -1,
+      "filename": "tfmesos-0.0.8-py3-none-any.whl",
       "has_sig": false,
-      "md5_digest": "b50d9d3725c2e65908378de7abc66eba",
+      "md5_digest": "4fb0e06da1e8729c386f8bff19363643",
       "packagetype": "bdist_wheel",
       "python_version": "py3",
-      "size": 14157,
-      "upload_time": "2017-08-16T06:11:27",
-      "url": "https://files.pythonhosted.org/packages/c4/90/8c69ef7dbe7de7402b3a3de99733f581f2e8002e86539836546fa78fa848/tfmesos-0.0.6-py3-none-any.whl"
+      "size": 14466,
+      "upload_time": "2018-01-09T08:09:21",
+      "url": "https://files.pythonhosted.org/packages/0e/c1/8f32cc81fbd232410ce0848bb6c95c0952bff94f8c11273e9fa7f547dc97/tfmesos-0.0.8-py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "7372ea6c5ccdcbd1157ddddc82df607d",
-        "sha256": "a325bb67606c96bd41533c8060a86e7366b075597d3d32a606fa4ef45f1fc92c"
+        "md5": "ecba884174bc93171db1db0299f3cc10",
+        "sha256": "5ef381b500331aed188a8373da170c6a67a8d3d75bb69d15776eb786bc783bba"
       },
-      "downloads": 0,
-      "filename": "tfmesos-0.0.6.tar.gz",
+      "downloads": -1,
+      "filename": "tfmesos-0.0.8.tar.gz",
       "has_sig": false,
-      "md5_digest": "7372ea6c5ccdcbd1157ddddc82df607d",
+      "md5_digest": "ecba884174bc93171db1db0299f3cc10",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 10204,
-      "upload_time": "2017-08-16T06:11:30",
-      "url": "https://files.pythonhosted.org/packages/e0/2c/9f0906c2bb7dbf1a13f936841ab9e39d457596d2638939711dac4cb7bbd4/tfmesos-0.0.6.tar.gz"
+      "size": 10482,
+      "upload_time": "2018-01-09T08:09:22",
+      "url": "https://files.pythonhosted.org/packages/e9/e2/a7a21b2b3a272c774426ae5b66934ba41dcd133c8ba1581c810d8b367b55/tfmesos-0.0.8.tar.gz"
     }
   ]
 }

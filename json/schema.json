@@ -15,9 +15,9 @@
       "Programming Language :: Python :: Implementation :: PyPy",
       "Topic :: Utilities"
     ],
-    "description": "Schema validation just got Pythonic\n===============================================================================\n\n**schema** is a library for validating Python data structures, such as those\nobtained from config-files, forms, external services or command-line\nparsing, converted from JSON/YAML (or something else) to Python data-types.\n\n\n.. image:: https://secure.travis-ci.org/keleshev/schema.png?branch=master\n    :target: https://travis-ci.org/keleshev/schema\n\n.. image:: https://img.shields.io/codecov/c/github/keleshev/schema.svg\n    :target: http://codecov.io/github/keleshev/schema\n\nExample\n----------------------------------------------------------------------------\n\nHere is a quick example to get a feeling of **schema**, validating a list of\nentries with personal information:\n\n.. code:: python\n\n    >>> from schema import Schema, And, Use, Optional\n\n    >>> schema = Schema([{'name': And(str, len),\n    ...                   'age':  And(Use(int), lambda n: 18 <= n <= 99),\n    ...                   Optional('sex'): And(str, Use(str.lower),\n    ...                                        lambda s: s in ('male', 'female'))}])\n\n    >>> data = [{'name': 'Sue', 'age': '28', 'sex': 'FEMALE'},\n    ...         {'name': 'Sam', 'age': '42'},\n    ...         {'name': 'Sacha', 'age': '20', 'sex': 'Male'}]\n\n    >>> validated = schema.validate(data)\n\n    >>> assert validated == [{'name': 'Sue', 'age': 28, 'sex': 'female'},\n    ...                      {'name': 'Sam', 'age': 42},\n    ...                      {'name': 'Sacha', 'age' : 20, 'sex': 'male'}]\n\n\nIf data is valid, ``Schema.validate`` will return the validated data\n(optionally converted with `Use` calls, see below).\n\nIf data is invalid, ``Schema`` will raise ``SchemaError`` exception.\n\n\nInstallation\n-------------------------------------------------------------------------------\n\nUse `pip <http://pip-installer.org>`_ or easy_install::\n\n    pip install schema\n\nAlternatively, you can just drop ``schema.py`` file into your project\u2014it is\nself-contained.\n\n- **schema** is tested with Python 2.6, 2.7, 3.2, 3.3 and PyPy.\n- **schema** follows `semantic versioning <http://semver.org>`_.\n\nHow ``Schema`` validates data\n-------------------------------------------------------------------------------\n\nTypes\n~~~~~\n\nIf ``Schema(...)`` encounters a type (such as ``int``, ``str``, ``object``,\netc.), it will check if the corresponding piece of data is an instance of that type,\notherwise it will raise ``SchemaError``.\n\n.. code:: python\n\n    >>> from schema import Schema\n\n    >>> Schema(int).validate(123)\n    123\n\n    >>> Schema(int).validate('123')\n    Traceback (most recent call last):\n    ...\n    SchemaUnexpectedTypeError: '123' should be instance of 'int'\n\n    >>> Schema(object).validate('hai')\n    'hai'\n\nCallables\n~~~~~~~~~\n\nIf ``Schema(...)`` encounters a callable (function, class, or object with\n``__call__`` method) it will call it, and if its return value evaluates to\n``True`` it will continue validating, else\u2014it will raise ``SchemaError``.\n\n.. code:: python\n\n    >>> import os\n\n    >>> Schema(os.path.exists).validate('./')\n    './'\n\n    >>> Schema(os.path.exists).validate('./non-existent/')\n    Traceback (most recent call last):\n    ...\n    SchemaError: exists('./non-existent/') should evaluate to True\n\n    >>> Schema(lambda n: n > 0).validate(123)\n    123\n\n    >>> Schema(lambda n: n > 0).validate(-12)\n    Traceback (most recent call last):\n    ...\n    SchemaError: <lambda>(-12) should evaluate to True\n\n\"Validatables\"\n~~~~~~~~~~~~~~\n\nIf ``Schema(...)`` encounters an object with method ``validate`` it will run\nthis method on corresponding data as ``data = obj.validate(data)``. This method\nmay raise ``SchemaError`` exception, which will tell ``Schema`` that that piece\nof data is invalid, otherwise\u2014it will continue validating.\n\nAn example of \"validatable\" is ``Regex``, that tries to match a string or a\nbuffer with the given regular expression (itself as a string, buffer or\ncompiled regex ``SRE_Pattern``):\n\n.. code:: python\n\n    >>> from schema import Regex\n    >>> import re\n\n    >>> Regex(r'^foo').validate('foobar')\n    'foobar'\n\n    >>> Regex(r'^[A-Z]+$', flags=re.I).validate('those-dashes-dont-match')\n    Traceback (most recent call last):\n    ...\n    SchemaError: Regex('^[A-Z]+$', flags=re.IGNORECASE) does not match 'those-dashes-dont-match'\n\nFor a more general case, you can use ``Use`` for creating such objects.\n``Use`` helps to use a function or type to convert a value while validating it:\n\n.. code:: python\n\n    >>> from schema import Use\n\n    >>> Schema(Use(int)).validate('123')\n    123\n\n    >>> Schema(Use(lambda f: open(f, 'a'))).validate('LICENSE-MIT')\n    <open file 'LICENSE-MIT', mode 'a' at 0x...>\n\nDropping the details, ``Use`` is basically:\n\n.. code:: python\n\n    class Use(object):\n\n        def __init__(self, callable_):\n            self._callable = callable_\n\n        def validate(self, data):\n            try:\n                return self._callable(data)\n            except Exception as e:\n                raise SchemaError('%r raised %r' % (self._callable.__name__, e))\n\nNow you can write your own validation-aware classes and data types.\n\nLists, similar containers\n~~~~~~~~~~~~~~~~~~~~~~~~~\n\nIf ``Schema(...)`` encounters an instance of ``list``, ``tuple``, ``set`` or\n``frozenset``, it will validate contents of corresponding data container\nagainst schemas listed inside that container:\n\n\n.. code:: python\n\n    >>> Schema([1, 0]).validate([1, 1, 0, 1])\n    [1, 1, 0, 1]\n\n    >>> Schema((int, float)).validate((5, 7, 8, 'not int or float here'))\n    Traceback (most recent call last):\n    ...\n    SchemaError: Or(<type 'int'>, <type 'float'>) did not validate 'not int or float here'\n    'not int or float here' should be instance of 'float'\n\nDictionaries\n~~~~~~~~~~~~\n\nIf ``Schema(...)`` encounters an instance of ``dict``, it will validate data\nkey-value pairs:\n\n.. code:: python\n\n    >>> d = Schema({'name': str,\n    ...             'age': lambda n: 18 <= n <= 99}).validate({'name': 'Sue', 'age': 28})\n\n    >>> assert d == {'name': 'Sue', 'age': 28}\n\nYou can specify keys as schemas too:\n\n.. code:: python\n\n    >>> schema = Schema({str: int,  # string keys should have integer values\n    ...                  int: None})  # int keys should be always None\n\n    >>> data = schema.validate({'key1': 1, 'key2': 2,\n    ...                         10: None, 20: None})\n\n    >>> schema.validate({'key1': 1,\n    ...                   10: 'not None here'})\n    Traceback (most recent call last):\n    ...\n    SchemaError: Key '10' error:\n    None does not match 'not None here'\n\nThis is useful if you want to check certain key-values, but don't care\nabout other:\n\n.. code:: python\n\n    >>> schema = Schema({'<id>': int,\n    ...                  '<file>': Use(open),\n    ...                  str: object})  # don't care about other str keys\n\n    >>> data = schema.validate({'<id>': 10,\n    ...                         '<file>': 'README.rst',\n    ...                         '--verbose': True})\n\nYou can mark a key as optional as follows:\n\n.. code:: python\n\n    >>> from schema import Optional\n    >>> Schema({'name': str,\n    ...         Optional('occupation'): str}).validate({'name': 'Sam'})\n    {'name': 'Sam'}\n\n``Optional`` keys can also carry a ``default``, to be used when no key in the\ndata matches:\n\n.. code:: python\n\n    >>> from schema import Optional\n    >>> Schema({Optional('color', default='blue'): str,\n    ...         str: str}).validate({'texture': 'furry'}\n    ...       ) == {'color': 'blue', 'texture': 'furry'}\n    True\n\nDefaults are used verbatim, not passed through any validators specified in the\nvalue.\n\n**schema** has classes ``And`` and ``Or`` that help validating several schemas\nfor the same data:\n\n.. code:: python\n\n    >>> from schema import And, Or\n\n    >>> Schema({'age': And(int, lambda n: 0 < n < 99)}).validate({'age': 7})\n    {'age': 7}\n\n    >>> Schema({'password': And(str, lambda s: len(s) > 6)}).validate({'password': 'hai'})\n    Traceback (most recent call last):\n    ...\n    SchemaError: Key 'password' error:\n    <lambda>('hai') should evaluate to True\n\n    >>> Schema(And(Or(int, float), lambda x: x > 0)).validate(3.1415)\n    3.1415\n\nExtra Keys\n~~~~~~~~~~\n\nThe ``Schema(...)`` parameter ``ignore_extra_keys`` causes validation to ignore extra keys in a dictionary, and also to not return them after validating.\n\n.. code:: python\n\n    >>> schema = Schema({'name': str}, ignore_extra_keys=True)\n    >>> schema.validate({'name': 'Sam', 'age': '42'})\n    {'name': 'Sam'}\n\nIf you would like any extra keys returned, use ``object: object`` as one of the key/value pairs, which will match any key and any value.\nOtherwise, extra keys will raise a ``SchemaError``.\n\nUser-friendly error reporting\n-------------------------------------------------------------------------------\n\nYou can pass a keyword argument ``error`` to any of validatable classes\n(such as ``Schema``, ``And``, ``Or``, ``Regex``, ``Use``) to report this error\ninstead of a built-in one.\n\n.. code:: python\n\n    >>> Schema(Use(int, error='Invalid year')).validate('XVII')\n    Traceback (most recent call last):\n    ...\n    SchemaError: Invalid year\n\nYou can see all errors that occurred by accessing exception's ``exc.autos``\nfor auto-generated error messages, and ``exc.errors`` for errors\nwhich had ``error`` text passed to them.\n\nYou can exit with ``sys.exit(exc.code)`` if you want to show the messages\nto the user without traceback. ``error`` messages are given precedence in that\ncase.\n\nA JSON API example\n-------------------------------------------------------------------------------\n\nHere is a quick example: validation of\n`create a gist <http://developer.github.com/v3/gists/>`_\nrequest from github API.\n\n.. code:: python\n\n    >>> gist = '''{\"description\": \"the description for this gist\",\n    ...            \"public\": true,\n    ...            \"files\": {\n    ...                \"file1.txt\": {\"content\": \"String file contents\"},\n    ...                \"other.txt\": {\"content\": \"Another file contents\"}}}'''\n\n    >>> from schema import Schema, And, Use, Optional\n\n    >>> import json\n\n    >>> gist_schema = Schema(And(Use(json.loads),  # first convert from JSON\n    ...                          # use basestring since json returns unicode\n    ...                          {Optional('description'): basestring,\n    ...                           'public': bool,\n    ...                           'files': {basestring: {'content': basestring}}}))\n\n    >>> gist = gist_schema.validate(gist)\n\n    # gist:\n    {u'description': u'the description for this gist',\n     u'files': {u'file1.txt': {u'content': u'String file contents'},\n                u'other.txt': {u'content': u'Another file contents'}},\n     u'public': True}\n\nUsing **schema** with `docopt <http://github.com/docopt/docopt>`_\n-------------------------------------------------------------------------------\n\nAssume you are using **docopt** with the following usage-pattern:\n\n    Usage: my_program.py [--count=N] <path> <files>...\n\nand you would like to validate that ``<files>`` are readable, and that\n``<path>`` exists, and that ``--count`` is either integer from 0 to 5, or\n``None``.\n\nAssuming **docopt** returns the following dict:\n\n.. code:: python\n\n    >>> args = {'<files>': ['LICENSE-MIT', 'setup.py'],\n    ...         '<path>': '../',\n    ...         '--count': '3'}\n\nthis is how you validate it using ``schema``:\n\n.. code:: python\n\n    >>> from schema import Schema, And, Or, Use\n    >>> import os\n\n    >>> s = Schema({'<files>': [Use(open)],\n    ...             '<path>': os.path.exists,\n    ...             '--count': Or(None, And(Use(int), lambda n: 0 < n < 5))})\n\n    >>> args = s.validate(args)\n\n    >>> args['<files>']\n    [<open file 'LICENSE-MIT', mode 'r' at 0x...>, <open file 'setup.py', mode 'r' at 0x...>]\n\n    >>> args['<path>']\n    '../'\n\n    >>> args['--count']\n    3\n\nAs you can see, **schema** validated data successfully, opened files and\nconverted ``'3'`` to ``int``.",
+    "description": "Schema validation just got Pythonic\n===============================================================================\n\n**schema** is a library for validating Python data structures, such as those\nobtained from config-files, forms, external services or command-line\nparsing, converted from JSON/YAML (or something else) to Python data-types.\n\n\n.. image:: https://secure.travis-ci.org/keleshev/schema.png?branch=master\n    :target: https://travis-ci.org/keleshev/schema\n\n.. image:: https://img.shields.io/codecov/c/github/keleshev/schema.svg\n    :target: http://codecov.io/github/keleshev/schema\n\nExample\n----------------------------------------------------------------------------\n\nHere is a quick example to get a feeling of **schema**, validating a list of\nentries with personal information:\n\n.. code:: python\n\n    >>> from schema import Schema, And, Use, Optional\n\n    >>> schema = Schema([{'name': And(str, len),\n    ...                   'age':  And(Use(int), lambda n: 18 <= n <= 99),\n    ...                   Optional('gender'): And(str, Use(str.lower),\n    ...                                           lambda s: s in ('squid', 'kid'))}])\n\n    >>> data = [{'name': 'Sue', 'age': '28', 'gender': 'Squid'},\n    ...         {'name': 'Sam', 'age': '42'},\n    ...         {'name': 'Sacha', 'age': '20', 'gender': 'KID'}]\n\n    >>> validated = schema.validate(data)\n\n    >>> assert validated == [{'name': 'Sue', 'age': 28, 'gender': 'squid'},\n    ...                      {'name': 'Sam', 'age': 42},\n    ...                      {'name': 'Sacha', 'age' : 20, 'gender': 'kid'}]\n\n\nIf data is valid, ``Schema.validate`` will return the validated data\n(optionally converted with `Use` calls, see below).\n\nIf data is invalid, ``Schema`` will raise ``SchemaError`` exception.\n\n\nInstallation\n-------------------------------------------------------------------------------\n\nUse `pip <http://pip-installer.org>`_ or easy_install::\n\n    pip install schema\n\nAlternatively, you can just drop ``schema.py`` file into your project\u2014it is\nself-contained.\n\n- **schema** is tested with Python 2.6, 2.7, 3.2, 3.3, 3.4, 3.5 and PyPy.\n- **schema** follows `semantic versioning <http://semver.org>`_.\n\nHow ``Schema`` validates data\n-------------------------------------------------------------------------------\n\nTypes\n~~~~~\n\nIf ``Schema(...)`` encounters a type (such as ``int``, ``str``, ``object``,\netc.), it will check if the corresponding piece of data is an instance of that type,\notherwise it will raise ``SchemaError``.\n\n.. code:: python\n\n    >>> from schema import Schema\n\n    >>> Schema(int).validate(123)\n    123\n\n    >>> Schema(int).validate('123')\n    Traceback (most recent call last):\n    ...\n    SchemaUnexpectedTypeError: '123' should be instance of 'int'\n\n    >>> Schema(object).validate('hai')\n    'hai'\n\nCallables\n~~~~~~~~~\n\nIf ``Schema(...)`` encounters a callable (function, class, or object with\n``__call__`` method) it will call it, and if its return value evaluates to\n``True`` it will continue validating, else\u2014it will raise ``SchemaError``.\n\n.. code:: python\n\n    >>> import os\n\n    >>> Schema(os.path.exists).validate('./')\n    './'\n\n    >>> Schema(os.path.exists).validate('./non-existent/')\n    Traceback (most recent call last):\n    ...\n    SchemaError: exists('./non-existent/') should evaluate to True\n\n    >>> Schema(lambda n: n > 0).validate(123)\n    123\n\n    >>> Schema(lambda n: n > 0).validate(-12)\n    Traceback (most recent call last):\n    ...\n    SchemaError: <lambda>(-12) should evaluate to True\n\n\"Validatables\"\n~~~~~~~~~~~~~~\n\nIf ``Schema(...)`` encounters an object with method ``validate`` it will run\nthis method on corresponding data as ``data = obj.validate(data)``. This method\nmay raise ``SchemaError`` exception, which will tell ``Schema`` that that piece\nof data is invalid, otherwise\u2014it will continue validating.\n\nAn example of \"validatable\" is ``Regex``, that tries to match a string or a\nbuffer with the given regular expression (itself as a string, buffer or\ncompiled regex ``SRE_Pattern``):\n\n.. code:: python\n\n    >>> from schema import Regex\n    >>> import re\n\n    >>> Regex(r'^foo').validate('foobar')\n    'foobar'\n\n    >>> Regex(r'^[A-Z]+$', flags=re.I).validate('those-dashes-dont-match')\n    Traceback (most recent call last):\n    ...\n    SchemaError: Regex('^[A-Z]+$', flags=re.IGNORECASE) does not match 'those-dashes-dont-match'\n\nFor a more general case, you can use ``Use`` for creating such objects.\n``Use`` helps to use a function or type to convert a value while validating it:\n\n.. code:: python\n\n    >>> from schema import Use\n\n    >>> Schema(Use(int)).validate('123')\n    123\n\n    >>> Schema(Use(lambda f: open(f, 'a'))).validate('LICENSE-MIT')\n    <open file 'LICENSE-MIT', mode 'a' at 0x...>\n\nDropping the details, ``Use`` is basically:\n\n.. code:: python\n\n    class Use(object):\n\n        def __init__(self, callable_):\n            self._callable = callable_\n\n        def validate(self, data):\n            try:\n                return self._callable(data)\n            except Exception as e:\n                raise SchemaError('%r raised %r' % (self._callable.__name__, e))\n\n\nSometimes you need to transform and validate part of data, but keep original data unchanged.\n``Const`` helps to keep your data safe:\n\n.. code:: python\n\n    >> from schema import Use, Const, And, Schema\n\n    >> from datetime import datetime\n\n    >> is_future = lambda date: datetime.now() > date\n\n    >> to_json = lambda v: {\"timestamp\": v}\n\n    >> Schema(And(Const(And(Use(datetime.fromtimestamp), is_future)), Use(to_json))).validate(1234567890)\n    {\"timestamp\": 1234567890}\n\nNow you can write your own validation-aware classes and data types.\n\nLists, similar containers\n~~~~~~~~~~~~~~~~~~~~~~~~~\n\nIf ``Schema(...)`` encounters an instance of ``list``, ``tuple``, ``set`` or\n``frozenset``, it will validate contents of corresponding data container\nagainst schemas listed inside that container:\n\n\n.. code:: python\n\n    >>> Schema([1, 0]).validate([1, 1, 0, 1])\n    [1, 1, 0, 1]\n\n    >>> Schema((int, float)).validate((5, 7, 8, 'not int or float here'))\n    Traceback (most recent call last):\n    ...\n    SchemaError: Or(<type 'int'>, <type 'float'>) did not validate 'not int or float here'\n    'not int or float here' should be instance of 'float'\n\nDictionaries\n~~~~~~~~~~~~\n\nIf ``Schema(...)`` encounters an instance of ``dict``, it will validate data\nkey-value pairs:\n\n.. code:: python\n\n    >>> d = Schema({'name': str,\n    ...             'age': lambda n: 18 <= n <= 99}).validate({'name': 'Sue', 'age': 28})\n\n    >>> assert d == {'name': 'Sue', 'age': 28}\n\nYou can specify keys as schemas too:\n\n.. code:: python\n\n    >>> schema = Schema({str: int,  # string keys should have integer values\n    ...                  int: None})  # int keys should be always None\n\n    >>> data = schema.validate({'key1': 1, 'key2': 2,\n    ...                         10: None, 20: None})\n\n    >>> schema.validate({'key1': 1,\n    ...                   10: 'not None here'})\n    Traceback (most recent call last):\n    ...\n    SchemaError: Key '10' error:\n    None does not match 'not None here'\n\nThis is useful if you want to check certain key-values, but don't care\nabout other:\n\n.. code:: python\n\n    >>> schema = Schema({'<id>': int,\n    ...                  '<file>': Use(open),\n    ...                  str: object})  # don't care about other str keys\n\n    >>> data = schema.validate({'<id>': 10,\n    ...                         '<file>': 'README.rst',\n    ...                         '--verbose': True})\n\nYou can mark a key as optional as follows:\n\n.. code:: python\n\n    >>> from schema import Optional\n    >>> Schema({'name': str,\n    ...         Optional('occupation'): str}).validate({'name': 'Sam'})\n    {'name': 'Sam'}\n\n``Optional`` keys can also carry a ``default``, to be used when no key in the\ndata matches:\n\n.. code:: python\n\n    >>> from schema import Optional\n    >>> Schema({Optional('color', default='blue'): str,\n    ...         str: str}).validate({'texture': 'furry'}\n    ...       ) == {'color': 'blue', 'texture': 'furry'}\n    True\n\nDefaults are used verbatim, not passed through any validators specified in the\nvalue.\n\nYou can mark a key as forbidden as follows:\n\n.. code:: python\n\n    >>> from schema import Forbidden\n    >>> Schema({Forbidden('age'): object}).validate({'age': 50})\n    Traceback (most recent call last):\n    ...\n    SchemaForbiddenKeyError: Forbidden key encountered: 'age' in {'age': 50}\n\nA few things are worth noting. First, the value paired with the forbidden\nkey determines whether it will be rejected:\n\n.. code:: python\n\n    >>> Schema({Forbidden('age'): str, 'age': int}).validate({'age': 50})\n    {'age': 50}\n\nNote: if we hadn't supplied the 'age' key here, the call would have failed too, but with\nSchemaWrongKeyError, not SchemaForbiddenKeyError.\n\nSecond, Forbidden has a higher priority than standard keys, and consequently than Optional.\nThis means we can do that:\n\n.. code:: python\n\n    >>> Schema({Forbidden('age'): object, Optional(str): object}).validate({'age': 50})\n    Traceback (most recent call last):\n    ...\n    SchemaForbiddenKeyError: Forbidden key encountered: 'age' in {'age': 50}\n\n**schema** has classes ``And`` and ``Or`` that help validating several schemas\nfor the same data:\n\n.. code:: python\n\n    >>> from schema import And, Or\n\n    >>> Schema({'age': And(int, lambda n: 0 < n < 99)}).validate({'age': 7})\n    {'age': 7}\n\n    >>> Schema({'password': And(str, lambda s: len(s) > 6)}).validate({'password': 'hai'})\n    Traceback (most recent call last):\n    ...\n    SchemaError: Key 'password' error:\n    <lambda>('hai') should evaluate to True\n\n    >>> Schema(And(Or(int, float), lambda x: x > 0)).validate(3.1415)\n    3.1415\n\nExtra Keys\n~~~~~~~~~~\n\nThe ``Schema(...)`` parameter ``ignore_extra_keys`` causes validation to ignore extra keys in a dictionary, and also to not return them after validating.\n\n.. code:: python\n\n    >>> schema = Schema({'name': str}, ignore_extra_keys=True)\n    >>> schema.validate({'name': 'Sam', 'age': '42'})\n    {'name': 'Sam'}\n\nIf you would like any extra keys returned, use ``object: object`` as one of the key/value pairs, which will match any key and any value.\nOtherwise, extra keys will raise a ``SchemaError``.\n\nUser-friendly error reporting\n-------------------------------------------------------------------------------\n\nYou can pass a keyword argument ``error`` to any of validatable classes\n(such as ``Schema``, ``And``, ``Or``, ``Regex``, ``Use``) to report this error\ninstead of a built-in one.\n\n.. code:: python\n\n    >>> Schema(Use(int, error='Invalid year')).validate('XVII')\n    Traceback (most recent call last):\n    ...\n    SchemaError: Invalid year\n\nYou can see all errors that occurred by accessing exception's ``exc.autos``\nfor auto-generated error messages, and ``exc.errors`` for errors\nwhich had ``error`` text passed to them.\n\nYou can exit with ``sys.exit(exc.code)`` if you want to show the messages\nto the user without traceback. ``error`` messages are given precedence in that\ncase.\n\nA JSON API example\n-------------------------------------------------------------------------------\n\nHere is a quick example: validation of\n`create a gist <http://developer.github.com/v3/gists/>`_\nrequest from github API.\n\n.. code:: python\n\n    >>> gist = '''{\"description\": \"the description for this gist\",\n    ...            \"public\": true,\n    ...            \"files\": {\n    ...                \"file1.txt\": {\"content\": \"String file contents\"},\n    ...                \"other.txt\": {\"content\": \"Another file contents\"}}}'''\n\n    >>> from schema import Schema, And, Use, Optional\n\n    >>> import json\n\n    >>> gist_schema = Schema(And(Use(json.loads),  # first convert from JSON\n    ...                          # use basestring since json returns unicode\n    ...                          {Optional('description'): basestring,\n    ...                           'public': bool,\n    ...                           'files': {basestring: {'content': basestring}}}))\n\n    >>> gist = gist_schema.validate(gist)\n\n    # gist:\n    {u'description': u'the description for this gist',\n     u'files': {u'file1.txt': {u'content': u'String file contents'},\n                u'other.txt': {u'content': u'Another file contents'}},\n     u'public': True}\n\nUsing **schema** with `docopt <http://github.com/docopt/docopt>`_\n-------------------------------------------------------------------------------\n\nAssume you are using **docopt** with the following usage-pattern:\n\n    Usage: my_program.py [--count=N] <path> <files>...\n\nand you would like to validate that ``<files>`` are readable, and that\n``<path>`` exists, and that ``--count`` is either integer from 0 to 5, or\n``None``.\n\nAssuming **docopt** returns the following dict:\n\n.. code:: python\n\n    >>> args = {'<files>': ['LICENSE-MIT', 'setup.py'],\n    ...         '<path>': '../',\n    ...         '--count': '3'}\n\nthis is how you validate it using ``schema``:\n\n.. code:: python\n\n    >>> from schema import Schema, And, Or, Use\n    >>> import os\n\n    >>> s = Schema({'<files>': [Use(open)],\n    ...             '<path>': os.path.exists,\n    ...             '--count': Or(None, And(Use(int), lambda n: 0 < n < 5))})\n\n    >>> args = s.validate(args)\n\n    >>> args['<files>']\n    [<open file 'LICENSE-MIT', mode 'r' at 0x...>, <open file 'setup.py', mode 'r' at 0x...>]\n\n    >>> args['<path>']\n    '../'\n\n    >>> args['--count']\n    3\n\nAs you can see, **schema** validated data successfully, opened files and\nconverted ``'3'`` to ``int``.\n\n\n",
     "docs_url": null,
-    "download_url": null,
+    "download_url": "",
     "downloads": {
       "last_day": 0,
       "last_month": 0,
@@ -26,15 +26,16 @@
     "home_page": "https://github.com/keleshev/schema",
     "keywords": "schema json validation",
     "license": "MIT",
-    "maintainer": null,
-    "maintainer_email": null,
+    "maintainer": "",
+    "maintainer_email": "",
     "name": "schema",
-    "platform": "UNKNOWN",
+    "platform": "",
     "project_url": "https://pypi.org/project/schema/",
-    "release_url": "https://pypi.org/project/schema/0.6.6/",
-    "requires_python": null,
+    "release_url": "https://pypi.org/project/schema/0.6.7/",
+    "requires_dist": [],
+    "requires_python": "",
     "summary": "Simple data validation library",
-    "version": "0.6.6"
+    "version": "0.6.7"
   },
   "releases": {
     "0.1.0": [
@@ -44,7 +45,7 @@
           "md5": "fe9af7ab3411b86c83808c1394199932",
           "sha256": "a134cc1fa6ef8508c2bdd4e17b191c2d5c8fd0bd1a5c14b90c3c9c4cf7aab7e3"
         },
-        "downloads": 2200,
+        "downloads": -1,
         "filename": "schema-0.1.0.tar.gz",
         "has_sig": false,
         "md5_digest": "fe9af7ab3411b86c83808c1394199932",
@@ -62,7 +63,7 @@
           "md5": "5347f96d72607ad2e5eb168eb71d682a",
           "sha256": "fb9dcee5513ce43daf2789078d4b3995bef3ab3f7962476c9301ed60a30c5535"
         },
-        "downloads": 5991,
+        "downloads": -1,
         "filename": "schema-0.1.1.tar.gz",
         "has_sig": false,
         "md5_digest": "5347f96d72607ad2e5eb168eb71d682a",
@@ -80,7 +81,7 @@
           "md5": "96c3de3ff4c0caaf93653aa82c49ac6e",
           "sha256": "25636aa9f474379e2d7848ab5890b3708675396a44522ecb9977a87a16399af2"
         },
-        "downloads": 1987,
+        "downloads": -1,
         "filename": "schema-0.1.2.tar.gz",
         "has_sig": false,
         "md5_digest": "96c3de3ff4c0caaf93653aa82c49ac6e",
@@ -98,7 +99,7 @@
           "md5": "673e88f70ad9227acd96a2ee682fd4a0",
           "sha256": "d9aa5b6cd03b400393ec2ebe9dcecf6c6bde4f0dde66a4062130b45cead74364"
         },
-        "downloads": 1982,
+        "downloads": -1,
         "filename": "schema-0.1.3.tar.gz",
         "has_sig": false,
         "md5_digest": "673e88f70ad9227acd96a2ee682fd4a0",
@@ -116,7 +117,7 @@
           "md5": "504755c50bf4b4ddbe4188cd2c5753f7",
           "sha256": "5c69254520c3a6babfcb86d8b57138d68dc79836705c68aa3ae1560365b912a1"
         },
-        "downloads": 2243,
+        "downloads": -1,
         "filename": "schema-0.1.4.tar.gz",
         "has_sig": false,
         "md5_digest": "504755c50bf4b4ddbe4188cd2c5753f7",
@@ -134,7 +135,7 @@
           "md5": "45738bf995f462f3856501fe613fd6f7",
           "sha256": "71ed44da72522cc588e4a093430729c866339a436bdbbc0ef051dd83e83b5d65"
         },
-        "downloads": 18752,
+        "downloads": -1,
         "filename": "schema-0.2.0.tar.gz",
         "has_sig": false,
         "md5_digest": "45738bf995f462f3856501fe613fd6f7",
@@ -152,7 +153,7 @@
           "md5": "3ad751c878232b93896378ea001c5610",
           "sha256": "2e1ac5e56ac00282a8e286f35ca1b94647266a3a40b33a1e2e0bb6ee785d51c0"
         },
-        "downloads": 2702,
+        "downloads": -1,
         "filename": "schema-0.3.0.tar.gz",
         "has_sig": false,
         "md5_digest": "3ad751c878232b93896378ea001c5610",
@@ -170,7 +171,7 @@
           "md5": "241d4f8211ebab33bc28be90a300cb58",
           "sha256": "0b9e883edb898971125112f1737d403ffd777513caf69a44b3b0765239797c18"
         },
-        "downloads": 95933,
+        "downloads": -1,
         "filename": "schema-0.3.1.tar.gz",
         "has_sig": false,
         "md5_digest": "241d4f8211ebab33bc28be90a300cb58",
@@ -188,7 +189,7 @@
           "md5": "cfabca802f206176e87888f716ee6baf",
           "sha256": "63f3ed23f3c383203bdac0c9a4c1fa823a507c3bfcd555954367a20a1c294973"
         },
-        "downloads": 21833,
+        "downloads": -1,
         "filename": "schema-0.4.0.tar.gz",
         "has_sig": false,
         "md5_digest": "cfabca802f206176e87888f716ee6baf",
@@ -206,7 +207,7 @@
           "md5": "cf1885ccdec0cc8b0620dda48dcab150",
           "sha256": "09ab80b331c6d181dbd6194709c971ae9a18aa9c560d05cd8dfe18083c91d187"
         },
-        "downloads": 3070,
+        "downloads": -1,
         "filename": "schema-0.5.0-py2-none-any.whl",
         "has_sig": false,
         "md5_digest": "cf1885ccdec0cc8b0620dda48dcab150",
@@ -222,7 +223,7 @@
           "md5": "cee375ebfa54f1c4a218438b3b1c6803",
           "sha256": "fa982e925cfe56ce036b5776aff6179621cae5994b9066d17a33143fd5ddf883"
         },
-        "downloads": 2722,
+        "downloads": -1,
         "filename": "schema-0.5.0.tar.gz",
         "has_sig": false,
         "md5_digest": "cee375ebfa54f1c4a218438b3b1c6803",
@@ -240,7 +241,7 @@
           "md5": "7c84b045ed0c1de2246f1ec08dfdc003",
           "sha256": "07c63e4e78b697b4670a2107fd8c1b04b44229317326314cd1289911fbf13575"
         },
-        "downloads": 252,
+        "downloads": -1,
         "filename": "schema-0.6.0-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "7c84b045ed0c1de2246f1ec08dfdc003",
@@ -256,7 +257,7 @@
           "md5": "98b1ec0420e3d0fbca73818ba12cf840",
           "sha256": "5bc84e7e17ffe9f917081871b7734b1eccd408a8a2b2ed09f672474e667b76f8"
         },
-        "downloads": 98,
+        "downloads": -1,
         "filename": "schema-0.6.0.tar.gz",
         "has_sig": false,
         "md5_digest": "98b1ec0420e3d0fbca73818ba12cf840",
@@ -274,7 +275,7 @@
           "md5": "f7dfe22011ad35cbaec51c72e0c6b055",
           "sha256": "ca1666c20df343920d93265debdf1b36247b20db2170d989e3e00878136d1d4c"
         },
-        "downloads": 111,
+        "downloads": -1,
         "filename": "schema-0.6.1-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "f7dfe22011ad35cbaec51c72e0c6b055",
@@ -290,7 +291,7 @@
           "md5": "1057e0c06272fbcfe1ee1a596a318704",
           "sha256": "f529f8f6b2912a8839b713cfaeeaa3fea5f5e61d562b41afb9dfb83a7f8f4491"
         },
-        "downloads": 90,
+        "downloads": -1,
         "filename": "schema-0.6.1.tar.gz",
         "has_sig": false,
         "md5_digest": "1057e0c06272fbcfe1ee1a596a318704",
@@ -308,7 +309,7 @@
           "md5": "c4cd26221c032e2646e566fbe00b961e",
           "sha256": "057eff1563eab2cff82e4aceac25712eacbc315ad30fa441418efced7752d5c7"
         },
-        "downloads": 5834,
+        "downloads": -1,
         "filename": "schema-0.6.2-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "c4cd26221c032e2646e566fbe00b961e",
@@ -324,7 +325,7 @@
           "md5": "ac1b359c31e9b37fbe9333902f6bdf76",
           "sha256": "958f25b80a811072df7c660b0b09d822c5dd553c1a87e6aff1f47ca538153a2f"
         },
-        "downloads": 176,
+        "downloads": -1,
         "filename": "schema-0.6.2.tar.gz",
         "has_sig": false,
         "md5_digest": "ac1b359c31e9b37fbe9333902f6bdf76",
@@ -342,7 +343,7 @@
           "md5": "c6e8d9ab71305f3e94b2c795393b3a4a",
           "sha256": "a58ce2482e8ce9c45dfe30cfc9b20762f0380c610d2f74fc6113ff4ca4c5c298"
         },
-        "downloads": 84,
+        "downloads": -1,
         "filename": "schema-0.6.3-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "c6e8d9ab71305f3e94b2c795393b3a4a",
@@ -358,7 +359,7 @@
           "md5": "15231ecf22d1965938d14838671eb2e7",
           "sha256": "41ecf42e4b8b050c6046a659475aa55d7c104290acc74313774ba8c6c59b18bf"
         },
-        "downloads": 65,
+        "downloads": -1,
         "filename": "schema-0.6.3.tar.gz",
         "has_sig": false,
         "md5_digest": "15231ecf22d1965938d14838671eb2e7",
@@ -376,7 +377,7 @@
           "md5": "be6c695e4e3f8886ac74c1ac48e306a6",
           "sha256": "f66440699b4809fb79f87158f917ec6f43a2967c78f03188072743377fec5b33"
         },
-        "downloads": 576,
+        "downloads": -1,
         "filename": "schema-0.6.4-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "be6c695e4e3f8886ac74c1ac48e306a6",
@@ -392,7 +393,7 @@
           "md5": "04d1ed71742160ef591732c4cbf276a6",
           "sha256": "4bde47585a771d9ebe64e138b1fed5298ced9596e91cb2337f03310c57c34bfa"
         },
-        "downloads": 79,
+        "downloads": -1,
         "filename": "schema-0.6.4.tar.gz",
         "has_sig": false,
         "md5_digest": "04d1ed71742160ef591732c4cbf276a6",
@@ -410,7 +411,7 @@
           "md5": "7ce86886314d8a260412862fcdb90504",
           "sha256": "d9c2a189e541c26ebd846156110fd6a14827efd0e4710f33a8ab2ef0f05f0d63"
         },
-        "downloads": 8858,
+        "downloads": -1,
         "filename": "schema-0.6.5-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "7ce86886314d8a260412862fcdb90504",
@@ -426,7 +427,7 @@
           "md5": "49966546df976a664b8b2be2764aa83a",
           "sha256": "b7494da450ce247fe8c7f2a8f9a73fbe5f1a634f64f734ce62aaba0708d76f0f"
         },
-        "downloads": 403,
+        "downloads": -1,
         "filename": "schema-0.6.5.tar.gz",
         "has_sig": false,
         "md5_digest": "49966546df976a664b8b2be2764aa83a",
@@ -444,7 +445,7 @@
           "md5": "5dff2ff6d6dd9c804857c10d8d9adbcb",
           "sha256": "0e1b5453ea462a10744c612bc8989e2a058609beac7deba9edbac8c5b1a2e2b0"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "schema-0.6.6-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "5dff2ff6d6dd9c804857c10d8d9adbcb",
@@ -460,7 +461,7 @@
           "md5": "0da19403e5e2abd49e323b0c076dde18",
           "sha256": "758b59ffc654d3794f6edd6e67db948f26164ddcd3cd7dde8bbeefc4934482d3"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "schema-0.6.6.tar.gz",
         "has_sig": false,
         "md5_digest": "0da19403e5e2abd49e323b0c076dde18",
@@ -470,40 +471,74 @@
         "upload_time": "2017-04-26T09:27:48",
         "url": "https://files.pythonhosted.org/packages/05/5c/25b7fccf722d579d1368415db031dbefedbbddac125363f7827af6aa5ece/schema-0.6.6.tar.gz"
       }
+    ],
+    "0.6.7": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4c55ae24291636ea1e1484f982a3ac11",
+          "sha256": "a058daf5d926e4ece9f13c4c2366a836143ca7913ef053c5023c569e00175b2a"
+        },
+        "downloads": -1,
+        "filename": "schema-0.6.7-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "4c55ae24291636ea1e1484f982a3ac11",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 14409,
+        "upload_time": "2018-01-09T02:04:35",
+        "url": "https://files.pythonhosted.org/packages/5d/42/32c059aa876eb16521a292e634d18f25408b2441862ff823f59af273d720/schema-0.6.7-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ba3e431118bb00ec522d516658de5c83",
+          "sha256": "410f44cb025384959d20deef00b4e1595397fa30959947a4f0d92e9c84616f35"
+        },
+        "downloads": -1,
+        "filename": "schema-0.6.7.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ba3e431118bb00ec522d516658de5c83",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 18746,
+        "upload_time": "2018-01-09T02:04:37",
+        "url": "https://files.pythonhosted.org/packages/ad/fd/07c85c70803465df171340d88b12b7f41f5181777053a5cd8d75ce2f4b89/schema-0.6.7.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "5dff2ff6d6dd9c804857c10d8d9adbcb",
-        "sha256": "0e1b5453ea462a10744c612bc8989e2a058609beac7deba9edbac8c5b1a2e2b0"
+        "md5": "4c55ae24291636ea1e1484f982a3ac11",
+        "sha256": "a058daf5d926e4ece9f13c4c2366a836143ca7913ef053c5023c569e00175b2a"
       },
-      "downloads": 0,
-      "filename": "schema-0.6.6-py2.py3-none-any.whl",
+      "downloads": -1,
+      "filename": "schema-0.6.7-py2.py3-none-any.whl",
       "has_sig": false,
-      "md5_digest": "5dff2ff6d6dd9c804857c10d8d9adbcb",
+      "md5_digest": "4c55ae24291636ea1e1484f982a3ac11",
       "packagetype": "bdist_wheel",
       "python_version": "py2.py3",
-      "size": 13085,
-      "upload_time": "2017-04-26T09:27:45",
-      "url": "https://files.pythonhosted.org/packages/7b/46/657c4b2a4dbfd353df49cf39edf5955cd10a63a5111751e7e80d2676398d/schema-0.6.6-py2.py3-none-any.whl"
+      "size": 14409,
+      "upload_time": "2018-01-09T02:04:35",
+      "url": "https://files.pythonhosted.org/packages/5d/42/32c059aa876eb16521a292e634d18f25408b2441862ff823f59af273d720/schema-0.6.7-py2.py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "0da19403e5e2abd49e323b0c076dde18",
-        "sha256": "758b59ffc654d3794f6edd6e67db948f26164ddcd3cd7dde8bbeefc4934482d3"
+        "md5": "ba3e431118bb00ec522d516658de5c83",
+        "sha256": "410f44cb025384959d20deef00b4e1595397fa30959947a4f0d92e9c84616f35"
       },
-      "downloads": 0,
-      "filename": "schema-0.6.6.tar.gz",
+      "downloads": -1,
+      "filename": "schema-0.6.7.tar.gz",
       "has_sig": false,
-      "md5_digest": "0da19403e5e2abd49e323b0c076dde18",
+      "md5_digest": "ba3e431118bb00ec522d516658de5c83",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 13490,
-      "upload_time": "2017-04-26T09:27:48",
-      "url": "https://files.pythonhosted.org/packages/05/5c/25b7fccf722d579d1368415db031dbefedbbddac125363f7827af6aa5ece/schema-0.6.6.tar.gz"
+      "size": 18746,
+      "upload_time": "2018-01-09T02:04:37",
+      "url": "https://files.pythonhosted.org/packages/ad/fd/07c85c70803465df171340d88b12b7f41f5181777053a5cd8d75ce2f4b89/schema-0.6.7.tar.gz"
     }
   ]
 }

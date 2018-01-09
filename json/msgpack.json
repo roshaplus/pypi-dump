@@ -15,7 +15,7 @@
       "Programming Language :: Python :: Implementation :: CPython",
       "Programming Language :: Python :: Implementation :: PyPy"
     ],
-    "description": "======================\nMessagePack for Python\n======================\n\n.. image:: https://travis-ci.org/msgpack/msgpack-python.svg?branch=master\n   :target: https://travis-ci.org/msgpack/msgpack-python\n   :alt: Build Status\n\n.. image:: https://readthedocs.org/projects/msgpack-python/badge/?version=latest\n   :target: https://msgpack-python.readthedocs.io/en/latest/?badge=latest\n   :alt: Documentation Status\n\nWhat's this\n-----------\n\n`MessagePack <https://msgpack.org/>`_ is an efficient binary serialization format.\nIt lets you exchange data among multiple languages like JSON.\nBut it's faster and smaller.\nThis package provides CPython bindings for reading and writing MessagePack data.\n\nInstall\n-------\n\n::\n\n   $ pip install msgpack\n\nPyPy\n^^^^\n\nmsgpack provides a pure Python implementation.  PyPy can use this.\n\nWindows\n^^^^^^^\n\nWhen you can't use a binary distribution, you need to install Visual Studio\nor Windows SDK on Windows.\nWithout extension, using pure Python implementation on CPython runs slowly.\n\nFor Python 2.7, `Microsoft Visual C++ Compiler for Python 2.7 <https://www.microsoft.com/en-us/download/details.aspx?id=44266>`_\nis recommended solution.\n\nFor Python 3.5, `Microsoft Visual Studio 2015 <https://www.visualstudio.com/en-us/products/vs-2015-product-editions.aspx>`_\nCommunity Edition or Express Edition can be used to build extension module.\n\n\nHow to use\n----------\n\nOne-shot pack & unpack\n^^^^^^^^^^^^^^^^^^^^^^\n\nUse ``packb`` for packing and ``unpackb`` for unpacking.\nmsgpack provides ``dumps`` and ``loads`` as an alias for compatibility with\n``json`` and ``pickle``.\n\n``pack`` and ``dump`` packs to a file-like object.\n``unpack`` and ``load`` unpacks from a file-like object.\n\n.. code-block:: pycon\n\n   >>> import msgpack\n   >>> msgpack.packb([1, 2, 3], use_bin_type=True)\n   '\\x93\\x01\\x02\\x03'\n   >>> msgpack.unpackb(_)\n   [1, 2, 3]\n\n``unpack`` unpacks msgpack's array to Python's list, but can also unpack to tuple:\n\n.. code-block:: pycon\n\n   >>> msgpack.unpackb(b'\\x93\\x01\\x02\\x03', use_list=False)\n   (1, 2, 3)\n\nYou should always specify the ``use_list`` keyword argument for backward compatibility.\nSee performance issues relating to `use_list option`_ below.\n\nRead the docstring for other options.\n\n\nStreaming unpacking\n^^^^^^^^^^^^^^^^^^^\n\n``Unpacker`` is a \"streaming unpacker\". It unpacks multiple objects from one\nstream (or from bytes provided through its ``feed`` method).\n\n.. code-block:: python\n\n   import msgpack\n   from io import BytesIO\n\n   buf = BytesIO()\n   for i in range(100):\n      buf.write(msgpack.packb(range(i), use_bin_type=True))\n\n   buf.seek(0)\n\n   unpacker = msgpack.Unpacker(buf)\n   for unpacked in unpacker:\n       print(unpacked)\n\n\nPacking/unpacking of custom data type\n^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nIt is also possible to pack/unpack custom data types. Here is an example for\n``datetime.datetime``.\n\n.. code-block:: python\n\n    import datetime\n    import msgpack\n\n    useful_dict = {\n        \"id\": 1,\n        \"created\": datetime.datetime.now(),\n    }\n\n    def decode_datetime(obj):\n        if b'__datetime__' in obj:\n            obj = datetime.datetime.strptime(obj[\"as_str\"], \"%Y%m%dT%H:%M:%S.%f\")\n        return obj\n\n    def encode_datetime(obj):\n        if isinstance(obj, datetime.datetime):\n            return {'__datetime__': True, 'as_str': obj.strftime(\"%Y%m%dT%H:%M:%S.%f\")}\n        return obj\n\n\n    packed_dict = msgpack.packb(useful_dict, default=encode_datetime, use_bin_type=True)\n    this_dict_again = msgpack.unpackb(packed_dict, object_hook=decode_datetime)\n\n``Unpacker``'s ``object_hook`` callback receives a dict; the\n``object_pairs_hook`` callback may instead be used to receive a list of\nkey-value pairs.\n\nExtended types\n^^^^^^^^^^^^^^\n\nIt is also possible to pack/unpack custom data types using the **ext** type.\n\n.. code-block:: pycon\n\n    >>> import msgpack\n    >>> import array\n    >>> def default(obj):\n    ...     if isinstance(obj, array.array) and obj.typecode == 'd':\n    ...         return msgpack.ExtType(42, obj.tostring())\n    ...     raise TypeError(\"Unknown type: %r\" % (obj,))\n    ...\n    >>> def ext_hook(code, data):\n    ...     if code == 42:\n    ...         a = array.array('d')\n    ...         a.fromstring(data)\n    ...         return a\n    ...     return ExtType(code, data)\n    ...\n    >>> data = array.array('d', [1.2, 3.4])\n    >>> packed = msgpack.packb(data, default=default)\n    >>> unpacked = msgpack.unpackb(packed, ext_hook=ext_hook)\n    >>> data == unpacked\n    True\n\n\nAdvanced unpacking control\n^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nAs an alternative to iteration, ``Unpacker`` objects provide ``unpack``,\n``skip``, ``read_array_header`` and ``read_map_header`` methods. The former two\nread an entire message from the stream, respectively de-serialising and returning\nthe result, or ignoring it. The latter two methods return the number of elements\nin the upcoming container, so that each element in an array, or key-value pair\nin a map, can be unpacked or skipped individually.\n\nEach of these methods may optionally write the packed data it reads to a\ncallback function:\n\n.. code-block:: python\n\n    from io import BytesIO\n\n    def distribute(unpacker, get_worker):\n        nelems = unpacker.read_map_header()\n        for i in range(nelems):\n            # Select a worker for the given key\n            key = unpacker.unpack()\n            worker = get_worker(key)\n\n            # Send the value as a packed message to worker\n            bytestream = BytesIO()\n            unpacker.skip(bytestream.write)\n            worker.send(bytestream.getvalue())\n\n\nNotes\n-----\n\nstring and binary type\n^^^^^^^^^^^^^^^^^^^^^^\n\nEarly versions of msgpack didn't distinguish string and binary types (like Python 1).\nThe type for representing both string and binary types was named **raw**.\n\nFor backward compatibility reasons, msgpack-python will still default all\nstrings to byte strings, unless you specify the `use_bin_type=True` option in\nthe packer. If you do so, it will use a non-standard type called **bin** to\nserialize byte arrays, and **raw** becomes to mean **str**. If you want to\ndistinguish **bin** and **raw** in the unpacker, specify `encoding='utf-8'`.\n\n**In future version, default value of ``use_bin_type`` will be changed to ``False``.\nTo avoid this change will break your code, you must specify it explicitly\neven when you want to use old format.**\n\nNote that Python 2 defaults to byte-arrays over Unicode strings:\n\n.. code-block:: pycon\n\n    >>> import msgpack\n    >>> msgpack.unpackb(msgpack.packb([b'spam', u'eggs']))\n    ['spam', 'eggs']\n    >>> msgpack.unpackb(msgpack.packb([b'spam', u'eggs'], use_bin_type=True),\n                        encoding='utf-8')\n    ['spam', u'eggs']\n\nThis is the same code in Python 3 (same behaviour, but Python 3 has a\ndifferent default):\n\n.. code-block:: pycon\n\n    >>> import msgpack\n    >>> msgpack.unpackb(msgpack.packb([b'spam', u'eggs']))\n    [b'spam', b'eggs']\n    >>> msgpack.unpackb(msgpack.packb([b'spam', u'eggs'], use_bin_type=True),\n                        encoding='utf-8')\n    [b'spam', 'eggs']\n\n\next type\n^^^^^^^^\n\nTo use the **ext** type, pass ``msgpack.ExtType`` object to packer.\n\n.. code-block:: pycon\n\n    >>> import msgpack\n    >>> packed = msgpack.packb(msgpack.ExtType(42, b'xyzzy'))\n    >>> msgpack.unpackb(packed)\n    ExtType(code=42, data='xyzzy')\n\nYou can use it with ``default`` and ``ext_hook``. See below.\n\n\nNote about performance\n----------------------\n\nGC\n^^\n\nCPython's GC starts when growing allocated object.\nThis means unpacking may cause useless GC.\nYou can use ``gc.disable()`` when unpacking large message.\n\nuse_list option\n^^^^^^^^^^^^^^^\nList is the default sequence type of Python.\nBut tuple is lighter than list.\nYou can use ``use_list=False`` while unpacking when performance is important.\n\nPython's dict can't use list as key and MessagePack allows array for key of mapping.\n``use_list=False`` allows unpacking such message.\nAnother way to unpacking such object is using ``object_pairs_hook``.\n\n\nDevelopment\n-----------\n\nTest\n^^^^\n\nMessagePack uses `pytest` for testing.\nRun test with following command:\n\n    $ py.test\n\n\n..\n    vim: filetype=rst",
+    "description": "======================\nMessagePack for Python\n======================\n\n.. image:: https://travis-ci.org/msgpack/msgpack-python.svg?branch=master\n   :target: https://travis-ci.org/msgpack/msgpack-python\n   :alt: Build Status\n\n.. image:: https://readthedocs.org/projects/msgpack-python/badge/?version=latest\n   :target: https://msgpack-python.readthedocs.io/en/latest/?badge=latest\n   :alt: Documentation Status\n\nIMPORTANT: Upgrading from msgpack-0.4\n--------------------------------------\n\nTL;DR: When upgrading from msgpack-0.4 or earlier, don't do `pip install -U msgpack-python`.\nDo `pip uninstall msgpack-python; pip install msgpack` instead.\n\nPackage name on PyPI was changed to msgpack from 0.5.\nI upload transitional package (msgpack-python 0.5 which depending on msgpack)\nfor smooth transition from msgpack-python to msgpack.\n\nSadly, this doesn't work for upgrade install.  After `pip install -U msgpack-python`,\nmsgpack is removed and `import msgpack` fail.\n\n\nWhat's this\n-----------\n\n`MessagePack <https://msgpack.org/>`_ is an efficient binary serialization format.\nIt lets you exchange data among multiple languages like JSON.\nBut it's faster and smaller.\nThis package provides CPython bindings for reading and writing MessagePack data.\n\nInstall\n-------\n\n::\n\n   $ pip install msgpack\n\nPyPy\n^^^^\n\nmsgpack provides a pure Python implementation.  PyPy can use this.\n\nWindows\n^^^^^^^\n\nWhen you can't use a binary distribution, you need to install Visual Studio\nor Windows SDK on Windows.\nWithout extension, using pure Python implementation on CPython runs slowly.\n\nFor Python 2.7, `Microsoft Visual C++ Compiler for Python 2.7 <https://www.microsoft.com/en-us/download/details.aspx?id=44266>`_\nis recommended solution.\n\nFor Python 3.5, `Microsoft Visual Studio 2015 <https://www.visualstudio.com/en-us/products/vs-2015-product-editions.aspx>`_\nCommunity Edition or Express Edition can be used to build extension module.\n\n\nHow to use\n----------\n\nOne-shot pack & unpack\n^^^^^^^^^^^^^^^^^^^^^^\n\nUse ``packb`` for packing and ``unpackb`` for unpacking.\nmsgpack provides ``dumps`` and ``loads`` as an alias for compatibility with\n``json`` and ``pickle``.\n\n``pack`` and ``dump`` packs to a file-like object.\n``unpack`` and ``load`` unpacks from a file-like object.\n\n.. code-block:: pycon\n\n   >>> import msgpack\n   >>> msgpack.packb([1, 2, 3], use_bin_type=True)\n   '\\x93\\x01\\x02\\x03'\n   >>> msgpack.unpackb(_)\n   [1, 2, 3]\n\n``unpack`` unpacks msgpack's array to Python's list, but can also unpack to tuple:\n\n.. code-block:: pycon\n\n   >>> msgpack.unpackb(b'\\x93\\x01\\x02\\x03', use_list=False)\n   (1, 2, 3)\n\nYou should always specify the ``use_list`` keyword argument for backward compatibility.\nSee performance issues relating to `use_list option`_ below.\n\nRead the docstring for other options.\n\n\nStreaming unpacking\n^^^^^^^^^^^^^^^^^^^\n\n``Unpacker`` is a \"streaming unpacker\". It unpacks multiple objects from one\nstream (or from bytes provided through its ``feed`` method).\n\n.. code-block:: python\n\n   import msgpack\n   from io import BytesIO\n\n   buf = BytesIO()\n   for i in range(100):\n      buf.write(msgpack.packb(range(i), use_bin_type=True))\n\n   buf.seek(0)\n\n   unpacker = msgpack.Unpacker(buf)\n   for unpacked in unpacker:\n       print(unpacked)\n\n\nPacking/unpacking of custom data type\n^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nIt is also possible to pack/unpack custom data types. Here is an example for\n``datetime.datetime``.\n\n.. code-block:: python\n\n    import datetime\n    import msgpack\n\n    useful_dict = {\n        \"id\": 1,\n        \"created\": datetime.datetime.now(),\n    }\n\n    def decode_datetime(obj):\n        if b'__datetime__' in obj:\n            obj = datetime.datetime.strptime(obj[\"as_str\"], \"%Y%m%dT%H:%M:%S.%f\")\n        return obj\n\n    def encode_datetime(obj):\n        if isinstance(obj, datetime.datetime):\n            return {'__datetime__': True, 'as_str': obj.strftime(\"%Y%m%dT%H:%M:%S.%f\")}\n        return obj\n\n\n    packed_dict = msgpack.packb(useful_dict, default=encode_datetime, use_bin_type=True)\n    this_dict_again = msgpack.unpackb(packed_dict, object_hook=decode_datetime)\n\n``Unpacker``'s ``object_hook`` callback receives a dict; the\n``object_pairs_hook`` callback may instead be used to receive a list of\nkey-value pairs.\n\n\nExtended types\n^^^^^^^^^^^^^^\n\nIt is also possible to pack/unpack custom data types using the **ext** type.\n\n.. code-block:: pycon\n\n    >>> import msgpack\n    >>> import array\n    >>> def default(obj):\n    ...     if isinstance(obj, array.array) and obj.typecode == 'd':\n    ...         return msgpack.ExtType(42, obj.tostring())\n    ...     raise TypeError(\"Unknown type: %r\" % (obj,))\n    ...\n    >>> def ext_hook(code, data):\n    ...     if code == 42:\n    ...         a = array.array('d')\n    ...         a.fromstring(data)\n    ...         return a\n    ...     return ExtType(code, data)\n    ...\n    >>> data = array.array('d', [1.2, 3.4])\n    >>> packed = msgpack.packb(data, default=default, use_bin_type=True)\n    >>> unpacked = msgpack.unpackb(packed, ext_hook=ext_hook)\n    >>> data == unpacked\n    True\n\n\nAdvanced unpacking control\n^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nAs an alternative to iteration, ``Unpacker`` objects provide ``unpack``,\n``skip``, ``read_array_header`` and ``read_map_header`` methods. The former two\nread an entire message from the stream, respectively de-serialising and returning\nthe result, or ignoring it. The latter two methods return the number of elements\nin the upcoming container, so that each element in an array, or key-value pair\nin a map, can be unpacked or skipped individually.\n\nEach of these methods may optionally write the packed data it reads to a\ncallback function:\n\n.. code-block:: python\n\n    from io import BytesIO\n\n    def distribute(unpacker, get_worker):\n        nelems = unpacker.read_map_header()\n        for i in range(nelems):\n            # Select a worker for the given key\n            key = unpacker.unpack()\n            worker = get_worker(key)\n\n            # Send the value as a packed message to worker\n            bytestream = BytesIO()\n            unpacker.skip(bytestream.write)\n            worker.send(bytestream.getvalue())\n\n\nNotes\n-----\n\nstring and binary type\n^^^^^^^^^^^^^^^^^^^^^^\n\nEarly versions of msgpack didn't distinguish string and binary types (like Python 1).\nThe type for representing both string and binary types was named **raw**.\n\nFor backward compatibility reasons, msgpack-python will still default all\nstrings to byte strings, unless you specify the `use_bin_type=True` option in\nthe packer. If you do so, it will use a non-standard type called **bin** to\nserialize byte arrays, and **raw** becomes to mean **str**. If you want to\ndistinguish **bin** and **raw** in the unpacker, specify `encoding='utf-8'`.\n\n**In future version, default value of ``use_bin_type`` will be changed to ``True``.\nTo avoid this change will break your code, you must specify it explicitly\neven when you want to use old format.**\n\nNote that Python 2 defaults to byte-arrays over Unicode strings:\n\n.. code-block:: pycon\n\n    >>> import msgpack\n    >>> msgpack.unpackb(msgpack.packb([b'spam', u'eggs']))\n    ['spam', 'eggs']\n    >>> msgpack.unpackb(msgpack.packb([b'spam', u'eggs'], use_bin_type=True),\n                        encoding='utf-8')\n    ['spam', u'eggs']\n\nThis is the same code in Python 3 (same behaviour, but Python 3 has a\ndifferent default):\n\n.. code-block:: pycon\n\n    >>> import msgpack\n    >>> msgpack.unpackb(msgpack.packb([b'spam', u'eggs']))\n    [b'spam', b'eggs']\n    >>> msgpack.unpackb(msgpack.packb([b'spam', u'eggs'], use_bin_type=True),\n                        encoding='utf-8')\n    [b'spam', 'eggs']\n\n\next type\n^^^^^^^^\n\nTo use the **ext** type, pass ``msgpack.ExtType`` object to packer.\n\n.. code-block:: pycon\n\n    >>> import msgpack\n    >>> packed = msgpack.packb(msgpack.ExtType(42, b'xyzzy'))\n    >>> msgpack.unpackb(packed)\n    ExtType(code=42, data='xyzzy')\n\nYou can use it with ``default`` and ``ext_hook``. See below.\n\n\nNote about performance\n----------------------\n\nGC\n^^\n\nCPython's GC starts when growing allocated object.\nThis means unpacking may cause useless GC.\nYou can use ``gc.disable()`` when unpacking large message.\n\nuse_list option\n^^^^^^^^^^^^^^^\nList is the default sequence type of Python.\nBut tuple is lighter than list.\nYou can use ``use_list=False`` while unpacking when performance is important.\n\nPython's dict can't use list as key and MessagePack allows array for key of mapping.\n``use_list=False`` allows unpacking such message.\nAnother way to unpacking such object is using ``object_pairs_hook``.\n\n\nDevelopment\n-----------\n\nTest\n^^^^\n\nMessagePack uses `pytest` for testing.\nRun test with following command:\n\n    $ pytest -v test\n\n\n..\n    vim: filetype=rst",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -31,14 +31,142 @@
     "name": "msgpack",
     "platform": "",
     "project_url": "https://pypi.org/project/msgpack/",
-    "release_url": "https://pypi.org/project/msgpack/0.5.0/",
+    "release_url": "https://pypi.org/project/msgpack/0.5.1/",
     "requires_dist": [],
     "requires_python": "",
     "summary": "MessagePack (de)serializer.",
-    "version": "0.5.0"
+    "version": "0.5.1"
   },
   "releases": {
     "0.5.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f5f0a0fc35060340c0daee1de8c924c7",
+          "sha256": "b34ced36f7b6aa1c3bcf7afe9f250f11f34d846dd6b611fe3c59f43d459253f0"
+        },
+        "downloads": -1,
+        "filename": "msgpack-0.5.0-cp27-cp27m-manylinux1_i686.whl",
+        "has_sig": false,
+        "md5_digest": "f5f0a0fc35060340c0daee1de8c924c7",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 278866,
+        "upload_time": "2018-01-09T09:23:39",
+        "url": "https://files.pythonhosted.org/packages/ed/51/c2bfe3a2374b6737661072f11fe10577a0f1c4f2343634f14fa6ff170e31/msgpack-0.5.0-cp27-cp27m-manylinux1_i686.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "41dd312621073e83791ea29f9109760f",
+          "sha256": "a86985805e19f735defd4949cda5d322deb6f24003497f046b72e52e3d8c0429"
+        },
+        "downloads": -1,
+        "filename": "msgpack-0.5.0-cp27-cp27m-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "41dd312621073e83791ea29f9109760f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 294593,
+        "upload_time": "2018-01-09T09:23:42",
+        "url": "https://files.pythonhosted.org/packages/96/91/f6ebb1b957f9bff8bd12ea8f3f03323b1f2e7240aaedaefe1107b2aede6e/msgpack-0.5.0-cp27-cp27m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ad4a50b482d2e5bcdc061375e1f29e50",
+          "sha256": "6bc7da25b2361a9be1358dd8dc2278b97c27f23cbabcb4ee46c762311150815a"
+        },
+        "downloads": -1,
+        "filename": "msgpack-0.5.0-cp27-cp27mu-manylinux1_i686.whl",
+        "has_sig": false,
+        "md5_digest": "ad4a50b482d2e5bcdc061375e1f29e50",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 278890,
+        "upload_time": "2018-01-09T09:23:44",
+        "url": "https://files.pythonhosted.org/packages/82/51/d56e450a19e2763572e9c74b0f6a719e43646f8430807ef9fb82d4520a19/msgpack-0.5.0-cp27-cp27mu-manylinux1_i686.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "83e7462fd8d9c27c3bb8231bcb9e5167",
+          "sha256": "7db61f4c5db938d4106eb5c17c470085e372d934ef135e4feaa60eb4e4ac63a0"
+        },
+        "downloads": -1,
+        "filename": "msgpack-0.5.0-cp27-cp27mu-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "83e7462fd8d9c27c3bb8231bcb9e5167",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 294603,
+        "upload_time": "2018-01-09T09:23:45",
+        "url": "https://files.pythonhosted.org/packages/3a/65/a9469dfdc7e4cb26e7a09c0d26cb6a6dc16ee65ce1882b4f5c4808d4d9c2/msgpack-0.5.0-cp27-cp27mu-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3fcdc6992e18f1e51b91f66f2b02d6e5",
+          "sha256": "14c97f87ac5320c56d3cdb75bdbe8560aa063a0d575fc4e0fb241a2c50f75a0e"
+        },
+        "downloads": -1,
+        "filename": "msgpack-0.5.0-cp35-cp35m-manylinux1_i686.whl",
+        "has_sig": false,
+        "md5_digest": "3fcdc6992e18f1e51b91f66f2b02d6e5",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 296915,
+        "upload_time": "2018-01-09T09:23:47",
+        "url": "https://files.pythonhosted.org/packages/24/c5/9a4c76ad23e48978ea2821bbe14b5b688dd11f5a210e0c88a1ba051fd857/msgpack-0.5.0-cp35-cp35m-manylinux1_i686.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "403b2356afbd5c261d107930490858f6",
+          "sha256": "be1d264613a16532efe534c59d1f44d724e3d5fb90739ac1a672e83ad03ad95f"
+        },
+        "downloads": -1,
+        "filename": "msgpack-0.5.0-cp35-cp35m-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "403b2356afbd5c261d107930490858f6",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 316225,
+        "upload_time": "2018-01-09T09:23:49",
+        "url": "https://files.pythonhosted.org/packages/34/fe/4c681f02902c2eb24756e2bd6cb051f4bdc425077778d6b9cd3d19d0f99e/msgpack-0.5.0-cp35-cp35m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3e34ce9e84c31819b108ce75a1c76997",
+          "sha256": "70ae8875af5377e0fd14c7fc1ddcb484a68d0e9864084574220349dd8d4f9335"
+        },
+        "downloads": -1,
+        "filename": "msgpack-0.5.0-cp36-cp36m-manylinux1_i686.whl",
+        "has_sig": false,
+        "md5_digest": "3e34ce9e84c31819b108ce75a1c76997",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "size": 302494,
+        "upload_time": "2018-01-09T09:23:50",
+        "url": "https://files.pythonhosted.org/packages/54/e8/ad0ec7329dfc8cfd3de111196d7a9f975c4c068f541eddb8b8899e180d80/msgpack-0.5.0-cp36-cp36m-manylinux1_i686.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9718a1aec42402b30151e822614bca87",
+          "sha256": "f5141e564b92d13c7e9378959bb7918b2e56015ae4076ea6224e0381be4ea345"
+        },
+        "downloads": -1,
+        "filename": "msgpack-0.5.0-cp36-cp36m-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "9718a1aec42402b30151e822614bca87",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "size": 322262,
+        "upload_time": "2018-01-09T09:23:52",
+        "url": "https://files.pythonhosted.org/packages/e3/3a/723db815dc89a993fbd076d941451dbcc9a00cbb2df92620b7cb3045ceff/msgpack-0.5.0-cp36-cp36m-manylinux1_x86_64.whl"
+      },
       {
         "comment_text": "",
         "digests": {
@@ -87,56 +215,490 @@
         "upload_time": "2018-01-06T18:07:36",
         "url": "https://files.pythonhosted.org/packages/c8/2c/7ed8a002ebf55e6b814b4b643d664f0a16aa7c0fa94987f9848b0b0d28f4/msgpack-0.5.0.tar.gz"
       }
+    ],
+    "0.5.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d81e5caa76cf4d2964ed49a7f17fd2b0",
+          "sha256": "95b5dd99fb366d2ca87251d9f755c26b7c3995a1ab86de97546d273016d0042d"
+        },
+        "downloads": -1,
+        "filename": "msgpack-0.5.1-cp27-cp27m-manylinux1_i686.whl",
+        "has_sig": false,
+        "md5_digest": "d81e5caa76cf4d2964ed49a7f17fd2b0",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 278404,
+        "upload_time": "2018-01-09T18:34:23",
+        "url": "https://files.pythonhosted.org/packages/87/70/c777e7992ac3b7f1a1bb170f65fd094c3e53b47d7bfa3e875be800840507/msgpack-0.5.1-cp27-cp27m-manylinux1_i686.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d77d9593d2cf94372de85b76847fbd2c",
+          "sha256": "6e97a9bdf3b0fa676910411fe8f10a0e3b8b92335640c7a131f1bbcfe1edd7d1"
+        },
+        "downloads": -1,
+        "filename": "msgpack-0.5.1-cp27-cp27m-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "d77d9593d2cf94372de85b76847fbd2c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 295128,
+        "upload_time": "2018-01-09T18:34:25",
+        "url": "https://files.pythonhosted.org/packages/02/c8/7f9533ba1f4876a457504504888c5ba43fc43f2887841816e60a1796e55c/msgpack-0.5.1-cp27-cp27m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ae4bc95ded080035e69d9806fc62fcc4",
+          "sha256": "718ca286ea67861ebe82367b5f0106ea8c00877f5aefcfe9c2acc505d16ea062"
+        },
+        "downloads": -1,
+        "filename": "msgpack-0.5.1-cp27-cp27mu-manylinux1_i686.whl",
+        "has_sig": false,
+        "md5_digest": "ae4bc95ded080035e69d9806fc62fcc4",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 278427,
+        "upload_time": "2018-01-09T18:34:27",
+        "url": "https://files.pythonhosted.org/packages/f7/93/ad1fa9e977da3a9146b6ba014495abe14c5eea30e6265ffa6f2060e8134d/msgpack-0.5.1-cp27-cp27mu-manylinux1_i686.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a6a7182fdc45e84cfd2d991d315800f1",
+          "sha256": "b396ef2bff9657e134d3c5286c83bc6098223e2c72b30fe05be973714fc96a97"
+        },
+        "downloads": -1,
+        "filename": "msgpack-0.5.1-cp27-cp27mu-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "a6a7182fdc45e84cfd2d991d315800f1",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 295138,
+        "upload_time": "2018-01-09T18:34:30",
+        "url": "https://files.pythonhosted.org/packages/a3/85/aa3ef9f0b982ca14fe939cbc52192f485db7376f7387888741ecb16c2bfb/msgpack-0.5.1-cp27-cp27mu-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "1375cd4aa792f6f6e1eb491d6b447ca4",
+          "sha256": "388d7fb88dc968ada81e8f05d851cb3c8ae4fce344751e3cdc93dc2f127bdbd1"
+        },
+        "downloads": -1,
+        "filename": "msgpack-0.5.1-cp27-cp27m-win32.whl",
+        "has_sig": false,
+        "md5_digest": "1375cd4aa792f6f6e1eb491d6b447ca4",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 74412,
+        "upload_time": "2018-01-09T18:29:06",
+        "url": "https://files.pythonhosted.org/packages/f9/55/1f3dd2d1e9d4f0ae6a5386a6ec59bf18b5a5c16da160d968c5067796152a/msgpack-0.5.1-cp27-cp27m-win32.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "bce49f0e0174c5799c9588855a552980",
+          "sha256": "82581e634e18e143d7838b5d64b640e7de210a65d216f41c56cc51e65a43781a"
+        },
+        "downloads": -1,
+        "filename": "msgpack-0.5.1-cp27-cp27m-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "bce49f0e0174c5799c9588855a552980",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "size": 82870,
+        "upload_time": "2018-01-09T18:29:08",
+        "url": "https://files.pythonhosted.org/packages/30/4a/13a96909ac9654fbcc05828da1ca64db9c3da06748e2bf7e2c2774f08e44/msgpack-0.5.1-cp27-cp27m-win_amd64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a24cd1de988104859be0c40ea64064c9",
+          "sha256": "aab92fd798058f0950cf8cb96ec1f7473c1cd7b2c135499d277e3fce054894e7"
+        },
+        "downloads": -1,
+        "filename": "msgpack-0.5.1-cp35-cp35m-manylinux1_i686.whl",
+        "has_sig": false,
+        "md5_digest": "a24cd1de988104859be0c40ea64064c9",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 296716,
+        "upload_time": "2018-01-09T18:34:32",
+        "url": "https://files.pythonhosted.org/packages/b5/67/c7c24909c0c82af53ea7e3307bbd58e0a7849d1ffe17ba3d1205cca034bb/msgpack-0.5.1-cp35-cp35m-manylinux1_i686.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7c973c63946a50ab7313e9a0884f3e4d",
+          "sha256": "d2def7129734a276d21c200c511c5a98adfafb828efc9b1b7513ef94e33e4bdc"
+        },
+        "downloads": -1,
+        "filename": "msgpack-0.5.1-cp35-cp35m-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "7c973c63946a50ab7313e9a0884f3e4d",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 315778,
+        "upload_time": "2018-01-09T18:34:34",
+        "url": "https://files.pythonhosted.org/packages/34/3f/8e568475c433a01d068c1402cd2426d71b644402e2b1936630e0134688c2/msgpack-0.5.1-cp35-cp35m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "abbc41ad4891309dd5a6b7b57ae29228",
+          "sha256": "4f3a1e74ab923adceb5620ad7b5e11ad2418730b6c8d39324595a32a5bed6c08"
+        },
+        "downloads": -1,
+        "filename": "msgpack-0.5.1-cp35-cp35m-win32.whl",
+        "has_sig": false,
+        "md5_digest": "abbc41ad4891309dd5a6b7b57ae29228",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 75723,
+        "upload_time": "2018-01-09T18:29:10",
+        "url": "https://files.pythonhosted.org/packages/20/49/79707f68cf1f63257265899689a21559cc7b138c19003c915535d70330f8/msgpack-0.5.1-cp35-cp35m-win32.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7c7371b8733dbd409f508d225da8075c",
+          "sha256": "0b91c49693137493f5371428bc3be3e07170d19c509b1d835bea1cdfd52258f5"
+        },
+        "downloads": -1,
+        "filename": "msgpack-0.5.1-cp35-cp35m-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "7c7371b8733dbd409f508d225da8075c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp35",
+        "size": 84447,
+        "upload_time": "2018-01-09T18:29:11",
+        "url": "https://files.pythonhosted.org/packages/46/40/5401c6baaddb0fe968f6abd55e0efaf4429ab7313a46368be44af332d169/msgpack-0.5.1-cp35-cp35m-win_amd64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "f40ab1733a99491607d4282c74573d4f",
+          "sha256": "4c6ccd97a501783b351572f85024892919197b74d61d3b71eebb64210ed07bf7"
+        },
+        "downloads": -1,
+        "filename": "msgpack-0.5.1-cp36-cp36m-manylinux1_i686.whl",
+        "has_sig": false,
+        "md5_digest": "f40ab1733a99491607d4282c74573d4f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "size": 300829,
+        "upload_time": "2018-01-09T18:34:35",
+        "url": "https://files.pythonhosted.org/packages/9e/28/54ec1db9672be861f9f64d21edeb7a4cd1402999ceb9862a9239084dfe3b/msgpack-0.5.1-cp36-cp36m-manylinux1_i686.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "271398e6f38d0ecda76087667a3ec826",
+          "sha256": "6b4334a9785ba1d1019773e5d64cf6842384a053df0cf413336d41b9520a11ba"
+        },
+        "downloads": -1,
+        "filename": "msgpack-0.5.1-cp36-cp36m-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "271398e6f38d0ecda76087667a3ec826",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "size": 322402,
+        "upload_time": "2018-01-09T18:34:38",
+        "url": "https://files.pythonhosted.org/packages/d9/1b/78c2d4b9b78a59ac9615b1851d4f769ee3836ac0664f946595239cf2e8bb/msgpack-0.5.1-cp36-cp36m-manylinux1_x86_64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e1d76171d43f0b4774c81ffc281cc5cf",
+          "sha256": "81cdd29e3849b5772ffdee4dee1c83054716f395ff78f502bf0949d1e1409a83"
+        },
+        "downloads": -1,
+        "filename": "msgpack-0.5.1-cp36-cp36m-win32.whl",
+        "has_sig": false,
+        "md5_digest": "e1d76171d43f0b4774c81ffc281cc5cf",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "size": 76310,
+        "upload_time": "2018-01-09T18:29:13",
+        "url": "https://files.pythonhosted.org/packages/ba/85/63f57d3e4a051ecdab83adf7771973de4052de72ca69912b2c7f700bb9f9/msgpack-0.5.1-cp36-cp36m-win32.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e67ff063b40c1d28b788db81396aefd1",
+          "sha256": "1dc60a4cfa9433876c4b6e5ab4dc91a2337b2b88fb1d20c54910b0a3f25219bc"
+        },
+        "downloads": -1,
+        "filename": "msgpack-0.5.1-cp36-cp36m-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "e67ff063b40c1d28b788db81396aefd1",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "size": 85135,
+        "upload_time": "2018-01-09T18:29:14",
+        "url": "https://files.pythonhosted.org/packages/ea/04/8e712e092ae0bcaf0cee72477632ef166e1ca6525ec49ce14af9568a70de/msgpack-0.5.1-cp36-cp36m-win_amd64.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "84c5f8007166c616e803b5c94eb0e8a7",
+          "sha256": "f5ebef2049f25da6d7ea53c3f95b4ba175ea9d96fadb60add80fc501a522bcc9"
+        },
+        "downloads": -1,
+        "filename": "msgpack-0.5.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "84c5f8007166c616e803b5c94eb0e8a7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 142316,
+        "upload_time": "2018-01-09T18:08:53",
+        "url": "https://files.pythonhosted.org/packages/45/03/642e1e8e154e26ea1561c275960edee95d28fd0d95b60556bf8d73d7ce7b/msgpack-0.5.1.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "f178fba9febc5cc3ba152c46de075e2f",
-        "sha256": "c7aa35c66ed276bf4a4220531abcee84992b9a312d76afb920d4cbae73d142c4"
+        "md5": "d81e5caa76cf4d2964ed49a7f17fd2b0",
+        "sha256": "95b5dd99fb366d2ca87251d9f755c26b7c3995a1ab86de97546d273016d0042d"
       },
       "downloads": -1,
-      "filename": "msgpack-0.5.0-cp36-cp36m-win32.whl",
+      "filename": "msgpack-0.5.1-cp27-cp27m-manylinux1_i686.whl",
       "has_sig": false,
-      "md5_digest": "f178fba9febc5cc3ba152c46de075e2f",
+      "md5_digest": "d81e5caa76cf4d2964ed49a7f17fd2b0",
       "packagetype": "bdist_wheel",
-      "python_version": "cp36",
-      "size": 75979,
-      "upload_time": "2018-01-06T18:11:05",
-      "url": "https://files.pythonhosted.org/packages/f2/e4/674e4b480d9bbcce1ddc283b3980e0a7a048cef9a8b61a390b833a33c4b8/msgpack-0.5.0-cp36-cp36m-win32.whl"
+      "python_version": "cp27",
+      "size": 278404,
+      "upload_time": "2018-01-09T18:34:23",
+      "url": "https://files.pythonhosted.org/packages/87/70/c777e7992ac3b7f1a1bb170f65fd094c3e53b47d7bfa3e875be800840507/msgpack-0.5.1-cp27-cp27m-manylinux1_i686.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "602656892c583eec666c517478dbbe01",
-        "sha256": "c165c44abc98ac8ccf921a5f0506b60180a20896815c6ff8c275d7646eb20702"
+        "md5": "d77d9593d2cf94372de85b76847fbd2c",
+        "sha256": "6e97a9bdf3b0fa676910411fe8f10a0e3b8b92335640c7a131f1bbcfe1edd7d1"
       },
       "downloads": -1,
-      "filename": "msgpack-0.5.0-cp36-cp36m-win_amd64.whl",
+      "filename": "msgpack-0.5.1-cp27-cp27m-manylinux1_x86_64.whl",
       "has_sig": false,
-      "md5_digest": "602656892c583eec666c517478dbbe01",
+      "md5_digest": "d77d9593d2cf94372de85b76847fbd2c",
       "packagetype": "bdist_wheel",
-      "python_version": "cp36",
-      "size": 84853,
-      "upload_time": "2018-01-06T18:10:41",
-      "url": "https://files.pythonhosted.org/packages/a4/bc/03ebff601d7a9967cbed0dd4ab703d46eab5dcd5252810032cecfdb007a5/msgpack-0.5.0-cp36-cp36m-win_amd64.whl"
+      "python_version": "cp27",
+      "size": 295128,
+      "upload_time": "2018-01-09T18:34:25",
+      "url": "https://files.pythonhosted.org/packages/02/c8/7f9533ba1f4876a457504504888c5ba43fc43f2887841816e60a1796e55c/msgpack-0.5.1-cp27-cp27m-manylinux1_x86_64.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "6d1df33fe19dcde7bde62f808f9c4488",
-        "sha256": "9ed78ef17937222b0467566487bab1ca1bb28158f66c6528ff3d5aced93ff49d"
+        "md5": "ae4bc95ded080035e69d9806fc62fcc4",
+        "sha256": "718ca286ea67861ebe82367b5f0106ea8c00877f5aefcfe9c2acc505d16ea062"
       },
       "downloads": -1,
-      "filename": "msgpack-0.5.0.tar.gz",
+      "filename": "msgpack-0.5.1-cp27-cp27mu-manylinux1_i686.whl",
       "has_sig": false,
-      "md5_digest": "6d1df33fe19dcde7bde62f808f9c4488",
+      "md5_digest": "ae4bc95ded080035e69d9806fc62fcc4",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp27",
+      "size": 278427,
+      "upload_time": "2018-01-09T18:34:27",
+      "url": "https://files.pythonhosted.org/packages/f7/93/ad1fa9e977da3a9146b6ba014495abe14c5eea30e6265ffa6f2060e8134d/msgpack-0.5.1-cp27-cp27mu-manylinux1_i686.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "a6a7182fdc45e84cfd2d991d315800f1",
+        "sha256": "b396ef2bff9657e134d3c5286c83bc6098223e2c72b30fe05be973714fc96a97"
+      },
+      "downloads": -1,
+      "filename": "msgpack-0.5.1-cp27-cp27mu-manylinux1_x86_64.whl",
+      "has_sig": false,
+      "md5_digest": "a6a7182fdc45e84cfd2d991d315800f1",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp27",
+      "size": 295138,
+      "upload_time": "2018-01-09T18:34:30",
+      "url": "https://files.pythonhosted.org/packages/a3/85/aa3ef9f0b982ca14fe939cbc52192f485db7376f7387888741ecb16c2bfb/msgpack-0.5.1-cp27-cp27mu-manylinux1_x86_64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "1375cd4aa792f6f6e1eb491d6b447ca4",
+        "sha256": "388d7fb88dc968ada81e8f05d851cb3c8ae4fce344751e3cdc93dc2f127bdbd1"
+      },
+      "downloads": -1,
+      "filename": "msgpack-0.5.1-cp27-cp27m-win32.whl",
+      "has_sig": false,
+      "md5_digest": "1375cd4aa792f6f6e1eb491d6b447ca4",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp27",
+      "size": 74412,
+      "upload_time": "2018-01-09T18:29:06",
+      "url": "https://files.pythonhosted.org/packages/f9/55/1f3dd2d1e9d4f0ae6a5386a6ec59bf18b5a5c16da160d968c5067796152a/msgpack-0.5.1-cp27-cp27m-win32.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "bce49f0e0174c5799c9588855a552980",
+        "sha256": "82581e634e18e143d7838b5d64b640e7de210a65d216f41c56cc51e65a43781a"
+      },
+      "downloads": -1,
+      "filename": "msgpack-0.5.1-cp27-cp27m-win_amd64.whl",
+      "has_sig": false,
+      "md5_digest": "bce49f0e0174c5799c9588855a552980",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp27",
+      "size": 82870,
+      "upload_time": "2018-01-09T18:29:08",
+      "url": "https://files.pythonhosted.org/packages/30/4a/13a96909ac9654fbcc05828da1ca64db9c3da06748e2bf7e2c2774f08e44/msgpack-0.5.1-cp27-cp27m-win_amd64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "a24cd1de988104859be0c40ea64064c9",
+        "sha256": "aab92fd798058f0950cf8cb96ec1f7473c1cd7b2c135499d277e3fce054894e7"
+      },
+      "downloads": -1,
+      "filename": "msgpack-0.5.1-cp35-cp35m-manylinux1_i686.whl",
+      "has_sig": false,
+      "md5_digest": "a24cd1de988104859be0c40ea64064c9",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp35",
+      "size": 296716,
+      "upload_time": "2018-01-09T18:34:32",
+      "url": "https://files.pythonhosted.org/packages/b5/67/c7c24909c0c82af53ea7e3307bbd58e0a7849d1ffe17ba3d1205cca034bb/msgpack-0.5.1-cp35-cp35m-manylinux1_i686.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "7c973c63946a50ab7313e9a0884f3e4d",
+        "sha256": "d2def7129734a276d21c200c511c5a98adfafb828efc9b1b7513ef94e33e4bdc"
+      },
+      "downloads": -1,
+      "filename": "msgpack-0.5.1-cp35-cp35m-manylinux1_x86_64.whl",
+      "has_sig": false,
+      "md5_digest": "7c973c63946a50ab7313e9a0884f3e4d",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp35",
+      "size": 315778,
+      "upload_time": "2018-01-09T18:34:34",
+      "url": "https://files.pythonhosted.org/packages/34/3f/8e568475c433a01d068c1402cd2426d71b644402e2b1936630e0134688c2/msgpack-0.5.1-cp35-cp35m-manylinux1_x86_64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "abbc41ad4891309dd5a6b7b57ae29228",
+        "sha256": "4f3a1e74ab923adceb5620ad7b5e11ad2418730b6c8d39324595a32a5bed6c08"
+      },
+      "downloads": -1,
+      "filename": "msgpack-0.5.1-cp35-cp35m-win32.whl",
+      "has_sig": false,
+      "md5_digest": "abbc41ad4891309dd5a6b7b57ae29228",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp35",
+      "size": 75723,
+      "upload_time": "2018-01-09T18:29:10",
+      "url": "https://files.pythonhosted.org/packages/20/49/79707f68cf1f63257265899689a21559cc7b138c19003c915535d70330f8/msgpack-0.5.1-cp35-cp35m-win32.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "7c7371b8733dbd409f508d225da8075c",
+        "sha256": "0b91c49693137493f5371428bc3be3e07170d19c509b1d835bea1cdfd52258f5"
+      },
+      "downloads": -1,
+      "filename": "msgpack-0.5.1-cp35-cp35m-win_amd64.whl",
+      "has_sig": false,
+      "md5_digest": "7c7371b8733dbd409f508d225da8075c",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp35",
+      "size": 84447,
+      "upload_time": "2018-01-09T18:29:11",
+      "url": "https://files.pythonhosted.org/packages/46/40/5401c6baaddb0fe968f6abd55e0efaf4429ab7313a46368be44af332d169/msgpack-0.5.1-cp35-cp35m-win_amd64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "f40ab1733a99491607d4282c74573d4f",
+        "sha256": "4c6ccd97a501783b351572f85024892919197b74d61d3b71eebb64210ed07bf7"
+      },
+      "downloads": -1,
+      "filename": "msgpack-0.5.1-cp36-cp36m-manylinux1_i686.whl",
+      "has_sig": false,
+      "md5_digest": "f40ab1733a99491607d4282c74573d4f",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp36",
+      "size": 300829,
+      "upload_time": "2018-01-09T18:34:35",
+      "url": "https://files.pythonhosted.org/packages/9e/28/54ec1db9672be861f9f64d21edeb7a4cd1402999ceb9862a9239084dfe3b/msgpack-0.5.1-cp36-cp36m-manylinux1_i686.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "271398e6f38d0ecda76087667a3ec826",
+        "sha256": "6b4334a9785ba1d1019773e5d64cf6842384a053df0cf413336d41b9520a11ba"
+      },
+      "downloads": -1,
+      "filename": "msgpack-0.5.1-cp36-cp36m-manylinux1_x86_64.whl",
+      "has_sig": false,
+      "md5_digest": "271398e6f38d0ecda76087667a3ec826",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp36",
+      "size": 322402,
+      "upload_time": "2018-01-09T18:34:38",
+      "url": "https://files.pythonhosted.org/packages/d9/1b/78c2d4b9b78a59ac9615b1851d4f769ee3836ac0664f946595239cf2e8bb/msgpack-0.5.1-cp36-cp36m-manylinux1_x86_64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "e1d76171d43f0b4774c81ffc281cc5cf",
+        "sha256": "81cdd29e3849b5772ffdee4dee1c83054716f395ff78f502bf0949d1e1409a83"
+      },
+      "downloads": -1,
+      "filename": "msgpack-0.5.1-cp36-cp36m-win32.whl",
+      "has_sig": false,
+      "md5_digest": "e1d76171d43f0b4774c81ffc281cc5cf",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp36",
+      "size": 76310,
+      "upload_time": "2018-01-09T18:29:13",
+      "url": "https://files.pythonhosted.org/packages/ba/85/63f57d3e4a051ecdab83adf7771973de4052de72ca69912b2c7f700bb9f9/msgpack-0.5.1-cp36-cp36m-win32.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "e67ff063b40c1d28b788db81396aefd1",
+        "sha256": "1dc60a4cfa9433876c4b6e5ab4dc91a2337b2b88fb1d20c54910b0a3f25219bc"
+      },
+      "downloads": -1,
+      "filename": "msgpack-0.5.1-cp36-cp36m-win_amd64.whl",
+      "has_sig": false,
+      "md5_digest": "e67ff063b40c1d28b788db81396aefd1",
+      "packagetype": "bdist_wheel",
+      "python_version": "cp36",
+      "size": 85135,
+      "upload_time": "2018-01-09T18:29:14",
+      "url": "https://files.pythonhosted.org/packages/ea/04/8e712e092ae0bcaf0cee72477632ef166e1ca6525ec49ce14af9568a70de/msgpack-0.5.1-cp36-cp36m-win_amd64.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "84c5f8007166c616e803b5c94eb0e8a7",
+        "sha256": "f5ebef2049f25da6d7ea53c3f95b4ba175ea9d96fadb60add80fc501a522bcc9"
+      },
+      "downloads": -1,
+      "filename": "msgpack-0.5.1.tar.gz",
+      "has_sig": false,
+      "md5_digest": "84c5f8007166c616e803b5c94eb0e8a7",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 142054,
-      "upload_time": "2018-01-06T18:07:36",
-      "url": "https://files.pythonhosted.org/packages/c8/2c/7ed8a002ebf55e6b814b4b643d664f0a16aa7c0fa94987f9848b0b0d28f4/msgpack-0.5.0.tar.gz"
+      "size": 142316,
+      "upload_time": "2018-01-09T18:08:53",
+      "url": "https://files.pythonhosted.org/packages/45/03/642e1e8e154e26ea1561c275960edee95d28fd0d95b60556bf8d73d7ce7b/msgpack-0.5.1.tar.gz"
     }
   ]
 }
