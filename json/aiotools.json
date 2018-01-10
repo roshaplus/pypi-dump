@@ -13,7 +13,7 @@
       "Programming Language :: Python :: 3.6",
       "Topic :: Software Development"
     ],
-    "description": "aiotools\n========\n\n.. image:: https://badge.fury.io/py/aiotools.svg\n   :target: https://badge.fury.io/py/aiotools\n   :alt: PyPI version\n\n.. image:: https://img.shields.io/pypi/pyversions/aiotools.svg\n   :target: https://pypi.org/project/aiotools/\n   :alt: Python Versions\n\n.. image:: https://travis-ci.org/achimnol/aiotools.svg?branch=master\n   :target: https://travis-ci.org/achimnol/aiotools\n   :alt: Build Status\n\n.. image:: https://codecov.io/gh/achimnol/aiotools/branch/master/graph/badge.svg\n   :target: https://codecov.io/gh/achimnol/aiotools\n   :alt: Code Coverage\n\nIdiomatic asyncio utilties\n\n*NOTE:* This project is under early stage of developement. The public APIs may break version by version.\n\n\nAsync Context Manager\n---------------------\n\nThis is an asynchronous version of `contextlib.contextmanager`_ to make it\neasier to write asynchronous context managers without creating boilerplate\nclasses.\n\n.. code-block:: python\n\n   import asyncio\n   import aiotools\n\n   @aiotools.actxmgr\n   async def mygen(a):\n       await asyncio.sleep(1)\n       yield a + 1\n       await asyncio.sleep(1)\n\n   async def somewhere():\n       async with mygen(1) as b:\n           assert b == 2\n\nNote that you need to wrap ``yield`` with a try-finally block to\nensure resource releases (e.g., locks), even in the case when\nan exception is ocurred inside the async-with block.\n\n.. code-block:: python\n\n   import asyncio\n   import aiotools\n\n   lock = asyncio.Lock()\n\n   @aiotools.actxmgr\n   async def mygen(a):\n       await lock.acquire()\n       try:\n           yield a + 1\n       finally:\n           lock.release()\n\n   async def somewhere():\n       try:\n           async with mygen(1) as b:\n               raise RuntimeError('oops')\n       except RuntimeError:\n           print('caught!')  # you can catch exceptions here.\n\nYou can also create a group of async context managers, which\nare entered/exited all at once using `asyncio.gather()`_.\n\n.. code-block:: python\n\n   import asyncio\n   import aiotools\n\n   @aiotools.actxmgr\n   async def mygen(a):\n       yield a + 10\n\n   async def somewhere():\n       ctxgrp = aiotools.actxgroup(mygen(i) for i in range(10))\n       async with ctxgrp as values:\n           assert len(values) == 10\n           for i in range(10):\n               assert values[i] == i + 10\n\nAsync Server\n------------\n\nThis implements a common pattern to launch asyncio-based server daemons.\n\n.. code-block:: python\n\n   import asyncio\n   import aiotools\n\n   async def echo(reader, writer):\n       data = await reader.read(100)\n       writer.write(data)\n       await writer.drain()\n       writer.close()\n\n   @aiotools.actxmgr\n   async def myworker(loop, pidx, args):\n       server = await asyncio.start_server(echo, '0.0.0.0', 8888,\n           reuse_port=True, loop=loop)\n       print(f'[{pidx}] started')\n       yield  # wait until terminated\n       server.close()\n       await server.wait_closed()\n       print(f'[{pidx}] terminated')\n\n   if __name__ == '__main__':\n       # Run the above server using 4 worker processes.\n       aiotools.start_server(myworker, num_workers=4)\n\nIt handles SIGINT/SIGTERM signals automatically to stop the server,\nas well as lifecycle management of event loops running on multiple processes.\n\n\nAsync Timer\n-----------\n\n.. code-block:: python\n\n   import aiotools\n\n   i = 0\n\n   async def mytick(interval):\n       print(i)\n       i += 1\n\n   async def somewhere():\n       t = aiotools.create_timer(mytick, 1.0)\n       ...\n       t.cancel()\n       await t\n\n``t`` is an `asyncio.Task`_ object.\nTo stop the timer, call ``t.cancel(); await t``.\nPlease don't forget ``await``-ing ``t`` because it requires extra steps to\ncancel and await all pending tasks.\nTo make your timer function to be cancellable, add a try-except clause\ncatching `asyncio.CancelledError`_ since we use it as a termination\nsignal.\n\nYou may add ``TimerDelayPolicy`` argument to control the behavior when the\ntimer-fired task takes longer than the timer interval.\n**DEFAULT** is to accumulate them and cancel all the remainings at once when\nthe timer is cancelled.\n**CANCEL** is to cancel any pending previously fired tasks on every interval.\n\n.. code-block:: python\n\n   import asyncio\n   import aiotools\n\n   async def mytick(interval):\n       await asyncio.sleep(100)  # cancelled on every next interval.\n\n   async def somewhere():\n       t = aiotools.create_timer(mytick, 1.0, aiotools.TimerDelayPolicy.CANCEL)\n       ...\n       t.cancel()\n       await t\n\n\n.. _contextlib.contextmanager: https://docs.python.org/3/library/contextlib.html#contextlib.contextmanager\n.. _asyncio.gather(): https://docs.python.org/3/library/asyncio-task.html#asyncio.gather\n.. _asyncio.Task: https://docs.python.org/3/library/asyncio-task.html#asyncio.Task\n.. _asyncio.CancelledError: https://docs.python.org/3/library/concurrent.futures.html#concurrent.futures.CancelledError\n\n\nChangelog\n=========\n\n0.5.0 (2017-11-08)\n------------------\n\n- func: Add ``lru_cache()`` which is a coroutine version of\n  ``functools.lru_cache()``.\n\n0.4.5 (2017-10-14)\n------------------\n\n- server: Fix a race condition related to signal handling in the\n  multiprocessing module during termination\n\n- server: Improve error handling during initialization of workers\n  (automatic shutdown of other workers and the main loop after\n  logging the exception)\n\n0.4.4 (2017-09-12)\n------------------\n\n- Add a new module ``aiotools.func`` with ``apartial()`` function which is an\n  async version of ``functools.partial()`` in the standard library\n\n0.4.3 (2017-08-06)\n------------------\n\n- Add ``aclosing()`` context manager like ``closing()`` in the standard library\n\n- Speed up Travis CI builds for packaging\n\n- Now provide README in rst as well as CHANGES (this file)\n\n0.4.2 (2017-08-01)\n------------------\n\n- ``server``: Fix spawning subprocesses in child workers\n\n- Add support for ``uvloop``\n\n0.4.0 (2017-08-01)\n------------------\n\n- Add ``use_threading`` argument to \n\n- Add initial documentation (which currently not served\n  on readthedocs.io due to Python version problem)\n\n0.3.2 (2017-07-31)\n------------------\n\n- Add ``extra_procs`` argument to ``start_server()`` function\n\n- Add socket and ZeroMQ server examples\n\n- Improve CI configs\n\n0.3.1 (2017-07-26)\n------------------\n\n- Improve CI scripts\n\n- Adopt editorconfig\n\n0.3.0 (2017-04-26)\n------------------\n\n- Add ``start_server()`` function using multiprocessing\n  with automatic children lifecycle management\n\n- Clarify the semantics of ``AsyncContextGroup`` using\n  ``asyncio.gather()`` with ``return_exceptions=True``\n\n0.2.0 (2017-04-20)\n------------------\n\n- Add abstract types for ``AsyncContextManager``\n\n- Rename ``AsyncGenContextManager`` to ``AsyncContextManager``\n\n- Add ``AsyncContextGroup``\n\n0.1.1 (2017-04-14)\n------------------\n\n- Initial release\n\n\n",
+    "description": "aiotools\n========\n\n.. image:: https://badge.fury.io/py/aiotools.svg\n   :target: https://badge.fury.io/py/aiotools\n   :alt: PyPI version\n\n.. image:: https://img.shields.io/pypi/pyversions/aiotools.svg\n   :target: https://pypi.org/project/aiotools/\n   :alt: Python Versions\n\n.. image:: https://travis-ci.org/achimnol/aiotools.svg?branch=master\n   :target: https://travis-ci.org/achimnol/aiotools\n   :alt: Build Status\n\n.. image:: https://codecov.io/gh/achimnol/aiotools/branch/master/graph/badge.svg\n   :target: https://codecov.io/gh/achimnol/aiotools\n   :alt: Code Coverage\n\nIdiomatic asyncio utilties\n\n*NOTE:* This project is under early stage of developement. The public APIs may break version by version.\n\n\nAsync Context Manager\n---------------------\n\nThis is an asynchronous version of `contextlib.contextmanager`_ to make it\neasier to write asynchronous context managers without creating boilerplate\nclasses.\n\n.. code-block:: python\n\n   import asyncio\n   import aiotools\n\n   @aiotools.actxmgr\n   async def mygen(a):\n       await asyncio.sleep(1)\n       yield a + 1\n       await asyncio.sleep(1)\n\n   async def somewhere():\n       async with mygen(1) as b:\n           assert b == 2\n\nNote that you need to wrap ``yield`` with a try-finally block to\nensure resource releases (e.g., locks), even in the case when\nan exception is ocurred inside the async-with block.\n\n.. code-block:: python\n\n   import asyncio\n   import aiotools\n\n   lock = asyncio.Lock()\n\n   @aiotools.actxmgr\n   async def mygen(a):\n       await lock.acquire()\n       try:\n           yield a + 1\n       finally:\n           lock.release()\n\n   async def somewhere():\n       try:\n           async with mygen(1) as b:\n               raise RuntimeError('oops')\n       except RuntimeError:\n           print('caught!')  # you can catch exceptions here.\n\nYou can also create a group of async context managers, which\nare entered/exited all at once using `asyncio.gather()`_.\n\n.. code-block:: python\n\n   import asyncio\n   import aiotools\n\n   @aiotools.actxmgr\n   async def mygen(a):\n       yield a + 10\n\n   async def somewhere():\n       ctxgrp = aiotools.actxgroup(mygen(i) for i in range(10))\n       async with ctxgrp as values:\n           assert len(values) == 10\n           for i in range(10):\n               assert values[i] == i + 10\n\nAsync Server\n------------\n\nThis implements a common pattern to launch asyncio-based server daemons.\n\n.. code-block:: python\n\n   import asyncio\n   import aiotools\n\n   async def echo(reader, writer):\n       data = await reader.read(100)\n       writer.write(data)\n       await writer.drain()\n       writer.close()\n\n   @aiotools.actxmgr\n   async def myworker(loop, pidx, args):\n       server = await asyncio.start_server(echo, '0.0.0.0', 8888,\n           reuse_port=True, loop=loop)\n       print(f'[{pidx}] started')\n       yield  # wait until terminated\n       server.close()\n       await server.wait_closed()\n       print(f'[{pidx}] terminated')\n\n   if __name__ == '__main__':\n       # Run the above server using 4 worker processes.\n       aiotools.start_server(myworker, num_workers=4)\n\nIt handles SIGINT/SIGTERM signals automatically to stop the server,\nas well as lifecycle management of event loops running on multiple processes.\n\n\nAsync Timer\n-----------\n\n.. code-block:: python\n\n   import aiotools\n\n   i = 0\n\n   async def mytick(interval):\n       print(i)\n       i += 1\n\n   async def somewhere():\n       t = aiotools.create_timer(mytick, 1.0)\n       ...\n       t.cancel()\n       await t\n\n``t`` is an `asyncio.Task`_ object.\nTo stop the timer, call ``t.cancel(); await t``.\nPlease don't forget ``await``-ing ``t`` because it requires extra steps to\ncancel and await all pending tasks.\nTo make your timer function to be cancellable, add a try-except clause\ncatching `asyncio.CancelledError`_ since we use it as a termination\nsignal.\n\nYou may add ``TimerDelayPolicy`` argument to control the behavior when the\ntimer-fired task takes longer than the timer interval.\n**DEFAULT** is to accumulate them and cancel all the remainings at once when\nthe timer is cancelled.\n**CANCEL** is to cancel any pending previously fired tasks on every interval.\n\n.. code-block:: python\n\n   import asyncio\n   import aiotools\n\n   async def mytick(interval):\n       await asyncio.sleep(100)  # cancelled on every next interval.\n\n   async def somewhere():\n       t = aiotools.create_timer(mytick, 1.0, aiotools.TimerDelayPolicy.CANCEL)\n       ...\n       t.cancel()\n       await t\n\n\n.. _contextlib.contextmanager: https://docs.python.org/3/library/contextlib.html#contextlib.contextmanager\n.. _asyncio.gather(): https://docs.python.org/3/library/asyncio-task.html#asyncio.gather\n.. _asyncio.Task: https://docs.python.org/3/library/asyncio-task.html#asyncio.Task\n.. _asyncio.CancelledError: https://docs.python.org/3/library/concurrent.futures.html#concurrent.futures.CancelledError\n\n\nChangelog\n=========\n\n0.5.1 (2018-01-11)\n------------------\n\n- server: Fix a race condition related to handling of worker\n  initialization errors with multiple workers\n\n0.5.0 (2017-11-08)\n------------------\n\n- func: Add ``lru_cache()`` which is a coroutine version of\n  ``functools.lru_cache()``.\n\n0.4.5 (2017-10-14)\n------------------\n\n- server: Fix a race condition related to signal handling in the\n  multiprocessing module during termination\n\n- server: Improve error handling during initialization of workers\n  (automatic shutdown of other workers and the main loop after\n  logging the exception)\n\n0.4.4 (2017-09-12)\n------------------\n\n- Add a new module ``aiotools.func`` with ``apartial()`` function which is an\n  async version of ``functools.partial()`` in the standard library\n\n0.4.3 (2017-08-06)\n------------------\n\n- Add ``aclosing()`` context manager like ``closing()`` in the standard library\n\n- Speed up Travis CI builds for packaging\n\n- Now provide README in rst as well as CHANGES (this file)\n\n0.4.2 (2017-08-01)\n------------------\n\n- ``server``: Fix spawning subprocesses in child workers\n\n- Add support for ``uvloop``\n\n0.4.0 (2017-08-01)\n------------------\n\n- Add ``use_threading`` argument to \n\n- Add initial documentation (which currently not served\n  on readthedocs.io due to Python version problem)\n\n0.3.2 (2017-07-31)\n------------------\n\n- Add ``extra_procs`` argument to ``start_server()`` function\n\n- Add socket and ZeroMQ server examples\n\n- Improve CI configs\n\n0.3.1 (2017-07-26)\n------------------\n\n- Improve CI scripts\n\n- Adopt editorconfig\n\n0.3.0 (2017-04-26)\n------------------\n\n- Add ``start_server()`` function using multiprocessing\n  with automatic children lifecycle management\n\n- Clarify the semantics of ``AsyncContextGroup`` using\n  ``asyncio.gather()`` with ``return_exceptions=True``\n\n0.2.0 (2017-04-20)\n------------------\n\n- Add abstract types for ``AsyncContextManager``\n\n- Rename ``AsyncGenContextManager`` to ``AsyncContextManager``\n\n- Add ``AsyncContextGroup``\n\n0.1.1 (2017-04-14)\n------------------\n\n- Initial release\n\n\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -29,13 +29,13 @@
     "name": "aiotools",
     "platform": "any",
     "project_url": "https://pypi.org/project/aiotools/",
-    "release_url": "https://pypi.org/project/aiotools/0.5.0/",
+    "release_url": "https://pypi.org/project/aiotools/0.5.1/",
     "requires_dist": [
       "flake8; extra == 'test'",
       "codecov; extra == 'test'",
       "pytest-cov; extra == 'test'",
-      "pytest-asyncio (~=0.6.0); extra == 'test'",
-      "pytest (>=3.1); extra == 'test'",
+      "pytest-asyncio (~=0.8.0); extra == 'test'",
+      "pytest (>=3.3); extra == 'test'",
       "guzzle-sphinx-theme; extra == 'docs'",
       "sphinx-autodoc-typehints; extra == 'docs'",
       "sphinx; extra == 'docs'",
@@ -45,7 +45,7 @@
     ],
     "requires_python": ">=3.6",
     "summary": "Idiomatic asyncio utilities",
-    "version": "0.5.0"
+    "version": "0.5.1"
   },
   "releases": {
     "0.1": [
@@ -523,40 +523,74 @@
         "upload_time": "2017-11-08T16:30:38",
         "url": "https://files.pythonhosted.org/packages/33/a8/0e3f85e8a7ac6358ea8b2627cf039f24cbacf073989b31d59195444a2183/aiotools-0.5.0.tar.gz"
       }
+    ],
+    "0.5.1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "320d675f847feb1755a18125d3e47f87",
+          "sha256": "355e84386b295a0da8d681f199fac9505fd8db2129e4eea112367b344c52800a"
+        },
+        "downloads": -1,
+        "filename": "aiotools-0.5.1-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "320d675f847feb1755a18125d3e47f87",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "size": 16002,
+        "upload_time": "2018-01-10T15:43:25",
+        "url": "https://files.pythonhosted.org/packages/9c/00/553b51f11e23c5950c34becb4dc0238431f594c138dcd0304c14aff01ca6/aiotools-0.5.1-py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6725c26ce48d100adbd0fe36c3724549",
+          "sha256": "180baf28d2fdf78d4782dacf1e4a9c41e1f3b959bc4f23eac2029605a7038177"
+        },
+        "downloads": -1,
+        "filename": "aiotools-0.5.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6725c26ce48d100adbd0fe36c3724549",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 11529,
+        "upload_time": "2018-01-10T15:43:28",
+        "url": "https://files.pythonhosted.org/packages/72/ac/5ed503ec1bfe25d45ad0220562abf50db44198d922f3247912bc33b02eab/aiotools-0.5.1.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "b6f6acb4ca10fb64dddae8718399a8eb",
-        "sha256": "2ee02b7f0ce011a1f8eb9a321fe05a836f055f42d8e088ecb38aee6486acdd39"
+        "md5": "320d675f847feb1755a18125d3e47f87",
+        "sha256": "355e84386b295a0da8d681f199fac9505fd8db2129e4eea112367b344c52800a"
       },
       "downloads": -1,
-      "filename": "aiotools-0.5.0-py3-none-any.whl",
+      "filename": "aiotools-0.5.1-py3-none-any.whl",
       "has_sig": false,
-      "md5_digest": "b6f6acb4ca10fb64dddae8718399a8eb",
+      "md5_digest": "320d675f847feb1755a18125d3e47f87",
       "packagetype": "bdist_wheel",
       "python_version": "py3",
-      "size": 15856,
-      "upload_time": "2017-11-08T16:30:35",
-      "url": "https://files.pythonhosted.org/packages/73/4f/4976b9ffae489dfda0e02eac10308cfbf4f9f5dc5be189592bbfbd80f602/aiotools-0.5.0-py3-none-any.whl"
+      "size": 16002,
+      "upload_time": "2018-01-10T15:43:25",
+      "url": "https://files.pythonhosted.org/packages/9c/00/553b51f11e23c5950c34becb4dc0238431f594c138dcd0304c14aff01ca6/aiotools-0.5.1-py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "2478befde428e3c3385b9f4dae504f00",
-        "sha256": "a7bde3627c57ef2b4940f254b893439e7f5b7f7c4d53b7bd40a585f599e02ac4"
+        "md5": "6725c26ce48d100adbd0fe36c3724549",
+        "sha256": "180baf28d2fdf78d4782dacf1e4a9c41e1f3b959bc4f23eac2029605a7038177"
       },
       "downloads": -1,
-      "filename": "aiotools-0.5.0.tar.gz",
+      "filename": "aiotools-0.5.1.tar.gz",
       "has_sig": false,
-      "md5_digest": "2478befde428e3c3385b9f4dae504f00",
+      "md5_digest": "6725c26ce48d100adbd0fe36c3724549",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 11334,
-      "upload_time": "2017-11-08T16:30:38",
-      "url": "https://files.pythonhosted.org/packages/33/a8/0e3f85e8a7ac6358ea8b2627cf039f24cbacf073989b31d59195444a2183/aiotools-0.5.0.tar.gz"
+      "size": 11529,
+      "upload_time": "2018-01-10T15:43:28",
+      "url": "https://files.pythonhosted.org/packages/72/ac/5ed503ec1bfe25d45ad0220562abf50db44198d922f3247912bc33b02eab/aiotools-0.5.1.tar.gz"
     }
   ]
 }
