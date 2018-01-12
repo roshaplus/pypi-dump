@@ -14,13 +14,15 @@
       "Programming Language :: Python :: 3.4",
       "Programming Language :: Python :: 3.5",
       "Programming Language :: Python :: 3.6",
+      "Programming Language :: Python :: Implementation :: CPython",
+      "Programming Language :: Python :: Implementation :: PyPy",
       "Topic :: Database",
       "Topic :: Database :: Front-Ends",
       "Topic :: Software Development :: Libraries :: Python Modules"
     ],
-    "description": ".. image:: https://travis-ci.org/Parsely/pykafka.svg?branch=master\n    :target: https://travis-ci.org/Parsely/pykafka\n.. image:: https://codecov.io/github/Parsely/pykafka/coverage.svg?branch=master\n    :target: https://codecov.io/github/Parsely/pykafka?branch=master\n\nPyKafka\n=======\n\n.. image:: http://i.imgur.com/ztYl4lG.jpg\n\nPyKafka is a cluster-aware Kafka>=0.8.2 client for Python. It includes Python\nimplementations of Kafka producers and consumers, which are optionally backed\nby a C extension built on `librdkafka`_, and runs under Python 2.7+, Python 3.4+,\nand PyPy.\n\n.. _librdkafka: https://github.com/edenhill/librdkafka\n\nPyKafka's primary goal is to provide a similar level of abstraction to the\n`JVM Kafka client`_ using idioms familiar to Python programmers and exposing\nthe most Pythonic API possible.\n\nYou can install PyKafka from PyPI with\n\n::\n\n    $ pip install pykafka\n\nFull documentation and usage examples for PyKafka can be found on `readthedocs`_.\n\nYou can install PyKafka for local development and testing by cloning this repository and\nrunning\n\n::\n\n    $ python setup.py develop\n\n.. _JVM Kafka client: https://github.com/apache/kafka/tree/0.8.2/clients/src/main/java/org/apache/kafka\n.. _readthedocs: http://pykafka.readthedocs.org/en/latest/\n\nGetting Started\n---------------\n\nAssuming you have at least one Kafka instance running on localhost, you can use PyKafka\nto connect to it.\n\n.. sourcecode:: python\n\n    >>> from pykafka import KafkaClient\n    >>> client = KafkaClient(hosts=\"127.0.0.1:9092,127.0.0.1:9093,...\")\n\nOr, for a TLS connection, you might write (and also see ``SslConfig`` docs\nfor further details):\n\n.. sourcecode:: python\n\n    >>> from pykafka import KafkaClient, SslConfig\n    >>> config = SslConfig(cafile='/your/ca.cert',\n    ...                    certfile='/your/client.cert',  # optional\n    ...                    keyfile='/your/client.key',  # optional\n    ...                    password='unlock my client key please')  # optional\n    >>> client = KafkaClient(hosts=\"127.0.0.1:<ssl-port>,...\",\n    ...                      ssl_config=config)\n\nIf the cluster you've connected to has any topics defined on it, you can list\nthem with:\n\n.. sourcecode:: python\n\n    >>> client.topics\n    {'my.test': <pykafka.topic.Topic at 0x19bc8c0 (name=my.test)>}\n    >>> topic = client.topics['my.test']\n\nOnce you've got a `Topic`, you can create a `Producer` for it and start\nproducing messages.\n\n.. sourcecode:: python\n\n    >>> with topic.get_sync_producer() as producer:\n    ...     for i in range(4):\n    ...         producer.produce('test message ' + str(i ** 2))\n\nThe example above would produce to kafka synchronously - the call only\nreturns after we have confirmation that the message made it to the cluster.\n\nTo achieve higher throughput, we recommend using the ``Producer`` in\nasynchronous mode, so that ``produce()`` calls will return immediately and the\nproducer may opt to send messages in larger batches.  You can still obtain\ndelivery confirmation for messages, through a queue interface which can be\nenabled by setting ``delivery_reports=True``.  Here's a rough usage example:\n\n.. sourcecode:: python\n\n    >>> with topic.get_producer(delivery_reports=True) as producer:\n    ...     count = 0\n    ...     while True:\n    ...         count += 1\n    ...         producer.produce('test msg', partition_key='{}'.format(count))\n    ...         if count % 10 ** 5 == 0:  # adjust this or bring lots of RAM ;)\n    ...             while True:\n    ...                 try:\n    ...                     msg, exc = producer.get_delivery_report(block=False)\n    ...                     if exc is not None:\n    ...                         print 'Failed to deliver msg {}: {}'.format(\n    ...                             msg.partition_key, repr(exc))\n    ...                     else:\n    ...                         print 'Successfully delivered msg {}'.format(\n    ...                         msg.partition_key)\n    ...                 except Queue.Empty:\n    ...                     break\n\nNote that the delivery report queue is thread-local: it will only serve reports\nfor messages which were produced from the current thread. Also, if you're using\n`delivery_reports=True`, failing to consume the delivery report queue will cause\nPyKafka's memory usage to grow unbounded.\n\nYou can also consume messages from this topic using a `Consumer` instance.\n\n.. sourcecode:: python\n\n    >>> consumer = topic.get_simple_consumer()\n    >>> for message in consumer:\n    ...     if message is not None:\n    ...         print message.offset, message.value\n    0 test message 0\n    1 test message 1\n    2 test message 4\n    3 test message 9\n\nThis `SimpleConsumer` doesn't scale - if you have two `SimpleConsumers`\nconsuming the same topic, they will receive duplicate messages. To get around\nthis, you can use the `BalancedConsumer`.\n\n.. sourcecode:: python\n\n    >>> balanced_consumer = topic.get_balanced_consumer(\n    ...     consumer_group='testgroup',\n    ...     auto_commit_enable=True,\n    ...     zookeeper_connect='myZkClusterNode1.com:2181,myZkClusterNode2.com:2181/myZkChroot'\n    ... )\n\nYou can have as many `BalancedConsumer` instances consuming a topic as that\ntopic has partitions. If they are all connected to the same zookeeper instance,\nthey will communicate with it to automatically balance the partitions between\nthemselves.\n\nYou can also use the Kafka 0.9 Group Membership API with the `managed`\nkeyword argument on `get_balanced_consumer`.\n\nUsing the librdkafka extension\n------------------------------\n\nPyKafka includes a C extension that makes use of librdkafka to speed up producer\nand consumer operation. To use the librdkafka extension, you need to make sure the header\nfiles and shared library are somewhere where python can find them, both when you build\nthe extension (which is taken care of by ``setup.py develop``) and at run time.\nTypically, this means that you need to either install librdkafka in a place\nconventional for your system, or declare ``C_INCLUDE_PATH``, ``LIBRARY_PATH``,\nand ``LD_LIBRARY_PATH`` in your shell environment to point to the installation location\nof the librdkafka shared objects. You can find this location with `locate librdkafka.so`.\n\nAfter that, all that's needed is that you pass an extra parameter\n``use_rdkafka=True`` to ``topic.get_producer()``,\n``topic.get_simple_consumer()``, or ``topic.get_balanced_consumer()``.  Note\nthat some configuration options may have different optimal values; it may be\nworthwhile to consult librdkafka's `configuration notes`_ for this.\n\nWe currently test against librdkafka `0.9.1`_ only.  Note that use on pypy is\nnot recommended at this time; the producer is certainly expected to crash.\n\n.. _0.9.1: https://github.com/edenhill/librdkafka/releases/tag/0.9.1\n.. _configuration notes: https://github.com/edenhill/librdkafka/blob/0.9.1/CONFIGURATION.md\n\nOperational Tools\n-----------------\n\nPyKafka includes a small collection of `CLI tools`_ that can help with common tasks\nrelated to the administration of a Kafka cluster, including offset and lag monitoring and\ntopic inspection. The full, up-to-date interface for these tools can be fould by running\n\n.. sourcecode:: sh\n\n    $ python cli/kafka_tools.py --help\n\nor after installing PyKafka via setuptools or pip:\n\n.. sourcecode:: sh\n\n    $ kafka-tools --help\n\n.. _CLI tools: https://github.com/Parsely/pykafka/blob/master/pykafka/cli/kafka_tools.py\n\nWhat happened to Samsa?\n-----------------------\n\nThis project used to be called samsa. It has been renamed PyKafka and has been\nfully overhauled to support Kafka 0.8.2. We chose to target 0.8.2 because the offset\nCommit/Fetch API stabilized on that release.\n\nThe Samsa `PyPI package`_  will stay up for the foreseeable future and tags for\nprevious versions will always be available in this repo.\n\n.. _PyPI package: https://pypi.python.org/pypi/samsa/0.3.11\n\nPyKafka or kafka-python?\n------------------------\n\nThese are two different projects.\nSee `the discussion here <https://github.com/Parsely/pykafka/issues/334>`_ for comparisons\nbetween the two projects.\n\nContributing\n------------\n\nIf you're interested in contributing code to PyKafka, a good place to start is the\n`\"help wanted\"`_ issue tag. We also recommend taking a look at the `contribution guide`_.\n\n.. _\"help wanted\": https://github.com/Parsely/pykafka/issues?q=is%3Aopen+is%3Aissue+label%3A%22help+wanted%22\n.. _contribution guide: https://github.com/Parsely/pykafka/blob/master/CONTRIBUTING.rst\n\nSupport\n-------\n\nIf you need help using PyKafka or have found a bug, please open a `github issue`_ or use the `Google Group`_.\n\n.. _github issue: https://github.com/Parsely/pykafka/issues\n.. _Google Group: https://groups.google.com/forum/#!forum/pykafka-user\n",
+    "description": "",
     "docs_url": null,
-    "download_url": "UNKNOWN",
+    "download_url": "",
     "downloads": {
       "last_day": 0,
       "last_month": 0,
@@ -29,16 +31,16 @@
     "home_page": "https://github.com/Parsely/pykafka",
     "keywords": "apache kafka client driver",
     "license": "Apache License 2.0",
-    "maintainer": null,
-    "maintainer_email": null,
+    "maintainer": "",
+    "maintainer_email": "",
     "name": "pykafka",
-    "platform": "UNKNOWN",
+    "platform": "",
     "project_url": "https://pypi.org/project/pykafka/",
-    "release_url": "https://pypi.org/project/pykafka/2.6.0/",
+    "release_url": "https://pypi.org/project/pykafka/2.7.0/",
     "requires_dist": [],
-    "requires_python": null,
+    "requires_python": "",
     "summary": "Full-Featured Pure-Python Kafka Client",
-    "version": "2.6.0"
+    "version": "2.7.0"
   },
   "releases": {
     "0.1.1": [
@@ -578,6 +580,24 @@
         "url": "https://files.pythonhosted.org/packages/07/ab/121cc1c17bbbcb526f29531c7fc64f29d8e979df011e8d34142408e1ea4c/pykafka-2.6.0.dev3.tar.gz"
       }
     ],
+    "2.7.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "608fe1f85858d00b9285b934690ede89",
+          "sha256": "c19a56a8b3744f23cc8dc0f1000b6d95e9fa5a773adfcda423b2f770e2dbf2cd"
+        },
+        "downloads": -1,
+        "filename": "pykafka-2.7.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "608fe1f85858d00b9285b934690ede89",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 128144,
+        "upload_time": "2018-01-11T23:38:12",
+        "url": "https://files.pythonhosted.org/packages/d6/eb/b5dab5a55073308fa83d10a1cbd7ade962d47b5f8a1fa99cc42f1151f810/pykafka-2.7.0.tar.gz"
+      }
+    ],
     "2.7.0.dev1": [
       {
         "comment_text": "",
@@ -619,18 +639,18 @@
     {
       "comment_text": "",
       "digests": {
-        "md5": "4363cfd761d99f0b3c865f551fed6917",
-        "sha256": "19e4a802b00e28c3203fcfd80ca440b13faecb8e58171e9685a044cf87dae93e"
+        "md5": "608fe1f85858d00b9285b934690ede89",
+        "sha256": "c19a56a8b3744f23cc8dc0f1000b6d95e9fa5a773adfcda423b2f770e2dbf2cd"
       },
       "downloads": -1,
-      "filename": "pykafka-2.6.0.tar.gz",
+      "filename": "pykafka-2.7.0.tar.gz",
       "has_sig": false,
-      "md5_digest": "4363cfd761d99f0b3c865f551fed6917",
+      "md5_digest": "608fe1f85858d00b9285b934690ede89",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 118312,
-      "upload_time": "2017-05-02T22:46:31",
-      "url": "https://files.pythonhosted.org/packages/b1/45/cbcf9eb496a47b45da661e016a5e68efb2239e09686ef48da3ccab4332eb/pykafka-2.6.0.tar.gz"
+      "size": 128144,
+      "upload_time": "2018-01-11T23:38:12",
+      "url": "https://files.pythonhosted.org/packages/d6/eb/b5dab5a55073308fa83d10a1cbd7ade962d47b5f8a1fa99cc42f1151f810/pykafka-2.7.0.tar.gz"
     }
   ]
 }
