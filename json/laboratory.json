@@ -14,9 +14,11 @@
       "Programming Language :: Python :: 3.1",
       "Programming Language :: Python :: 3.3",
       "Programming Language :: Python :: 3.4",
+      "Programming Language :: Python :: 3.5",
+      "Programming Language :: Python :: 3.6",
       "Topic :: Software Development :: Testing"
     ],
-    "description": "Laboratory! |Build Status|\n==========================\n\nA Python library for carefully refactoring critical paths (and a port of\n`GitHub's Scientist`_).\n\n.. _GitHub's Scientist: https://github.com/github/scientist\n\n\n- `Installation`_\n- `Getting started`_\n- `Publishing results`_\n- `Controlling comparison`_\n- `Adding context`_\n\n\nWhy?\n----\n\nSee GitHub's blog post |--| http://githubengineering.com/scientist/\n\n\n.. _Getting started:\n\nBut how?\n--------\n\nImagine you've implemented a complex caching strategy for some objects in your\ndatabase and a stale cache is simply not acceptable.  How could you test this\nand ensure parity with your previous implementation, under load, with\nproduction data?  Run it in production!\n\nLaboratory will:\n\n-  Run both the new and the old code\n-  Compare their results\n-  Record timing information about all code\n-  Swallow and record exceptions in the new code\n-  Publish all of this information\n\nOf course, you're still unsure your candidate code works correctly, so\nlaboratory will always return the result from the control block.\n\n.. code:: python\n\n    import laboratory\n\n    experiment = laboratory.Experiment()\n    with experiment.control() as c:\n        c.record(get_objects_from_database())\n\n    with experiment.candidate() as c:\n        c.record(get_objects_from_cache())\n\n    objects = experiment.conduct()\n\nNote that the ``Experiment`` class can also be used as a decorator.\n\n.. code:: python\n\n    @Experiment(candidate=get_objects_from_cache)\n    def get_objects_from_database():\n        return True\n\n\nPublishing results\n------------------\n\nThis data is useless unless we can do something with it. Laboratory makes no\nassumptions about how to do this |--| it's entirely for you to implement to suit\nyour needs.  For example, timing data can be sent to graphite, and mismatches\ncan be placed in a capped collection in redis for debugging later.\n\nThe publish method is passed a ``Result`` instance, with control and candidate\ndata is available in ``Result.control`` and ``Result.observations``\nrespectively.\n\n.. code:: python\n\n    class MyExperiment(laboratory.Experiment):\n        def publish(self, result):\n            statsd.timing('MyExperiment.control', result.control.duration)\n            for o in result.observations:\n                statsd.timing('MyExperiment.%s' % o.name, o.duration)\n\n\nControlling comparison\n----------------------\n\nNot all data is created equal. By default laboratory compares using ``==``, but\nsometimes you may need to tweak this to suit your needs.  It's easy enough |--|\njust subclass ``Experiment`` and implement the ``compare(control,\nobservation)`` method.\n\n.. code:: python\n\n    class MyExperiment(Experiment):\n        def compare(self, control, observation):\n            return control.value['id'] == observation.value['id']\n\n\nAdding context\n--------------\n\nA lot of the time there's going to be extra context around an experiment that's\nuseful to use in publishing or comparisons.  You can set this data in a few\nways.\n\n.. code:: python\n\n    # The first is experiment-wide context, which will be set on every observation laboratory makes.\n\n    experiment = laboratory.Experiment(name='Object Cache Experiment', context={'user': user})\n\n\n    # Observation-specific context can be updated before or as the experiment is running.\n\n    with experiment.control(name='Object DB Strategy', context={'using': 'db'}) as e:\n        e.update_context({'uuid': uuid})\n\n        e.get_context()\n        # {\n        #     'user': <User>,\n        #     'uuid': 'c08d46f1-92a6-46e5-9185-82d90dcb5af1',\n        #     'using': 'db',\n        # }\n\n\n    with experiment.candidate(name='Object Cache Strategy', context={'using': 'cache'}) as e:\n        e.update_context({'uuid': uuid})\n\n        e.get_context()\n        # {\n        #     'user': <User>,\n        #     'using': 'cache',\n        # }\n\n\nContext can be retrieved using the ``get_context`` method on ``Experiment`` and ``Observation`` classes.\n\n.. code:: python\n\n    class Experiment(laboratory.Experiment):\n\n        def publish(self, result):\n            self.get_context()\n            result.control.get_context()\n            result.observations[0].get_context()\n\n\nInstallation\n------------\n\nInstalling from pypi is recommended\n\n.. code::\n\n    $ pip install laboratory\n\n\nMaintenance\n-----------\n\nLaboratory is actively maintained by Joe Alcorn (`Github <https://github.com/joealcorn>`_, `Twitter <https://twitter.com/joe_alcorn>`_)\n\n\n.. |--| unicode:: U+2014  .. em dash\n\n.. |Build Status| image:: https://travis-ci.org/joealcorn/laboratory.svg?branch=master\n   :target: https://travis-ci.org/joealcorn/laboratory",
+    "description": "Laboratory! |Build Status|\n==========================\n\nA Python library for carefully refactoring critical paths by testing in\nproduction (inspired by `GitHub's Scientist`_) with support for Python 2.7, 3.3+\n\n.. _GitHub's Scientist: https://github.com/github/scientist\n\n\n- `Why?`_\n- `Getting started`_\n- `Adding context`_\n- `Controlling comparison`_\n    - `Raise on mismatch`_\n- `Publishing results`_\n- `Installation`_\n\n.. _Why?:\n\nWhy?\n----\n\nSome blocks of code are more critical than the rest. Laboratory helps us refactor\nimportant code paths with confidence by testing in production and verifying\nthe results.\n\nBy running experiments, Laboratory helps you establish a feedback loop which\nyou can use to make improvements to unproven code until the error rate is nil.\n\nAll non-trivial software has bugs, and bugs in code lead to bugs in data. This\nmeans only production is production, and so testing in production is the only\nway to ensure your code actually works.\n\nI recommend reading Jesse Toth's `blog post`_ on using a similar techniques\nwithin Github that inspired this library, as well as Charity Majors on\n`why you should test in production`_.\n\n.. _blog post: https://githubengineering.com/scientist/\n.. _why you should test in production: https://opensource.com/article/17/8/testing-production\n\n\n.. _Getting started:\n\nGetting started\n---------------\n\nSee: `Installation`_\n\nWith Laboratory you conduct an experiment with your known-good code as the\ncontrol block and a new code branch as a candidate. Laboratory will:\n\n-  Run both the new and the old code\n-  Compare the return values\n-  Record timing information about old & new code\n-  Catch (but record!) exceptions in the new code\n-  Publish all of this information\n\nLet's imagine you're refactoring some authorisation code. Your existing code\nis working, but it's a fragile pile of spaghetti that is becoming hard to\nmaintain. You want to refactor, but this is important code and you simply can't\nafford to get this wrong or else you risk exposing user data.\nConsidering the state of the original code, this could be difficult to pull off,\nbut Laboratory is here to help.\n\nLaboratory helps us verify the correctness of our implementation even with the\ncornucopia of factors that make production a unique environment (bad or legacy\ndata, heavy load, etc.)\n\nLet's set up an experiment to run our old (control) and new (candidate) code:\n\n.. code:: python\n\n    import laboratory\n\n    experiment = laboratory.Experiment()\n    with experiment.control() as c:\n        c.record(authorise_control(action))\n\n    with experiment.candidate() as c:\n        c.record(authorise_candidate(action))\n\n    authorised = experiment.conduct()\n\n\nNote that the ``Experiment`` class can also be used as a decorator if the\ncontrol and candidate functions take the same arguments.\n\n.. code:: python\n\n    def authorise_candidate(action):\n        return True\n\n    @Experiment(candidate=authorise_candidate)\n    def authorise_control(action):\n        return True\n\n\nAn experiment will always return the value of the control block.\n\n\nAdding context\n--------------\n\nA lot of the time there's going to be extra context around an experiment that's\nuseful to use in publishing or comparisons.  You can set this data in a few\nways.\n\n.. code:: python\n\n    # The first is experiment-wide context, which will be set on every observation laboratory makes\n    experiment = laboratory.Experiment(name='Authorisation experiment', context={'action': action})\n\n    # Observation-specific context can be updated before or as the experiment is running\n    with experiment.control(context={'strategy': 1}) as c:\n        e.update_context({'uuid': uuid})\n        e.get_context()\n        # {\n        #     'action': 'delete',\n        #     'strategy': 1,\n        #     'uuid': 'c08d46f1-92a6-46e5-9185-82d90dcb5af1',\n        # }\n\nContext can be retrieved using the ``get_context`` method on ``Experiment`` and ``Observation`` classes.\n\n.. code:: python\n\n    class Experiment(laboratory.Experiment):\n        def publish(self, result):\n            self.get_context()\n            result.control.get_context()\n            result.observations[0].get_context()\n\n\nControlling comparison\n----------------------\n\nNot all data is created equal. By default laboratory compares using ``==``, but\nsometimes you may need to tweak this to suit your needs.  It's easy enough |--|\njust subclass ``Experiment`` and implement the ``compare(control,\nobservation)`` method.\n\n.. code:: python\n\n    class MyExperiment(Experiment):\n        def compare(self, control, observation):\n            return control.value['id'] == observation.value['id']\n\n\nRaise on mismatch\n*****************\n\nThe ``Experiment`` class accepts a ``raise_on_mismatch`` argument which you can set\nto ``True`` if you want Laboratory to raise an exception when the comparison returns\nfalse. This may be useful in testing, for example.\n\n\nPublishing results\n------------------\n\nThis data is useless unless we can do something with it. Laboratory makes no\nassumptions about how to do this |--| it's entirely for you to implement to suit\nyour needs.  For example, timing data can be sent to graphite, and mismatches\ncan be placed in a capped collection in redis for debugging later.\n\nThe publish method is passed a ``Result`` instance, with control and candidate\ndata is available in ``Result.control`` and ``Result.observations``\nrespectively.\n\n.. code:: python\n\n    class MyExperiment(laboratory.Experiment):\n        def publish(self, result):\n            statsd.timing('MyExperiment.control', result.control.duration)\n            for o in result.observations:\n                statsd.timing('MyExperiment.%s' % o.name, o.duration)\n\n\nInstallation\n------------\n\nInstalling from pypi is recommended\n\n.. code::\n\n    $ pip install laboratory\n\nYou can also install a `tagged version`_ from Github\n\n.. code::\n\n    $ pip install https://github.com/joealcorn/laboratory/archive/v0.4.2.tar.gz\n\nOr the latest development version\n\n.. code::\n\n    $ pip install git+https://github.com/joealcorn/laboratory.git\n\n\n.. _tagged version: https://github.com/joealcorn/laboratory/releases\n\n\nMaintenance\n-----------\n\nLaboratory is actively maintained by Joe Alcorn (`Github <https://github.com/joealcorn>`_, `Twitter <https://twitter.com/joe_alcorn>`_)\n\n\n.. |--| unicode:: U+2014  .. em dash\n\n.. |Build Status| image:: https://travis-ci.org/joealcorn/laboratory.svg?branch=master\n   :target: https://travis-ci.org/joealcorn/laboratory\n\n\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -30,13 +32,13 @@
     "maintainer": "",
     "maintainer_email": "",
     "name": "laboratory",
-    "platform": "UNKNOWN",
+    "platform": "",
     "project_url": "https://pypi.org/project/laboratory/",
-    "release_url": "https://pypi.org/project/laboratory/0.4.2/",
+    "release_url": "https://pypi.org/project/laboratory/0.4.3/",
     "requires_dist": [],
     "requires_python": "",
     "summary": "A Python port of Github's Scientist lib.",
-    "version": "0.4.2"
+    "version": "0.4.3"
   },
   "releases": {
     "0": [],
@@ -47,7 +49,7 @@
           "md5": "1d0e346a79bc31d87f8cccae4daad503",
           "sha256": "d18d10f8e0f924c8dea20478facd8e2be4d9f8b9f19c9c7a9335d32ee5c68385"
         },
-        "downloads": 111,
+        "downloads": -1,
         "filename": "laboratory-0.1.0-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "1d0e346a79bc31d87f8cccae4daad503",
@@ -63,7 +65,7 @@
           "md5": "bed76f0cac67f41ffeb805a1052771a1",
           "sha256": "40b41848c0447e62432da7166c1e0c59bc907393880acb53145c887c6770890b"
         },
-        "downloads": 111,
+        "downloads": -1,
         "filename": "laboratory-0.1.0.tar.gz",
         "has_sig": false,
         "md5_digest": "bed76f0cac67f41ffeb805a1052771a1",
@@ -81,7 +83,7 @@
           "md5": "aa70f9c8d2be658a86045ea2294fe23b",
           "sha256": "47ac5138764698f2b08681659650019d7e8a2c3165796f66a2287cdedb30d2af"
         },
-        "downloads": 1648,
+        "downloads": -1,
         "filename": "laboratory-0.2.0-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "aa70f9c8d2be658a86045ea2294fe23b",
@@ -97,7 +99,7 @@
           "md5": "de27d82afafb53647c3dc6d40ddb6e84",
           "sha256": "684842b10c99d4f950cb749a7c05f0912a7a08780e4090b66805bba874b2abe2"
         },
-        "downloads": 133,
+        "downloads": -1,
         "filename": "laboratory-0.2.0.tar.gz",
         "has_sig": false,
         "md5_digest": "de27d82afafb53647c3dc6d40ddb6e84",
@@ -115,7 +117,7 @@
           "md5": "99b8fbfc43af249a917eff6888108e65",
           "sha256": "908b73dbeee516cff2c2d27c6baa3de1a8272307fa4edc378b56e3e29c445ac3"
         },
-        "downloads": 383,
+        "downloads": -1,
         "filename": "laboratory-0.3.0-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "99b8fbfc43af249a917eff6888108e65",
@@ -131,7 +133,7 @@
           "md5": "e0454545c209adfc314cf7c27afe08d5",
           "sha256": "113bf7bcedee698598bfa08c266f97da058fd7d025741db5eb2f1a969e0d97a4"
         },
-        "downloads": 146,
+        "downloads": -1,
         "filename": "laboratory-0.3.0.tar.gz",
         "has_sig": false,
         "md5_digest": "e0454545c209adfc314cf7c27afe08d5",
@@ -149,7 +151,7 @@
           "md5": "27ad8ce092eed826fe4d004b7288452d",
           "sha256": "e8c0ce01dea1cac0878a5f80460dac28fc56b9f4f15cf7ef6232b7206ff2546b"
         },
-        "downloads": 131,
+        "downloads": -1,
         "filename": "laboratory-0.4.0-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "27ad8ce092eed826fe4d004b7288452d",
@@ -165,7 +167,7 @@
           "md5": "a30b684fb68efac846d183024afdc9cc",
           "sha256": "670769270b54019f8c282829ec370df3aaa142e33b7c7379069a1a7670157ca5"
         },
-        "downloads": 115,
+        "downloads": -1,
         "filename": "laboratory-0.4.0.tar.gz",
         "has_sig": false,
         "md5_digest": "a30b684fb68efac846d183024afdc9cc",
@@ -183,7 +185,7 @@
           "md5": "f7a4250ea16d6ce64db616e1200582c6",
           "sha256": "c20e56c23ef40fb0882f91972fcab9e8f3c4bbdc95f7b54b0e6c176777da6af4"
         },
-        "downloads": 602,
+        "downloads": -1,
         "filename": "laboratory-0.4.1-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "f7a4250ea16d6ce64db616e1200582c6",
@@ -199,7 +201,7 @@
           "md5": "15ae052025592228bcd840394e6cfb94",
           "sha256": "080e7f210b81b496842cb3c63bddf5bb7ac6aba883adff14b8c131431185f30d"
         },
-        "downloads": 129,
+        "downloads": -1,
         "filename": "laboratory-0.4.1.tar.gz",
         "has_sig": false,
         "md5_digest": "15ae052025592228bcd840394e6cfb94",
@@ -217,7 +219,7 @@
           "md5": "3f1a439b7e5b677ce445f0e0ec6ecdab",
           "sha256": "e6f2a85aadbba876af03328b011602d84fea30228ef2536d0cb9ca6d6ed2cc44"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "laboratory-0.4.2-py2.py3-none-any.whl",
         "has_sig": true,
         "md5_digest": "3f1a439b7e5b677ce445f0e0ec6ecdab",
@@ -233,7 +235,7 @@
           "md5": "2bac49dde4934bcf3e4b6641f67e0334",
           "sha256": "67e70ea69b480c5da5385cb6006220c120a0d06b8f8d1c641dee3a4f61102704"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "laboratory-0.4.2.tar.gz",
         "has_sig": true,
         "md5_digest": "2bac49dde4934bcf3e4b6641f67e0334",
@@ -243,40 +245,74 @@
         "upload_time": "2017-06-15T18:13:33",
         "url": "https://files.pythonhosted.org/packages/88/cd/2210449f9b9491225af3884a27fd938dc72b93db246ef3d2963226f44ed8/laboratory-0.4.2.tar.gz"
       }
+    ],
+    "0.4.3": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8b6477039d9b932a80b00b61f75c4188",
+          "sha256": "d3a7751edf92e37686b387149ae3ccf0b292adfa23e1e8fc0e605e284f84d91f"
+        },
+        "downloads": -1,
+        "filename": "laboratory-0.4.3-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "8b6477039d9b932a80b00b61f75c4188",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 9852,
+        "upload_time": "2018-01-17T22:41:02",
+        "url": "https://files.pythonhosted.org/packages/a5/cb/ac5081b72cb919f159bfc085d438e89884ad6bd82051e95084334a6b9265/laboratory-0.4.3-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "2fd56275270a4c106849ba75c69b976c",
+          "sha256": "cdc566150470edc5f68a082ee537addca1e701844dcb4eb8ba646845aa09c882"
+        },
+        "downloads": -1,
+        "filename": "laboratory-0.4.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2fd56275270a4c106849ba75c69b976c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 5972,
+        "upload_time": "2018-01-17T22:41:04",
+        "url": "https://files.pythonhosted.org/packages/0c/61/45ddddde243224bb2e292cb8b76eaa010190109b5d06bc2520257b77e4e0/laboratory-0.4.3.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "3f1a439b7e5b677ce445f0e0ec6ecdab",
-        "sha256": "e6f2a85aadbba876af03328b011602d84fea30228ef2536d0cb9ca6d6ed2cc44"
+        "md5": "8b6477039d9b932a80b00b61f75c4188",
+        "sha256": "d3a7751edf92e37686b387149ae3ccf0b292adfa23e1e8fc0e605e284f84d91f"
       },
-      "downloads": 0,
-      "filename": "laboratory-0.4.2-py2.py3-none-any.whl",
-      "has_sig": true,
-      "md5_digest": "3f1a439b7e5b677ce445f0e0ec6ecdab",
+      "downloads": -1,
+      "filename": "laboratory-0.4.3-py2.py3-none-any.whl",
+      "has_sig": false,
+      "md5_digest": "8b6477039d9b932a80b00b61f75c4188",
       "packagetype": "bdist_wheel",
       "python_version": "py2.py3",
-      "size": 8216,
-      "upload_time": "2017-06-15T18:13:30",
-      "url": "https://files.pythonhosted.org/packages/25/fd/7855e5198129ad123ff427c95d64fe133e53db099e5b1d897c3281e39f4b/laboratory-0.4.2-py2.py3-none-any.whl"
+      "size": 9852,
+      "upload_time": "2018-01-17T22:41:02",
+      "url": "https://files.pythonhosted.org/packages/a5/cb/ac5081b72cb919f159bfc085d438e89884ad6bd82051e95084334a6b9265/laboratory-0.4.3-py2.py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "2bac49dde4934bcf3e4b6641f67e0334",
-        "sha256": "67e70ea69b480c5da5385cb6006220c120a0d06b8f8d1c641dee3a4f61102704"
+        "md5": "2fd56275270a4c106849ba75c69b976c",
+        "sha256": "cdc566150470edc5f68a082ee537addca1e701844dcb4eb8ba646845aa09c882"
       },
-      "downloads": 0,
-      "filename": "laboratory-0.4.2.tar.gz",
-      "has_sig": true,
-      "md5_digest": "2bac49dde4934bcf3e4b6641f67e0334",
+      "downloads": -1,
+      "filename": "laboratory-0.4.3.tar.gz",
+      "has_sig": false,
+      "md5_digest": "2fd56275270a4c106849ba75c69b976c",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 4955,
-      "upload_time": "2017-06-15T18:13:33",
-      "url": "https://files.pythonhosted.org/packages/88/cd/2210449f9b9491225af3884a27fd938dc72b93db246ef3d2963226f44ed8/laboratory-0.4.2.tar.gz"
+      "size": 5972,
+      "upload_time": "2018-01-17T22:41:04",
+      "url": "https://files.pythonhosted.org/packages/0c/61/45ddddde243224bb2e292cb8b76eaa010190109b5d06bc2520257b77e4e0/laboratory-0.4.3.tar.gz"
     }
   ]
 }
