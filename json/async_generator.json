@@ -5,15 +5,17 @@
     "bugtrack_url": "",
     "classifiers": [
       "Development Status :: 5 - Production/Stable",
+      "Framework :: AsyncIO",
       "Intended Audience :: Developers",
+      "License :: OSI Approved :: Apache Software License",
       "License :: OSI Approved :: MIT License",
-      "Programming Language :: Python :: 3",
       "Programming Language :: Python :: 3.5",
       "Programming Language :: Python :: 3.6",
+      "Programming Language :: Python :: 3 :: Only",
       "Programming Language :: Python :: Implementation :: CPython",
       "Programming Language :: Python :: Implementation :: PyPy"
     ],
-    "description": "The async_generator library\n===========================\n\n.. image:: https://travis-ci.org/njsmith/async_generator.svg?branch=master\n   :target: https://travis-ci.org/njsmith/async_generator\n   :alt: Automated test status\n\n.. image:: https://codecov.io/gh/njsmith/async_generator/branch/master/graph/badge.svg\n   :target: https://codecov.io/gh/njsmith/async_generator\n   :alt: Test coverage\n\nThis is a tiny library to add \"async generators\" to Python 3.5. What\nare those?\n\nOption 1: `my 5-minute lightning talk demo from PyCon 2016 <https://youtu.be/PulzIT8KYLk?t=24m30s>`_\n\nOption 2: read on!\n\nPython's iterators are great to use -- but manually implementing the\niterator protocol (``__iter__``, ``__next__``) can be very\nannoying. No-one wants to do that all the time.\n\nFortunately, Python has *generators*, which make it easy and\nstraightforward to create an *iterator* by writing a *function*. E.g.,\nif you have a file where each line is a JSON document, you can make an\niterator over the decoded bodies with:\n\n.. code-block:: python3\n\n   def load_json_lines(fileobj):\n       for line in fileobj:\n           yield json.loads(line)\n\nStarting in v3.5, Python has added `*async iterators* and *async\nfunctions* <https://www.python.org/dev/peps/pep-0492/>`_. These are\nlike regular iterators and functions, except that they have magic\npowers that let them do asynchronous I/O without twisting your control\nflow into knots.\n\nAsynchronous I/O code is all about incrementally processing streaming\ndata, so async iterators are super handy. But manually implementing\nthe async iterator protocol (``__aiter__``, ``__anext__``) can be very\nannoying, which is why we want *async generators*, which make it easy\nto create an *async iterator* by writing an *async function*. For\nexample, suppose that in our example above, we want to read the\ndocuments from a network connection, instead of the local\nfilesystem. Using the `asyncio.StreamReader interface\n<https://docs.python.org/3/library/asyncio-stream.html#asyncio.StreamReader>`_\nwe can write:\n\n.. code-block:: python3\n\n   async def load_json_lines(asyncio_stream_reader):\n       async for line in asyncio_stream_reader:\n           yield json.loads(line)\n\nBUT! the above DOESN'T WORK in Python 3.5 -- you just get a syntax\nerror. In 3.5, the only way to make an async generator is to manually\ndefine ``__aiter__`` and ``__anext__``.\n\n**Until now.**\n\nThis is a little library which implements async generators in Python\n3.5, by emulating the above syntax. The two changes are that you have\nto decorate your async generators with ``@async_generator``, and\ninstead of writing ``yield x`` you write ``await yield_(x)``:\n\n.. code-block:: python3\n\n   # Same example as before, but works in Python 3.5\n   from async_generator import async_generator, yield_, yield_from_\n\n   @async_generator\n   async def load_json_lines(asyncio_stream_reader):\n       async for line in asyncio_stream_reader:\n           await yield_(json.loads(line))\n\n\nSemantics\n=========\n\nThis library generally tries hard to match the semantics of Python\n3.6's native async generators in every detail (`PEP 525\n<https://www.python.org/dev/peps/pep-0525/>`__), except that it adds\n``yield from`` support, and it doesn't currently support the\n``sys.{get,set}_asyncgen_hooks`` garbage collection API. There are two\nmain reasons for this: (a) it doesn't exist on Python 3.5, and (b)\neven on 3.6, only built-in generators are supposed to use that API,\nand that's not us. In any case, you probably shouldn't be relying on\ngarbage collection for async generators \u2013 see `this discussion\n<https://vorpus.org/blog/some-thoughts-on-asynchronous-api-design-in-a-post-asyncawait-world/#cleanup-in-generators-and-async-generators>`__\nand `PEP 533 <https://www.python.org/dev/peps/pep-0533/>`__ for more\ndetails.\n\n\naclosing\n========\n\nAs discussed above, you should always explicitly call ``aclose`` on\nasync generators. To make this more convenient, this library also\nincludes an ``aclosing`` async context manager. It acts just like the\n``closing`` context manager included in the stdlib ``contextlib``\nmodule, but does ``await obj.aclose()`` instead of\n``obj.close()``. Use it like this:\n\n.. code-block:: python3\n\n   from async_generator import aclosing\n\n   async with aclosing(load_json_lines(asyncio_stream_reader)) as agen:\n       async for json_obj in agen:\n           ...\n\n\nyield from\n==========\n\nStarting in 3.6, CPython has native support for async generators. But,\nnative async generators still don't support ``yield from``. This\nlibrary does. It looks like:\n\n.. code-block:: python3\n\n   @async_generator\n   async def wrap_load_json_lines(asyncio_stream_reader):\n       await yield_from_(load_json_lines(asyncio_stream_reader))\n\nThe ``await yield_from_(...)`` construction can be applied to any\nasync iterator, including class-based iterators, native async\ngenerators, and async generators created using this library, and fully\nsupports the classic ``yield from`` semantics.\n\n..\n   In fact, if you're using CPython 3.6 native generators, you can even\n   use this library's ``yield_from_`` *directly inside a native\n   generator*. For example, this totally works (if you're on 3.6):\n\n   .. code-block:: python3\n\n      async def f():\n          yield 2\n          yield 3\n\n      async def g():\n          yield 1\n          await yield_from_(f())\n          yield 4\n\n   There are two limitations to watch out for, though:\n\n   * You can't write a native async generator that *only* contains\n     ``yield_from_`` calls; it has to contain at least one real ``yield``\n     or else the Python compiler won't know that you're trying to write\n     an async generator and you'll get extremely weird results. For\n     example, this won't work:\n\n     .. code-block:: python3\n\n        async def wrap_load_json_lines(asyncio_stream_reader):\n            await yield_from_(load_json_lines(asyncio_stream_reader))\n\n     The solution is either to convert it into an ``@async_generator``,\n     or else add a ``yield`` expression somewhere.\n\n   * You can't return values from native async generators. So this\n     doesn't work:\n\n     .. code-block:: python3\n\n        async def yield_and_return():\n            yield 1\n            yield 2\n            # \"SyntaxError: 'return' with value in async generator\"\n            return \"all done\"\n\n        async def wrapper():\n            yield \"in wrapper\"\n            result = await yield_from_(yield_and_return())\n            assert result == \"all done\"\n\n     The solution is to convert ``yield_and_return`` to an\n     ``@async_generator``::\n\n        @async_generator\n        async def yield_and_return():\n            await yield_(1)\n            await yield_(2)\n            return \"all done\"\n\n\nIntrospection\n=============\n\nFor introspection purposes, we also export the following functions:\n\n* ``async_generator.isasyncgen``: Returns true if passed either an async\n  generator object created by this library, or a native Python 3.6+\n  async generator object. Analogous to ``inspect.isasyncgen`` in 3.6+.\n\n* ``async_generator.isasyncgenfunction``: Returns true if passed\n  either an async generator function created by this library, or a\n  native Python 3.6+ async generator function. Analogous to\n  ``inspect.isasyncgenfunction`` in 3.6+.\n\nExample:\n\n.. code-block:: python3\n\n   >>> isasyncgenfunction(load_json_lines)\n   True\n   >>> gen_object = load_json_lines(asyncio_stream_reader)\n   >>> isasyncgen(gen_object)\n   True\n\nIn addition, this library's async generator objects are registered\nwith the ``collections.abc.AsyncGenerator`` abstract base class:\n\n.. code-block:: python3\n\n   >>> isinstance(gen_object, collections.abc.AsyncGenerator)\n   True\n\n\nChanges\n=======\n\n1.8 (2017-06-17)\n----------------\n\n* Implement PEP 479: if a ``StopAsyncIteration`` leaks out of an async\n  generator body, wrap it into a ``RuntimeError``.\n* If an async generator was instantiated but never iterated, then we\n  used to issue a spurious \"RuntimeWarning: coroutine '...' was never\n  awaited\" warning. This is now fixed.\n* Add PyPy3 to our test matrix.\n* 100% test coverage.\n\n\n1.7 (2017-05-13)\n----------------\n\n* Fix a subtle bug where if you wrapped an async generator using\n  ``functools.wraps``, then ``isasyncgenfunction`` would return True\n  for the wrapper. This isn't how ``inspect.isasyncgenfunction``\n  works, and it broke ``sphinxcontrib_trio``.\n\n\n1.6 (2017-02-17)\n----------------\n\n* Add support for async generator introspection attributes\n  ``ag_running``, ``ag_code``, ``ag_frame``.\n* Attempting to re-enter a running async_generator now raises\n  ``ValueError``, just like for native async generators.\n* 100% test coverage.\n\n\n1.5 (2017-01-15)\n----------------\n\n* Remove (temporarily?) the hacks that let ``yield_`` and\n  ``yield_from_`` work with native async generators. It turns out that\n  due to obscure linking issues this was causing the library to be\n  entirely broken on Python 3.6 on Windows (but not Linux or\n  MacOS). It's probably fixable, but needs some fiddling with ctypes\n  to get the refcounting right, and I couldn't figure it out in the\n  time I had available to spend.\n\n  So in this version, everything that worked before still works with\n  ``@async_generator``-style generators, but uniformly, on all\n  platforms, ``yield_`` and ``yield_from_`` now do *not* work inside\n  native-style async generators.\n* Now running CI testing on Windows as well as Linux.\n* 100% test coverage.\n\n\n1.4 (2016-12-05)\n----------------\n\n* Allow ``await yield_()`` as an shorthand for ``await yield_(None)``\n  (thanks to Alex Gr\u00f6nholm for the suggestion+patch).\n* Small cleanups to setup.py and test infrastructure.\n* 100% test coverage (now including branch coverage!)\n\n\n1.3 (2016-11-24)\n----------------\n\n* Added ``isasyncgen`` and ``isasyncgenfunction``.\n* On 3.6+, register our async generators with\n  ``collections.abc.AsyncGenerator``.\n* 100% test coverage.\n\n\n1.2 (2016-11-14)\n----------------\n\n* Rewrote ``yield from`` support; now has much more accurate handling\n  of edge cases.\n* ``yield_from_`` now works inside CPython 3.6's native async\n  generators.\n* Added ``aclosing`` context manager; it's pretty trivial, but if\n  we're going to recommend it be used everywhere then it seems polite\n  to include it.\n* 100% test coverage.\n\n\n1.1 (2016-11-06)\n----------------\n\n* Support for ``asend``\\/``athrow``\\/``aclose``\n* Support for ``yield from``\n* Add a ``__del__`` method that complains about improperly cleaned up\n  async generators.\n* Adapt to `the change in Python 3.5.2\n  <https://www.python.org/dev/peps/pep-0492/#api-design-and-implementation-revisions>`_\n  where ``__aiter__`` should now be a regular method instead of an\n  async method.\n* Adapt to Python 3.5.2's pickiness about iterating over\n  already-exhausted coroutines.\n* 100% test coverage.\n\n\n1.0 (2016-07-03)\n----------------\n\n* Fixes a very nasty and hard-to-hit bug where ``await yield_(...)``\n  calls could escape out to the top-level coroutine runner and get\n  lost, if the last trap out to the coroutine runner before the\n  ``await yield_(...)`` caused an exception to be injected.\n* Infinitesimally more efficient due to re-using internal\n  ``ANextIter`` objects instead of recreating them on each call to\n  ``__anext__``.\n* 100% test coverage.\n\n\n0.0.1 (2016-05-31)\n------------------\n\nInitial release.\n\n\n",
+    "description": ".. image:: https://img.shields.io/badge/chat-join%20now-blue.svg\n   :target: https://gitter.im/python-trio/general\n   :alt: Join chatroom\n\n.. image:: https://img.shields.io/badge/docs-read%20now-blue.svg\n   :target: https://async-generator.readthedocs.io/en/latest/?badge=latest\n   :alt: Documentation Status\n\n.. image:: https://travis-ci.org/njsmith/async_generator.svg?branch=master\n   :target: https://travis-ci.org/njsmith/async_generator\n   :alt: Automated test status\n\n.. image:: https://ci.appveyor.com/api/projects/status/af4eyed8o8tc3t0r/branch/master?svg=true\n   :target: https://ci.appveyor.com/project/python-trio/trio/history\n   :alt: Automated test status (Windows)\n\n.. image:: https://codecov.io/gh/njsmith/async_generator/branch/master/graph/badge.svg\n   :target: https://codecov.io/gh/njsmith/async_generator\n   :alt: Test coverage\n\nThe async_generator library\n===========================\n\nPython 3.6 added `async generators\n<https://www.python.org/dev/peps/pep-0525/>`__. (What's an async\ngenerator? `Check out my 5-minute lightning talk demo from PyCon 2016\n<https://youtu.be/PulzIT8KYLk?t=24m30s>`__.) Python 3.7 adds some more\ntools to make them usable, like ``contextlib.asynccontextmanager``.\n\nThis library gives you all that back to Python 3.5.\n\nFor example, this code only works in Python 3.6+:\n\n.. code-block:: python3\n\n   async def load_json_lines(stream_reader):\n       async for line in stream_reader:\n           yield json.loads(line)\n\nBut this code does the same thing, and works on Python 3.5+:\n\n.. code-block:: python3\n\n   from async_generator import async_generator, yield_\n\n   @async_generator\n   async def load_json_lines(stream_reader):\n       async for line in stream_reader:\n           await yield_(json.loads(line))\n\nOr in Python 3.7, you can write:\n\n.. code-block:: python3\n\n   from contextlib import asynccontextmanager\n\n   @asynccontextmanager\n   async def background_server():\n       async with trio.open_nursery() as nursery:\n           value = await nursery.start(my_server)\n           try:\n               yield value\n           finally:\n               # Kill the server when the scope exits\n               nursery.cancel_scope.cancel()\n\nThis is the same, but back to 3.5:\n\n.. code-block:: python3\n\n   from async_generator import async_generator, yield_, asynccontextmanager\n\n   @asynccontextmanager\n   @async_generator\n   async def background_server():\n       async with trio.open_nursery() as nursery:\n           value = await nursery.start(my_server)\n           try:\n               await yield_(value)\n           finally:\n               # Kill the server when the scope exits\n               nursery.cancel_scope.cancel()\n\n(And if you're on 3.6, you can use ``@asynccontextmanager`` with\nnative generators.)\n\n\nLet's do this\n=============\n\n* Install: ``python3 -m pip install -U async_generator`` (or on Windows,\n  maybe ``py -3 -m pip install -U async_generator``\n\n* Manual: https://async-generator.readthedocs.io/\n\n* Bug tracker and source code: https://github.com/python-trio/async_generator\n\n* Real-time chat: https://gitter.im/python-trio/general\n\n* License: MIT or Apache 2, your choice\n\n* Contributor guide: https://trio.readthedocs.io/en/latest/contributing.html\n\n* Code of conduct: Contributors are requested to follow our `code of\n  conduct\n  <https://trio.readthedocs.io/en/latest/code-of-conduct.html>`__ in\n  all project spaces.\n\n\nHow come some of those links talk about \"trio\"?\n===============================================\n\n`Trio <https://trio.readthedocs.io>`__ is a new async concurrency\nlibrary for Python that's obsessed with usability and correctness \u2013 we\nwant to make it *easy* to get things *right*. The ``async_generator``\nlibrary is maintained by the Trio project as part of that mission, and\nbecause Trio uses ``async_generator`` internally.\n\nYou can use ``async_generator`` with any async library. It works great\nwith ``asyncio``, or Twisted, or whatever you like. (But we think Trio\nis pretty sweet.)\n\n\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -21,18 +23,19 @@
       "last_month": 0,
       "last_week": 0
     },
-    "home_page": "https://github.com/njsmith/async_generator",
-    "keywords": "",
+    "home_page": "https://github.com/python-trio/async_generator",
+    "keywords": "async",
     "license": "MIT",
     "maintainer": "",
     "maintainer_email": "",
     "name": "async_generator",
     "platform": "",
     "project_url": "https://pypi.org/project/async_generator/",
-    "release_url": "https://pypi.org/project/async_generator/1.8/",
-    "requires_python": "",
-    "summary": "Async generators for Python 3.5",
-    "version": "1.8"
+    "release_url": "https://pypi.org/project/async_generator/1.9/",
+    "requires_dist": [],
+    "requires_python": ">=3.5",
+    "summary": "Async generators and context managers for Python 3.5+",
+    "version": "1.9"
   },
   "releases": {
     "0.0.1": [
@@ -42,7 +45,7 @@
           "md5": "5635930168bfda2a892bb36c2df7bf6e",
           "sha256": "9aac800f525cd566ce67cfc1765377d56148a6801a3439e789a2c879f59434db"
         },
-        "downloads": 191,
+        "downloads": -1,
         "filename": "async_generator-0.0.1-py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "5635930168bfda2a892bb36c2df7bf6e",
@@ -58,7 +61,7 @@
           "md5": "9b8c4b879e6851de0443397d4e50d2bd",
           "sha256": "97395f027c3dbe5de9a8a87bfd4f9110d9408f904e55037ed18c9c1c9b419294"
         },
-        "downloads": 183,
+        "downloads": -1,
         "filename": "async_generator-0.0.1.tar.gz",
         "has_sig": false,
         "md5_digest": "9b8c4b879e6851de0443397d4e50d2bd",
@@ -76,7 +79,7 @@
           "md5": "f9f7f37afdca04724e2fcbf146647afe",
           "sha256": "7bb68c18d3f4555b3a9df5e6d18885ca7fea5db27aca4f37b3fdcb2349aa9acd"
         },
-        "downloads": 505,
+        "downloads": -1,
         "filename": "async_generator-1.0-py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "f9f7f37afdca04724e2fcbf146647afe",
@@ -92,7 +95,7 @@
           "md5": "facd1300959eaa4665cd88c7d17b4374",
           "sha256": "99e22985e4ea79cdd9b46e659ecc3329e5c0ca0de056d1e79b8e55eee58c0895"
         },
-        "downloads": 177,
+        "downloads": -1,
         "filename": "async_generator-1.0.zip",
         "has_sig": false,
         "md5_digest": "facd1300959eaa4665cd88c7d17b4374",
@@ -110,7 +113,7 @@
           "md5": "6a5bf269b395d9af21337505fc924f55",
           "sha256": "a46195e86832fad03b6b2f4fd4618fe8234693ed41ed5826ae3cd2754e5eec6f"
         },
-        "downloads": 64,
+        "downloads": -1,
         "filename": "async_generator-1.1-py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "6a5bf269b395d9af21337505fc924f55",
@@ -126,7 +129,7 @@
           "md5": "452388b7a472010528aabac222a7b9da",
           "sha256": "296b088b9071e3bd176f354904cad13d0501a37a49f405f1bca5f2d40daf45c8"
         },
-        "downloads": 60,
+        "downloads": -1,
         "filename": "async_generator-1.1.zip",
         "has_sig": false,
         "md5_digest": "452388b7a472010528aabac222a7b9da",
@@ -144,7 +147,7 @@
           "md5": "6486dcf84b7f836f79ac215182b51630",
           "sha256": "0e45a37b2d5596d64a498cb698286e39bb492db61cd01027247e66e8036e0fc9"
         },
-        "downloads": 63,
+        "downloads": -1,
         "filename": "async_generator-1.2-py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "6486dcf84b7f836f79ac215182b51630",
@@ -160,7 +163,7 @@
           "md5": "3c94d6b61a1248e11177824d9abaa0be",
           "sha256": "f29f45317b74baa05adecd19d5af871d2e90347d78c580a9e492cbf9b604caf5"
         },
-        "downloads": 66,
+        "downloads": -1,
         "filename": "async_generator-1.2.zip",
         "has_sig": false,
         "md5_digest": "3c94d6b61a1248e11177824d9abaa0be",
@@ -178,7 +181,7 @@
           "md5": "a57da320c8de7defe43deeb1614249fa",
           "sha256": "55e7c6f07761105f0460836ef2296837edd00d2e84876d336ac6ac0058137d23"
         },
-        "downloads": 318,
+        "downloads": -1,
         "filename": "async_generator-1.3-py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "a57da320c8de7defe43deeb1614249fa",
@@ -194,7 +197,7 @@
           "md5": "5e51fa5a90e7d6640f4b7d604f9bc538",
           "sha256": "240f0ba990fe088b050963fc1ba09dfadd4cf96c79c969084e7582b4015a084b"
         },
-        "downloads": 321,
+        "downloads": -1,
         "filename": "async_generator-1.3.zip",
         "has_sig": false,
         "md5_digest": "5e51fa5a90e7d6640f4b7d604f9bc538",
@@ -212,7 +215,7 @@
           "md5": "861ec98f6a44f32a2d04502c91eecdad",
           "sha256": "073980550d8bcaebda30225b006babfb8f53dd72d858dc762e93e963a78473b0"
         },
-        "downloads": 227,
+        "downloads": -1,
         "filename": "async_generator-1.4-py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "861ec98f6a44f32a2d04502c91eecdad",
@@ -228,7 +231,7 @@
           "md5": "dae846c99201a095e500af508c3eb3b1",
           "sha256": "092d2f5f3039f103485df926635cf735acf8cc27769707dcf15a828427d8cbfd"
         },
-        "downloads": 69,
+        "downloads": -1,
         "filename": "async_generator-1.4.zip",
         "has_sig": false,
         "md5_digest": "dae846c99201a095e500af508c3eb3b1",
@@ -246,7 +249,7 @@
           "md5": "22c555f0f76295bcc937bda74293f8b4",
           "sha256": "5ccd6451ba30944c5dcbfcf3330a6c8793e8e1cfa7d5c8d8f018bf2c4ff00959"
         },
-        "downloads": 14,
+        "downloads": -1,
         "filename": "async_generator-1.5-py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "22c555f0f76295bcc937bda74293f8b4",
@@ -262,7 +265,7 @@
           "md5": "b1ce28264e25b7d95312a716accdcbea",
           "sha256": "392b776f4a158cc3b7ba5127d88d73eee10fa420e36d7099431c6b04fc0032cf"
         },
-        "downloads": 12,
+        "downloads": -1,
         "filename": "async_generator-1.5.zip",
         "has_sig": false,
         "md5_digest": "b1ce28264e25b7d95312a716accdcbea",
@@ -280,7 +283,7 @@
           "md5": "2775c21bd80fd2ad2c75125467029982",
           "sha256": "657196d620c2ca4b87f2f615b87d46558be4dc1fdec3c49774c98d1ffb8c9c60"
         },
-        "downloads": 130,
+        "downloads": -1,
         "filename": "async_generator-1.6-py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "2775c21bd80fd2ad2c75125467029982",
@@ -296,7 +299,7 @@
           "md5": "931eda157cbfe97fd1014ff0d64a1b32",
           "sha256": "1d6e9e5e5eb688030c03154feb8b20b0633e93c3a8c37e8023800d1c7c66d3a3"
         },
-        "downloads": 33,
+        "downloads": -1,
         "filename": "async_generator-1.6.zip",
         "has_sig": false,
         "md5_digest": "931eda157cbfe97fd1014ff0d64a1b32",
@@ -314,7 +317,7 @@
           "md5": "2bb560c8d0153219dc34b1d87304c404",
           "sha256": "96c272dcf22cbac9eaf6bd1de01434cd7b33d734dab32702521b62685885093e"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "async_generator-1.7-py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "2bb560c8d0153219dc34b1d87304c404",
@@ -330,7 +333,7 @@
           "md5": "fb0eafee5ceb17ab028f7e532f72fede",
           "sha256": "8cb1ea4416908436c86b8cec03b01b67028dda3bac285e6cef4d7b26eeac5710"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "async_generator-1.7.tar.gz",
         "has_sig": false,
         "md5_digest": "fb0eafee5ceb17ab028f7e532f72fede",
@@ -348,7 +351,7 @@
           "md5": "fc25b18290628a31905e758e03ddc1fe",
           "sha256": "d9253336202cb9df50ba617893fe794c61394a7eb4b9054f285c860f395ac6ff"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "async_generator-1.8-py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "fc25b18290628a31905e758e03ddc1fe",
@@ -364,7 +367,7 @@
           "md5": "a97473393c097193e5316a957e96020c",
           "sha256": "928b644cfc92be498f2d6c431e0082ae79ea736fbdf1ce4247881071dd525348"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "async_generator-1.8.zip",
         "has_sig": false,
         "md5_digest": "a97473393c097193e5316a957e96020c",
@@ -374,40 +377,74 @@
         "upload_time": "2017-06-18T00:02:10",
         "url": "https://files.pythonhosted.org/packages/cf/2f/0577dc1ebcee37f5b4ace6f32da5bd2b2dc9073d82186143b75259b52123/async_generator-1.8.zip"
       }
+    ],
+    "1.9": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "8fb128e275f61d4e2fa3e7dc4bb0221c",
+          "sha256": "2f45541002a14f80fffc6d52788f92470ff0d9bfe81c434ea8cd60babe43de9e"
+        },
+        "downloads": -1,
+        "filename": "async_generator-1.9-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "8fb128e275f61d4e2fa3e7dc4bb0221c",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "size": 18571,
+        "upload_time": "2018-01-19T12:36:23",
+        "url": "https://files.pythonhosted.org/packages/d9/c9/4a1806709a86b0e81849abb51242a4c6cfaba9c52dce05828e9125d7081d/async_generator-1.9-py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "a0a4922839f6309135e4122975ed4a96",
+          "sha256": "b7d5465c6174fe86dba498ececb175f93a6097ffb7cc91946405e1f05b848371"
+        },
+        "downloads": -1,
+        "filename": "async_generator-1.9.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a0a4922839f6309135e4122975ed4a96",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 15711,
+        "upload_time": "2018-01-19T12:36:24",
+        "url": "https://files.pythonhosted.org/packages/d6/fd/d9c76bac900882ceb0b2579d071588f60556557cc5d1a92ddcade14cc210/async_generator-1.9.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "fc25b18290628a31905e758e03ddc1fe",
-        "sha256": "d9253336202cb9df50ba617893fe794c61394a7eb4b9054f285c860f395ac6ff"
+        "md5": "8fb128e275f61d4e2fa3e7dc4bb0221c",
+        "sha256": "2f45541002a14f80fffc6d52788f92470ff0d9bfe81c434ea8cd60babe43de9e"
       },
-      "downloads": 0,
-      "filename": "async_generator-1.8-py3-none-any.whl",
+      "downloads": -1,
+      "filename": "async_generator-1.9-py3-none-any.whl",
       "has_sig": false,
-      "md5_digest": "fc25b18290628a31905e758e03ddc1fe",
+      "md5_digest": "8fb128e275f61d4e2fa3e7dc4bb0221c",
       "packagetype": "bdist_wheel",
       "python_version": "py3",
-      "size": 19916,
-      "upload_time": "2017-06-18T00:02:08",
-      "url": "https://files.pythonhosted.org/packages/a7/82/a9312aaaaaf354d23a54d198dc6fa0b8192d88db9a51845f957a878c4527/async_generator-1.8-py3-none-any.whl"
+      "size": 18571,
+      "upload_time": "2018-01-19T12:36:23",
+      "url": "https://files.pythonhosted.org/packages/d9/c9/4a1806709a86b0e81849abb51242a4c6cfaba9c52dce05828e9125d7081d/async_generator-1.9-py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "a97473393c097193e5316a957e96020c",
-        "sha256": "928b644cfc92be498f2d6c431e0082ae79ea736fbdf1ce4247881071dd525348"
+        "md5": "a0a4922839f6309135e4122975ed4a96",
+        "sha256": "b7d5465c6174fe86dba498ececb175f93a6097ffb7cc91946405e1f05b848371"
       },
-      "downloads": 0,
-      "filename": "async_generator-1.8.zip",
+      "downloads": -1,
+      "filename": "async_generator-1.9.tar.gz",
       "has_sig": false,
-      "md5_digest": "a97473393c097193e5316a957e96020c",
+      "md5_digest": "a0a4922839f6309135e4122975ed4a96",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 27558,
-      "upload_time": "2017-06-18T00:02:10",
-      "url": "https://files.pythonhosted.org/packages/cf/2f/0577dc1ebcee37f5b4ace6f32da5bd2b2dc9073d82186143b75259b52123/async_generator-1.8.zip"
+      "size": 15711,
+      "upload_time": "2018-01-19T12:36:24",
+      "url": "https://files.pythonhosted.org/packages/d6/fd/d9c76bac900882ceb0b2579d071588f60556557cc5d1a92ddcade14cc210/async_generator-1.9.tar.gz"
     }
   ]
 }
