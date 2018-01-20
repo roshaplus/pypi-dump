@@ -1,0 +1,107 @@
+{
+  "info": {
+    "author": "data.world",
+    "author_email": "help@data.world",
+    "bugtrack_url": null,
+    "classifiers": [
+      "Programming Language :: Python :: 3 :: Only"
+    ],
+    "description": "============\ntap-redshift\n============\n\n\n`Singer <https://singer.io>`_ tap that extracts data from a `Redshift <https://aws.amazon.com/documentation/redshift/>`_ database and produces JSON-formatted data following the Singer spec.\n\n\nUsage\n=====\ntap-redshift assumes you have connection to redshift.\n\nCreate a configuration file\n---------------------------\nWhen you install tap-redshift, you need to create a ``config.json`` file for the database connection.\n\nThe json file requires the following attributes;\n\n* ``host``\n* ``port``\n* ``dbname``\n* ``user``\n* ``password``\n\nAnd an optional attribute;\n\n* ``schema``\n\nExample:\n\n.. code-block:: json\n\n    {\n        \"host\": \"REDSHIFT_HOSTT\",\n        \"port\": \"REDSHIFT_PORT\",\n        \"dbname\": \"REDSHIFT_DBNAME\",\n        \"user\": \"REDSHIFT_USER\",\n        \"password\": \"REDSHIFT_PASSWORD\",\n        \"schema\": \"REDSHIFT_SCHEMA\"\n    }\n\n\nDiscovery mode\n==============\nThe tap can be invoked in discovery mode to get the available tables and columns in the database. It points to the config file created to connect to redshift:\n\n.. code-block:: shell\n\n    $ tap-redshift --config config.json -d\n\nA full catalog tap is writtem to stdout, with a JSON-schema description of each table. A source table directly corresponds to a Singer stream.\n\nRedirect output from the tap's discovery mode to a file so that it can be modified when the tap is to be invoked in sync mode.\n\n.. code-block:: shell\n\n    $ tap-redshift -c config.json -d > properties.json\n\nThis runs the tap in discovery mode and copies the output into a ``properties.json`` file.\n\n\nTables and property selection\n=============================\nIn sync mode, tap-redshift consumes a modified version of the catalog where tables and fields have been marked as selected.\n\nEdit ``properties.json`` file to make selections by adding key-value of ``\"selected\": \"true\"`` to the top level schema and also in the metadata for each properties you want to select.\n\nExample:\n\n\n.. code-block:: json\n\n    {\n        \"tap_stream_id\": \"sample-stream-id\",\n        \"table_name\": \"sample-name\",\n        \"stream\": \"sample-stream\",\n        \"is_view\": false,\n        \"database_name\": \"sample-dbname\"\n        \"schema\": {\n            \"selected\": \"true\",\n            \"properties\": {\n                \"name\": {\n                    \"maxLength\": 255,\n                    \"inclusion\": \"available\",\n                    \"type\": [\n                        \"null\",\n                        \"string\"\n                    ]\n                },\n                \"id\": {\n                    \"minimum\": -2147483648,\n                    \"inclusion\": \"automatic\",\n                    \"maximum\": 2147483647,\n                    \"type\": [\n                        \"null\",\n                        \"integer\"\n                    ]\n                }\n            },\n            \"type\": \"object\"\n        },\n        \"metadata\": [\n            {\n                \"metadata\": {\n                    \"selected\": true,\n                    \"selected-by-default\": true,\n                    \"sql-datatype\": \"int2\"\n                },\n                \"breadcrumb\": [\n                    \"properties\",\n                    \"id\"\n                ]\n            },\n            {\n                \"metadata\": {\n                    \"selected\": true,\n                    \"selected-by-default\": true,\n                    \"sql-datatype\": \"varchar\"\n                },\n                \"breadcrumb\": [\n                    \"properties\",\n                    \"catname\"\n                ]\n            },\n        ]\n    }\n\nThe tap can then be invoked in sync mode with the properties catalog argument:\n\n.. code-block:: shell\n\n    $ tap-redshift -c config.json --properties properties.json\n\n\nReplication methods and state file\n==================================\nThere are two ways to replicate a given table. FULL_TABLE and INCREMENTAL. FULL_TABLE replication is used by default.\n\nFull Table\n----------\nFull-table replication extracts all data from the source table each time the tap is invoked without a state file.\n\nIncremental\n-----------\nIncremental replication works in conjunction with a state file to only extract new records each time the tap is invoked i.e continue from the last synced data.\n\nTo use incremental replication, we need to add the ``replication_method`` and ``replication_key`` to the top level of the ``properties.json file``.\n\n.. code-block:: json\n\n    {\n        \"streams\": [\n            {\n                \"replication_method\": \"INCREMENTAL\",\n                \"replication_key\": \"id\",\n                \"tap_stream_id\": \"tap-sample\",\n                \"schema\": {\n                    \"properties\": {\n                        \"name\": {\n                            \"selected\": \"true\",\n                            \"maxLength\": 255,\n                            \"inclusion\": \"available\",\n                            \"type\": [\n                                \"null\",\n                                \"string\"\n                            ]\n                        },\n                        \"id\": {\n                            \"selected\": \"true\",\n                            \"minimum\": -2147483648,\n                            \"inclusion\": \"automatic\",\n                            \"maximum\": 2147483647,\n                            \"type\": [\n                                \"null\",\n                                \"integer\"\n                            ]\n                        }\n                    }\n                    \"type\": \"object\"\n                }\n            }\n        ]\n    }\n\nWe can then invoke the tap again in sync mode. This time the output will have ``STATE`` messages that contains a ``replication_key_value`` and ``bookmark`` for data that were extracted. \n\nRedirect the output to a ``state.json`` file. Normally, the target will echo the last STATE after it has finished processing data.\n\nRun the code below to pass the state into a ``state.json`` file and then grab the last synced state data.\n\n.. code-block:: shell\n\n    $ tap-redshift -c config.json --properties properties.json > state.json\n\n    $ tail -1 state.json > state.json.tmp && mv state.json.tmp state.json\n\nThe ``state.json`` file should look like;\n\n.. code-block:: json\n\n    {\n        \"currently_syncing\": \"dbname-tablename\",\n        \"bookmarks\": {\n            \"dev-category\": {\n                \"replication_key\": \"id\",\n                \"version\": 1516304171710,\n                \"replication_key_value\": 3\n            }\n        }\n    }\n\nWe can then always invoke the incremental replication with the ``state.json`` file to only sync new data created after the last synced data.\n\n.. code-block:: shell\n\n    $ tap-redshift -c config.json --properties properties.json --state state.json\n\n",
+    "docs_url": null,
+    "download_url": "",
+    "downloads": {
+      "last_day": 0,
+      "last_month": 0,
+      "last_week": 0
+    },
+    "home_page": "",
+    "keywords": "",
+    "license": "",
+    "maintainer": "",
+    "maintainer_email": "",
+    "name": "tap-redshift",
+    "platform": "",
+    "project_url": "https://pypi.org/project/tap-redshift/",
+    "release_url": "https://pypi.org/project/tap-redshift/1.0.0b1/",
+    "requires_dist": [
+      "singer-python (==5.0.4)",
+      "psycopg2 (==2.7.3.2)",
+      "pendulum (==1.2.0)",
+      "backoff (==1.3.2)",
+      "attrs (==17.2.0)"
+    ],
+    "requires_python": "",
+    "summary": "Singer.io tap for extracting data from redshift",
+    "version": "1.0.0b1"
+  },
+  "releases": {
+    "1.0.0b1": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "386b09874dd28b9efa926ffd31560d19",
+          "sha256": "91691d7dd35d37d7322086b79a5f7f883ef637810297c1a362666f323369812e"
+        },
+        "downloads": -1,
+        "filename": "tap_redshift-1.0.0b1-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "386b09874dd28b9efa926ffd31560d19",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 11776,
+        "upload_time": "2018-01-19T21:52:32",
+        "url": "https://files.pythonhosted.org/packages/c0/c4/39ccff3aa01b057cd70d23f431cc883c018ddeafb91418e4e2ceaafffed5/tap_redshift-1.0.0b1-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "4d66433048ce179afb6aec730de442b9",
+          "sha256": "efcceb17e041c5c257a1320c5c98866289f6b1056c99b667b98b61adf3166d77"
+        },
+        "downloads": -1,
+        "filename": "tap-redshift-1.0.0b1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "4d66433048ce179afb6aec730de442b9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 13134,
+        "upload_time": "2018-01-19T21:52:59",
+        "url": "https://files.pythonhosted.org/packages/c2/6d/020e8139c7b8e7ea49b8a7551dc2fe85cfb42915d2a222fb7e11f93fb8c7/tap-redshift-1.0.0b1.tar.gz"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "386b09874dd28b9efa926ffd31560d19",
+        "sha256": "91691d7dd35d37d7322086b79a5f7f883ef637810297c1a362666f323369812e"
+      },
+      "downloads": -1,
+      "filename": "tap_redshift-1.0.0b1-py2.py3-none-any.whl",
+      "has_sig": false,
+      "md5_digest": "386b09874dd28b9efa926ffd31560d19",
+      "packagetype": "bdist_wheel",
+      "python_version": "py2.py3",
+      "size": 11776,
+      "upload_time": "2018-01-19T21:52:32",
+      "url": "https://files.pythonhosted.org/packages/c0/c4/39ccff3aa01b057cd70d23f431cc883c018ddeafb91418e4e2ceaafffed5/tap_redshift-1.0.0b1-py2.py3-none-any.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "4d66433048ce179afb6aec730de442b9",
+        "sha256": "efcceb17e041c5c257a1320c5c98866289f6b1056c99b667b98b61adf3166d77"
+      },
+      "downloads": -1,
+      "filename": "tap-redshift-1.0.0b1.tar.gz",
+      "has_sig": false,
+      "md5_digest": "4d66433048ce179afb6aec730de442b9",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "size": 13134,
+      "upload_time": "2018-01-19T21:52:59",
+      "url": "https://files.pythonhosted.org/packages/c2/6d/020e8139c7b8e7ea49b8a7551dc2fe85cfb42915d2a222fb7e11f93fb8c7/tap-redshift-1.0.0b1.tar.gz"
+    }
+  ]
+}

@@ -6,7 +6,7 @@
     "classifiers": [],
     "description": "ebs-snatcher\n============\n\nAutomatically provision and attach AWS EBS volumes to instances\n\n\nInstallation\n------------\n\nRun ``pip install ebs-snatcher``, or ``python ./setup.py``\n\n\nPurpose\n-------\n\nThis tool allows AWS instances to self-sufficiently provision or takeover EBS\nvolumes for data storage. It was created to support stateful database instances\nthat should be able to join a replication group autonomously, while making use\nof snapshots to start from a recent state, instead of scratch.\n\n\nProcess\n-------\n\n``ebs-snatcher`` will attempt to provision an EBS volume with the minimal\npossible effort for a target instance, considering that both must reside in\nthe same availability zone. Suitable volumes and snapshots are identified by\ntag key-value pairs, such that different types of volumes can be managed by\ncalling the program multiple times.\n\nIn order of preference, the choices are:\n\n1. Keep using any volumes already attached to the instance\n2. Find an existing but available volume in the same AZ as the instance, and\n   attach it to the instance\n3. Create a new volume from a suitable snapshot, and attach it\n4. Create a new volume from scratch, and attach it\n\n\nIdentifying volumes and snapshots\n---------------------------------\n\nVolumes and snapshots will only be considered for usage if they match the set\nof tags specified by the ``--volume-id-tag``  and ``--snapshot-search-tag``\narguments, respectively. They take the form of ``key=value`` pairs, and can\nbe specified multiple times, in which case the conditions are combined in AND\nfashion.\n\nExtra tags that are not used for selection can be specified with\n``--volume-extra-tags`` (also in ``key=value`` format).\n\n\nAttachment device selection\n---------------------------\n\nAfter a volume is provisioned, it needs to be attached to the instance and\nassigned a device name in the operating system. The desired name can be\nspecified with the ``--attach-device`` argument, or it can be set to ``auto``\nto start from the AWS default of ``/dev/sdf`` (earlier devices are \"reserved\"\nfor instance-store volumes).\n\nIf an attachment attempt fails due to the name already being in use, and it\nmatches known Linux disk names (``/dev/(sd|xvd)[a-z]+``), the next name in\norder will be picked and retried, in alphabetical order. The sequence starts as:\n\n``sda, sdb, ..., sdz, sdaa, ..., sdaz, sdba, ...``\n\n\nVolume creation\n---------------\n\nVolume creation settings are exposed as command line arguments, corresponding to\nthe AWS API parameters, with a few observations:\n\n1. The `Encrypt` and `KMSKeyId` options are combined into the\n   ``--encrypt-kms-key-id`` argument. Providing it will enable encryption, and\n   omitting it will disable it\n2. Volume size will be silently ignored when creating from a snapshot, as the\n   volume will always have the same size as the snapshot\n\n\nOutput\n------\n\nWhen no errors are found, the command will exit with status 0, and print a JSON\ndocument in stdout, containing at least the following keys:\n\n:volume_id:\n    ID of the EBS volume that has been attached to the instance\n:attached_device:\n    Path of the device assigned to the volume. Note that this might not match\n    exactly the device name visible inside the instance. For example, modern\n    Linux kernel versions use ``/dev/xvd*`` even if ``/dev/sd*`` is specified\n:result:\n    One of ``present``, ``attached`` or ``created``, indicating the change in\n    volume state (or lack thereof)\n:src_snapshot_id:\n    Contains the snapshot ID used to provision the volume it ``result`` is\n    ``created``. Is ``null`` otherwise, or if the volume was created from\n    scratch\n\nIn both cases log messages are printed to stderr.\n\n\nIAM Permissions\n---------------\n\nPermissions to list volumes, snapshots and instances, to create volumes and\nto attach volumes to instances are necessary for ``ebs-snatcher`` to work.\nThey should be granted to instances using IAM roles. The simplest policy allows\ncomplete access to all of those actions. It is much easier to handle, but very\nbroad:\n\n.. code:: json\n\n    {\n        \"Version\": \"2012-10-17\",\n        \"Statement\": [\n            {\n                \"Sid\": \"EBSSnatcherAll\",\n                \"Action\": [\n                    \"ec2:DescribeInstances\",\n                    \"ec2:DescribeSnapshots\",\n                    \"ec2:DescribeVolumes\",\n                    \"ec2:CreateVolume\",\n                    \"ec2:AttachVolume\"\n                ],\n                \"Effect\": \"Allow\",\n                \"Resource\": \"*\"\n            }\n      ]\n    }\n\n\nIt is possible to ensure all managed volumes and instances have some chosen\ntags, as long as those same tags are passed to ``ebs-snatcher``.\nAn example policy to achieve it follows. Before using it, replace:\n\n- ``db-volume-type`` and ``cassandra`` with the desired tags for volumes\n- ``db-instance-type`` and ``cassandra`` with the desired tags for instances\n  (which must have been already assigned)\n- ``<REGION>`` and ``<ACCOUNT-ID>`` with your own AWS account information\n\n.. code:: json\n\n    {\n        \"Version\": \"2012-10-17\",\n        \"Statement\": [\n            {\n                \"Sid\": \"EBSSnatcherDescribe\",\n                \"Action\": [\n                    \"ec2:DescribeInstances\",\n                    \"ec2:DescribeSnapshots\",\n                    \"ec2:DescribeVolumes\"\n                ],\n                \"Effect\": \"Allow\",\n                \"Resource\": \"*\"\n            },\n            {\n                \"Sid\": \"EBSSnatcherCreateVolume\",\n                \"Action\": [\n                    \"ec2:CreateVolume\"\n                ],\n                \"Condition\": {\n                    \"StringEquals\": {\n                        \"aws:RequestTag/db-volume-type\": \"cassandra\"\n                    }\n                },\n                \"Effect\": \"Allow\",\n                \"Resource\": \"*\"\n            },\n            {\n                \"Sid\": \"EBSSnatcherCreateVolumeTags\",\n                \"Action\": [\n                    \"ec2:CreateTags\"\n                ],\n                \"Condition\": {\n                    \"StringEquals\": {\n                        \"ec2:CreateAction\": \"CreateVolume\"\n                    }\n                },\n                \"Effect\": \"Allow\",\n                \"Resource\": \"arn:aws:ec2:<REGION>:<ACCOUNT-ID>:volume/*\"\n            },\n            {\n                \"Sid\": \"EBSSnatcherAttachVolumeVolume\",\n                \"Action\": [\n                    \"ec2:AttachVolume\"\n                ],\n                \"Condition\": {\n                    \"StringEquals\": {\n                        \"ec2:ResourceTag/db-volume-type\": \"cassandra\"\n                    }\n                },\n                \"Effect\": \"Allow\",\n                \"Resource\": \"arn:aws:ec2:<REGION>:<ACCOUNT-ID>:volume/*\"\n            },\n            {\n                \"Sid\": \"EBSSnatcherAttachVolumeInstance\",\n                \"Action\": [\n                    \"ec2:AttachVolume\"\n                ],\n                \"Effect\": \"Allow\",\n                \"Condition\": {\n                    \"StringEquals\": {\n                        \"ec2:ResourceTag/db-instance-type\": \"cassandra\"\n                    }\n                },\n                \"Resource\": \"arn:aws:ec2:<REGION>:<ACCOUNT-ID>:instance/*\"\n            }\n        ]\n    }\n\n\nFuture enhancements\n-------------------\n\n- Generate minimal IAM policies programatically\n- Pull instance information from the local metadata store (remove the need for\n  DescribeInstances permissions)\n- \n\nUsage\n-----\n\n::\n\n    usage: ebs-snatcher [-h] --instance-id ID --volume-id-tag KEY=VALUE\n                        --volume-size GB --snapshot-search-tag KEY=VALUE\n                        --attach-device PATH|auto [--volume-extra-tag KEY=VALUE]\n                        [--encrypt-kms-key-id KEY-ID] [--volume-type TYPE]\n                        [--volume-iops COUNT]\n\n    Automatically provision AWS EBS volumes from snapshots\n\n    optional arguments:\n      -h, --help            show this help message and exit\n      --instance-id ID      Instance ID to attach volumes to\n      --volume-id-tag KEY=VALUE\n                            Tag used to identify desired volumes. Will be used to\n                            search currently attached volumes to determine if a\n                            new one is needed and applied to new volumes. Can be\n                            provided multiple times, in which case tags will be\n                            combined as an AND condition.\n      --volume-size GB      Size to assign to newly created volumes, in GBs.\n      --snapshot-search-tag KEY=VALUE\n                            Tag used to identify snapshots to create new volumes\n                            from.Can be provided multiple times, in which case\n                            tags will be combined as an AND condition.\n      --attach-device PATH|auto\n                            Name of device to use when attaching a volume, such as\n                            \"/dev/sdb\". Can also be set to \"auto\", in which case\n                            sequential device names starting from /dev/sdb will be\n                            tried until attaching succeeeds\n      --volume-extra-tag KEY=VALUE\n                            Extra tags to be applied to newly create volumes, but\n                            which are not used for identification .\n      --encrypt-kms-key-id KEY-ID\n                            Enable encryption and use the given KMS key ID for\n                            newly created volumes\n      --volume-type TYPE    Volume type to use for newly created volumes\n      --volume-iops COUNT   Number of provisioned I/O operations to assign to\n                            newly created volumes. Make sure to choose an\n                            appropriate volume type to match.\n\n\nLicense (MIT)\n-------------\n\n::\n\n    Copyright (C) 2017 Cobli\n\n    Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:\n\n    The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.\n\n    THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n\n\n",
     "docs_url": null,
-    "download_url": "https://github.com/Cobliteam/ebs-snatcher/archive/0.1.2.tar.gz",
+    "download_url": "https://github.com/Cobliteam/ebs-snatcher/archive/0.2.0.tar.gz",
     "downloads": {
       "last_day": 0,
       "last_month": 0,
@@ -20,14 +20,14 @@
     "name": "ebs-snatcher",
     "platform": "",
     "project_url": "https://pypi.org/project/ebs-snatcher/",
-    "release_url": "https://pypi.org/project/ebs-snatcher/0.1.2/",
+    "release_url": "https://pypi.org/project/ebs-snatcher/0.2.0/",
     "requires_dist": [
       "future",
       "boto3"
     ],
     "requires_python": "",
     "summary": "Automatically provision AWS EBS volumes from snapshots",
-    "version": "0.1.2"
+    "version": "0.2.0"
   },
   "releases": {
     "0.1.0": [
@@ -131,40 +131,74 @@
         "upload_time": "2017-10-23T23:16:58",
         "url": "https://files.pythonhosted.org/packages/4f/bd/72cc65d1040f9c7af3421377a667913b20123c52f4fe8570ef0a787ffd44/ebs-snatcher-0.1.2.tar.gz"
       }
+    ],
+    "0.2.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3300e8298fbeadd2d7ef1d73c8a16fb5",
+          "sha256": "04a6ba912f1ed2ef3999a2bfdda9e97889e080b12c5d1c7e536f34f5fb1f96aa"
+        },
+        "downloads": -1,
+        "filename": "ebs_snatcher-0.2.0-py2.py3-none-any.whl",
+        "has_sig": true,
+        "md5_digest": "3300e8298fbeadd2d7ef1d73c8a16fb5",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 15107,
+        "upload_time": "2018-01-19T06:38:18",
+        "url": "https://files.pythonhosted.org/packages/5a/cd/fd5047eeddfb43e44adcc4e56e38893e094836a90698d2ee9ecd86f4fa03/ebs_snatcher-0.2.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d235f953336f959cd0e486c7d2969c62",
+          "sha256": "012a4e9933a075adc51546b3555f2bab0dbdfc51663f583d65103c86b5f9c93e"
+        },
+        "downloads": -1,
+        "filename": "ebs-snatcher-0.2.0.tar.gz",
+        "has_sig": true,
+        "md5_digest": "d235f953336f959cd0e486c7d2969c62",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 12602,
+        "upload_time": "2018-01-19T06:38:20",
+        "url": "https://files.pythonhosted.org/packages/7c/ca/66d27d2f68e1c988dd505230df68893395fd6b7efb8c51d13dbe1ff88ac1/ebs-snatcher-0.2.0.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "410caa8045c137e6ab3348feaec2171a",
-        "sha256": "d8a2b35a2429c5eadeba0d3b91ef04ae9a81d7fbfeec0cbd602c5221567cc85c"
+        "md5": "3300e8298fbeadd2d7ef1d73c8a16fb5",
+        "sha256": "04a6ba912f1ed2ef3999a2bfdda9e97889e080b12c5d1c7e536f34f5fb1f96aa"
       },
       "downloads": -1,
-      "filename": "ebs_snatcher-0.1.2-py2.py3-none-any.whl",
-      "has_sig": false,
-      "md5_digest": "410caa8045c137e6ab3348feaec2171a",
+      "filename": "ebs_snatcher-0.2.0-py2.py3-none-any.whl",
+      "has_sig": true,
+      "md5_digest": "3300e8298fbeadd2d7ef1d73c8a16fb5",
       "packagetype": "bdist_wheel",
       "python_version": "py2.py3",
-      "size": 14101,
-      "upload_time": "2017-10-23T23:16:56",
-      "url": "https://files.pythonhosted.org/packages/97/77/fa326879d454dd8035caa22ce6e4c98fbcffd1867809ddd0d6caa646e746/ebs_snatcher-0.1.2-py2.py3-none-any.whl"
+      "size": 15107,
+      "upload_time": "2018-01-19T06:38:18",
+      "url": "https://files.pythonhosted.org/packages/5a/cd/fd5047eeddfb43e44adcc4e56e38893e094836a90698d2ee9ecd86f4fa03/ebs_snatcher-0.2.0-py2.py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "59c64009485058f5801c484d3fe8e5a2",
-        "sha256": "641b781f33daeb7b5d56a3bdffc4df84971d915fea4d4c418ec6cb6f48629d39"
+        "md5": "d235f953336f959cd0e486c7d2969c62",
+        "sha256": "012a4e9933a075adc51546b3555f2bab0dbdfc51663f583d65103c86b5f9c93e"
       },
       "downloads": -1,
-      "filename": "ebs-snatcher-0.1.2.tar.gz",
-      "has_sig": false,
-      "md5_digest": "59c64009485058f5801c484d3fe8e5a2",
+      "filename": "ebs-snatcher-0.2.0.tar.gz",
+      "has_sig": true,
+      "md5_digest": "d235f953336f959cd0e486c7d2969c62",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 9930,
-      "upload_time": "2017-10-23T23:16:58",
-      "url": "https://files.pythonhosted.org/packages/4f/bd/72cc65d1040f9c7af3421377a667913b20123c52f4fe8570ef0a787ffd44/ebs-snatcher-0.1.2.tar.gz"
+      "size": 12602,
+      "upload_time": "2018-01-19T06:38:20",
+      "url": "https://files.pythonhosted.org/packages/7c/ca/66d27d2f68e1c988dd505230df68893395fd6b7efb8c51d13dbe1ff88ac1/ebs-snatcher-0.2.0.tar.gz"
     }
   ]
 }
