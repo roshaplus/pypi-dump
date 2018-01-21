@@ -3,8 +3,16 @@
     "author": "Peter & Ilja",
     "author_email": "ilja@wise.fish",
     "bugtrack_url": null,
-    "classifiers": [],
-    "description": "",
+    "classifiers": [
+      "Development Status :: 5 - Production/Stable",
+      "Intended Audience :: Developers",
+      "License :: OSI Approved :: MIT License",
+      "Operating System :: OS Independent",
+      "Programming Language :: Python :: 2.7",
+      "Programming Language :: Python :: 3",
+      "Topic :: Database"
+    ],
+    "description": ".. image:: https://travis-ci.org/VRGhost/sqlalchemy-fsm.svg?branch=master\n   :target: https://travis-ci.org/VRGhost/sqlalchemy-fsm\n   :alt: Build Status\n\n\n.. image:: https://coveralls.io/repos/github/VRGhost/sqlalchemy-fsm/badge.svg?branch=master\n   :target: https://coveralls.io/github/VRGhost/sqlalchemy-fsm?branch=master\n   :alt: Coverage Status\n\n\nFinite state machine field for sqlalchemy (based on django-fsm)\n===============================================================\n\nsqlalchemy-fsm adds declarative states management for sqlalchemy models.\nInstead of adding some state field to a model, and manage its\nvalues by hand, you could use FSMState field and mark model methods\nwith the ``transition`` decorator. Your method will contain the side-effects\nof the state change.\n\nThe decorator also takes a list of conditions, all of which must be met\nbefore a transition is allowed.\n\nUsage\n-----\n\nAdd FSMState field to you model\n    from sqlalchemy_fsm import FSMField, transition\n\n.. code-block::\n\n   class BlogPost(db.Model):\n       state = db.Column(FSMField, nullable = False)\n\n\n\nUse the ``transition`` decorator to annotate model methods\n\n.. code-block::\n\n   @transition(source='new', target='published')\n   def publish(self):\n       \"\"\"\n       This function may contain side-effects, \n       like updating caches, notifying users, etc.\n       The return value will be discarded.\n       \"\"\"\n\n\n``source`` parameter accepts a list of states, or an individual state.\nYou can use ``*`` for source, to allow switching to ``target`` from any state.\n\nYou can also use ``None`` as source state for (e.g. in case when the state column in nullable).\nHowever, it is *not possible* to create transition with ``None`` as target state due to religious reasons.\n\nTransition can be also used on a class object to create a group of handlers\nfor same target state.\n\n.. code-block::\n\n   @transition(target='published')\n   class PublishHandler(object):\n\n       @transition(source='new')\n       def do_one(self, instance, value):\n           instance.side_effect = \"published from new\"\n\n       @transition(source='draft')\n       def do_two(self, instance, value):\n           instance.side_effect = \"published from draft\"\n\n\n   class BlogPost(db.Model):\n       ...\n       publish = PublishHandler\n\n\nThe transition is still to be invoked by calling the model's publish() method.\n\nAn alternative inline class syntax is supported too:\n\n.. code-block::\n\n   @transition(target='published')\n   class publish(object):\n\n       @transition(source='new')\n       def do_one(self, instance, value):\n           instance.side_effect = \"published from new\"\n\n       @transition(source='draft')\n       def do_two(self, instance, value):\n           instance.side_effect = \"published from draft\"\n\n\nIf calling publish() succeeds without raising an exception, the state field\nwill be changed, but not written to the database.\n\n.. code-block::\n\n   from sqlalchemy_fsm import can_proceed\n\n   def publish_view(request, post_id):\n       post = get_object__or_404(BlogPost, pk=post_id)\n       if not can_proceed(post.publish):\n            raise Http404;\n\n       post.publish()\n       post.save()\n       return redirect('/')\n\n\n\nIf your given function requires arguments to validate, you need to include them\nwhen calling can_proceed as well as including them when you call the function\nnormally. Say publish() required a date for some reason:\n\n.. code-block::\n\n   if not can_proceed(post.publish, the_date):\n       raise Http404\n   else:\n       post.publish(the_date)\n\n\nIf your code needs to know the state model is currently in, you can call\nthe is_current() function.\n\n.. code-block::\n\n   if is_current(post.delete):\n       raise Http404\n\n\nIf you require some conditions to be met before changing state, use the\n``conditions`` argument to ``transition``. ``conditions`` must be a list of functions\nthat take one argument, the model instance.  The function must return either\n``True`` or ``False`` or a value that evaluates to ``True`` or ``False``. If all\nfunctions return ``True``\\ , all conditions are considered to be met and transition\nis allowed to happen. If one of the functions return ``False``\\ , the transition\nwill not happen. These functions should not have any side effects.\n\nYou can use ordinary functions\n\n.. code-block::\n\n   def can_publish(instance):\n       # No publishing after 17 hours\n       if datetime.datetime.now().hour > 17:\n          return False\n       return True\n\n\nOr model methods\n\n.. code-block::\n\n   def can_destroy(self):\n       return not self.is_under_investigation()\n\n\nUse the conditions like this:\n\n.. code-block::\n\n   @transition(source='new', target='published', conditions=[can_publish])\n   def publish(self):\n       \"\"\"\n       Side effects galore\n       \"\"\"\n\n   @transition(source='*', target='destroyed', conditions=[can_destroy])\n   def destroy(self):\n       \"\"\"\n       Side effects galore\n       \"\"\"\n\n\nYou can also use FSM handlers to query the database. E.g.\n\n.. code-block::\n\n   session.query(BlogCls).filter(BlogCls.publish())\n\n\nwill return all \"Blog\" objects whose current state matches \"publish\"'es target state.\n\nEvents\n------\n\nSqlalchemy-fsm integrates with sqlalchemy's event system.\nThe library exposes two events ``before_state_change`` and ``after_state_change`` that are fired up\nat the expected points of state's lifecycle.\n\nYou can subscribe event listeners via standard SQLAlchemy interface of\n``listens_for`` or ``listen``.\n\n.. code-block::\n\n   from sqlalchemy.event import listens_for\n\n   @listens_for(Blog, 'before_state_change')\n   def on_state_change(instance, source, target):\n       ...\n\n\nOr\n\n.. code-block::\n\n   from sqlalchemy import event\n\n   def on_state_change(instance, source, target):\n       ...\n\n   event.listen(Blog, 'after_state_change', on_state_change)\n\n\n\nIt is possible to de-register an event listener call with ``sqlalchemy.event.remove()`` method.\n\nHow does sqlalchemy-fsm diverge from django-fsm?\n------------------------------------------------\n\n\n* \n  Can't commit data from within transition-decorated functions\n\n* \n  Does support arguments to conditions functions",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -12,199 +20,73 @@
       "last_month": 0,
       "last_week": 0
     },
-    "home_page": "https://github.com/dagoof/sqlalchemy-fsm",
-    "keywords": "",
-    "license": "",
+    "home_page": "https://github.com/VRGhost/sqlalchemy-fsm",
+    "keywords": "sqlalchemy finite state machine fsm",
+    "license": "MIT",
     "maintainer": "",
     "maintainer_email": "",
     "name": "sqlalchemy-fsm",
     "platform": "",
     "project_url": "https://pypi.org/project/sqlalchemy-fsm/",
-    "release_url": "https://pypi.org/project/sqlalchemy-fsm/1.1.0/",
+    "release_url": "https://pypi.org/project/sqlalchemy-fsm/1.1.6/",
     "requires_dist": [],
     "requires_python": "",
     "summary": "Finite state machine field for sqlalchemy",
-    "version": "1.1.0"
+    "version": "1.1.6"
   },
   "releases": {
-    "0.0.1": [
+    "1.1.4": [
       {
         "comment_text": "",
         "digests": {
-          "md5": "9a0f67a757266c98db0183325dbb6145",
-          "sha256": "33c7d9e837e3593cb99e58510fdd8faf01e1261220080c4058ca3559ec25630f"
+          "md5": "1677c9ec12b25b1352f84dfbf95d2ce0",
+          "sha256": "31f1e3f066e0cb126fa915ad433a020def406353fd2ce553c1451481cdd31e64"
         },
         "downloads": -1,
-        "filename": "sqlalchemy_fsm-0.0.1.tar.gz",
+        "filename": "sqlalchemy_fsm-1.1.4.tar.gz",
         "has_sig": false,
-        "md5_digest": "9a0f67a757266c98db0183325dbb6145",
+        "md5_digest": "1677c9ec12b25b1352f84dfbf95d2ce0",
         "packagetype": "sdist",
         "python_version": "source",
-        "size": 5710,
-        "upload_time": "2018-01-20T09:53:53",
-        "url": "https://files.pythonhosted.org/packages/55/3c/36804c2092549038fe563e734225ccf282b3e598d84e23c30bb209e2283e/sqlalchemy_fsm-0.0.1.tar.gz"
+        "size": 7836,
+        "upload_time": "2018-01-20T22:29:44",
+        "url": "https://files.pythonhosted.org/packages/ec/b8/f6eadf2b22b924c1fb9ffb989d9ebca919af0627264a91850688399a77ec/sqlalchemy_fsm-1.1.4.tar.gz"
       }
     ],
-    "0.0.2": [
+    "1.1.5": [
       {
         "comment_text": "",
         "digests": {
-          "md5": "d15e2ca9553cdeebd63225442d6eb7b3",
-          "sha256": "181ddbc9376e31feefd06f2734abec2688698ea0941fc6f34b0189fabc7e98a2"
+          "md5": "db5f996e8f3acf368319eaeca10e1b7e",
+          "sha256": "c5e94528873c5a551144a9937a990f48fb20f5314d2edeffb03057befc04c251"
         },
         "downloads": -1,
-        "filename": "sqlalchemy_fsm-0.0.2.tar.gz",
+        "filename": "sqlalchemy_fsm-1.1.5.tar.gz",
         "has_sig": false,
-        "md5_digest": "d15e2ca9553cdeebd63225442d6eb7b3",
+        "md5_digest": "db5f996e8f3acf368319eaeca10e1b7e",
         "packagetype": "sdist",
         "python_version": "source",
-        "size": 5912,
-        "upload_time": "2018-01-20T10:07:26",
-        "url": "https://files.pythonhosted.org/packages/be/b4/2355b78dbf0f490ee9cb4b466dc502ae3b229bb4725085afebe58bfcb7a8/sqlalchemy_fsm-0.0.2.tar.gz"
+        "size": 7846,
+        "upload_time": "2018-01-20T22:36:49",
+        "url": "https://files.pythonhosted.org/packages/b4/47/a89abaf8d8df53c617342860a7e139412295253c604bcdd02041799d299d/sqlalchemy_fsm-1.1.5.tar.gz"
       }
     ],
-    "0.0.3": [
+    "1.1.6": [
       {
         "comment_text": "",
         "digests": {
-          "md5": "90fd15ea1e1d878ba3edd4da50010fe6",
-          "sha256": "3aec998ab328548173fb533c116b7c6b7c8c9a5057a9f7535dddc3072224c43b"
+          "md5": "d4cd1d41ba29001cd085705740d9978f",
+          "sha256": "3a661dbdb5969d939ca5f82c6c8727b122df76f19a3169b92b043c3042cdd95e"
         },
         "downloads": -1,
-        "filename": "sqlalchemy_fsm-0.0.3.tar.gz",
+        "filename": "sqlalchemy_fsm-1.1.6.tar.gz",
         "has_sig": false,
-        "md5_digest": "90fd15ea1e1d878ba3edd4da50010fe6",
+        "md5_digest": "d4cd1d41ba29001cd085705740d9978f",
         "packagetype": "sdist",
         "python_version": "source",
-        "size": 5950,
-        "upload_time": "2018-01-20T10:17:19",
-        "url": "https://files.pythonhosted.org/packages/b7/17/2b8403314893c04965c74868cec91c4126ea2fcf092ae5868543e408d58a/sqlalchemy_fsm-0.0.3.tar.gz"
-      }
-    ],
-    "0.0.4": [
-      {
-        "comment_text": "",
-        "digests": {
-          "md5": "b5905d836f93a8821d4a9063165d5825",
-          "sha256": "103f4643623093cb766e915c45cbdff6ac07056aed8adf3e18e8c22ac6251aa6"
-        },
-        "downloads": -1,
-        "filename": "sqlalchemy_fsm-0.0.4.tar.gz",
-        "has_sig": false,
-        "md5_digest": "b5905d836f93a8821d4a9063165d5825",
-        "packagetype": "sdist",
-        "python_version": "source",
-        "size": 5763,
-        "upload_time": "2018-01-20T10:36:49",
-        "url": "https://files.pythonhosted.org/packages/5d/56/ff6e4e71c4a1d9c1c65cf43fe09c86623c5757b62000b553d7fef226e7e9/sqlalchemy_fsm-0.0.4.tar.gz"
-      }
-    ],
-    "0.0.5": [
-      {
-        "comment_text": "",
-        "digests": {
-          "md5": "3e897c3df58069bab5dbe8d800c2af40",
-          "sha256": "c10d7858307ac6b6d328ea7a9e304bc2d70b0d100b33e1228a0aa0addef4d9a3"
-        },
-        "downloads": -1,
-        "filename": "sqlalchemy_fsm-0.0.5.tar.gz",
-        "has_sig": false,
-        "md5_digest": "3e897c3df58069bab5dbe8d800c2af40",
-        "packagetype": "sdist",
-        "python_version": "source",
-        "size": 5839,
-        "upload_time": "2018-01-20T11:41:36",
-        "url": "https://files.pythonhosted.org/packages/75/e3/46fa0e8d433656e3d54e2d570670892b3ace5099b1921634e0c1313b0d85/sqlalchemy_fsm-0.0.5.tar.gz"
-      }
-    ],
-    "0.0.6": [
-      {
-        "comment_text": "",
-        "digests": {
-          "md5": "743c62162ad5ede0b5932875fc181a7e",
-          "sha256": "0f69c5afc3fd81bfeab954cef5b7b6918dcdc25795c7b0b8e55c3dab60e2c2ac"
-        },
-        "downloads": -1,
-        "filename": "sqlalchemy_fsm-0.0.6.tar.gz",
-        "has_sig": false,
-        "md5_digest": "743c62162ad5ede0b5932875fc181a7e",
-        "packagetype": "sdist",
-        "python_version": "source",
-        "size": 5844,
-        "upload_time": "2018-01-20T11:45:03",
-        "url": "https://files.pythonhosted.org/packages/60/73/2a41674cde43aba5a34ea0467dc34b161e841c4b61491ef47b8817b07594/sqlalchemy_fsm-0.0.6.tar.gz"
-      }
-    ],
-    "0.0.7": [
-      {
-        "comment_text": "",
-        "digests": {
-          "md5": "32dacab7d651aecf0a30d9f4999d1170",
-          "sha256": "8a4602e9e800d2743a82a537db5c7d875a8f4ed6866662e69580333361f3435c"
-        },
-        "downloads": -1,
-        "filename": "sqlalchemy_fsm-0.0.7.tar.gz",
-        "has_sig": false,
-        "md5_digest": "32dacab7d651aecf0a30d9f4999d1170",
-        "packagetype": "sdist",
-        "python_version": "source",
-        "size": 5847,
-        "upload_time": "2018-01-20T11:59:07",
-        "url": "https://files.pythonhosted.org/packages/03/25/3a18f100abb2d09c233c9d6e9d10c68d905edffbb91b9d0b81a18aa8b00e/sqlalchemy_fsm-0.0.7.tar.gz"
-      }
-    ],
-    "0.0.8": [
-      {
-        "comment_text": "",
-        "digests": {
-          "md5": "d09dcaf3e70882a34881a0ec77184527",
-          "sha256": "a767532ffacbb7f2e59f55499b1e9e1b87b9106429562a3ab440b641484e6982"
-        },
-        "downloads": -1,
-        "filename": "sqlalchemy_fsm-0.0.8.tar.gz",
-        "has_sig": false,
-        "md5_digest": "d09dcaf3e70882a34881a0ec77184527",
-        "packagetype": "sdist",
-        "python_version": "source",
-        "size": 5845,
-        "upload_time": "2018-01-20T12:06:22",
-        "url": "https://files.pythonhosted.org/packages/43/1a/c951648e500c4b98051edf4388bbfff9d3cb9dbe9ccd94c6aa5b7f991137/sqlalchemy_fsm-0.0.8.tar.gz"
-      }
-    ],
-    "1.0.0": [
-      {
-        "comment_text": "",
-        "digests": {
-          "md5": "63308cbbac1d1182932de2eb53e5d938",
-          "sha256": "eef95acba86a1cb4be95003b16aba9428557479d3af563e304fbe364360a4548"
-        },
-        "downloads": -1,
-        "filename": "sqlalchemy_fsm-1.0.0.tar.gz",
-        "has_sig": false,
-        "md5_digest": "63308cbbac1d1182932de2eb53e5d938",
-        "packagetype": "sdist",
-        "python_version": "source",
-        "size": 5839,
-        "upload_time": "2018-01-20T12:13:10",
-        "url": "https://files.pythonhosted.org/packages/41/b4/ed903d82f5fe4da707ce0efea9f6ce414822c927c691b613bcc590f25b26/sqlalchemy_fsm-1.0.0.tar.gz"
-      }
-    ],
-    "1.1.0": [
-      {
-        "comment_text": "",
-        "digests": {
-          "md5": "d50b5aeafa0f8791e0e83f2293f367a4",
-          "sha256": "5361b294baf60a022fce47c575bd66f76ae1e941dee14fe907e7df980d72370e"
-        },
-        "downloads": -1,
-        "filename": "sqlalchemy_fsm-1.1.0.tar.gz",
-        "has_sig": false,
-        "md5_digest": "d50b5aeafa0f8791e0e83f2293f367a4",
-        "packagetype": "sdist",
-        "python_version": "source",
-        "size": 6599,
-        "upload_time": "2018-01-20T17:16:42",
-        "url": "https://files.pythonhosted.org/packages/d7/a1/810e5ee18c45125c7b26461db8e5c56e69f8064cf162d91fca571df0f9b1/sqlalchemy_fsm-1.1.0.tar.gz"
+        "size": 8054,
+        "upload_time": "2018-01-21T10:29:48",
+        "url": "https://files.pythonhosted.org/packages/47/99/d19ec710d9f80085c7ce1f6c353467e4fde9bd9f20ab58fe0c9e4f67e1ba/sqlalchemy_fsm-1.1.6.tar.gz"
       }
     ]
   },
@@ -212,18 +94,18 @@
     {
       "comment_text": "",
       "digests": {
-        "md5": "d50b5aeafa0f8791e0e83f2293f367a4",
-        "sha256": "5361b294baf60a022fce47c575bd66f76ae1e941dee14fe907e7df980d72370e"
+        "md5": "d4cd1d41ba29001cd085705740d9978f",
+        "sha256": "3a661dbdb5969d939ca5f82c6c8727b122df76f19a3169b92b043c3042cdd95e"
       },
       "downloads": -1,
-      "filename": "sqlalchemy_fsm-1.1.0.tar.gz",
+      "filename": "sqlalchemy_fsm-1.1.6.tar.gz",
       "has_sig": false,
-      "md5_digest": "d50b5aeafa0f8791e0e83f2293f367a4",
+      "md5_digest": "d4cd1d41ba29001cd085705740d9978f",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 6599,
-      "upload_time": "2018-01-20T17:16:42",
-      "url": "https://files.pythonhosted.org/packages/d7/a1/810e5ee18c45125c7b26461db8e5c56e69f8064cf162d91fca571df0f9b1/sqlalchemy_fsm-1.1.0.tar.gz"
+      "size": 8054,
+      "upload_time": "2018-01-21T10:29:48",
+      "url": "https://files.pythonhosted.org/packages/47/99/d19ec710d9f80085c7ce1f6c353467e4fde9bd9f20ab58fe0c9e4f67e1ba/sqlalchemy_fsm-1.1.6.tar.gz"
     }
   ]
 }
