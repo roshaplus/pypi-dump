@@ -11,7 +11,7 @@
       "Operating System :: Microsoft :: Windows",
       "Topic :: System :: Systems Administration :: Authentication/Directory :: LDAP"
     ],
-    "description": "Introduction\r\n============\r\n\r\npyad is a Python library designed to provide a simple, Pythonic interface to Active Directory through ADSI on the Windows platform. Complete documentation can be found at https://zakird.com/pyad. Code is maintained at https://github.com/zakird/pyad. The library can be downloaded from PyPI at https://pypi.python.org/pypi/pyad.\r\n\r\n\r\nRequirements\r\n============\r\n\r\npyad requires pywin32, available at http://sourceforge.net/projects/pywin32.\r\n\r\n\r\nConnecting to Active Directory\r\n==============================\r\n\r\nBy default, pyad will connect to the Active Directory domain to which the machine is joined (rootDSE)::\r\n\r\n    from pyad import aduser\r\n    user = aduser.ADUser.from_cn(\"myuser\")\r\n\r\n\r\nHowever, it is possible to connect to a specific domain controller or to use alternate credentials, by calling pyad.set_defaults() or by passing in connection information in the options dictionary for each object you connect to. Authentication is performed over a secured connection, pyad will not pass credentials over clear text. The following options can be set in the `set_defaults` call: `ldap_server`, `gc_server`, `ldap_port`, `gc_port`, `username`, `password`, and `ssl` (True/False). For example, the following code will set the default connection parameters for all objects accessed through pyad::\r\n\r\n    from pyad import *\r\n    pyad.set_defaults(ldap_server=\"dc1.domain.com\", username=\"service_account\", password=\"mypassword\")\r\n    user = pyad.aduser.ADUser.from_cn(\"myuser\")\r\n\r\n\r\nIt is also possible to pass in options when connecting to a specific object. This will not set the library defaults, but these settings will be used from any objects you derive from it (e.g. if you request group membership of a user) Example::\r\n\r\n   from pyad import aduser\r\n   user = aduser.ADUser.from_cn(\"myuser\", options=dict(ldap_server=\"dc1.domain.com\"))\r\n\r\n\r\nBasic Object Manipulation\r\n=========================\r\n\r\nThere are first order Python classes for different types of objects in Active Directory. For example, ADUser represents user objects and ADGroup represents groups. All objects subclass ADObject. Most methods are defined in ADObject, but subclasses generally provide additional helper methods (e.g. ADUser has `set_password` and ADGroup has `add_member`).\r\n\r\nIt is possible to connect to an object by distinguished name, CN, UPN, and GUID if you already know the type of object. Examples::\r\n\r\n    from pyad import aduser\r\n    user1 = aduser.ADUser.from_dn(\"cn=myuser, ou=staff, dc=domain, dc=com\")\r\n    user2 = aduser.ADUser.from_cn(\"myuser\")\r\n    user3 = aduser.ADUser.from_guid(\"XXX-XXX-XXX\")\r\n\r\n\r\nIt is also possible to use the pyad factory with an arbitrary Active Directory object and to receive an appropriately classed Python object::\r\n\r\n    from pyad import pyad\r\n    user = pyad.from_cn(\"user1\")\r\n    computer = pyad.from_dn(\"cn=WS1,ou=Workstations,dc=domain,dc=com\")\r\n    group = pyad.from_guid(\"XXX-XXX-XXX\")\r\n\r\n\r\nUnlike the ADSI interface, pyad objects are intended to interact with one another. Instead of adding the DN of a user to the members attribute of a group to add the user, you instead add the user object to the group. For instance::\r\n\r\n    user1 = ADUser.from_cn(\"myuser1\")\r\n    user2 = ADUser.from_cn(\"myuser2\")\r\n    group = ADGroup.from_dn(\"staff\")\r\n\r\n    group.add_members([user1, user2])\r\n\r\n    for user in group.get_members():\r\n        print user1.description\r\n\r\n\r\nHowever, it is still possible to directly manipulate any attribute outside of the helper methods that pyad provides::\r\n\r\n    user1 = ADUser.from_cn(\"myuser1\")\r\n    user.set_attribute(\"description\", \"new description\")\r\n    user.append_to_attribute(\"member\", \"cn=myuser1, ou=staff, dc=domain, dc=com\")\r\n\r\n\r\nMore details on how to manipulate the objects you find to is found in the next section.\r\n\r\n\r\nCreating, Moving, and Deleting Objects\r\n======================================\r\n\r\nThere are two methodologies for creating and deleting objects. In both cases, you must first bind to the parent container. When creating a new object, several attributes are required, but other additional attributes can be specified with the `optional_attributes` parameter. Example 1::\r\n\r\n    ou = ADContainer.from_dn(\"ou=workstations, dc=domain, dc=com\")\r\n\r\n    # create a new group without any optional attributes\r\n    new_computer = ADComputer.create(\"WS-489\", ou)\r\n\r\n    # create a new group with additional attributes\r\n    new_group = ADGroup.create(\"IT-STAFF\", security_enabled=True, scope='UNIVERSAL',\r\n                    optional_attributes = {\"description\":\"all IT staff in our company\"})\r\n\r\nIt is also possible to create new objects from the parent container::\r\n\r\n    ou = ADContainer.from_dn(\"ou=workstations, dc=domain, dc=com\")\r\n    computer = ou.create_computer(\"WS-490\")\r\n\r\nOnce objects are created, they can be moved::\r\n\r\n    computer = ADComputer.from_cn(\"WS-500\")\r\n    computer.move(ADContainer.from_dn(\"ou=workstations, ou=HR, dc=company, dc=com\"))\r\n\r\nor renamed::\r\n\r\n    computer = ADComputer.from_cn(\"WS-500\")\r\n    computer.rename(\"WS-501\")\r\n\r\nObjects can be removed by calling delete()::\r\n\r\n    ADComputer.from_cn(\"WS-500\").delete()\r\n\r\n\r\nSearching Active Directory\r\n==========================\r\n\r\nAs shown above, objects can be directly connected to via CN, DN, GUID, or UPN. However, objects can also be searched for through the ADQuery interface (and in the background, this is how objects are actually found when you connect by CN). It is important to note that the ADQuery interface will not provide you with pyad objects, but instead with only the attributes for which you queried, for performance reasons. Example::\r\n\r\n    import pyad.adquery\r\n    q = pyad.adquery.ADQuery()\r\n\r\n    q.execute_query(\r\n        attributes = [\"distinguishedName\", \"description\"],\r\n        where_clause = \"objectClass = '*'\",\r\n        base_dn = \"OU=users, DC=domain, DC=com\"\r\n    )\r\n\r\n    for row in q.get_results():\r\n        print row[\"distinguishedName\"]\r\n\r\nLicense\r\n=======\r\n\r\npyad is licensed under the Apache License, Version 2.0 (the \"License\"). You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0.\r\n\r\nUnless required by applicable law or agreed to in writing, software distributed under the License is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.",
+    "description": "Introduction\r\n============\r\n\r\npyad is a Python library designed to provide a simple, Pythonic interface to Active Directory through ADSI on the Windows platform. Complete documentation can be found at https://zakird.com/pyad. Code is maintained at https://github.com/zakird/pyad. The library can be downloaded from PyPI at https://pypi.python.org/pypi/pyad.\r\n\r\n\r\nRequirements\r\n============\r\n\r\npyad requires pywin32, available at http://sourceforge.net/projects/pywin32.\r\n\r\nAlternatively,\r\n::\r\n    pip install pypiwin32\r\n\r\nworks as well.\r\n\r\n\r\nConnecting to Active Directory\r\n==============================\r\n\r\nBy default, pyad will connect to the Active Directory domain to which the machine is joined (rootDSE)::\r\n\r\n    from pyad import aduser\r\n    user = aduser.ADUser.from_cn(\"myuser\")\r\n\r\n\r\nHowever, it is possible to connect to a specific domain controller or to use alternate credentials, by calling pyad.set_defaults() or by passing in connection information in the options dictionary for each object you connect to. Authentication is performed over a secured connection, pyad will not pass credentials over clear text. The following options can be set in the `set_defaults` call: `ldap_server`, `gc_server`, `ldap_port`, `gc_port`, `username`, `password`, and `ssl` (True/False). For example, the following code will set the default connection parameters for all objects accessed through pyad::\r\n\r\n    from pyad import *\r\n    pyad.set_defaults(ldap_server=\"dc1.domain.com\", username=\"service_account\", password=\"mypassword\")\r\n    user = pyad.aduser.ADUser.from_cn(\"myuser\")\r\n\r\n\r\nIt is also possible to pass in options when connecting to a specific object. This will not set the library defaults, but these settings will be used from any objects you derive from it (e.g. if you request group membership of a user) Example::\r\n\r\n   from pyad import aduser\r\n   user = aduser.ADUser.from_cn(\"myuser\", options=dict(ldap_server=\"dc1.domain.com\"))\r\n\r\n\r\nBasic Object Manipulation\r\n=========================\r\n\r\nThere are first order Python classes for different types of objects in Active Directory. For example, ADUser represents user objects and ADGroup represents groups. All objects subclass ADObject. Most methods are defined in ADObject, but subclasses generally provide additional helper methods (e.g. ADUser has `set_password` and ADGroup has `add_member`).\r\n\r\nIt is possible to connect to an object by distinguished name, CN, UPN, and GUID if you already know the type of object. Examples::\r\n\r\n    from pyad import aduser\r\n    user1 = aduser.ADUser.from_dn(\"cn=myuser, ou=staff, dc=domain, dc=com\")\r\n    user2 = aduser.ADUser.from_cn(\"myuser\")\r\n    user3 = aduser.ADUser.from_guid(\"XXX-XXX-XXX\")\r\n\r\n\r\nIt is also possible to use the pyad factory with an arbitrary Active Directory object and to receive an appropriately classed Python object::\r\n\r\n    from pyad import pyad\r\n    user = pyad.from_cn(\"user1\")\r\n    computer = pyad.from_dn(\"cn=WS1,ou=Workstations,dc=domain,dc=com\")\r\n    group = pyad.from_guid(\"XXX-XXX-XXX\")\r\n\r\n\r\nUnlike the ADSI interface, pyad objects are intended to interact with one another. Instead of adding the DN of a user to the members attribute of a group to add the user, you instead add the user object to the group. For instance::\r\n\r\n    user1 = ADUser.from_cn(\"myuser1\")\r\n    user2 = ADUser.from_cn(\"myuser2\")\r\n    group = ADGroup.from_dn(\"staff\")\r\n\r\n    group.add_members([user1, user2])\r\n\r\n    for user in group.get_members():\r\n        print user1.description\r\n\r\n\r\nHowever, it is still possible to directly manipulate any attribute outside of the helper methods that pyad provides::\r\n\r\n    user1 = ADUser.from_cn(\"myuser1\")\r\n    user.set_attribute(\"description\", \"new description\")\r\n    user.append_to_attribute(\"member\", \"cn=myuser1, ou=staff, dc=domain, dc=com\")\r\n\r\n\r\nMore details on how to manipulate the objects you find to is found in the next section.\r\n\r\n\r\nCreating, Moving, and Deleting Objects\r\n======================================\r\n\r\nThere are two methodologies for creating and deleting objects. In both cases, you must first bind to the parent container. When creating a new object, several attributes are required, but other additional attributes can be specified with the `optional_attributes` parameter. Example 1::\r\n\r\n    ou = ADContainer.from_dn(\"ou=workstations, dc=domain, dc=com\")\r\n\r\n    # create a new group without any optional attributes\r\n    new_computer = ADComputer.create(\"WS-489\", ou)\r\n\r\n    # create a new group with additional attributes\r\n    new_group = ADGroup.create(\"IT-STAFF\", security_enabled=True, scope='UNIVERSAL',\r\n                    optional_attributes = {\"description\":\"all IT staff in our company\"})\r\n\r\nIt is also possible to create new objects from the parent container::\r\n\r\n    ou = ADContainer.from_dn(\"ou=workstations, dc=domain, dc=com\")\r\n    computer = ou.create_computer(\"WS-490\")\r\n\r\nOnce objects are created, they can be moved::\r\n\r\n    computer = ADComputer.from_cn(\"WS-500\")\r\n    computer.move(ADContainer.from_dn(\"ou=workstations, ou=HR, dc=company, dc=com\"))\r\n\r\nor renamed::\r\n\r\n    computer = ADComputer.from_cn(\"WS-500\")\r\n    computer.rename(\"WS-501\")\r\n\r\nObjects can be removed by calling delete()::\r\n\r\n    ADComputer.from_cn(\"WS-500\").delete()\r\n\r\n\r\nSearching Active Directory\r\n==========================\r\n\r\nAs shown above, objects can be directly connected to via CN, DN, GUID, or UPN. However, objects can also be searched for through the ADQuery interface (and in the background, this is how objects are actually found when you connect by CN). It is important to note that the ADQuery interface will not provide you with pyad objects, but instead with only the attributes for which you queried, for performance reasons. Example::\r\n\r\n    import pyad.adquery\r\n    q = pyad.adquery.ADQuery()\r\n\r\n    q.execute_query(\r\n        attributes = [\"distinguishedName\", \"description\"],\r\n        where_clause = \"objectClass = '*'\",\r\n        base_dn = \"OU=users, DC=domain, DC=com\"\r\n    )\r\n\r\n    for row in q.get_results():\r\n        print row[\"distinguishedName\"]\r\n\r\nLicense\r\n=======\r\n\r\npyad is licensed under the Apache License, Version 2.0 (the \"License\"). You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0.\r\n\r\nUnless required by applicable law or agreed to in writing, software distributed under the License is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.\r\n",
     "docs_url": null,
     "download_url": "https://github.com/zakird/pyad/",
     "downloads": {
@@ -22,15 +22,16 @@
     "home_page": "https://zakird.com/pyad",
     "keywords": "python microsoft windows active directory AD adsi",
     "license": "Apache License, Version 2.0",
-    "maintainer": null,
-    "maintainer_email": null,
+    "maintainer": "",
+    "maintainer_email": "",
     "name": "pyad",
-    "platform": "UNKNOWN",
+    "platform": "",
     "project_url": "https://pypi.org/project/pyad/",
-    "release_url": "https://pypi.org/project/pyad/0.5.16/",
-    "requires_python": null,
+    "release_url": "https://pypi.org/project/pyad/0.5.20/",
+    "requires_dist": [],
+    "requires_python": "",
     "summary": "An Object-Oriented Active Directory management framework built on ADSI",
-    "version": "0.5.16"
+    "version": "0.5.20"
   },
   "releases": {
     "0.4.10": [
@@ -40,7 +41,7 @@
           "md5": "9fec55f71f788dd94c05e8ee5b692bac",
           "sha256": "915eef56ca9ba617dfec6e984f23daebe0d4f906b29c22ba78d83e50068c0512"
         },
-        "downloads": 2770,
+        "downloads": -1,
         "filename": "pyad-0.4.10-py2.7.egg",
         "has_sig": false,
         "md5_digest": "9fec55f71f788dd94c05e8ee5b692bac",
@@ -56,7 +57,7 @@
           "md5": "92f3947c7785b2048f01ac3cd2ed0d13",
           "sha256": "59cac30b3d37abc59074389a0241d0e0be47ec62a5f721b04deae71c31255113"
         },
-        "downloads": 2732,
+        "downloads": -1,
         "filename": "pyad-0.4.10.tar.gz",
         "has_sig": false,
         "md5_digest": "92f3947c7785b2048f01ac3cd2ed0d13",
@@ -74,7 +75,7 @@
           "md5": "f2b1cdb3b473fb3300b9415b5d9e4760",
           "sha256": "c07bc181ba2fadc9c41f333540344985d3640de547117a7f0c62b080fd80f059"
         },
-        "downloads": 2601,
+        "downloads": -1,
         "filename": "pyad-0.4.12-py2.6.egg",
         "has_sig": false,
         "md5_digest": "f2b1cdb3b473fb3300b9415b5d9e4760",
@@ -90,7 +91,7 @@
           "md5": "a2692e30073df49d52b88c008e6348de",
           "sha256": "91bf1bcd277150580049b6b0e40ac0916f3370af7abc61c48b1d73f5ca6effd9"
         },
-        "downloads": 2651,
+        "downloads": -1,
         "filename": "pyad-0.4.12-py2.7.egg",
         "has_sig": false,
         "md5_digest": "a2692e30073df49d52b88c008e6348de",
@@ -106,7 +107,7 @@
           "md5": "deed29342a74830ea89f0b7f59d2ea7a",
           "sha256": "53a8fd866cdb1e5604e2a7bd43dd7616499171f751885a303939eac79cbfb8b9"
         },
-        "downloads": 2629,
+        "downloads": -1,
         "filename": "pyad-0.4.12.tar.gz",
         "has_sig": false,
         "md5_digest": "deed29342a74830ea89f0b7f59d2ea7a",
@@ -124,7 +125,7 @@
           "md5": "478e9ba3c7074feb5d5deb353ce885ed",
           "sha256": "ae23a15fc3a98ef70a03e9964ff19ae269b8c8ac9f974c567ae19bafcb9ce794"
         },
-        "downloads": 2606,
+        "downloads": -1,
         "filename": "pyad-0.4.13-py2.6.egg",
         "has_sig": false,
         "md5_digest": "478e9ba3c7074feb5d5deb353ce885ed",
@@ -140,7 +141,7 @@
           "md5": "4353dde8f52aed46abd07ce52fbfb4a3",
           "sha256": "42f054f75e6d558fe01ea88aa4e5d870e7a187247706dce9ca2c250d10eb9b7c"
         },
-        "downloads": 2622,
+        "downloads": -1,
         "filename": "pyad-0.4.13-py2.7.egg",
         "has_sig": false,
         "md5_digest": "4353dde8f52aed46abd07ce52fbfb4a3",
@@ -156,7 +157,7 @@
           "md5": "336f39c707bed74a1037f3b417880731",
           "sha256": "b65b85999bb1bddb5245a83f9e63209aea06c2368e948f36765992e24b19b280"
         },
-        "downloads": 2563,
+        "downloads": -1,
         "filename": "pyad-0.4.13.tar.gz",
         "has_sig": false,
         "md5_digest": "336f39c707bed74a1037f3b417880731",
@@ -174,7 +175,7 @@
           "md5": "6db0a18470aaaf7f64b4b0948c99e9be",
           "sha256": "c8e8916b57a2735a56767123d88086cedb77177cc6d9862b3a285a2ed24398d3"
         },
-        "downloads": 2603,
+        "downloads": -1,
         "filename": "pyad-0.4.14-py2.6.egg",
         "has_sig": false,
         "md5_digest": "6db0a18470aaaf7f64b4b0948c99e9be",
@@ -190,7 +191,7 @@
           "md5": "d5cee5b39db14ae8288e261e50895a39",
           "sha256": "11199a47419f7e8201a0391d9f7afffc64e44deba2ee82ca0a3ace885fba231e"
         },
-        "downloads": 2640,
+        "downloads": -1,
         "filename": "pyad-0.4.14-py2.7.egg",
         "has_sig": false,
         "md5_digest": "d5cee5b39db14ae8288e261e50895a39",
@@ -206,7 +207,7 @@
           "md5": "ed5e2f155dcbd6cfb8c5a2f50fbc1f83",
           "sha256": "c4cd49aa5022f9f82c4715e36757a1dd38573451c067314abe626cd64dbe7453"
         },
-        "downloads": 2575,
+        "downloads": -1,
         "filename": "pyad-0.4.14.tar.gz",
         "has_sig": false,
         "md5_digest": "ed5e2f155dcbd6cfb8c5a2f50fbc1f83",
@@ -224,7 +225,7 @@
           "md5": "630b614972b2715a6ec2a7a389aa0f78",
           "sha256": "d9a5402bfe0f4dd173bf9f2371f4f506cbbe111635e8fc8bfbd08b7e7549e8bf"
         },
-        "downloads": 2513,
+        "downloads": -1,
         "filename": "pyad-0.4.15.macosx-10.7-intel.tar.gz",
         "has_sig": false,
         "md5_digest": "630b614972b2715a6ec2a7a389aa0f78",
@@ -240,7 +241,7 @@
           "md5": "9466b5b1780664242718727c8cf8150b",
           "sha256": "2e924725609d68ee58138bad6384c660227cd87ec98a8624a3ec37e5c7810d9b"
         },
-        "downloads": 2541,
+        "downloads": -1,
         "filename": "pyad-0.4.15-py2.6.egg",
         "has_sig": false,
         "md5_digest": "9466b5b1780664242718727c8cf8150b",
@@ -256,7 +257,7 @@
           "md5": "bef87ce6ccec5ac8d0645e3d0bba6925",
           "sha256": "520171ee3cc794c6a3504f22fbbafe0c72066facd56796847f857e6ce775203e"
         },
-        "downloads": 2620,
+        "downloads": -1,
         "filename": "pyad-0.4.15-py2.7.egg",
         "has_sig": false,
         "md5_digest": "bef87ce6ccec5ac8d0645e3d0bba6925",
@@ -272,7 +273,7 @@
           "md5": "7a0f55b239af11f4d7f78017dee8e964",
           "sha256": "0236d3fda63e94585112fbc5a6e11a8bec785b6ae90578e5fae5872d11be194b"
         },
-        "downloads": 2526,
+        "downloads": -1,
         "filename": "pyad-0.4.15.tar.gz",
         "has_sig": false,
         "md5_digest": "7a0f55b239af11f4d7f78017dee8e964",
@@ -290,7 +291,7 @@
           "md5": "8d884f29eb4a35bb0dd19593f71afa42",
           "sha256": "c13da7b8a1e5f88d8e046417171e317260f6bbc9e5b44474b17cab7b3d971f97"
         },
-        "downloads": 2515,
+        "downloads": -1,
         "filename": "pyad-0.4.16-py2.6.egg",
         "has_sig": false,
         "md5_digest": "8d884f29eb4a35bb0dd19593f71afa42",
@@ -306,7 +307,7 @@
           "md5": "4620466edc058e0a8cd7cd66697d55a4",
           "sha256": "f7702fa6cfdbb58b12393a3c6a73575e9f4dc289fd39cbbe8ec78b1ffdd8419e"
         },
-        "downloads": 2543,
+        "downloads": -1,
         "filename": "pyad-0.4.16-py2.7.egg",
         "has_sig": false,
         "md5_digest": "4620466edc058e0a8cd7cd66697d55a4",
@@ -322,7 +323,7 @@
           "md5": "7e4638df95ce1e1e65f23d56ceea28e7",
           "sha256": "cfcd111a0612ca6aa892454c1a6b98897cf46749f8c428ddf05f4443e7a4020c"
         },
-        "downloads": 2485,
+        "downloads": -1,
         "filename": "pyad-0.4.16.tar.gz",
         "has_sig": false,
         "md5_digest": "7e4638df95ce1e1e65f23d56ceea28e7",
@@ -340,7 +341,7 @@
           "md5": "537c9ba6696bed731406092c6eabe9c1",
           "sha256": "075733f669bfd0ddedb0bd7018ec573bdfa521a45c0aee3aa13fbaf350cd47b8"
         },
-        "downloads": 2494,
+        "downloads": -1,
         "filename": "pyad-0.4.17-py2.6.egg",
         "has_sig": false,
         "md5_digest": "537c9ba6696bed731406092c6eabe9c1",
@@ -356,7 +357,7 @@
           "md5": "2fa3201f68798ed3735cc208cf18c6a0",
           "sha256": "df2219c262daa501a1d5e884652b9c6da216a467389d15dac42c4f84db397402"
         },
-        "downloads": 2554,
+        "downloads": -1,
         "filename": "pyad-0.4.17-py2.7.egg",
         "has_sig": false,
         "md5_digest": "2fa3201f68798ed3735cc208cf18c6a0",
@@ -372,7 +373,7 @@
           "md5": "107bb9a1487f08cf27b81f578f466ccc",
           "sha256": "f9e31d4b33466f30c4a50f5721a163444362b7a88e15fb95238bdf292ac1f4b6"
         },
-        "downloads": 2522,
+        "downloads": -1,
         "filename": "pyad-0.4.17.tar.gz",
         "has_sig": false,
         "md5_digest": "107bb9a1487f08cf27b81f578f466ccc",
@@ -390,7 +391,7 @@
           "md5": "9c468ec6340e552e5f2d7e63f3563da4",
           "sha256": "2b58a5974a2e283813cca29fc7aee5773c98bfdaf32925f33e3eaeaf5681ae0d"
         },
-        "downloads": 2360,
+        "downloads": -1,
         "filename": "pyad-0.4.18-py2.6.egg",
         "has_sig": false,
         "md5_digest": "9c468ec6340e552e5f2d7e63f3563da4",
@@ -406,7 +407,7 @@
           "md5": "e7799ef6d9202a9a62d074a80d6845a4",
           "sha256": "0fb9f2bf65a5d6558947fc2090d03f8487359c7787b62b2181a525a37aba73b2"
         },
-        "downloads": 2426,
+        "downloads": -1,
         "filename": "pyad-0.4.18-py2.7.egg",
         "has_sig": false,
         "md5_digest": "e7799ef6d9202a9a62d074a80d6845a4",
@@ -422,7 +423,7 @@
           "md5": "6ae63ebd1e06f253b9daa1f443e5c1ac",
           "sha256": "8560fc7855e82720e8b9b6ea4e1041b5cb83c6f89ace9cc78c7143bbb3435fd8"
         },
-        "downloads": 2389,
+        "downloads": -1,
         "filename": "pyad-0.4.18.tar.gz",
         "has_sig": false,
         "md5_digest": "6ae63ebd1e06f253b9daa1f443e5c1ac",
@@ -440,7 +441,7 @@
           "md5": "e6526e7d356919d8bb289218f774740c",
           "sha256": "20b2b66f4357cd582b2c3d02bb2f30f15381f5a48f1b1a372a3d96b57efe6817"
         },
-        "downloads": 2356,
+        "downloads": -1,
         "filename": "pyad-0.4.19-py2.6.egg",
         "has_sig": false,
         "md5_digest": "e6526e7d356919d8bb289218f774740c",
@@ -456,7 +457,7 @@
           "md5": "4ad1c891e5e964a5b1c3d6cea5fb6e4c",
           "sha256": "2e455ac13b9ea2df87bf03f041a0b8f2de4ba06fef9a4a23a19cb3aaecb8a70d"
         },
-        "downloads": 2574,
+        "downloads": -1,
         "filename": "pyad-0.4.19-py2.7.egg",
         "has_sig": false,
         "md5_digest": "4ad1c891e5e964a5b1c3d6cea5fb6e4c",
@@ -472,7 +473,7 @@
           "md5": "0e4e98a51afa574091a1a601bc2086fe",
           "sha256": "ce68a6e7b343735ee7b4fb0e13a7b586f6645d4fd0d4c5cdf4c319e78775db14"
         },
-        "downloads": 2618,
+        "downloads": -1,
         "filename": "pyad-0.4.19.tar.gz",
         "has_sig": false,
         "md5_digest": "0e4e98a51afa574091a1a601bc2086fe",
@@ -490,7 +491,7 @@
           "md5": "6d4a66a8bbe6f6408cdfafa594d18093",
           "sha256": "3c4c293837ef8e3061d610a3b45ce1a74f7bc33b469d724b91d08f14f42089cd"
         },
-        "downloads": 2854,
+        "downloads": -1,
         "filename": "pyad-0.4.9-py2.7.egg",
         "has_sig": false,
         "md5_digest": "6d4a66a8bbe6f6408cdfafa594d18093",
@@ -506,7 +507,7 @@
           "md5": "56b6ade7f1eb1e60cd58d8b91317e0b3",
           "sha256": "4e8acdef75cdec4b8f061ee69c911c2cf2b151a3ae35b0e0ada3d402b66024bd"
         },
-        "downloads": 2872,
+        "downloads": -1,
         "filename": "pyad.0.4.9.tar.gz",
         "has_sig": false,
         "md5_digest": "56b6ade7f1eb1e60cd58d8b91317e0b3",
@@ -524,7 +525,7 @@
           "md5": "5bb25709c8be9a3fd96d2b9048456d16",
           "sha256": "2048c51b591152ed02420e554bcd76773785a34cae64d2dcd18ae62b1ce5d0e8"
         },
-        "downloads": 2040,
+        "downloads": -1,
         "filename": "pyad-0.5.02-py2.6.egg",
         "has_sig": false,
         "md5_digest": "5bb25709c8be9a3fd96d2b9048456d16",
@@ -540,7 +541,7 @@
           "md5": "b9d4abc8a768d1883abb03a6a9269ed7",
           "sha256": "d8b348b46274d657182375d332a668baee5fb0ead9ba4a76f07dd82891a07e8b"
         },
-        "downloads": 2047,
+        "downloads": -1,
         "filename": "pyad-0.5.02-py2.7.egg",
         "has_sig": false,
         "md5_digest": "b9d4abc8a768d1883abb03a6a9269ed7",
@@ -556,7 +557,7 @@
           "md5": "2fce5b92fe88fbd8af5a106a6ebe4a61",
           "sha256": "9dcbc254925d7c1ddb19e3187ce7eeede375d8bb554b0addb71a1820c4f69913"
         },
-        "downloads": 2054,
+        "downloads": -1,
         "filename": "pyad-0.5.02.tar.gz",
         "has_sig": false,
         "md5_digest": "2fce5b92fe88fbd8af5a106a6ebe4a61",
@@ -574,7 +575,7 @@
           "md5": "873cc54e5a7032e7e8235cd067c69707",
           "sha256": "779ff89c70cd27fc3ccbd277cddd1afc0d39ad00cd41884d3f3f611f2d9bc032"
         },
-        "downloads": 2023,
+        "downloads": -1,
         "filename": "pyad-0.5.03-py2.6.egg",
         "has_sig": false,
         "md5_digest": "873cc54e5a7032e7e8235cd067c69707",
@@ -590,7 +591,7 @@
           "md5": "68b26b5b90e582a3f72d11f7623d156f",
           "sha256": "90e2e58564f316e344b90a33a60fd2a047cf29059003b48ab79727831226caa7"
         },
-        "downloads": 2049,
+        "downloads": -1,
         "filename": "pyad-0.5.03-py2.7.egg",
         "has_sig": false,
         "md5_digest": "68b26b5b90e582a3f72d11f7623d156f",
@@ -606,7 +607,7 @@
           "md5": "7503482c61e74cf114ac0f02edadf6c5",
           "sha256": "1d13693f7675d3608ac52f6f7c62c0542079c0cc9fd8504a8562d8626310bd02"
         },
-        "downloads": 2051,
+        "downloads": -1,
         "filename": "pyad-0.5.03.tar.gz",
         "has_sig": false,
         "md5_digest": "7503482c61e74cf114ac0f02edadf6c5",
@@ -624,7 +625,7 @@
           "md5": "a96282993888f80d9a54c210d6fdf030",
           "sha256": "dea287f33035bdb968330b54611ea03318e9063dea67cd30d458f7dc51edf36a"
         },
-        "downloads": 2039,
+        "downloads": -1,
         "filename": "pyad-0.5.04-py2.6.egg",
         "has_sig": false,
         "md5_digest": "a96282993888f80d9a54c210d6fdf030",
@@ -640,7 +641,7 @@
           "md5": "85fc703edd6a6e10c375d67790dfca4e",
           "sha256": "0f539bb6cb305110e0a1a36a4267d9a2f24f0576e63a64a25af4ab72db014d54"
         },
-        "downloads": 2078,
+        "downloads": -1,
         "filename": "pyad-0.5.04-py2.7.egg",
         "has_sig": false,
         "md5_digest": "85fc703edd6a6e10c375d67790dfca4e",
@@ -656,7 +657,7 @@
           "md5": "fd4e2a495af51cab440b10c513588091",
           "sha256": "9c853027bc77cbf5f03d01cdf7d3c456b268ce88c108b32e59bbcdbfc23c4c9a"
         },
-        "downloads": 2088,
+        "downloads": -1,
         "filename": "pyad-0.5.04.tar.gz",
         "has_sig": false,
         "md5_digest": "fd4e2a495af51cab440b10c513588091",
@@ -674,7 +675,7 @@
           "md5": "657ff80ad76bcb056f4080998336cc80",
           "sha256": "6bf2769da1e0087791e2759a785d354b01df37d915020044e3961b6746ce845b"
         },
-        "downloads": 2030,
+        "downloads": -1,
         "filename": "pyad-0.5.05-py2.6.egg",
         "has_sig": false,
         "md5_digest": "657ff80ad76bcb056f4080998336cc80",
@@ -690,7 +691,7 @@
           "md5": "f9cc23d9de367ddd822dc6838dc144dd",
           "sha256": "1650e8c89660957b4f62dbe30b25f11c75e2422ee5315c6dd3f2cc8a5045208a"
         },
-        "downloads": 2063,
+        "downloads": -1,
         "filename": "pyad-0.5.05-py2.7.egg",
         "has_sig": false,
         "md5_digest": "f9cc23d9de367ddd822dc6838dc144dd",
@@ -706,7 +707,7 @@
           "md5": "3866673c6cd493e6d1fc0d7230e31d6f",
           "sha256": "77bff6b6ece16c4ca7fb1b0de4320982c2252abbf77d77bff60144b5af1fa32d"
         },
-        "downloads": 2055,
+        "downloads": -1,
         "filename": "pyad-0.5.05.tar.gz",
         "has_sig": false,
         "md5_digest": "3866673c6cd493e6d1fc0d7230e31d6f",
@@ -724,7 +725,7 @@
           "md5": "bf11cd9dafdf80fcbb20eb2738ae300b",
           "sha256": "e4cc5468c8239e0f1f44804a13ac3ddbbd36ab7cad7ac959be382565334236fa"
         },
-        "downloads": 2011,
+        "downloads": -1,
         "filename": "pyad-0.5.06-py2.6.egg",
         "has_sig": false,
         "md5_digest": "bf11cd9dafdf80fcbb20eb2738ae300b",
@@ -740,7 +741,7 @@
           "md5": "3ec70e984517c9c584fcfc2b7407e0ef",
           "sha256": "31b1c9ddbf865ab81981b56c2c0b9028e6334ebe1954faf06b57b3d4c16aac3a"
         },
-        "downloads": 2029,
+        "downloads": -1,
         "filename": "pyad-0.5.06-py2.7.egg",
         "has_sig": false,
         "md5_digest": "3ec70e984517c9c584fcfc2b7407e0ef",
@@ -756,7 +757,7 @@
           "md5": "50064e0012e85f3806b4295986713514",
           "sha256": "c5b71481417a18eba102d68ea4d8724402032bc3304370e53d21b3c21e2a4a02"
         },
-        "downloads": 2048,
+        "downloads": -1,
         "filename": "pyad-0.5.06.tar.gz",
         "has_sig": false,
         "md5_digest": "50064e0012e85f3806b4295986713514",
@@ -774,7 +775,7 @@
           "md5": "1fba0a6fb55ce9f8a31e2df60fd374bf",
           "sha256": "6bbc8ced3bd7afac11d87834ae791f53928ee2848f2701c4bbe69bd8c3b351f7"
         },
-        "downloads": 2040,
+        "downloads": -1,
         "filename": "pyad-0.5.07-py2.6.egg",
         "has_sig": false,
         "md5_digest": "1fba0a6fb55ce9f8a31e2df60fd374bf",
@@ -790,7 +791,7 @@
           "md5": "6f6b5cac366008d376115e9e8ee4efaf",
           "sha256": "ac450c7b340bf6644aa1a58596f012885385cd1fda408311b2f330ad80e8ed9b"
         },
-        "downloads": 2081,
+        "downloads": -1,
         "filename": "pyad-0.5.07-py2.7.egg",
         "has_sig": false,
         "md5_digest": "6f6b5cac366008d376115e9e8ee4efaf",
@@ -806,7 +807,7 @@
           "md5": "70d712a58c2ff9043acdca4853949bee",
           "sha256": "83d69c92ec3f845590d3149ed5420d7da52070c62c919e5979535a370865061f"
         },
-        "downloads": 2090,
+        "downloads": -1,
         "filename": "pyad-0.5.07.tar.gz",
         "has_sig": false,
         "md5_digest": "70d712a58c2ff9043acdca4853949bee",
@@ -824,7 +825,7 @@
           "md5": "3e9524abaa00870d0dd4f935ab98f0f6",
           "sha256": "76d41f6509062bc946f06ca9c92a8b40f4f02a52ee169f2ce969c3ab8cb4e360"
         },
-        "downloads": 2235,
+        "downloads": -1,
         "filename": "pyad-0.5.08-py2.6.egg",
         "has_sig": false,
         "md5_digest": "3e9524abaa00870d0dd4f935ab98f0f6",
@@ -840,7 +841,7 @@
           "md5": "e318e5cab6fe4f6b514268dc613cef02",
           "sha256": "3975cc2c7a33b6e96e076df0af57c879a5606b8788f2d8af17b72ef93457f180"
         },
-        "downloads": 2732,
+        "downloads": -1,
         "filename": "pyad-0.5.08-py2.7.egg",
         "has_sig": false,
         "md5_digest": "e318e5cab6fe4f6b514268dc613cef02",
@@ -856,7 +857,7 @@
           "md5": "df310e63180b161a4237061f5dac9d6c",
           "sha256": "494a2a21cdb35170e845ec3b187adf642f18ab9440ef4e8ff2fc808bb03a47b5"
         },
-        "downloads": 3671,
+        "downloads": -1,
         "filename": "pyad-0.5.08.tar.gz",
         "has_sig": false,
         "md5_digest": "df310e63180b161a4237061f5dac9d6c",
@@ -874,7 +875,7 @@
           "md5": "5cbc40347f79f012c1132604464236ce",
           "sha256": "4cab21bcd92853a9e25a1364c63166baad5038533abefac520ab3de478bc400a"
         },
-        "downloads": 2129,
+        "downloads": -1,
         "filename": "pyad-0.5.11.macosx-10.9-intel.tar.gz",
         "has_sig": false,
         "md5_digest": "5cbc40347f79f012c1132604464236ce",
@@ -890,7 +891,7 @@
           "md5": "94649e943ba4b069d4967066c1dd1edb",
           "sha256": "214b7689f32b2117f372e39c91fd5e7ccb5b4cfc77d917a70f3ad937e670e666"
         },
-        "downloads": 2259,
+        "downloads": -1,
         "filename": "pyad-0.5.11.tar.gz",
         "has_sig": false,
         "md5_digest": "94649e943ba4b069d4967066c1dd1edb",
@@ -908,7 +909,7 @@
           "md5": "e22e67cac0c6b862eb43db17f5821172",
           "sha256": "772d595404d18c9dc56ca35a900534d731aca8385034b02fd45e64dcff8f5835"
         },
-        "downloads": 2389,
+        "downloads": -1,
         "filename": "pyad-0.5.14-py2.7.egg",
         "has_sig": false,
         "md5_digest": "e22e67cac0c6b862eb43db17f5821172",
@@ -924,7 +925,7 @@
           "md5": "713dcd4607744e9bcbaab4ec010bb714",
           "sha256": "dd39216802e50e586b11f88f607e47cf10d6712ab0116355fe57db833da7631b"
         },
-        "downloads": 5211,
+        "downloads": -1,
         "filename": "pyad-0.5.14.tar.gz",
         "has_sig": false,
         "md5_digest": "713dcd4607744e9bcbaab4ec010bb714",
@@ -942,7 +943,7 @@
           "md5": "9f7f7d1c0422d5d95f8434201fc197e7",
           "sha256": "e5ae803d71fd1ed158786e3a47babaa12fe627aeffbdf8367b0bceeef3a2231a"
         },
-        "downloads": 773,
+        "downloads": -1,
         "filename": "pyad-0.5.16.tar.gz",
         "has_sig": false,
         "md5_digest": "9f7f7d1c0422d5d95f8434201fc197e7",
@@ -952,24 +953,42 @@
         "upload_time": "2016-10-05T17:30:46",
         "url": "https://files.pythonhosted.org/packages/5f/e3/7681491403480d21fad9a15b56c69f94b24974c26c187339daa502738832/pyad-0.5.16.tar.gz"
       }
+    ],
+    "0.5.20": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "afaba73053f527147ba0932eccb9b1ea",
+          "sha256": "b747e32898b74ae2cac135b3b0ca7598c61f5bee8899870dababc9f12d8f1478"
+        },
+        "downloads": -1,
+        "filename": "pyad-0.5.20.tar.gz",
+        "has_sig": false,
+        "md5_digest": "afaba73053f527147ba0932eccb9b1ea",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 22453,
+        "upload_time": "2018-01-22T19:12:58",
+        "url": "https://files.pythonhosted.org/packages/37/b5/fbca3df37f3a221748f6fb93ee2b2a12df6c317634f51b3d3a747653f48b/pyad-0.5.20.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "9f7f7d1c0422d5d95f8434201fc197e7",
-        "sha256": "e5ae803d71fd1ed158786e3a47babaa12fe627aeffbdf8367b0bceeef3a2231a"
+        "md5": "afaba73053f527147ba0932eccb9b1ea",
+        "sha256": "b747e32898b74ae2cac135b3b0ca7598c61f5bee8899870dababc9f12d8f1478"
       },
-      "downloads": 773,
-      "filename": "pyad-0.5.16.tar.gz",
+      "downloads": -1,
+      "filename": "pyad-0.5.20.tar.gz",
       "has_sig": false,
-      "md5_digest": "9f7f7d1c0422d5d95f8434201fc197e7",
+      "md5_digest": "afaba73053f527147ba0932eccb9b1ea",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 19886,
-      "upload_time": "2016-10-05T17:30:46",
-      "url": "https://files.pythonhosted.org/packages/5f/e3/7681491403480d21fad9a15b56c69f94b24974c26c187339daa502738832/pyad-0.5.16.tar.gz"
+      "size": 22453,
+      "upload_time": "2018-01-22T19:12:58",
+      "url": "https://files.pythonhosted.org/packages/37/b5/fbca3df37f3a221748f6fb93ee2b2a12df6c317634f51b3d3a747653f48b/pyad-0.5.20.tar.gz"
     }
   ]
 }

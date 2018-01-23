@@ -4,7 +4,7 @@
     "author_email": "jo8937@gmail.com",
     "bugtrack_url": null,
     "classifiers": [],
-    "description": "# migbq \r\n\r\nRDBMS Table data upload to Bigquery table.\r\n\r\n## Requirement\r\n\r\n* Python\r\n  - CPython 2.7.x\r\n\r\n* RDBMS (below, DB)  \r\n  - Microsoft SQL Server\r\n  - Mysql (development)\r\n\r\n* Table Spec\r\n  - All table must have Numeric Primary Key Field\r\n\r\n* DB User Grant\r\n  - SELECT, INSERT, UPDATE, CREATE\r\n  - can access DB's metadata ([INFORMATION_SCHEMA] database) \r\n  - some metadata tables create in source RDBMS\r\n  - (If you don't want create table in source, you can use sqlite. fork this project and edit source)\r\n\r\n* Google Cloud SDK \r\n  - install Google Cloud SDK must be required \r\n    - https://cloud.google.com/sdk/downloads\r\n    - https://cloud.google.com/sdk/gcloud/reference/auth/login\r\n\r\n* Pymssql freetds\r\n  - http://www.pymssql.org/en/stable/\r\n\r\n## Install\r\n\r\n```\r\nexport PYMSSQL_BUILD_WITH_BUNDLED_FREETDS=1\r\npip install migbq\r\n```\r\n\r\n## Usage\r\n\r\n### write Configuration File\r\n\r\n* like embulk ( http://www.embulk.org ) \r\n\r\n### Example \r\n\r\n#### general congif file\r\n* config.yml \r\n\r\n```yml\r\nin:\r\n  type: mssql\r\n  host: localhost\r\n  user: USER\r\n  password: PASSWORD\r\n  port: 1433\r\n  database: DATABASE\r\n  tables: \r\n    - tbl\r\n    - tbl2\r\n    - tbl3\r\n  batch_size: 50000\r\n  temp_csv_path: /temp/pymig_csv\r\n  temp_csv_path_complete: /temp/pymig_csv_complete \r\nout:\r\n  type: bigquery\r\n  project: GCP_PROJECT\r\n  dataset: BQ_DATASET\r\n```\r\n\r\n#### jinja2 template \r\n\r\n* config.j2.yml\r\n - variable is enviromant variable only.\r\n - file extension is **.j2.yml** \r\n\r\n```yml\r\nin:\r\n  type: mssql\r\n{% include \"mssql-connect.yml\" %}\r\n  tables: \r\n    - tbl\r\n    - tbl2\r\n    - tbl3\r\n  batch_size: 50000\r\n  temp_csv_path: /temp/pymig_csv\r\n  temp_csv_path_complete: /temp/pymig_csv_complete \r\nout:\r\n  type: bigquery\r\n  project: {{ env.GCP_PROJECT }}\r\n  dataset: BQ_DATASET\r\n```\r\n\r\n\r\n### Run  \r\n\r\n#### (1) Execute\r\n\r\n```bash\r\nbqmig run config.yml\r\n```\r\n\r\n#### (2) Check Job Complete\r\n\r\n```bash\r\nbqmig check config.yml\r\n```\r\n\r\n\r\n#### (3) Check table count equals  \r\n\r\n```bash\r\nbqmig sync config.yml\r\n```\r\n\r\n* Primary Key base count check. \r\n\r\n### Run Forever \r\n\r\n* you can add crontab \r\n* migbq have exclusive process lock. so you can add crontab every minute. \r\n* you must add both **run** and **check**  \r\n\r\n\r\n## Description\r\n\r\n### run command\r\n\r\n**[1]** select RDBMS table metadata \r\n  - get table primary key name in RDBMS metadata table.\r\n  - get column name and type fields in RDBMS metadata table.\r\n\r\n**[2]** select RDBMS Primary key value range \r\n  - get min / max PK of table \r\n\r\n**[3]** select data in primary key range\r\n  - select with pk min and min + batch_size\r\n\r\n```sql\r\n\tselect * from tbl where 0 < idx and idx <= 100;\r\n```\r\n\r\n  - create file **pymig-tbl-idx-1-100** \r\n  - gzip csv  \r\n\r\n**[4]** upload csv file to bigquery  \r\n  - direct upload to bigquery table. not upload to GCS (quota exceed can occur)\r\n\r\n**[5]** Repeat 1~4 until over the max primary key. \r\n\r\nFor example, batch_size : 100, max pk is 321, then rdbms query execute like below.\r\n\r\n```sql\r\n\r\nselect * from tbl where 0 < idx and idx <= 100;\r\nselect * from tbl where 100 < idx and idx <= 200;\r\nselect * from tbl where 200 < idx and idx <= 300;\r\nselect * from tbl where 300 < idx and idx <= 400;\r\n\r\n-- end \r\n\r\n```\r\n\r\n### check command\r\n\r\n* check bigquery jobid end. \r\n* retry fail job.\r\n\r\n\r\n### Log file of program\r\n\r\n* log file create in config file's sub directory [log]\r\n\r\n### Pid file of program\r\n\r\n* pid file provide unique process for unique command. created at below directory. exclusive file lock.\r\n\r\n\r\n```\r\n/tmp\r\n```\r\n\r\n### load metadata table\r\n\r\n#### META: migrationmetadata\r\n\r\n* one row insert when each 'select' runs\r\n\r\n| field name | type   | description                            | smaple value  | etc               |\r\n| ----:     |--------|----------------------------------------|-----------------|-------------|\r\n| tableName | STRING  | target [tableName]                         | tbl             | Primary Key |\r\n| firstPk   | INTEGER | [tableName]'s Min Primary Key value       | 1             |           |\r\n| lastPk    | INTEGER | [tableName]'s Max Primary Key value                  | 123             |           |\r\n| currentPk | STRING  | [tableName]'s read complete Primary Key value                  | 20             |           |\r\n| regDate   | DATETIME| this row's insert date   | 2017-11-29 01:02:03             |           |\r\n| modDate   | DATETIME| firstPk, lastPk modify date              | 2017-11-29 01:02:03             |           |\r\n| endDate   | DATETIME| currentPk reach lastPk date | 2017-11-29 11:22:33             |           |\r\n| pkName    | STRING  | [tableNames]'s Primary Key Name          | idx             |           |\r\n| rowCnt    | INTEGER | [tableNames]'s count(*)              | 123             |           |\r\n| pageTokenCurrent | STRING | not use now                                   | tbl             |           |\r\n| pageTokenNext | STRING |  not use now                                     | tbl             |           |\r\n\r\n#### LOG:  migrationmetadatalog\r\n\r\n* sequance\r\n  - run :  insert a row to this table when 'select [tableName]' executed\r\n  - run :  update a row to this table when bigquery jobId created \r\n  - check : update a row to this table's jobComplete and checkComplete when bigquery jobId call ends \r\n\r\n| field name | type   | description                            | smaple value  | etc               |\r\n| ----:     |--------|----------------------------------------|-----------------|-------------|\r\n| idx | BigInt |  PK                                  | 1             | Primary Key Auto Increment |\r\n| tableName | STRING | [tableName]                                  | tbl             | Primary Key |\r\n| regDate   | DATETIME | row insert date   | 2017-11-29 01:02:03             |           |\r\n| endDate   | DATETIME | when jobId is 'DONE'  | 2017-11-29 11:22:33             |           |\r\n| pkName    | STRING | [tableNames]'s Primary Key Name          | idx             |           |\r\n| cnt    | INTEGER | bigquery api : statistics.load.outputRows         | 123             |           |\r\n| pkUpper    | INTEGER | each 'select' executed : [PKName] <= [pkUpper] | 100             |           |\r\n| pkLower    | INTEGER | each 'select' executed : [PKName] > [pkLower]    | 0             |           |\r\n| pkCurrent    | INTEGER | same as pkUpper  | 99             |           |\r\n| jobId    | STRING | bigquery upload job jobId        | job-adf132f31rf3f             |           |\r\n| errorMessage    | STRING | when jodId check result is 'ERROR', then write this  | ERROR:bigquery quota exceed             |           |\r\n| checkComplete | INTEGER | check command       | 1             |           |\r\n| jobComplete | INTEGER |  check command jobId check complete. success=1, fail=-1 | 1             |           |\r\n| pageToken | STRING |  use as etc                                       |              |           |\r\n\r\n\r\n## loadmap\r\n\r\n* parallel loading not supported.  \r\n\r\n\r\n",
+    "description": "# migbq \r\n\r\nrdbms-to-bigquery-data-loader\r\n\r\n## Requirement\r\n\r\n* Python\r\n  - CPython 2.7.x\r\n\r\n* RDBMS (below, DB)  \r\n  - Microsoft SQL Server\r\n  - Mysql (development)\r\n\r\n* Table Spec\r\n  - All table must have Numeric Primary Key Field\r\n\r\n* DB User Grant\r\n  - SELECT, INSERT, UPDATE, CREATE\r\n  - can access DB's metadata ([INFORMATION_SCHEMA] database) \r\n  - some metadata tables create in source RDBMS\r\n  - (If you don't want create table in source, you can use sqlite. fork this project and edit source)\r\n\r\n* Google Cloud SDK \r\n  - install Google Cloud SDK must be required \r\n    - https://cloud.google.com/sdk/downloads\r\n    - https://cloud.google.com/sdk/gcloud/reference/auth/login\r\n\r\n* Pymssql freetds\r\n  - http://www.pymssql.org/en/stable/\r\n\r\n## Install\r\n\r\n```\r\nexport PYMSSQL_BUILD_WITH_BUNDLED_FREETDS=1\r\npip install migbq\r\n```\r\n\r\n## Usage\r\n\r\n### write Configuration File\r\n\r\n* like embulk ( http://www.embulk.org ) \r\n\r\n### Example \r\n\r\n#### general congif file\r\n* config.yml \r\n\r\n```yml\r\nin:\r\n  type: mssql\r\n  host: localhost\r\n  user: USER\r\n  password: PASSWORD\r\n  port: 1433\r\n  database: DATABASE\r\n  tables: \r\n    - tbl\r\n    - tbl2\r\n    - tbl3\r\n  batch_size: 50000\r\n  temp_csv_path: /temp/pymig_csv\r\n  temp_csv_path_complete: /temp/pymig_csv_complete \r\nout:\r\n  type: bigquery\r\n  project: GCP_PROJECT\r\n  dataset: BQ_DATASET\r\n```\r\n\r\n#### jinja2 template \r\n\r\n* config.j2.yml\r\n - variable is enviromant variable only.\r\n - file extension is **.j2.yml** \r\n\r\n```yml\r\nin:\r\n  type: mssql\r\n{% include \"mssql-connect.yml\" %}\r\n  tables: \r\n    - tbl\r\n    - tbl2\r\n    - tbl3\r\n  batch_size: 50000\r\n  temp_csv_path: /temp/pymig_csv\r\n  temp_csv_path_complete: /temp/pymig_csv_complete \r\nout:\r\n  type: bigquery\r\n  project: {{ env.GCP_PROJECT }}\r\n  dataset: BQ_DATASET\r\n```\r\n\r\n\r\n### Run  \r\n\r\n#### (1) Execute\r\n\r\n```bash\r\nbqmig run config.yml\r\n```\r\n\r\n#### (2) Check Job Complete\r\n\r\n```bash\r\nbqmig check config.yml\r\n```\r\n\r\n\r\n#### (3) Check table count equals  \r\n\r\n```bash\r\nbqmig sync config.yml\r\n```\r\n\r\n* Primary Key base count check. \r\n\r\n### Run Forever \r\n\r\n* you can add crontab \r\n* migbq have exclusive process lock. so you can add crontab every minute. \r\n* you must add both **run** and **check**  \r\n\r\n\r\n## Description\r\n\r\n### run command\r\n\r\n**[1]** select RDBMS table metadata \r\n  - get table primary key name in RDBMS metadata table.\r\n  - get column name and type fields in RDBMS metadata table.\r\n\r\n**[2]** select RDBMS Primary key value range \r\n  - get min / max PK of table \r\n\r\n**[3]** select data in primary key range\r\n  - select with pk min and min + batch_size\r\n\r\n```sql\r\n\tselect * from tbl where 0 < idx and idx <= 100;\r\n```\r\n\r\n  - create file **pymig-tbl-idx-1-100** \r\n  - gzip csv  \r\n\r\n**[4]** upload csv file to bigquery  \r\n  - direct upload to bigquery table. not upload to GCS (quota exceed can occur)\r\n\r\n**[5]** Repeat 1~4 until over the max primary key. \r\n\r\nFor example, batch_size : 100, max pk is 321, then rdbms query execute like below.\r\n\r\n```sql\r\n\r\nselect * from tbl where 0 < idx and idx <= 100;\r\nselect * from tbl where 100 < idx and idx <= 200;\r\nselect * from tbl where 200 < idx and idx <= 300;\r\nselect * from tbl where 300 < idx and idx <= 400;\r\n\r\n-- end \r\n\r\n```\r\n\r\n### check command\r\n\r\n* check bigquery jobid end. \r\n* retry fail job.\r\n\r\n\r\n### Log file of program\r\n\r\n* log file create in config file's sub directory [log]\r\n\r\n### Pid file of program\r\n\r\n* pid file provide unique process for unique command. created at below directory. exclusive file lock.\r\n\r\n\r\n```\r\n/tmp\r\n```\r\n\r\n### load metadata table\r\n\r\n#### META: migrationmetadata\r\n\r\n* one row insert when each 'select' runs\r\n\r\n| field name | type   | description                            | smaple value  | etc               |\r\n| ----:     |--------|----------------------------------------|-----------------|-------------|\r\n| tableName | STRING  | target [tableName]                         | tbl             | Primary Key |\r\n| firstPk   | INTEGER | [tableName]'s Min Primary Key value       | 1             |           |\r\n| lastPk    | INTEGER | [tableName]'s Max Primary Key value                  | 123             |           |\r\n| currentPk | STRING  | [tableName]'s read complete Primary Key value                  | 20             |           |\r\n| regDate   | DATETIME| this row's insert date   | 2017-11-29 01:02:03             |           |\r\n| modDate   | DATETIME| firstPk, lastPk modify date              | 2017-11-29 01:02:03             |           |\r\n| endDate   | DATETIME| currentPk reach lastPk date | 2017-11-29 11:22:33             |           |\r\n| pkName    | STRING  | [tableNames]'s Primary Key Name          | idx             |           |\r\n| rowCnt    | INTEGER | [tableNames]'s count(*)              | 123             |           |\r\n| pageTokenCurrent | STRING | not use now                                   | tbl             |           |\r\n| pageTokenNext | STRING |  not use now                                     | tbl             |           |\r\n\r\n#### LOG:  migrationmetadatalog\r\n\r\n* sequance\r\n  - run :  insert a row to this table when 'select [tableName]' executed\r\n  - run :  update a row to this table when bigquery jobId created \r\n  - check : update a row to this table's jobComplete and checkComplete when bigquery jobId call ends \r\n\r\n| field name | type   | description                            | smaple value  | etc               |\r\n| ----:     |--------|----------------------------------------|-----------------|-------------|\r\n| idx | BigInt |  PK                                  | 1             | Primary Key Auto Increment |\r\n| tableName | STRING | [tableName]                                  | tbl             | Primary Key |\r\n| regDate   | DATETIME | row insert date   | 2017-11-29 01:02:03             |           |\r\n| endDate   | DATETIME | when jobId is 'DONE'  | 2017-11-29 11:22:33             |           |\r\n| pkName    | STRING | [tableNames]'s Primary Key Name          | idx             |           |\r\n| cnt    | INTEGER | bigquery api : statistics.load.outputRows         | 123             |           |\r\n| pkUpper    | INTEGER | each 'select' executed : [PKName] <= [pkUpper] | 100             |           |\r\n| pkLower    | INTEGER | each 'select' executed : [PKName] > [pkLower]    | 0             |           |\r\n| pkCurrent    | INTEGER | same as pkUpper  | 99             |           |\r\n| jobId    | STRING | bigquery upload job jobId        | job-adf132f31rf3f             |           |\r\n| errorMessage    | STRING | when jodId check result is 'ERROR', then write this  | ERROR:bigquery quota exceed             |           |\r\n| checkComplete | INTEGER | check command       | 1             |           |\r\n| jobComplete | INTEGER |  check command jobId check complete. success=1, fail=-1 | 1             |           |\r\n| pageToken | STRING |  use as etc                                       |              |           |\r\n\r\n\r\n## loadmap\r\n\r\n* parallel loading not supported.  \r\n\r\n\r\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -12,7 +12,7 @@
       "last_month": 0,
       "last_week": 0
     },
-    "home_page": "https://github.com/jo8937/rdbms-to-bigquery-data-loader",
+    "home_page": "https://github.com/jo8937/migbq",
     "keywords": "",
     "license": "MIT",
     "maintainer": "",
@@ -20,7 +20,7 @@
     "name": "migbq",
     "platform": "",
     "project_url": "https://pypi.org/project/migbq/",
-    "release_url": "https://pypi.org/project/migbq/0.0.72/",
+    "release_url": "https://pypi.org/project/migbq/0.0.73/",
     "requires_dist": [
       "httplib2",
       "Jinja2 (>=2.10)",
@@ -34,7 +34,7 @@
     ],
     "requires_python": ">=2.7",
     "summary": "read rdbms table data and upload to bigquery",
-    "version": "0.0.72"
+    "version": "0.0.73"
   },
   "releases": {
     "0.0.12": [
@@ -2060,40 +2060,74 @@
         "upload_time": "2018-01-12T10:55:24",
         "url": "https://files.pythonhosted.org/packages/ed/0c/01f3dbbeb628eaa01ad40ac4a75a89ec2a00f61d84fb758b261335a855e3/migbq-0.0.72.tar.gz"
       }
+    ],
+    "0.0.73": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e4db13482871cb7cda9ea4f95114aa05",
+          "sha256": "51404f9ce7ddd1084b84bc3d52d4e6914d0b2f60dccdf64c6ee9b5a480b50694"
+        },
+        "downloads": -1,
+        "filename": "migbq-0.0.73-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "e4db13482871cb7cda9ea4f95114aa05",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 48425,
+        "upload_time": "2018-01-22T03:21:15",
+        "url": "https://files.pythonhosted.org/packages/88/33/75522c0cd47e27cd9c1f9afa76180c3a94768c21b72f587aa3134be6a908/migbq-0.0.73-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "44843baa3d262d37454ba0de4c6a2efd",
+          "sha256": "02f3a4c2812029cd37d97a3655bcefe65ab405f5f37582638ad2157a649eeaa6"
+        },
+        "downloads": -1,
+        "filename": "migbq-0.0.73.tar.gz",
+        "has_sig": false,
+        "md5_digest": "44843baa3d262d37454ba0de4c6a2efd",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 40119,
+        "upload_time": "2018-01-22T03:21:18",
+        "url": "https://files.pythonhosted.org/packages/11/ad/0b0b89aaf3784c6a6cb89b0a0ab0fd0e9ecbea4951cd6c4822520509ee49/migbq-0.0.73.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "1f0d69aa7604513d68163379594f323f",
-        "sha256": "b3210e70288a103824e17038e78d26419e4dd1ab497a7548466347551b2edf8b"
+        "md5": "e4db13482871cb7cda9ea4f95114aa05",
+        "sha256": "51404f9ce7ddd1084b84bc3d52d4e6914d0b2f60dccdf64c6ee9b5a480b50694"
       },
       "downloads": -1,
-      "filename": "migbq-0.0.72-py2.py3-none-any.whl",
+      "filename": "migbq-0.0.73-py2.py3-none-any.whl",
       "has_sig": false,
-      "md5_digest": "1f0d69aa7604513d68163379594f323f",
+      "md5_digest": "e4db13482871cb7cda9ea4f95114aa05",
       "packagetype": "bdist_wheel",
       "python_version": "py2.py3",
-      "size": 48388,
-      "upload_time": "2018-01-12T10:55:22",
-      "url": "https://files.pythonhosted.org/packages/86/e1/efc64bddf7f44c15fc7051e468502ac192b9b376b2163131503662c5993b/migbq-0.0.72-py2.py3-none-any.whl"
+      "size": 48425,
+      "upload_time": "2018-01-22T03:21:15",
+      "url": "https://files.pythonhosted.org/packages/88/33/75522c0cd47e27cd9c1f9afa76180c3a94768c21b72f587aa3134be6a908/migbq-0.0.73-py2.py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "a6f2d619cf4c5a545660e322a3a6c4a5",
-        "sha256": "b7d65f53e95c5f235caa567bc76cc0372884d600c9605fab7aa83aa72960523b"
+        "md5": "44843baa3d262d37454ba0de4c6a2efd",
+        "sha256": "02f3a4c2812029cd37d97a3655bcefe65ab405f5f37582638ad2157a649eeaa6"
       },
       "downloads": -1,
-      "filename": "migbq-0.0.72.tar.gz",
+      "filename": "migbq-0.0.73.tar.gz",
       "has_sig": false,
-      "md5_digest": "a6f2d619cf4c5a545660e322a3a6c4a5",
+      "md5_digest": "44843baa3d262d37454ba0de4c6a2efd",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 40075,
-      "upload_time": "2018-01-12T10:55:24",
-      "url": "https://files.pythonhosted.org/packages/ed/0c/01f3dbbeb628eaa01ad40ac4a75a89ec2a00f61d84fb758b261335a855e3/migbq-0.0.72.tar.gz"
+      "size": 40119,
+      "upload_time": "2018-01-22T03:21:18",
+      "url": "https://files.pythonhosted.org/packages/11/ad/0b0b89aaf3784c6a6cb89b0a0ab0fd0e9ecbea4951cd6c4822520509ee49/migbq-0.0.73.tar.gz"
     }
   ]
 }
