@@ -9,6 +9,7 @@
       "Framework :: Django :: 1.11",
       "Framework :: Django :: 1.8",
       "Framework :: Django :: 1.9",
+      "Framework :: Django :: 2.0",
       "Intended Audience :: Developers",
       "License :: OSI Approved :: MIT License",
       "Natural Language :: English",
@@ -20,7 +21,7 @@
       "Programming Language :: Python :: 3.5",
       "Programming Language :: Python :: 3.6"
     ],
-    "description": "===============\ndjango-perf-rec\n===============\n\n.. image:: https://img.shields.io/pypi/v/django-perf-rec.svg\n    :target: https://pypi.python.org/pypi/django-perf-rec\n\n.. image:: https://img.shields.io/travis/YPlan/django-perf-rec/master.svg\n        :target: https://travis-ci.org/YPlan/django-perf-rec\n\n\"Keep detailed records of the performance of your Django code.\"\n\n**django-perf-rec** is like Django's ``assertNumQueries`` on steroids. It lets\nyou track the individual queries and cache operations that occur in your code.\nUse it in your tests like so:\n\n.. code-block:: python\n\n    def test_home(self):\n        with django_perf_rec.record():\n            self.client.get('/')\n\nIt then stores a YAML file alongside the test file that tracks the queries and\noperations, looking something like:\n\n.. code-block:: yaml\n\n    MyTests.test_home:\n    - cache|get: home_data.user_id.#\n    - db: 'SELECT ... FROM myapp_table WHERE (myapp_table.id = #)'\n    - db: 'SELECT ... FROM myapp_table WHERE (myapp_table.id = #)'\n\nWhen the test is run again, the new record will be compared with the one in the\nYAML file. If they are different, an assertion failure will be raised, failing\nthe test. Magic!\n\nThe queries and keys are 'fingerprinted', replacing information that seems\nvariable with `#` and `...`. This is done to avoid spurious failures when e.g.\nprimary keys are different, random data is used, new columns are added to\ntables, etc.\n\nIf you check the YAML file in along with your tests, you'll have unbreakable\nperformance with much better information about any regressions compared to\n``assertNumQueries``. If you are fine with the changes from a failing test,\njust remove the file and rerun the test to regenerate it.\n\nFor more information, see our `introductory blog\npost <https://tech.yplanapp.com/2016/09/26/introducing-django-perf-rec/>`_ that\nsays a little more about why we made it.\n\nInstallation\n============\n\nUse **pip**:\n\n.. code-block:: bash\n\n    pip install django-perf-rec\n\nRequirements\n============\n\nTested with all combinations of:\n\n* Python: 2.7, 3.6\n* Django: 1.8, 1.9, 1.10, 1.11\n\nN.B. When using Django 1.8 and SQLite the queries won't be rendered in SQL, but\na format like 'QUERY = ... PARAMS = ...'. You can workaround this by\nbackporting the query rendering code from Django 1.9 as `django-perf-rec's test\nsuite does\n<https://github.com/YPlan/django-perf-rec/blob/master/tests/settings.py#L16>`_.\n\nAPI\n===\n\n``record(record_name=None, path=None)``\n---------------------------------------\n\nReturn a context manager that will be used for a single performance test.\n\nThe arguments must be passed as keyword arguments.\n\n``path`` is the path to a directory or file in which to store the record. If it\nends with ``'/'``, or is left as ``None``, the filename will be automatically\ndetermined by looking at the filename the calling code is in and replacing the\n``.py[c]`` extension with ``.perf.yml``. If it points to a directory that\ndoesn't exist, that directory will be created.\n\n``record_name`` is the name of the record inside the performance file to use.\nIf left as ``None``, the code assumes you are inside a Django ``TestCase`` and\nuses magic stack inspection to find that test case, and uses a name based upon\nthe test case name + the test method name + an optional counter if you invoke\n``record()`` multiple times inside the same test method.\n\nWhilst open, the context manager tracks all DB queries on all connections, and\nall cache operations on all defined caches. It names the connection/cache in\nthe tracked operation it uses, except from for the ``default`` one.\n\nWhen the context manager exits, it will use the list of operations it has\ngathered. If the relevant file specified using ``path`` doesn't exist, or\ndoesn't contain data for the specific ``record_name``, it will be created and\nsaved and the test will pass with no assertions. However if the record **does**\nexist inside the file, the collected record will be compared with the original\none, and if different, an ``AssertionError`` will be raised. When running on\npytest, this will use its fancy assertion rewriting; in other test runners/uses\nthe full diff will be attached to the message.\n\nExample:\n\n.. code-block:: python\n\n    import django_perf_rec\n\n    from app.models import Author\n\n    class AuthorPerformanceTests(TestCase):\n\n        def test_special_method(self):\n            with django_perf_rec.record():\n                list(Author.objects.special_method())\n\n\n``TestCaseMixin``\n-----------------\n\nA mixin class to be added to your custom ``TestCase`` subclass so you can use\n**django-perf-rec** across your codebase without needing to import it in each\nindividual test file. It adds one method, ``record_performance()``, whose\nsignature is the same as ``record()`` above.\n\nExample:\n\n.. code-block:: python\n\n    # yplan/test.py\n    from django.test import TestCase as OrigTestCase\n    from django_perf_rec import TestCaseMixin\n\n    class TestCase(TestCaseMixin, OrigTestCase):\n        pass\n\n    # app/tests/models/test_author.py\n    from app.models import Author\n    from yplan.test import TestCase\n\n    class AuthorPerformanceTests(TestCase):\n\n        def test_special_method(self):\n            with self.record_performance():\n                list(Author.objects.special_method())\n\n``get_perf_path(file_path)``\n----------------------------\n\nEncapsulates the logic used in ``record()`` to form ``path`` from the path of\nthe file containing the currently running test, mostly swapping '.py' or '.pyc'\nfor '.perf.yml'. You might want to use this when calling ``record()`` from\nsomewhere other than inside a test (which causes the automatic inspection to\nfail), to match the same filename.\n\n``get_record_name(test_name, class_name=None)``\n-----------------------------------------------\n\nEncapsulates the logic used in ``record()`` to form a ``record_name`` from\ndetails of the currently running test. You might want to use this when calling\n``record()`` from somewhere other than inside a test (which causes the\nautomatic inspection to fail), to match the same ``record_name``.\n\nSettings\n========\n\nBehaviour can be customized with a dictionary called ``PERF_REC`` in your\nDjango settings, for example:\n\n.. code-block:: python\n\n    PERF_REC = {\n        'MODE': 'once'\n    }\n\nThe possible keys to this dictionary are explained below.\n\n``MODE``\n--------\n\nThe ``MODE`` setting may be used to change the way **django-perf-rec** behaves\nwhen a performance record does not exist during a test run.\n\n* ``'once'`` (default) creates missing records silently.\n* ``'none'`` raises ``AssertionError`` when a record does not exist. You\n  probably want to use this mode in CI, to ensure new tests fail if their\n  corresponding performance records were not committed.\n* ``'all'`` creates missing records and then raises ``AssertionError``.\n\n\nUsage in Pytest\n===============\n\nIf you're using Pytest, you might want to call ``record()`` from within a\nPytest fixture and have it automatically apply to all your tests. We have an\nexample of this, see the file `test_pytest_fixture_usage.py\n<https://github.com/YPlan/django-perf-rec/blob/master/tests/test_pytest_fixture_usage.py>`_\nin the test suite.\n\n\n\n\nHistory\n=======\n\nPending release\n---------------\n\n* New release notes go here\n\n2.1.0 (2017-05-29)\n------------------\n\n* Exposed the automatic naming logic used in ``record()`` in two new functions\n  ``get_perf_path()`` and ``get_record_name()``, in order to ease creation of\n  test records from calls outside of tests.\n* Made the automatic test detection work when running under a Pytest fixture.\n* Stopped throwing warnings on Python 3.\n* Fixed loading empty performance record files.\n\n2.0.1 (2017-03-02)\n------------------\n\n* Make cascaded delete queries deterministic on Django <1.10, with another\n  Patchy patch to make it match the order from 1.10+.\n\n2.0.0 (2017-02-09)\n------------------\n\n* Arguments to ``record`` must be passed as keyword arguments.\n* ``file_name`` is removed as an argument to ``record`` following its\n  deprecation in release 1.1.0.\n\n\n1.1.1 (2016-10-30)\n------------------\n\n* Fix django session keys not being fingerprinted.\n* Show diff when records don't match (when not on pytest).\n* Add new 'MODE' setting with three modes. This allows customization of the\n  behaviour for missing performance records. The new ``'none'`` mode is\n  particularly useful for CI servers as it makes tests fail if their\n  corresponding performance records have not been committed.\n\n1.1.0 (2016-10-26)\n------------------\n\n* Fix automatic filenames for tests in ``.pyc`` files.\n* Add the ``path`` argument to ``record`` which allows specifying a relative\n  directory or filename to use. This deprecates the ``file_name`` argument,\n  which will be removed in a future major release. For more info see the\n  README.\n\n1.0.4 (2016-10-23)\n------------------\n\n* Work with ``sqlparse`` 0.2.2\n\n1.0.3 (2016-10-07)\n------------------\n\n* Stopped ``setup.py`` installing ``tests`` module.\n\n1.0.2 (2016-09-23)\n------------------\n\n* Confirmed Django 1.8 and 1.10 support.\n\n1.0.1 (2016-09-20)\n------------------\n\n* Fix ``install_requires`` in ``setup.py``.\n\n1.0.0 (2016-09-19)\n------------------\n\n* Initial version with ``record()`` that can record database queries and cache\n  operations and error if they change between test runs.\n",
+    "description": "===============\ndjango-perf-rec\n===============\n\n.. image:: https://img.shields.io/pypi/v/django-perf-rec.svg\n    :target: https://pypi.python.org/pypi/django-perf-rec\n\n.. image:: https://img.shields.io/travis/YPlan/django-perf-rec/master.svg\n        :target: https://travis-ci.org/YPlan/django-perf-rec\n\n\"Keep detailed records of the performance of your Django code.\"\n\n**django-perf-rec** is like Django's ``assertNumQueries`` on steroids. It lets\nyou track the individual queries and cache operations that occur in your code.\nUse it in your tests like so:\n\n.. code-block:: python\n\n    def test_home(self):\n        with django_perf_rec.record():\n            self.client.get('/')\n\nIt then stores a YAML file alongside the test file that tracks the queries and\noperations, looking something like:\n\n.. code-block:: yaml\n\n    MyTests.test_home:\n    - cache|get: home_data.user_id.#\n    - db: 'SELECT ... FROM myapp_table WHERE (myapp_table.id = #)'\n    - db: 'SELECT ... FROM myapp_table WHERE (myapp_table.id = #)'\n\nWhen the test is run again, the new record will be compared with the one in the\nYAML file. If they are different, an assertion failure will be raised, failing\nthe test. Magic!\n\nThe queries and keys are 'fingerprinted', replacing information that seems\nvariable with `#` and `...`. This is done to avoid spurious failures when e.g.\nprimary keys are different, random data is used, new columns are added to\ntables, etc.\n\nIf you check the YAML file in along with your tests, you'll have unbreakable\nperformance with much better information about any regressions compared to\n``assertNumQueries``. If you are fine with the changes from a failing test,\njust remove the file and rerun the test to regenerate it.\n\nFor more information, see our `introductory blog\npost <https://tech.yplanapp.com/2016/09/26/introducing-django-perf-rec/>`_ that\nsays a little more about why we made it.\n\nInstallation\n============\n\nUse **pip**:\n\n.. code-block:: bash\n\n    pip install django-perf-rec\n\nRequirements\n============\n\nTested with all combinations of:\n\n* Python: 2.7, 3.6\n* Django: 1.8, 1.9, 1.10, 1.11, 2.0\n\nN.B. When using Django 1.8 and SQLite the queries won't be rendered in SQL, but\na format like 'QUERY = ... PARAMS = ...'. You can workaround this by\nbackporting the query rendering code from Django 1.9 as `django-perf-rec's test\nsuite does\n<https://github.com/YPlan/django-perf-rec/blob/master/tests/settings.py#L16>`_.\n\nAPI\n===\n\n``record(record_name=None, path=None)``\n---------------------------------------\n\nReturn a context manager that will be used for a single performance test.\n\nThe arguments must be passed as keyword arguments.\n\n``path`` is the path to a directory or file in which to store the record. If it\nends with ``'/'``, or is left as ``None``, the filename will be automatically\ndetermined by looking at the filename the calling code is in and replacing the\n``.py[c]`` extension with ``.perf.yml``. If it points to a directory that\ndoesn't exist, that directory will be created.\n\n``record_name`` is the name of the record inside the performance file to use.\nIf left as ``None``, the code assumes you are inside a Django ``TestCase`` and\nuses magic stack inspection to find that test case, and uses a name based upon\nthe test case name + the test method name + an optional counter if you invoke\n``record()`` multiple times inside the same test method.\n\nWhilst open, the context manager tracks all DB queries on all connections, and\nall cache operations on all defined caches. It names the connection/cache in\nthe tracked operation it uses, except from for the ``default`` one.\n\nWhen the context manager exits, it will use the list of operations it has\ngathered. If the relevant file specified using ``path`` doesn't exist, or\ndoesn't contain data for the specific ``record_name``, it will be created and\nsaved and the test will pass with no assertions. However if the record **does**\nexist inside the file, the collected record will be compared with the original\none, and if different, an ``AssertionError`` will be raised. When running on\npytest, this will use its fancy assertion rewriting; in other test runners/uses\nthe full diff will be attached to the message.\n\nExample:\n\n.. code-block:: python\n\n    import django_perf_rec\n\n    from app.models import Author\n\n    class AuthorPerformanceTests(TestCase):\n\n        def test_special_method(self):\n            with django_perf_rec.record():\n                list(Author.objects.special_method())\n\n\n``TestCaseMixin``\n-----------------\n\nA mixin class to be added to your custom ``TestCase`` subclass so you can use\n**django-perf-rec** across your codebase without needing to import it in each\nindividual test file. It adds one method, ``record_performance()``, whose\nsignature is the same as ``record()`` above.\n\nExample:\n\n.. code-block:: python\n\n    # yplan/test.py\n    from django.test import TestCase as OrigTestCase\n    from django_perf_rec import TestCaseMixin\n\n    class TestCase(TestCaseMixin, OrigTestCase):\n        pass\n\n    # app/tests/models/test_author.py\n    from app.models import Author\n    from yplan.test import TestCase\n\n    class AuthorPerformanceTests(TestCase):\n\n        def test_special_method(self):\n            with self.record_performance():\n                list(Author.objects.special_method())\n\n``get_perf_path(file_path)``\n----------------------------\n\nEncapsulates the logic used in ``record()`` to form ``path`` from the path of\nthe file containing the currently running test, mostly swapping '.py' or '.pyc'\nfor '.perf.yml'. You might want to use this when calling ``record()`` from\nsomewhere other than inside a test (which causes the automatic inspection to\nfail), to match the same filename.\n\n``get_record_name(test_name, class_name=None)``\n-----------------------------------------------\n\nEncapsulates the logic used in ``record()`` to form a ``record_name`` from\ndetails of the currently running test. You might want to use this when calling\n``record()`` from somewhere other than inside a test (which causes the\nautomatic inspection to fail), to match the same ``record_name``.\n\nSettings\n========\n\nBehaviour can be customized with a dictionary called ``PERF_REC`` in your\nDjango settings, for example:\n\n.. code-block:: python\n\n    PERF_REC = {\n        'MODE': 'once'\n    }\n\nThe possible keys to this dictionary are explained below.\n\n``MODE``\n--------\n\nThe ``MODE`` setting may be used to change the way **django-perf-rec** behaves\nwhen a performance record does not exist during a test run.\n\n* ``'once'`` (default) creates missing records silently.\n* ``'none'`` raises ``AssertionError`` when a record does not exist. You\n  probably want to use this mode in CI, to ensure new tests fail if their\n  corresponding performance records were not committed.\n* ``'all'`` creates missing records and then raises ``AssertionError``.\n\n\nUsage in Pytest\n===============\n\nIf you're using Pytest, you might want to call ``record()`` from within a\nPytest fixture and have it automatically apply to all your tests. We have an\nexample of this, see the file `test_pytest_fixture_usage.py\n<https://github.com/YPlan/django-perf-rec/blob/master/tests/test_pytest_fixture_usage.py>`_\nin the test suite.\n\n\n\n\nHistory\n=======\n\nPending release\n---------------\n\n* New release notes go here\n\n2.2.0 (2018-01-24)\n------------------\n\n* Use ``kwargs-only`` library rather than vendored copy.\n* Erase volatile part of PostgreSQL cursor name.\n\n2.1.0 (2017-05-29)\n------------------\n\n* Exposed the automatic naming logic used in ``record()`` in two new functions\n  ``get_perf_path()`` and ``get_record_name()``, in order to ease creation of\n  test records from calls outside of tests.\n* Made the automatic test detection work when running under a Pytest fixture.\n* Stopped throwing warnings on Python 3.\n* Fixed loading empty performance record files.\n\n2.0.1 (2017-03-02)\n------------------\n\n* Make cascaded delete queries deterministic on Django <1.10, with another\n  Patchy patch to make it match the order from 1.10+.\n\n2.0.0 (2017-02-09)\n------------------\n\n* Arguments to ``record`` must be passed as keyword arguments.\n* ``file_name`` is removed as an argument to ``record`` following its\n  deprecation in release 1.1.0.\n\n\n1.1.1 (2016-10-30)\n------------------\n\n* Fix django session keys not being fingerprinted.\n* Show diff when records don't match (when not on pytest).\n* Add new 'MODE' setting with three modes. This allows customization of the\n  behaviour for missing performance records. The new ``'none'`` mode is\n  particularly useful for CI servers as it makes tests fail if their\n  corresponding performance records have not been committed.\n\n1.1.0 (2016-10-26)\n------------------\n\n* Fix automatic filenames for tests in ``.pyc`` files.\n* Add the ``path`` argument to ``record`` which allows specifying a relative\n  directory or filename to use. This deprecates the ``file_name`` argument,\n  which will be removed in a future major release. For more info see the\n  README.\n\n1.0.4 (2016-10-23)\n------------------\n\n* Work with ``sqlparse`` 0.2.2\n\n1.0.3 (2016-10-07)\n------------------\n\n* Stopped ``setup.py`` installing ``tests`` module.\n\n1.0.2 (2016-09-23)\n------------------\n\n* Confirmed Django 1.8 and 1.10 support.\n\n1.0.1 (2016-09-20)\n------------------\n\n* Fix ``install_requires`` in ``setup.py``.\n\n1.0.0 (2016-09-19)\n------------------\n\n* Initial version with ``record()`` that can record database queries and cache\n  operations and error if they change between test runs.\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -36,10 +37,11 @@
     "name": "django-perf-rec",
     "platform": "",
     "project_url": "https://pypi.org/project/django-perf-rec/",
-    "release_url": "https://pypi.org/project/django-perf-rec/2.1.0/",
+    "release_url": "https://pypi.org/project/django-perf-rec/2.2.0/",
+    "requires_dist": [],
     "requires_python": "",
     "summary": "Keep detailed records of the performance of your Django code.",
-    "version": "2.1.0"
+    "version": "2.2.0"
   },
   "releases": {
     "1.0.0": [
@@ -49,7 +51,7 @@
           "md5": "51b7d9c6660798aeffa68232ed8324e8",
           "sha256": "0324368af8c8e1e64f98297641a0df9b318ba991029b432702aeaaba414f4652"
         },
-        "downloads": 98,
+        "downloads": -1,
         "filename": "django_perf_rec-1.0.0-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "51b7d9c6660798aeffa68232ed8324e8",
@@ -65,7 +67,7 @@
           "md5": "aaa3461db647c2e889de6329870645fe",
           "sha256": "03813dc8b8349163fbcf31907f737af8422ae6195b8dba4d4d2d61c17279c2ce"
         },
-        "downloads": 190,
+        "downloads": -1,
         "filename": "django-perf-rec-1.0.0.tar.gz",
         "has_sig": false,
         "md5_digest": "aaa3461db647c2e889de6329870645fe",
@@ -83,7 +85,7 @@
           "md5": "3e5ed5aea648cb347326c6758b18a249",
           "sha256": "bdb22167d0f8c58417d5700928b5d317ae70bdd2f2e75bd60730126c8c084f0a"
         },
-        "downloads": 117,
+        "downloads": -1,
         "filename": "django_perf_rec-1.0.1-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "3e5ed5aea648cb347326c6758b18a249",
@@ -99,7 +101,7 @@
           "md5": "2ed0498eb92f346f918c8ccee694a5a2",
           "sha256": "50bcbaf0e970bad09352824a15ae96e964f9a94d32c646b53d6795df2f6d3e38"
         },
-        "downloads": 113,
+        "downloads": -1,
         "filename": "django-perf-rec-1.0.1.tar.gz",
         "has_sig": false,
         "md5_digest": "2ed0498eb92f346f918c8ccee694a5a2",
@@ -117,7 +119,7 @@
           "md5": "4c7b78d3949a63b3445e6b1be9c68bdb",
           "sha256": "107021a3720f7603143c5a0961897a40b69f8c0baa62808a525cc025c6db2e0c"
         },
-        "downloads": 195,
+        "downloads": -1,
         "filename": "django_perf_rec-1.0.2-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "4c7b78d3949a63b3445e6b1be9c68bdb",
@@ -133,7 +135,7 @@
           "md5": "9a0139d1451308fad6fa7efe8ea62d62",
           "sha256": "d20924ad88eca8257e6b4e17c7aa039a7adf617e89a0990de350ba3802cd5fec"
         },
-        "downloads": 140,
+        "downloads": -1,
         "filename": "django-perf-rec-1.0.2.tar.gz",
         "has_sig": false,
         "md5_digest": "9a0139d1451308fad6fa7efe8ea62d62",
@@ -151,7 +153,7 @@
           "md5": "c8d7920239c3cb4a2e23431f7b0b7ea7",
           "sha256": "29a4e11727e39ffdb9d3b1de48a58146e816451448303c750656953cc05c29cb"
         },
-        "downloads": 198,
+        "downloads": -1,
         "filename": "django_perf_rec-1.0.3-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "c8d7920239c3cb4a2e23431f7b0b7ea7",
@@ -167,7 +169,7 @@
           "md5": "d33edd96ac1bf5c14e404acb95023853",
           "sha256": "c70f7ad6c2e59ba4515d5f2b779f70ed760e7698c1b31ec86e62fd951e09f436"
         },
-        "downloads": 89,
+        "downloads": -1,
         "filename": "django-perf-rec-1.0.3.tar.gz",
         "has_sig": false,
         "md5_digest": "d33edd96ac1bf5c14e404acb95023853",
@@ -185,7 +187,7 @@
           "md5": "ca2d86801f78c91e0442930cb5bed2b0",
           "sha256": "914a478b69eb03f8b221872480bc69d001854e3c870fbd2a8292ca11050ef0bb"
         },
-        "downloads": 317,
+        "downloads": -1,
         "filename": "django_perf_rec-1.0.4-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "ca2d86801f78c91e0442930cb5bed2b0",
@@ -201,7 +203,7 @@
           "md5": "05124e67ad1090d5f492e65dea9af96d",
           "sha256": "f046502d807cc41742ba12005fd4e3cdd7ef7b5160fea16b672c5113c2d089d8"
         },
-        "downloads": 326,
+        "downloads": -1,
         "filename": "django-perf-rec-1.0.4.tar.gz",
         "has_sig": false,
         "md5_digest": "05124e67ad1090d5f492e65dea9af96d",
@@ -219,7 +221,7 @@
           "md5": "be582ef6ba8b7caaf164f8cd9a716058",
           "sha256": "63260b70c6e827632fa0cd35b27066c18e9a25d14172af903e0a9d465af4f91b"
         },
-        "downloads": 128,
+        "downloads": -1,
         "filename": "django_perf_rec-1.1.0-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "be582ef6ba8b7caaf164f8cd9a716058",
@@ -235,7 +237,7 @@
           "md5": "cfd40eef53e6283edc9df8a5244bbb47",
           "sha256": "f929b3d4680a0e6190ca0bb241292107e179dafdff59f52df057da8f88ac073e"
         },
-        "downloads": 124,
+        "downloads": -1,
         "filename": "django-perf-rec-1.1.0.tar.gz",
         "has_sig": false,
         "md5_digest": "cfd40eef53e6283edc9df8a5244bbb47",
@@ -253,7 +255,7 @@
           "md5": "2cd3b1ac2002d22a4aa1439322df1e19",
           "sha256": "7a304a7e5ad11338e49a9d4e542abc6990e1b81aef530d031864fcfbbfe07ee4"
         },
-        "downloads": 283,
+        "downloads": -1,
         "filename": "django_perf_rec-1.1.1-py2.py3-none-any.whl",
         "has_sig": false,
         "md5_digest": "2cd3b1ac2002d22a4aa1439322df1e19",
@@ -269,7 +271,7 @@
           "md5": "e684a5324b09aa36752a81a34cd52ec1",
           "sha256": "04324e4151ad5231c655a198a67ed53351c88f32e48d728b3a2ae6e16d9248b2"
         },
-        "downloads": 191,
+        "downloads": -1,
         "filename": "django-perf-rec-1.1.1.tar.gz",
         "has_sig": false,
         "md5_digest": "e684a5324b09aa36752a81a34cd52ec1",
@@ -287,7 +289,7 @@
           "md5": "86882a77e6ee45a9ecf7f58a973f691c",
           "sha256": "ad68ce3250b6f69308ad87c5386299f333d9e1a68e1079cb42742cf912043fb0"
         },
-        "downloads": 12,
+        "downloads": -1,
         "filename": "django_perf_rec-2.0.0-py2.py3-none-any.whl",
         "has_sig": true,
         "md5_digest": "86882a77e6ee45a9ecf7f58a973f691c",
@@ -303,7 +305,7 @@
           "md5": "bca55ca5172be0dd45c49fb9cbc151bb",
           "sha256": "be8494c35b771e84ce36f97de001345418d6aac937bbf7675261eed7800d5d7d"
         },
-        "downloads": 15,
+        "downloads": -1,
         "filename": "django-perf-rec-2.0.0.tar.gz",
         "has_sig": true,
         "md5_digest": "bca55ca5172be0dd45c49fb9cbc151bb",
@@ -321,7 +323,7 @@
           "md5": "0bf3043d5ed1ab8e7d748045052926d2",
           "sha256": "74c9d2fbfd65853692afe6f4f9ebd9bfe404d67dbd3c68e4f193272a64fe14f6"
         },
-        "downloads": 71,
+        "downloads": -1,
         "filename": "django_perf_rec-2.0.1-py2.py3-none-any.whl",
         "has_sig": true,
         "md5_digest": "0bf3043d5ed1ab8e7d748045052926d2",
@@ -337,7 +339,7 @@
           "md5": "cd4705a594aef37e6af702992044d4dc",
           "sha256": "2e731ccf666eca429b64a7bb9ee3bd1eb3635f3f9ac44330d1be74358e8037b1"
         },
-        "downloads": 15,
+        "downloads": -1,
         "filename": "django-perf-rec-2.0.1.tar.gz",
         "has_sig": true,
         "md5_digest": "cd4705a594aef37e6af702992044d4dc",
@@ -355,7 +357,7 @@
           "md5": "8b23ed6fdfb90691b8a0f58c862612e4",
           "sha256": "ccbc9f42112bfd9219329816515f69c831ed7bea22fb87fcbf61084446c8cc54"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "django_perf_rec-2.1.0-py2.py3-none-any.whl",
         "has_sig": true,
         "md5_digest": "8b23ed6fdfb90691b8a0f58c862612e4",
@@ -371,7 +373,7 @@
           "md5": "bffcc15810ce52870d06cfa2485eb2b7",
           "sha256": "6e77cd2eb6ec411bda2c534ceb80f69708932df965831836882034ca2f54137a"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "django-perf-rec-2.1.0.tar.gz",
         "has_sig": true,
         "md5_digest": "bffcc15810ce52870d06cfa2485eb2b7",
@@ -381,40 +383,74 @@
         "upload_time": "2017-05-29T10:37:42",
         "url": "https://files.pythonhosted.org/packages/0d/35/689bcecb117956b8504b83a982bfc3109c24b000943aaefb3f6ef74c1e34/django-perf-rec-2.1.0.tar.gz"
       }
+    ],
+    "2.2.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "c56ae18e9700a99d72d4810a2a3bd0f8",
+          "sha256": "35d694f4312540a003869f0835386d75adc99f17aa29f9bfb459e84e06bb7b61"
+        },
+        "downloads": -1,
+        "filename": "django_perf_rec-2.2.0-py2.py3-none-any.whl",
+        "has_sig": true,
+        "md5_digest": "c56ae18e9700a99d72d4810a2a3bd0f8",
+        "packagetype": "bdist_wheel",
+        "python_version": "2.7",
+        "size": 21005,
+        "upload_time": "2018-01-24T11:10:01",
+        "url": "https://files.pythonhosted.org/packages/8a/66/9f829a7b0ae050ef7a247f16a39c35089bb9d631112037c3c26bf106e3b0/django_perf_rec-2.2.0-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7d33f1dc9d643416039acd86e571142d",
+          "sha256": "06017309c1fe4f8ec28f9eb4894e88fb81a1524b7e04841925e9bff412a3536b"
+        },
+        "downloads": -1,
+        "filename": "django-perf-rec-2.2.0.tar.gz",
+        "has_sig": true,
+        "md5_digest": "7d33f1dc9d643416039acd86e571142d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 20218,
+        "upload_time": "2018-01-24T11:09:58",
+        "url": "https://files.pythonhosted.org/packages/8a/23/7afa0c3d8acb2532762069573281868aa22fe3c0d4ca663903584daa4182/django-perf-rec-2.2.0.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "8b23ed6fdfb90691b8a0f58c862612e4",
-        "sha256": "ccbc9f42112bfd9219329816515f69c831ed7bea22fb87fcbf61084446c8cc54"
+        "md5": "c56ae18e9700a99d72d4810a2a3bd0f8",
+        "sha256": "35d694f4312540a003869f0835386d75adc99f17aa29f9bfb459e84e06bb7b61"
       },
-      "downloads": 0,
-      "filename": "django_perf_rec-2.1.0-py2.py3-none-any.whl",
+      "downloads": -1,
+      "filename": "django_perf_rec-2.2.0-py2.py3-none-any.whl",
       "has_sig": true,
-      "md5_digest": "8b23ed6fdfb90691b8a0f58c862612e4",
+      "md5_digest": "c56ae18e9700a99d72d4810a2a3bd0f8",
       "packagetype": "bdist_wheel",
       "python_version": "2.7",
-      "size": 20534,
-      "upload_time": "2017-05-29T10:37:45",
-      "url": "https://files.pythonhosted.org/packages/8f/21/4f6b8d89dc1091015918334427320b60ecefb3bafc16520f12aad6beb309/django_perf_rec-2.1.0-py2.py3-none-any.whl"
+      "size": 21005,
+      "upload_time": "2018-01-24T11:10:01",
+      "url": "https://files.pythonhosted.org/packages/8a/66/9f829a7b0ae050ef7a247f16a39c35089bb9d631112037c3c26bf106e3b0/django_perf_rec-2.2.0-py2.py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "bffcc15810ce52870d06cfa2485eb2b7",
-        "sha256": "6e77cd2eb6ec411bda2c534ceb80f69708932df965831836882034ca2f54137a"
+        "md5": "7d33f1dc9d643416039acd86e571142d",
+        "sha256": "06017309c1fe4f8ec28f9eb4894e88fb81a1524b7e04841925e9bff412a3536b"
       },
-      "downloads": 0,
-      "filename": "django-perf-rec-2.1.0.tar.gz",
+      "downloads": -1,
+      "filename": "django-perf-rec-2.2.0.tar.gz",
       "has_sig": true,
-      "md5_digest": "bffcc15810ce52870d06cfa2485eb2b7",
+      "md5_digest": "7d33f1dc9d643416039acd86e571142d",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 20557,
-      "upload_time": "2017-05-29T10:37:42",
-      "url": "https://files.pythonhosted.org/packages/0d/35/689bcecb117956b8504b83a982bfc3109c24b000943aaefb3f6ef74c1e34/django-perf-rec-2.1.0.tar.gz"
+      "size": 20218,
+      "upload_time": "2018-01-24T11:09:58",
+      "url": "https://files.pythonhosted.org/packages/8a/23/7afa0c3d8acb2532762069573281868aa22fe3c0d4ca663903584daa4182/django-perf-rec-2.2.0.tar.gz"
     }
   ]
 }
