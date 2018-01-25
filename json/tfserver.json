@@ -11,7 +11,7 @@
       "Programming Language :: Python :: 3",
       "Topic :: Scientific/Engineering :: Artificial Intelligence"
     ],
-    "description": "==========================================\nTensorflow gRPC and RESTful API Server\n==========================================\n\n**tfserver** is an example for serving Tensorflow model with `Skitai App Engine`_.\n\nIt can be accessed by gRPC and JSON RESTful API.\n\nThis project is inspired by `issue #176`_.\n\n.. _`issue #176` : https://github.com/tensorflow/serving/issues/176\n.. _`Skitai App Engine`: https://pypi.python.org/pypi/skitai\n\n\n.. contents:: Table of Contents\n\nSaving Tensorflow Model\n---------------------------\n\nSee `tf.saved_model.builder.SavedModelBuilder`_, but for example:\n\n.. code:: python\n  \n  import tensorflow as tf\n  \n  # your own neural network\n  class DNN:\n    ...\n\n  net = DNN (phase_train=False)\n  \n  sess = tf.Session()\n  sess.run (tf.global_variables_initializer())\n  \n  # restoring checkpoint\n  saver = tf.train.Saver (tf.global_variables())\n  saver.restore (sess, \"./models/model.cpkt-1000\")\n  \n  # save model with builder  \n  builder = tf.saved_model.builder.SavedModelBuilder (\"exported/1/\")\n  \n  prediction_signature = (\n    tf.saved_model.signature_def_utils.build_signature_def(\n      inputs = {'x': tf.saved_model.utils.build_tensor_info (net.x)},\n      outputs = {'y': tf.saved_model.utils.build_tensor_info (net.predict)])},\n      method_name = tf.saved_model.signature_constants.PREDICT_METHOD_NAME)\n  )  \n  # Remember 'x', 'y' for I/O\n  \n  legacy_init_op = tf.group (tf.tables_initializer (), name = 'legacy_init_op')\n  builder.add_meta_graph_and_variables(\n    sess, \n    [ tf.saved_model.tag_constants.SERVING ],\n    signature_def_map = {'signature_def_name': prediction_signature},\n    legacy_init_op = legacy_init_op\n  )\n  # Remember 'signature_def_name'\n  \n  builder.save()\n\n.. _`tf.saved_model.builder.SavedModelBuilder`: https://www.tensorflow.org/api_docs/python/tf/saved_model/builder/SavedModelBuilder\n\n\nRun Tensorflow Server\n------------------------\n\nExample of api.py\n\n.. code:: python\n  \n  import tfserver\n  import skitai\n  import tensorflow as tf\n\n  pref = skitai.pref ()\n  pref.max_client_body_size = 100 * 1024 * 1024 # 100 MB\n  \n  # we want to serve 2 models: \n  # (alias, model_dir, optional session config)  \n  pref.config.tf_models [\"model1\"]\t= \"exported/2\"\n  pref.config.tf_models [\"model2\"]\t= (\n  \t\"exported/3\", \n  \ttf.ConfigProto(\n  \t\tgpu_options=tf.GPUOptions (per_process_gpu_memory_fraction = 0.2),\n  \t\tlog_device_placement = False\n    )\n  )\n\n  \n  # If you want to activate gRPC, should mount on '/'\n  skitai.mount (\"/\", tfserver, pref = pref)\n  skitai.run (port = 5000)\n\nAnd run,\n\n.. code:: bash\n\n  python3 api.py  \n  \n\ngRPC Client\n--------------\n\nUsing grpcio library,\n\n.. code:: python\n\n  from tfserver import cli\n  from tensorflow.python.framework import tensor_util\n  import numpy as np\n  \n  stub = cli.Server (\"http://localhost:5000\")\n  problem = np.array ([1.0, 2.0])\n  \n  # put problem as 'x', and 'signature_def_name'\n  # ignore 'model_name' for now\n  resp = stub.predict (\n    'model_name',\n    'signature_def_name', \n    x = tensor_util.make_tensor_proto(problem.astype('float32'), shape=problem.shape)\n  )\n  # then get 'y'\n  resp.y\n  >> np.ndarray ([-1.5, 1.6])\n\nUsing aquests for async request,\n\n.. code:: python\n  \n  import aquests\n  from tfserver import cli\n  from tensorflow.python.framework import tensor_util\n  import numpy as np\n  \n  def print_result (resp):\n    cli.Response (resp.data).y\n    >> np.ndarray ([-1.5, 1.6])\n    \n  stub = aquests.grpc (\"http://localhost:5000\", callback = print_result)\n  problem = np.array ([1.0, 2.0])\n  \n  request = cli.build_request (\n    'model_name',\n    'signature_def_name', \n    x = tensor_util.make_tensor_proto(problem.astype('float32'), shape=problem.shape)\n  )\n  stub.Predict (request, 10.0)\n\n  aquests.fetchall ()\n\n  \nRESTful API\n-------------\n\nUsing requests,\n\n.. code:: python\n  \n  import requests\n  \n  problem = np.array ([1.0, 2.0])\n  api = requests.session ()\n  resp = api.post (\n    \"http://localhost:5000/predict\",\n    json.dumps ({\"x\": problem.astype (\"float32\").tolist()}), \n    headers = {\"Content-Type\": \"application/json\"}\n  )\n  data = json.loads (resp.text)\n  data [\"y\"]\n  >> [-1.5, 1.6]\n\nAnother,\n  \n.. code:: python\n\n  from aquests.lib import siesta\n  \n  problem = np.array ([1.0, 2.0])  \n  api = siesta.API (\"http://localhost:5000\")\n  resp = api.predict.post ({\"x\": problem.astype (\"float32\").tolist()})\n  resp.data.y  \n  >> [-1.5, 1.6]\n\n  \nPerformance Note Comparing with Proto Buffer and JSON\n---------------------------------------------------------\n\nTest Environment\n```````````````````````\n\n- Input: \n\n  - dtype: Float 32\n  - shape: Various, From (50, 1025) To (300, 1025), Prox. Average (100, 1025)\n \n- Output: \n  \n  - dtype: Float 32\n  - shape: (60,)\n  \n- Request Threads: 16\n- Requests Per Thread: 100\n- Total Requests: 1,600\n\nResults\n`````````\n\nAverage of 3 runs,\n\n- gRPC with Proto Buffer:\n  \n  - Use grpcio\n  - 11.58 seconds\n\n- RESTful API with JSON\n\n  - Use requests\n  - 216.66 seconds\n\nProto Buffer is 20 times faster than JSON...\n\nRelease History\n-------------------\n\n- 0.1a (2018. 1. 4)\n\n  - Alpha release\n  ",
+    "description": "==========================================\nTensorflow gRPC and RESTful API Server\n==========================================\n\n**tfserver** is an example for serving Tensorflow model with `Skitai App Engine`_.\n\nIt can be accessed by gRPC and JSON RESTful API.\n\nThis project is inspired by `issue #176`_.\n\n.. _`issue #176` : https://github.com/tensorflow/serving/issues/176\n.. _`Skitai App Engine`: https://pypi.python.org/pypi/skitai\n\n\n.. contents:: Table of Contents\n\nSaving Tensorflow Model\n---------------------------\n\nSee `tf.saved_model.builder.SavedModelBuilder`_, but for example:\n\n.. code:: python\n  \n  import tensorflow as tf\n  \n  # your own neural network\n  class DNN:\n    ...\n\n  net = DNN (phase_train=False)\n  \n  sess = tf.Session()\n  sess.run (tf.global_variables_initializer())\n  \n  # restoring checkpoint\n  saver = tf.train.Saver (tf.global_variables())\n  saver.restore (sess, \"./models/model.cpkt-1000\")\n  \n  # save model with builder  \n  builder = tf.saved_model.builder.SavedModelBuilder (\"exported/1/\")\n  \n  prediction_signature = (\n    tf.saved_model.signature_def_utils.build_signature_def(\n      inputs = {'x': tf.saved_model.utils.build_tensor_info (net.x)},\n      outputs = {'y': tf.saved_model.utils.build_tensor_info (net.predict)])},\n      method_name = tf.saved_model.signature_constants.PREDICT_METHOD_NAME)\n  )  \n  # Remember 'x', 'y' for I/O\n  \n  legacy_init_op = tf.group (tf.tables_initializer (), name = 'legacy_init_op')\n  builder.add_meta_graph_and_variables(\n    sess, \n    [ tf.saved_model.tag_constants.SERVING ],\n    signature_def_map = {'predict_class': prediction_signature},\n    legacy_init_op = legacy_init_op\n  )\n  # Remember 'signature_def_name'\n  \n  builder.save()\n\n.. _`tf.saved_model.builder.SavedModelBuilder`: https://www.tensorflow.org/api_docs/python/tf/saved_model/builder/SavedModelBuilder\n\n\nRun Tensorflow Server\n------------------------\n\nExample of api.py\n\n.. code:: python\n  \n  import tfserver\n  import skitai\n  import tensorflow as tf\n\n  pref = skitai.pref ()\n  pref.max_client_body_size = 100 * 1024 * 1024 # 100 MB\n  \n  # we want to serve 2 models: \n  # alias and (model_dir, optional session config)  \n  pref.config.tf_models [\"model1\"] = \"exported/2\"\n  pref.config.tf_models [\"model2\"] = (\n  \t\"exported/3\", \n  \ttf.ConfigProto(\n  \t  gpu_options=tf.GPUOptions (per_process_gpu_memory_fraction = 0.2),\n  \t  log_device_placement = False\n    )\n  )\n  \n  # If you want to activate gRPC, should mount on '/'\n  skitai.mount (\"/\", tfserver, pref = pref)\n  skitai.run (port = 5000)\n\nAnd run,\n\n.. code:: bash\n\n  python3 api.py  \n  \n\ngRPC Client\n--------------\n\nUsing grpcio library,\n\n.. code:: python\n\n  from tfserver import cli\n  from tensorflow.python.framework import tensor_util\n  import numpy as np\n  \n  stub = cli.Server (\"http://localhost:5000\")\n  problem = np.array ([1.0, 2.0])\n  \n  resp = stub.predict (\n    'model1', #alias for model\n    'predict_class', #signature_def_name \n    x = tensor_util.make_tensor_proto(problem.astype('float32'), shape=problem.shape)\n  )\n  # then get 'y'\n  resp.y\n  >> np.ndarray ([-1.5, 1.6])\n\nUsing aquests for async request,\n\n.. code:: python\n  \n  import aquests\n  from tfserver import cli\n  from tensorflow.python.framework import tensor_util\n  import numpy as np\n  \n  def print_result (resp):\n    cli.Response (resp.data).y\n    >> np.ndarray ([-1.5, 1.6])\n    \n  stub = aquests.grpc (\"http://localhost:5000\", callback = print_result)\n  problem = np.array ([1.0, 2.0])\n  \n  request = cli.build_request (\n    'model_name',\n    'signature_def_name', \n    x = tensor_util.make_tensor_proto(problem.astype('float32'), shape=problem.shape)\n  )\n  stub.Predict (request, 10.0)\n\n  aquests.fetchall ()\n\n  \nRESTful API\n-------------\n\nUsing requests,\n\n.. code:: python\n  \n  import requests\n  \n  problem = np.array ([1.0, 2.0])\n  api = requests.session ()\n  resp = api.post (\n    \"http://localhost:5000/predict\",\n    json.dumps ({\"x\": problem.astype (\"float32\").tolist()}), \n    headers = {\"Content-Type\": \"application/json\"}\n  )\n  data = json.loads (resp.text)\n  data [\"y\"]\n  >> [-1.5, 1.6]\n\nAnother,\n  \n.. code:: python\n\n  from aquests.lib import siesta\n  \n  problem = np.array ([1.0, 2.0])  \n  api = siesta.API (\"http://localhost:5000\")\n  resp = api.predict.post ({\"x\": problem.astype (\"float32\").tolist()})\n  resp.data.y  \n  >> [-1.5, 1.6]\n\n  \nPerformance Note Comparing with Proto Buffer and JSON\n---------------------------------------------------------\n\nTest Environment\n```````````````````````\n\n- Input: \n\n  - dtype: Float 32\n  - shape: Various, From (50, 1025) To (300, 1025), Prox. Average (100, 1025)\n \n- Output: \n  \n  - dtype: Float 32\n  - shape: (60,)\n  \n- Request Threads: 16\n- Requests Per Thread: 100\n- Total Requests: 1,600\n\nResults\n`````````\n\nAverage of 3 runs,\n\n- gRPC with Proto Buffer:\n  \n  - Use grpcio\n  - 11.58 seconds\n\n- RESTful API with JSON\n\n  - Use requests\n  - 216.66 seconds\n\nProto Buffer is 20 times faster than JSON...\n\nRelease History\n-------------------\n\n- 0.1a (2018. 1. 4)\n\n  - Alpha release\n  ",
     "docs_url": null,
     "download_url": "https://pypi.python.org/pypi/tfserver",
     "downloads": {
@@ -27,11 +27,11 @@
     "name": "tfserver",
     "platform": "posix",
     "project_url": "https://pypi.org/project/tfserver/",
-    "release_url": "https://pypi.org/project/tfserver/0.1a30/",
+    "release_url": "https://pypi.org/project/tfserver/0.1a31/",
     "requires_dist": [],
     "requires_python": "",
     "summary": "Tensor Flow Model Server",
-    "version": "0.1a30"
+    "version": "0.1a31"
   },
   "releases": {
     "0.1a1": [
@@ -466,6 +466,24 @@
         "url": "https://files.pythonhosted.org/packages/7f/58/5ce9ba8f10a65dde532b594909b93e56946c54d9c020787b9eebea7f5136/tfserver-0.1a30.tar.gz"
       }
     ],
+    "0.1a31": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "7395d5bf16ed22c334a4adba11830ab7",
+          "sha256": "d77a93508c3f0d1f135f4544df7656e42e3b0971a15d89e8275953ee77c629ec"
+        },
+        "downloads": -1,
+        "filename": "tfserver-0.1a31.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7395d5bf16ed22c334a4adba11830ab7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 10224,
+        "upload_time": "2018-01-25T04:42:18",
+        "url": "https://files.pythonhosted.org/packages/d6/c2/93f8dd9d3bf2caba8db106ec7309b3ddcef63ad010231b30212666684b01/tfserver-0.1a31.tar.gz"
+      }
+    ],
     "0.1a4": [
       {
         "comment_text": "",
@@ -579,18 +597,18 @@
     {
       "comment_text": "",
       "digests": {
-        "md5": "80c753c8ad8f0444174b0d2a72463555",
-        "sha256": "1c551107b04ce9227ab699a11fda510b38cf02a47a32de25c289186891edd523"
+        "md5": "7395d5bf16ed22c334a4adba11830ab7",
+        "sha256": "d77a93508c3f0d1f135f4544df7656e42e3b0971a15d89e8275953ee77c629ec"
       },
       "downloads": -1,
-      "filename": "tfserver-0.1a30.tar.gz",
+      "filename": "tfserver-0.1a31.tar.gz",
       "has_sig": false,
-      "md5_digest": "80c753c8ad8f0444174b0d2a72463555",
+      "md5_digest": "7395d5bf16ed22c334a4adba11830ab7",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 10231,
-      "upload_time": "2018-01-24T10:56:12",
-      "url": "https://files.pythonhosted.org/packages/7f/58/5ce9ba8f10a65dde532b594909b93e56946c54d9c020787b9eebea7f5136/tfserver-0.1a30.tar.gz"
+      "size": 10224,
+      "upload_time": "2018-01-25T04:42:18",
+      "url": "https://files.pythonhosted.org/packages/d6/c2/93f8dd9d3bf2caba8db106ec7309b3ddcef63ad010231b30212666684b01/tfserver-0.1a31.tar.gz"
     }
   ]
 }
