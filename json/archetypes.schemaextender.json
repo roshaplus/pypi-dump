@@ -9,11 +9,12 @@
       "Framework :: Plone :: 5.0",
       "Framework :: Plone :: 5.1",
       "Framework :: Zope2",
+      "License :: OSI Approved :: GNU General Public License (GPL)",
       "Programming Language :: Python",
       "Programming Language :: Python :: 2.6",
       "Programming Language :: Python :: 2.7"
     ],
-    "description": "Introduction\n============\n\nThis package allows you to modify an Archetypes schema, using simple\nadapters. This can be used to add new fields, reorder fields and fieldsets\nor make other changes.\n\nThe most common use of schema extension is to allow add-on products to\nenhance standard Plone content types, for example by adding an option\nthat can be set to toggle special behaviour.\n\nschemaextender hooks into the Archetypes framework by registering\nan ISchema adapter for BaseContent and BaseFolder, making it responsible\nfor providing the schema for all types derived from those classes. This\nincludes all standard Plone content types. Since only one ISchema adapter\ncan be active schemaextender provides its own mechanism to modify schemas\nusing named adapters. Named adapters are allowing to register more than one\nschemaextender per adapted interface.\n\nThere are three types of adapters available:\n\n* ISchemaExtender: using this adapter you can add new fields to a schema.\n\n* IOrderableSchemaExtender: this adapters makes it possible to both add\n  new fields and reorder fields. This is more costly than just adding new\n  fields.\n\n* IBrowserLayerAwareExtender: this adapters are making use of\n  plone.browserlayer, so that the extender is only available if a layer is\n  registered.\n\n* ISchemaModifier: this is a low-level hook that allows direct manipulation\n  of the schema. This can be very dangerous and should never be used if one\n  does not know exactly what she/he is doing!\n\n\nThe adapter types are documented in the ''interfaces.py'' file in\narchetypes.schemaextender.\n\n\nSimple example\n==============\n\nAs an example we will add a simple boolean field to the standard\nPlone document type. First we need to create a field class::\n\n     from Products.Archetypes.public import BooleanField\n     from archetypes.schemaextender.field import ExtensionField\n\n     class MyBooleanField(ExtensionField, BooleanField):\n         \"\"\"A trivial field.\"\"\"\n\nschemaextender can not use the standard Archetypes fields directly\nsince those rely on the class generation logic generating accessors\nand mutator methods. By using the ExtensionField mix-in class we can\nstill use them. Make sure the ExtensionField mix-in comes first, so it\nproperly overwrites the standard methods.\n\nNext we have to create an adapter that will add this field::\n\n    from zope.component import adapts\n    from zope.interface import implements\n    from archetypes.schemaextender.interfaces import ISchemaExtender\n    from Products.Archetypes.public import BooleanWidget\n    from Products.ATContentTypes.interfaces import IATDocument\n\n    class PageExtender(object):\n        adapts(IATDocument)\n        implements(ISchemaExtender)\n\n\n        fields = [\n            MyBooleanField(\"super_power\",\n            widget = BooleanWidget(\n                label=\"This page has super powers\")),\n                ]\n\n        def __init__(self, context):\n            self.context = context\n\n        def getFields(self):\n            return self.fields\n\nTry to store the fields on the class, that way they aren't created each\ntime the getFields method gets called. Generally you should make sure\ngetFields does as few things as possible, because it's called very often.\n\nThe final step is registering this adapter with the Zope component\narchitecture. Since we already declared the interface we provide and\nwhich type of object we adapt this can be done very quickly in\nconfigure.zcml (assuming you put the code above in a file extender.py)::\n\n    <configure xmlns=\"http://namespaces.zope.org/zope\"\n               xmlns:five=\"http://namespaces.zope.org/five\">\n\n        <include package=\"archetypes.schemaextender\" />\n        <adapter factory=\".extender.PageExtender\" />\n    </configure>\n\nCustom fields\n=============\n\nIf you want you can make more complicated field types as well. The only\nrequirement is that you need to have ExtensionField as the first parent\nclass for your field type. As an example here is a field that toggles a\nmarker interface on an object::\n\n    from zope.interface import Interface\n    from zope.interface import alsoProvides\n    from zope.interface import noLongerProvides\n    from Products.Archetypes.public import BooleanField\n    from archetypes.schemaextender.field import ExtensionField\n\n    def addMarkerInterface(obj, *ifaces):\n        for iface in ifaces:\n            if not iface.providedBy(obj):\n                alsoProvides(obj, iface)\n\n\n    def removeMarkerInterface(obj, *ifaces):\n        for iface in ifaces:\n            if iface.providedBy(obj):\n                noLongerProvides(obj, iface)\n\n\n    class ISuperPower(Interface):\n        \"\"\"Marker interface for classes that can do amazing things.\"\"\"\n\n\n    class InterfaceMarkerField(ExtensionField, BooleanField):\n        def get(self, instance, **kwargs):\n            return ISuperPower.providedBy(instance)\n\n        def getRaw(self, instance, **kwargs):\n            return ISuperPower.providedBy(instance)\n\n        def set(self, instance, value, **kwargs):\n            if value:\n                addMarkerInterface(instance, ISuperPower)\n            else:\n                removeMarkerInterface(instance, ISuperPower)\n\nLayer-aware example\n===================\n\nBy using ``archetypes.schemaextender.IBrowserLayerAwareExtender`` the\nextender is only applied if a specific browser layer is installed on the site.\n\n.. note ::\n\n        You should always use IBrowserLayerAwareExtender on configurations\n        where there can be multiple Plone sites on a single Zope application server.\n        Otherwise extenders are applied on every site, unconditionally.\n\nBelow is an example of ``extender.py`` which adds new field on *Dates* edit tab::\n\n        \"\"\"\n\n            Retrofit re-review dates to Archetypes schema.\n\n        \"\"\"\n\n        __docformat__ = \"epytext\"\n\n        from zope.component import adapts\n        from zope.interface import implements\n\n        from Products.Archetypes.public import BooleanWidget\n        from Products.ATContentTypes.interfaces import IATDocument\n        from Products.Archetypes import public as atapi\n        from Products.Archetypes.interfaces import IBaseContent\n\n        from archetypes.schemaextender.field import ExtensionField\n        from archetypes.schemaextender.interfaces import (\n          ISchemaExtender, IOrderableSchemaExtender, IBrowserLayerAwareExtender)\n\n        # Your add-on browserlayer\n        from your.package.interfaces import IAddOnInstalled\n\n        class ExtensionDateField(ExtensionField, atapi.DateTimeField):\n            \"\"\" Retrofitted date field \"\"\"\n\n\n        class RevisitExtender(object):\n            \"\"\" Include revisit date on all objects.\n\n            An example extended which will create a new field on Dates\n            tab between effective date and expiration date.\n            \"\"\"\n\n            # This extender will apply to all Archetypes based content\n            adapts(IBaseContent)\n\n            # We use both orderable and browser layer aware sensitive properties\n            implements(IOrderableSchemaExtender, IBrowserLayerAwareExtender)\n\n            # Don't do schema extending unless our add-on product is installed on Plone site\n            layer = IAddOnInstalled\n\n            fields = [\n                ExtensionDateField(\"revisitDate\",\n                    schemata=\"dates\",\n                    widget = atapi.CalendarWidget(\n                        label=\"Review Date\",\n                        description=(u\"When this date is reached, the content \"\n                                     u\"will be visible in the review task list\"),\n                        show_hm=False,\n                    ),\n                )\n            ]\n\n            def __init__(self, context):\n                self.context = context\n\n            def getOrder(self, schematas):\n                \"\"\" Manipulate the order in which fields appear.\n\n                @param schematas: Dictonary of schemata name -> field lists\n\n                @return: Dictionary of reordered field lists per schemata.\n                \"\"\"\n                schematas[\"dates\"] = ['effectiveDate', 'revisitDate', 'expirationDate',\n                                      'creation_date', 'modification_date']\n\n                return schematas\n\n            def getFields(self):\n                \"\"\"\n                @return: List of new fields we contribute to content.\n                \"\"\"\n                return self.fields\n\nNote: since the above example has two interfaces in its ``implements``\nline, you will get an error when your Zope instance starts up::\n\n        TypeError: Missing 'provides' attribute\n\nThis means we need to be more explicit in our zcml configuration and\nspecify which of the two interfaces is provided by our adapter::\n\n        <adapter factory=\".extender.RevisitExtender\"\n            provides=\"archetypes.schemaextender.interfaces.ISchemaExtender\" />\n\nChangelog\n=========\n\n2.1.7 (2017-03-09)\n------------------\n\nBug fixes:\n\n- Update docs about ``Products.ATContentTypes.interfaces`` import location.\n  [thet]\n\n- Fix imports from Globals that was removed in Zope4\n  [pbauer]\n\n2.1.6 (2016-08-11)\n------------------\n\nFixes:\n\n- Use zope.interface decorator.\n  [gforcada]\n\n\n2.1.5 (2015-03-11)\n------------------\n\n- Ported tests to plone.app.testing\n\n\n2.1.4 (2014-09-08)\n------------------\n\n- archetypes.schemaextender assumes presence of getRaw method which\n  ComputedField does not provide\n  https://dev.plone.org/ticket/11315\n  [anthonygerrard]\n\n2.1.3 (2014-02-26)\n------------------\n\n- Fix tests [kiorky]\n\n2.1.2 (2013-01-13)\n------------------\n\n- PEP8 changes, documentation updates.\n  [maurits]\n\n2.1.1 - 2011-07-04\n------------------\n\n* Acquire request object via local site hook if object is not\n  acquisition-wrapped (in ``cachingInstanceSchemaFactory``). This\n  fixes caching issues with objects rendered using DTML. Note that\n  this is likely a bug in the ``DocumentTemplate`` code. Ideally, the\n  issue should be resolved there.\n  [malthe]\n\n2.1 - 2011-01-03\n----------------\n\n* Use plone.uuid to look up content UUIDs.\n  [toutpt, davisagli]\n\n* Added example of how to use ordered extenders and browser layer aware\n  extenders.\n  [miohtama]\n\n2.0.3 - 2010-07-07\n------------------\n\n* Added back the ``caching.zcml`` file, but have it load ``configure.zcml``.\n  This makes it easier to write Plone 3 / 4 compatible code.\n  [hannosch]\n\n* Factored out the condition to disable the cache during tests into a module\n  global variable called ``CACHE_ENABLED``.\n  [hannosch]\n\n2.0.2 - 2010-06-13\n------------------\n\n* Changed the schema cache again, to use the id() only as a fallback when there\n  is not yet an UID assigned. The id() is unstable with Acquisition wrappers\n  and ZODB level ghosting of objects. We provide an explicit API for disabling\n  the cache instead.\n  [hannosch]\n\n* Avoid deprecation warnings under Zope 2.13.\n  [hannosch]\n\n* Change the schema cache key to avoid an issue during content migration when\n  there might be two objects that have the same UID but different schemata.\n  Now concatenating the Python id() with the UID (id() alone isn't good enough,\n  as two objects with non-overlapping lifetimes may have the same id() value).\n  Fixes http://dev.plone.org/plone/ticket/10637.\n  [davisagli]\n\n2.0.1 - 2010-05-23\n------------------\n\n* Disable the schema cache during test runs.\n  [hannosch]\n\n2.0 - 2010-05-23\n----------------\n\n* Removed the ``caching.zcml`` and enabled caching by default. You can use\n  a different caching implementation by using an ``overrides.zcml`` file.\n  [hannosch]\n\n* Added ``z3c.autoinclude`` entry point to mark this as a Plone plugin.\n  [hannosch]\n\n1.6 - 2010-03-22\n----------------\n\n* Fix index accessor to support setting custom accessor methods.\n  [witsch]\n\n1.5 - 2009-11-18\n----------------\n\n* Fixed test failure in usage.txt.\n  [hannosch]\n\n* Standardized package metadata layout.\n  [hannosch]\n\n1.4 - 2009-11-05\n----------------\n\n* Fix schema copying to also include properties and layers.\n  [maerteijn]\n\n1.3 - 2009-10-20\n----------------\n\n* Refactored the TranslatableExtensionField getMutator to directly reuse the\n  generatedMutatorWrapper from LinguaPlone itself. This avoids duplicating the\n  logic and lets schemaextender fields use the special reference field\n  handling introduced in LinguaPlone. This change introduces a version\n  requirement for LinguaPlone of at least 3.0b6.\n  [hannosch]\n\n1.2 - 2009-10-10\n----------------\n\n* Add `ISchema` adapter using simple caching on the request in order to\n  avoid redundant calculation of the (extended) schema.  The adapter is\n  not enabled by default and can be activated by loading `caching.zcml`.\n  [witsch]\n\n* Avoid using the overridden `+` operator when copying the original schema\n  as this will needlessly validate all fields again.\n  [witsch]\n\n* Added missing changelog entry.\n  [hannosch, woutervh]\n\n1.1 - 2009-06-03\n----------------\n\n* Added support for LinguaPlone language independent fields, by seamlessly\n  using a new TranslatableExtensionField when LP is installed.\n  [hannosch]\n\n* Added a proper interface to the IExtensionField.\n  [hannosch]\n\n* Adjusted tests for Plone 3.3.\n  [hannosch]\n\n* Minor adjustment in documentation: a) don't adapt the class in the example,\n  b) explain why named adapters are used.\n  [jensens]\n\n* Schema modifiers now also browserlayer-aware.\n  [jessesnyder]\n\n1.0 - 2008-07-17\n----------------\n\n* No changes since 1.0rc1.\n\n1.0rc1 - 2008-04-07\n-------------------\n\n* Added optional plone.browserlayer support. Extenders implementing\n  IBrowserLayerAwareExtender need to have a layer attribute. Those extenders\n  are taken into account only if the specified layer is active.\n  [jensens]\n\n1.0b1 - 2007-12-07\n------------------\n\n* Schema modifiers implementing ISchemaModifier are now responsible for\n  copying fields they modify. See README and the doc strings.\n  [fschulze]\n\n* Added a simple benchmark and made some optimizations by avoiding a lot\n  of field copying.\n  [fschulze, wiggy]\n\n* Use a marker interface instead of overrides.zcml - this means you don't\n  need to muck with overrides in dependent products.\n  [optilude]\n\n* Added code to allow addition of new schemata. We need an ordered\n  dictionary to not bork the order of the schemata.\n  [jensens]\n\n* Add a small benchmark utility.\n  [wichert]\n\n* Replace the high-level test with unit-tests and extend the test coverage.\n  [wichert]\n\n* Rewrite the README to be more human readable.\n  [wichert]\n\n\n1.0a1 - 2007-10-15\n------------------\n\n* First public release.",
+    "description": "Introduction\n============\n\nThis package allows you to modify an Archetypes schema, using simple\nadapters. This can be used to add new fields, reorder fields and fieldsets\nor make other changes.\n\nThe most common use of schema extension is to allow add-on products to\nenhance standard Plone content types, for example by adding an option\nthat can be set to toggle special behaviour.\n\nschemaextender hooks into the Archetypes framework by registering\nan ISchema adapter for BaseContent and BaseFolder, making it responsible\nfor providing the schema for all types derived from those classes. This\nincludes all standard Plone content types. Since only one ISchema adapter\ncan be active schemaextender provides its own mechanism to modify schemas\nusing named adapters. Named adapters are allowing to register more than one\nschemaextender per adapted interface.\n\nThere are three types of adapters available:\n\n* ISchemaExtender: using this adapter you can add new fields to a schema.\n\n* IOrderableSchemaExtender: this adapters makes it possible to both add\n  new fields and reorder fields. This is more costly than just adding new\n  fields.\n\n* IBrowserLayerAwareExtender: this adapters are making use of\n  plone.browserlayer, so that the extender is only available if a layer is\n  registered.\n\n* ISchemaModifier: this is a low-level hook that allows direct manipulation\n  of the schema. This can be very dangerous and should never be used if one\n  does not know exactly what she/he is doing!\n\n\nThe adapter types are documented in the ''interfaces.py'' file in\narchetypes.schemaextender.\n\n\nSimple example\n==============\n\nAs an example we will add a simple boolean field to the standard\nPlone document type. First we need to create a field class::\n\n     from Products.Archetypes.public import BooleanField\n     from archetypes.schemaextender.field import ExtensionField\n\n     class MyBooleanField(ExtensionField, BooleanField):\n         \"\"\"A trivial field.\"\"\"\n\nschemaextender can not use the standard Archetypes fields directly\nsince those rely on the class generation logic generating accessors\nand mutator methods. By using the ExtensionField mix-in class we can\nstill use them. Make sure the ExtensionField mix-in comes first, so it\nproperly overwrites the standard methods.\n\nNext we have to create an adapter that will add this field::\n\n    from zope.component import adapts\n    from zope.interface import implements\n    from archetypes.schemaextender.interfaces import ISchemaExtender\n    from Products.Archetypes.public import BooleanWidget\n    from Products.ATContentTypes.interfaces import IATDocument\n\n    class PageExtender(object):\n        adapts(IATDocument)\n        implements(ISchemaExtender)\n\n\n        fields = [\n            MyBooleanField(\"super_power\",\n            widget = BooleanWidget(\n                label=\"This page has super powers\")),\n                ]\n\n        def __init__(self, context):\n            self.context = context\n\n        def getFields(self):\n            return self.fields\n\nTry to store the fields on the class, that way they aren't created each\ntime the getFields method gets called. Generally you should make sure\ngetFields does as few things as possible, because it's called very often.\n\nThe final step is registering this adapter with the Zope component\narchitecture. Since we already declared the interface we provide and\nwhich type of object we adapt this can be done very quickly in\nconfigure.zcml (assuming you put the code above in a file extender.py)::\n\n    <configure xmlns=\"http://namespaces.zope.org/zope\"\n               xmlns:five=\"http://namespaces.zope.org/five\">\n\n        <include package=\"archetypes.schemaextender\" />\n        <adapter factory=\".extender.PageExtender\" />\n    </configure>\n\nCustom fields\n=============\n\nIf you want you can make more complicated field types as well. The only\nrequirement is that you need to have ExtensionField as the first parent\nclass for your field type. As an example here is a field that toggles a\nmarker interface on an object::\n\n    from zope.interface import Interface\n    from zope.interface import alsoProvides\n    from zope.interface import noLongerProvides\n    from Products.Archetypes.public import BooleanField\n    from archetypes.schemaextender.field import ExtensionField\n\n    def addMarkerInterface(obj, *ifaces):\n        for iface in ifaces:\n            if not iface.providedBy(obj):\n                alsoProvides(obj, iface)\n\n\n    def removeMarkerInterface(obj, *ifaces):\n        for iface in ifaces:\n            if iface.providedBy(obj):\n                noLongerProvides(obj, iface)\n\n\n    class ISuperPower(Interface):\n        \"\"\"Marker interface for classes that can do amazing things.\"\"\"\n\n\n    class InterfaceMarkerField(ExtensionField, BooleanField):\n        def get(self, instance, **kwargs):\n            return ISuperPower.providedBy(instance)\n\n        def getRaw(self, instance, **kwargs):\n            return ISuperPower.providedBy(instance)\n\n        def set(self, instance, value, **kwargs):\n            if value:\n                addMarkerInterface(instance, ISuperPower)\n            else:\n                removeMarkerInterface(instance, ISuperPower)\n\nLayer-aware example\n===================\n\nBy using ``archetypes.schemaextender.IBrowserLayerAwareExtender`` the\nextender is only applied if a specific browser layer is installed on the site.\n\n.. note ::\n\n        You should always use IBrowserLayerAwareExtender on configurations\n        where there can be multiple Plone sites on a single Zope application server.\n        Otherwise extenders are applied on every site, unconditionally.\n\nBelow is an example of ``extender.py`` which adds new field on *Dates* edit tab::\n\n        \"\"\"\n\n            Retrofit re-review dates to Archetypes schema.\n\n        \"\"\"\n\n        __docformat__ = \"epytext\"\n\n        from zope.component import adapts\n        from zope.interface import implements\n\n        from Products.Archetypes.public import BooleanWidget\n        from Products.ATContentTypes.interfaces import IATDocument\n        from Products.Archetypes import public as atapi\n        from Products.Archetypes.interfaces import IBaseContent\n\n        from archetypes.schemaextender.field import ExtensionField\n        from archetypes.schemaextender.interfaces import (\n          ISchemaExtender, IOrderableSchemaExtender, IBrowserLayerAwareExtender)\n\n        # Your add-on browserlayer\n        from your.package.interfaces import IAddOnInstalled\n\n        class ExtensionDateField(ExtensionField, atapi.DateTimeField):\n            \"\"\" Retrofitted date field \"\"\"\n\n\n        class RevisitExtender(object):\n            \"\"\" Include revisit date on all objects.\n\n            An example extended which will create a new field on Dates\n            tab between effective date and expiration date.\n            \"\"\"\n\n            # This extender will apply to all Archetypes based content\n            adapts(IBaseContent)\n\n            # We use both orderable and browser layer aware sensitive properties\n            implements(IOrderableSchemaExtender, IBrowserLayerAwareExtender)\n\n            # Don't do schema extending unless our add-on product is installed on Plone site\n            layer = IAddOnInstalled\n\n            fields = [\n                ExtensionDateField(\"revisitDate\",\n                    schemata=\"dates\",\n                    widget = atapi.CalendarWidget(\n                        label=\"Review Date\",\n                        description=(u\"When this date is reached, the content \"\n                                     u\"will be visible in the review task list\"),\n                        show_hm=False,\n                    ),\n                )\n            ]\n\n            def __init__(self, context):\n                self.context = context\n\n            def getOrder(self, schematas):\n                \"\"\" Manipulate the order in which fields appear.\n\n                @param schematas: Dictonary of schemata name -> field lists\n\n                @return: Dictionary of reordered field lists per schemata.\n                \"\"\"\n                schematas[\"dates\"] = ['effectiveDate', 'revisitDate', 'expirationDate',\n                                      'creation_date', 'modification_date']\n\n                return schematas\n\n            def getFields(self):\n                \"\"\"\n                @return: List of new fields we contribute to content.\n                \"\"\"\n                return self.fields\n\nNote: since the above example has two interfaces in its ``implements``\nline, you will get an error when your Zope instance starts up::\n\n        TypeError: Missing 'provides' attribute\n\nThis means we need to be more explicit in our zcml configuration and\nspecify which of the two interfaces is provided by our adapter::\n\n        <adapter factory=\".extender.RevisitExtender\"\n            provides=\"archetypes.schemaextender.interfaces.ISchemaExtender\" />\n\nChangelog\n=========\n\n2.1.8 (2018-01-30)\n------------------\n\nBug fixes:\n\n- Add Python 2 / 3 compatibility.  [maurits]\n\n\n2.1.7 (2017-03-09)\n------------------\n\nBug fixes:\n\n- Update docs about ``Products.ATContentTypes.interfaces`` import location.\n  [thet]\n\n- Fix imports from Globals that was removed in Zope4\n  [pbauer]\n\n2.1.6 (2016-08-11)\n------------------\n\nFixes:\n\n- Use zope.interface decorator.\n  [gforcada]\n\n\n2.1.5 (2015-03-11)\n------------------\n\n- Ported tests to plone.app.testing\n\n\n2.1.4 (2014-09-08)\n------------------\n\n- archetypes.schemaextender assumes presence of getRaw method which\n  ComputedField does not provide\n  https://dev.plone.org/ticket/11315\n  [anthonygerrard]\n\n2.1.3 (2014-02-26)\n------------------\n\n- Fix tests [kiorky]\n\n2.1.2 (2013-01-13)\n------------------\n\n- PEP8 changes, documentation updates.\n  [maurits]\n\n2.1.1 - 2011-07-04\n------------------\n\n* Acquire request object via local site hook if object is not\n  acquisition-wrapped (in ``cachingInstanceSchemaFactory``). This\n  fixes caching issues with objects rendered using DTML. Note that\n  this is likely a bug in the ``DocumentTemplate`` code. Ideally, the\n  issue should be resolved there.\n  [malthe]\n\n2.1 - 2011-01-03\n----------------\n\n* Use plone.uuid to look up content UUIDs.\n  [toutpt, davisagli]\n\n* Added example of how to use ordered extenders and browser layer aware\n  extenders.\n  [miohtama]\n\n2.0.3 - 2010-07-07\n------------------\n\n* Added back the ``caching.zcml`` file, but have it load ``configure.zcml``.\n  This makes it easier to write Plone 3 / 4 compatible code.\n  [hannosch]\n\n* Factored out the condition to disable the cache during tests into a module\n  global variable called ``CACHE_ENABLED``.\n  [hannosch]\n\n2.0.2 - 2010-06-13\n------------------\n\n* Changed the schema cache again, to use the id() only as a fallback when there\n  is not yet an UID assigned. The id() is unstable with Acquisition wrappers\n  and ZODB level ghosting of objects. We provide an explicit API for disabling\n  the cache instead.\n  [hannosch]\n\n* Avoid deprecation warnings under Zope 2.13.\n  [hannosch]\n\n* Change the schema cache key to avoid an issue during content migration when\n  there might be two objects that have the same UID but different schemata.\n  Now concatenating the Python id() with the UID (id() alone isn't good enough,\n  as two objects with non-overlapping lifetimes may have the same id() value).\n  Fixes http://dev.plone.org/plone/ticket/10637.\n  [davisagli]\n\n2.0.1 - 2010-05-23\n------------------\n\n* Disable the schema cache during test runs.\n  [hannosch]\n\n2.0 - 2010-05-23\n----------------\n\n* Removed the ``caching.zcml`` and enabled caching by default. You can use\n  a different caching implementation by using an ``overrides.zcml`` file.\n  [hannosch]\n\n* Added ``z3c.autoinclude`` entry point to mark this as a Plone plugin.\n  [hannosch]\n\n1.6 - 2010-03-22\n----------------\n\n* Fix index accessor to support setting custom accessor methods.\n  [witsch]\n\n1.5 - 2009-11-18\n----------------\n\n* Fixed test failure in usage.txt.\n  [hannosch]\n\n* Standardized package metadata layout.\n  [hannosch]\n\n1.4 - 2009-11-05\n----------------\n\n* Fix schema copying to also include properties and layers.\n  [maerteijn]\n\n1.3 - 2009-10-20\n----------------\n\n* Refactored the TranslatableExtensionField getMutator to directly reuse the\n  generatedMutatorWrapper from LinguaPlone itself. This avoids duplicating the\n  logic and lets schemaextender fields use the special reference field\n  handling introduced in LinguaPlone. This change introduces a version\n  requirement for LinguaPlone of at least 3.0b6.\n  [hannosch]\n\n1.2 - 2009-10-10\n----------------\n\n* Add `ISchema` adapter using simple caching on the request in order to\n  avoid redundant calculation of the (extended) schema.  The adapter is\n  not enabled by default and can be activated by loading `caching.zcml`.\n  [witsch]\n\n* Avoid using the overridden `+` operator when copying the original schema\n  as this will needlessly validate all fields again.\n  [witsch]\n\n* Added missing changelog entry.\n  [hannosch, woutervh]\n\n1.1 - 2009-06-03\n----------------\n\n* Added support for LinguaPlone language independent fields, by seamlessly\n  using a new TranslatableExtensionField when LP is installed.\n  [hannosch]\n\n* Added a proper interface to the IExtensionField.\n  [hannosch]\n\n* Adjusted tests for Plone 3.3.\n  [hannosch]\n\n* Minor adjustment in documentation: a) don't adapt the class in the example,\n  b) explain why named adapters are used.\n  [jensens]\n\n* Schema modifiers now also browserlayer-aware.\n  [jessesnyder]\n\n1.0 - 2008-07-17\n----------------\n\n* No changes since 1.0rc1.\n\n1.0rc1 - 2008-04-07\n-------------------\n\n* Added optional plone.browserlayer support. Extenders implementing\n  IBrowserLayerAwareExtender need to have a layer attribute. Those extenders\n  are taken into account only if the specified layer is active.\n  [jensens]\n\n1.0b1 - 2007-12-07\n------------------\n\n* Schema modifiers implementing ISchemaModifier are now responsible for\n  copying fields they modify. See README and the doc strings.\n  [fschulze]\n\n* Added a simple benchmark and made some optimizations by avoiding a lot\n  of field copying.\n  [fschulze, wiggy]\n\n* Use a marker interface instead of overrides.zcml - this means you don't\n  need to muck with overrides in dependent products.\n  [optilude]\n\n* Added code to allow addition of new schemata. We need an ordered\n  dictionary to not bork the order of the schemata.\n  [jensens]\n\n* Add a small benchmark utility.\n  [wichert]\n\n* Replace the high-level test with unit-tests and extend the test coverage.\n  [wichert]\n\n* Rewrite the README to be more human readable.\n  [wichert]\n\n\n1.0a1 - 2007-10-15\n------------------\n\n* First public release.\n\n\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -29,10 +30,15 @@
     "name": "archetypes.schemaextender",
     "platform": "",
     "project_url": "https://pypi.org/project/archetypes.schemaextender/",
-    "release_url": "https://pypi.org/project/archetypes.schemaextender/2.1.7/",
+    "release_url": "https://pypi.org/project/archetypes.schemaextender/2.1.8/",
+    "requires_dist": [
+      "plone.uuid",
+      "six",
+      "setuptools"
+    ],
     "requires_python": "",
     "summary": "Dynamically extend Archetypes schemas with named adapters.",
-    "version": "2.1.7"
+    "version": "2.1.8"
   },
   "releases": {
     "1.0": [
@@ -42,7 +48,7 @@
           "md5": "a8915df30933d7e245d82d8da53aed0d",
           "sha256": "8f95090744b3fc4fe86702d76f86397611651eebffc3979d53c83fb2fff7177a"
         },
-        "downloads": 17231,
+        "downloads": -1,
         "filename": "archetypes.schemaextender-1.0.tar.gz",
         "has_sig": false,
         "md5_digest": "a8915df30933d7e245d82d8da53aed0d",
@@ -60,7 +66,7 @@
           "md5": "a25d575a7a1a0932e8ab96f9e2f40f04",
           "sha256": "96c62d19889276a2897e0b753c4bf1d129f9a51f2ac3e7f46dd5fb724df0db14"
         },
-        "downloads": 4342,
+        "downloads": -1,
         "filename": "archetypes.schemaextender-1.0a1-py2.4.egg",
         "has_sig": false,
         "md5_digest": "a25d575a7a1a0932e8ab96f9e2f40f04",
@@ -76,7 +82,7 @@
           "md5": "4a2d659ab7465bc3a58b5076a5dec13b",
           "sha256": "8b7a975e575eef0c8e35b18a20e3390ec8cc3089cef91b0b3b18ff60ebf8a446"
         },
-        "downloads": 3533,
+        "downloads": -1,
         "filename": "archetypes.schemaextender-1.0a1.tar.gz",
         "has_sig": false,
         "md5_digest": "4a2d659ab7465bc3a58b5076a5dec13b",
@@ -94,7 +100,7 @@
           "md5": "ca8d221b34e997e885d40de3470408f2",
           "sha256": "2424060b29c9920cd4b3bd7b5ec2f203366bd31e22b55288da2c010fb3b14f0c"
         },
-        "downloads": 5254,
+        "downloads": -1,
         "filename": "archetypes.schemaextender-1.0b1.tar.gz",
         "has_sig": false,
         "md5_digest": "ca8d221b34e997e885d40de3470408f2",
@@ -112,7 +118,7 @@
           "md5": "4699c23f83d6abe4d4e5d7df9670357d",
           "sha256": "93bebd612a71428a602dd59f0204508390281cf1707b63395740fecbadc7883c"
         },
-        "downloads": 4362,
+        "downloads": -1,
         "filename": "archetypes.schemaextender-1.0rc1-py2.5.egg",
         "has_sig": false,
         "md5_digest": "4699c23f83d6abe4d4e5d7df9670357d",
@@ -128,7 +134,7 @@
           "md5": "bf62c5a156a72e739539d5326febbeb1",
           "sha256": "4cb229cacccdc664688a34dbc70bc7049c8f1494c6e849e07ac81096ce99f7b2"
         },
-        "downloads": 6014,
+        "downloads": -1,
         "filename": "archetypes.schemaextender-1.0rc1.tar.gz",
         "has_sig": false,
         "md5_digest": "bf62c5a156a72e739539d5326febbeb1",
@@ -146,7 +152,7 @@
           "md5": "c58959b7258e2252019731efd46cdf06",
           "sha256": "8aa04ea68cc6bd84d4383b2f73ab5c02c6acfd6605604706758f9331610ac19f"
         },
-        "downloads": 11107,
+        "downloads": -1,
         "filename": "archetypes.schemaextender-1.1.zip",
         "has_sig": true,
         "md5_digest": "c58959b7258e2252019731efd46cdf06",
@@ -164,7 +170,7 @@
           "md5": "b543d7fb02e67259943d25661ed1b0fe",
           "sha256": "5cd0921b1cd640a544a8c24c8dbe227aaa3be90feff38f7d01511ec385f67591"
         },
-        "downloads": 4049,
+        "downloads": -1,
         "filename": "archetypes.schemaextender-1.2.zip",
         "has_sig": true,
         "md5_digest": "b543d7fb02e67259943d25661ed1b0fe",
@@ -182,7 +188,7 @@
           "md5": "c75fa9a3c563f6f7f8a78a555dd85344",
           "sha256": "beeaddcd049020b456783ff0b687c3ae833ae447bbfd16afc972810b5b82ebc1"
         },
-        "downloads": 4655,
+        "downloads": -1,
         "filename": "archetypes.schemaextender-1.3.zip",
         "has_sig": true,
         "md5_digest": "c75fa9a3c563f6f7f8a78a555dd85344",
@@ -200,7 +206,7 @@
           "md5": "dc5efb46b3950a99a353c86816d4c5f4",
           "sha256": "0cffc88b247b9b45bce509cf03dd50db98aec2eceec98a29e156553fd8012b84"
         },
-        "downloads": 5043,
+        "downloads": -1,
         "filename": "archetypes.schemaextender-1.4.zip",
         "has_sig": true,
         "md5_digest": "dc5efb46b3950a99a353c86816d4c5f4",
@@ -218,7 +224,7 @@
           "md5": "3661134e7419f8ab5723711953e45bc7",
           "sha256": "ae4fdbfa5370264e48d4cfc81ac5e7d9332e4b70a67b3261cfd31ab84dc839c8"
         },
-        "downloads": 12023,
+        "downloads": -1,
         "filename": "archetypes.schemaextender-1.5.zip",
         "has_sig": false,
         "md5_digest": "3661134e7419f8ab5723711953e45bc7",
@@ -236,7 +242,7 @@
           "md5": "6679b05ccdcdb5254a23328b867c18ce",
           "sha256": "04283faf136b357c4be08be1db539d30746e3263d7f0306945767f7b830ee4a4"
         },
-        "downloads": 9736,
+        "downloads": -1,
         "filename": "archetypes.schemaextender-1.6.zip",
         "has_sig": true,
         "md5_digest": "6679b05ccdcdb5254a23328b867c18ce",
@@ -254,7 +260,7 @@
           "md5": "5e9ec70171ab7bebc6cef32c50aa6970",
           "sha256": "ea1afd94b856f28190379590837d1c2f15c25dc7f078fb88009f810741b25d47"
         },
-        "downloads": 3550,
+        "downloads": -1,
         "filename": "archetypes.schemaextender-2.0.zip",
         "has_sig": false,
         "md5_digest": "5e9ec70171ab7bebc6cef32c50aa6970",
@@ -272,7 +278,7 @@
           "md5": "eb8e9e3136f3394a2e290a4914719c06",
           "sha256": "3fb3b8a83523952e99b09531838d8cf59d79b63467429a194f01245ca72ec4ac"
         },
-        "downloads": 4604,
+        "downloads": -1,
         "filename": "archetypes.schemaextender-2.0.1.zip",
         "has_sig": false,
         "md5_digest": "eb8e9e3136f3394a2e290a4914719c06",
@@ -290,7 +296,7 @@
           "md5": "79d39dd2f90893ca16c18a1d75afcab2",
           "sha256": "27e04a07a4223b8305f5451e2359513ad9d55d23290b70bb7d07fd5662116e65"
         },
-        "downloads": 4778,
+        "downloads": -1,
         "filename": "archetypes.schemaextender-2.0.2.zip",
         "has_sig": false,
         "md5_digest": "79d39dd2f90893ca16c18a1d75afcab2",
@@ -308,7 +314,7 @@
           "md5": "b4471603c33462d0fd7fff7e51930e67",
           "sha256": "8f739eb09801fe58ec1a6e8cb7d4f4ef717512fb4258d08ac144c8aa853cc128"
         },
-        "downloads": 27110,
+        "downloads": -1,
         "filename": "archetypes.schemaextender-2.0.3.zip",
         "has_sig": false,
         "md5_digest": "b4471603c33462d0fd7fff7e51930e67",
@@ -326,7 +332,7 @@
           "md5": "2c3b027d40eb1ac81718fe56212d4cb3",
           "sha256": "05d3639dc51a5782d2811ac87ebc9f4fe23d3e0bd2321f2842e77ebe7e0b8b01"
         },
-        "downloads": 5905,
+        "downloads": -1,
         "filename": "archetypes.schemaextender-2.0.4.zip",
         "has_sig": false,
         "md5_digest": "2c3b027d40eb1ac81718fe56212d4cb3",
@@ -344,7 +350,7 @@
           "md5": "b681acc4e8ca0f60b04e7f509f3c529f",
           "sha256": "939efce5dd668aaf20f1c744ce866f2cedbcb33b35262ae76475106694fdc12b"
         },
-        "downloads": 8741,
+        "downloads": -1,
         "filename": "archetypes.schemaextender-2.1.zip",
         "has_sig": false,
         "md5_digest": "b681acc4e8ca0f60b04e7f509f3c529f",
@@ -362,7 +368,7 @@
           "md5": "3659dd72db341b629308d90f135031df",
           "sha256": "7ba5cefafbe7e97a9c33172ba16852138d33b05addf6b5f61ddb6b82f2154449"
         },
-        "downloads": 37023,
+        "downloads": -1,
         "filename": "archetypes.schemaextender-2.1.1.zip",
         "has_sig": false,
         "md5_digest": "3659dd72db341b629308d90f135031df",
@@ -380,7 +386,7 @@
           "md5": "865aa5b4b6b26e3bb650d89ddfe77c87",
           "sha256": "d151e3298c4ec19d9b6c2eb5fff807dd24ff051cc4170d099d41d4b7998c4715"
         },
-        "downloads": 25735,
+        "downloads": -1,
         "filename": "archetypes.schemaextender-2.1.2.zip",
         "has_sig": false,
         "md5_digest": "865aa5b4b6b26e3bb650d89ddfe77c87",
@@ -398,7 +404,7 @@
           "md5": "105f2f8e9c18f34bd09d1a90a10c91d2",
           "sha256": "8dc8abf8b5d54e198f87f7d71edddd556c9c07be2e20e454bb997dccd68255e8"
         },
-        "downloads": 9169,
+        "downloads": -1,
         "filename": "archetypes.schemaextender-2.1.3.zip",
         "has_sig": false,
         "md5_digest": "105f2f8e9c18f34bd09d1a90a10c91d2",
@@ -416,7 +422,7 @@
           "md5": "18ec710a90e10af48d5db86aa02fb0e7",
           "sha256": "a280f058f801236efdcf56cbf3f615e328cefcb2e8d7d834581151cab4dfa7e5"
         },
-        "downloads": 8572,
+        "downloads": -1,
         "filename": "archetypes.schemaextender-2.1.4.zip",
         "has_sig": false,
         "md5_digest": "18ec710a90e10af48d5db86aa02fb0e7",
@@ -434,7 +440,7 @@
           "md5": "3276800ab65c09e10b45541b35299419",
           "sha256": "6e66a5fd74d4e6da444cb2d85daae9b24dd8e532ebf5f84407818ed03c30e17c"
         },
-        "downloads": 17437,
+        "downloads": -1,
         "filename": "archetypes.schemaextender-2.1.5.zip",
         "has_sig": false,
         "md5_digest": "3276800ab65c09e10b45541b35299419",
@@ -452,7 +458,7 @@
           "md5": "c6d651d2e44ab6d8b983b965bbd4fb43",
           "sha256": "a5dc2dcf37f673900631c8cb22e5cfe5506037d99d870394d38561cb0c5e63cd"
         },
-        "downloads": 1551,
+        "downloads": -1,
         "filename": "archetypes.schemaextender-2.1.6.tar.gz",
         "has_sig": false,
         "md5_digest": "c6d651d2e44ab6d8b983b965bbd4fb43",
@@ -470,7 +476,7 @@
           "md5": "4ba80586f8bdf72c07b05c691ff49efb",
           "sha256": "c19dea782af608719c739e02c76e569417d57f52427d4af678432fa4b59387f0"
         },
-        "downloads": 99,
+        "downloads": -1,
         "filename": "archetypes.schemaextender-2.1.7.tar.gz",
         "has_sig": false,
         "md5_digest": "4ba80586f8bdf72c07b05c691ff49efb",
@@ -480,24 +486,74 @@
         "upload_time": "2017-03-09T21:03:18",
         "url": "https://files.pythonhosted.org/packages/78/03/491c926676496d0608aaf4ab1dcb356ca2172e35a4d0b69ecdd450db0590/archetypes.schemaextender-2.1.7.tar.gz"
       }
+    ],
+    "2.1.8": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "56002e9fbe6c259d08a0422318cc63e2",
+          "sha256": "795b951396f32473b0f5d441fdc8ca2d68c64cb2c03ff2091698fe46d9827c17"
+        },
+        "downloads": -1,
+        "filename": "archetypes.schemaextender-2.1.8-py2-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "56002e9fbe6c259d08a0422318cc63e2",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2",
+        "size": 29328,
+        "upload_time": "2018-01-30T09:45:26",
+        "url": "https://files.pythonhosted.org/packages/9b/60/2f12edcb674be48352cef0774a81ba37744c566dfe84d5112a242c09ac20/archetypes.schemaextender-2.1.8-py2-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "b05f50af8cf9434b7dfda8548a332853",
+          "sha256": "82e74c72dea15e9af5f13701b2892e8bc09ab7d404917e71cd60dafe7106e484"
+        },
+        "downloads": -1,
+        "filename": "archetypes.schemaextender-2.1.8.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b05f50af8cf9434b7dfda8548a332853",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 28045,
+        "upload_time": "2018-01-30T09:45:28",
+        "url": "https://files.pythonhosted.org/packages/0a/4c/9a73ccec94ffbd953f7a7903db094282d06680d87c856f423d769f651cca/archetypes.schemaextender-2.1.8.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "4ba80586f8bdf72c07b05c691ff49efb",
-        "sha256": "c19dea782af608719c739e02c76e569417d57f52427d4af678432fa4b59387f0"
+        "md5": "56002e9fbe6c259d08a0422318cc63e2",
+        "sha256": "795b951396f32473b0f5d441fdc8ca2d68c64cb2c03ff2091698fe46d9827c17"
       },
-      "downloads": 99,
-      "filename": "archetypes.schemaextender-2.1.7.tar.gz",
+      "downloads": -1,
+      "filename": "archetypes.schemaextender-2.1.8-py2-none-any.whl",
       "has_sig": false,
-      "md5_digest": "4ba80586f8bdf72c07b05c691ff49efb",
+      "md5_digest": "56002e9fbe6c259d08a0422318cc63e2",
+      "packagetype": "bdist_wheel",
+      "python_version": "py2",
+      "size": 29328,
+      "upload_time": "2018-01-30T09:45:26",
+      "url": "https://files.pythonhosted.org/packages/9b/60/2f12edcb674be48352cef0774a81ba37744c566dfe84d5112a242c09ac20/archetypes.schemaextender-2.1.8-py2-none-any.whl"
+    },
+    {
+      "comment_text": "",
+      "digests": {
+        "md5": "b05f50af8cf9434b7dfda8548a332853",
+        "sha256": "82e74c72dea15e9af5f13701b2892e8bc09ab7d404917e71cd60dafe7106e484"
+      },
+      "downloads": -1,
+      "filename": "archetypes.schemaextender-2.1.8.tar.gz",
+      "has_sig": false,
+      "md5_digest": "b05f50af8cf9434b7dfda8548a332853",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 27894,
-      "upload_time": "2017-03-09T21:03:18",
-      "url": "https://files.pythonhosted.org/packages/78/03/491c926676496d0608aaf4ab1dcb356ca2172e35a4d0b69ecdd450db0590/archetypes.schemaextender-2.1.7.tar.gz"
+      "size": 28045,
+      "upload_time": "2018-01-30T09:45:28",
+      "url": "https://files.pythonhosted.org/packages/0a/4c/9a73ccec94ffbd953f7a7903db094282d06680d87c856f423d769f651cca/archetypes.schemaextender-2.1.8.tar.gz"
     }
   ]
 }
