@@ -10,7 +10,7 @@
       "Programming Language :: Python :: 2.7",
       "Programming Language :: Python :: 3"
     ],
-    "description": ".. image:: https://img.shields.io/pypi/v/rwt.svg\n   :target: https://pypi.org/project/rwt\n\n.. image:: https://img.shields.io/pypi/pyversions/rwt.svg\n\n.. image:: https://img.shields.io/travis/jaraco/rwt/master.svg\n   :target: http://travis-ci.org/jaraco/rwt\n\n.. image:: https://readthedocs.org/projects/rwt/badge/?version=latest\n   :target: http://rwt.readthedocs.io/en/latest/?badge=latest\n\n/ru\u02d0t/\n\nRWT (Run With This) provides on-demand dependency resolution,\nmaking packages available for the duration of an interpreter\nsession.\n\n- Allows declaration of dependencies at runtime.\n- Downloads missing dependencies and makes their packages available for import.\n- Installs packages to a special staging location such that they're not installed after the process exits.\n- Relies on pip to cache downloads of such packages for reuse.\n- Supersedes installed packages when required.\n- Relies on packages already satisfied [1]_.\n- Re-uses the pip tool chain for package installation.\n\nRWT is not intended to solve production dependency management, but does aim to address the other, one-off scenarios around dependency management:\n\n- build setup\n- test runners\n- just in time script running\n- interactive development\n\nRWT is a compliment to Pip and Virtualenv and Setuptools, intended to more\nreadily address the on-demand needs and supersede some\nfeatures like ``setup_requires``.\n\n.. [1] Except when a requirements file is used.\n\nUsage\n=====\n\n- as script launcher\n- as runtime dependency context manager\n- as interactive interpreter in dependency context\n- as module launcher (akin to `python -m`)\n\nInvoke ``rwt`` from the command-line using the console entry\nscript (simply ``rwt``) or using the module executable (\n``python -m rwt``).\n\nParameters following rwt are passed directly to ``pip install``,\nso ``rwt numpy`` will install ``numpy`` (reporting any work done\nduring the install) and ``rwt -q -r requirements.txt`` will quietly\ninstall all the requirements listed in a file called requirements.txt.\n\nFollowing the parameters to ``pip install``, one may optionally\ninclude a ``--`` after which any parameters will be passed\nto a Python interpreter in the context.\n\nExamples\n========\n\nThe ``examples`` folder in this project includes some examples demonstrating\nthe power and usefulness of the project. Read the docs on those examples\nfor instructions.\n\nIn many of these examples, the option ``-q`` is passed to ``rwt``\nto suppress the output from pip.\n\nInteractive Interpreter\n-----------------------\n\nRWT also offers a painless way to run a Python interactive\ninterpreter in the context of certain dependencies::\n\n    $ /clean-install/python -m rwt -q boto\n    >>> import boto\n    >>>\n\n\nCommand Runner\n--------------\n\nNote that everything after the -- is passed to the python invocation,\nso it's possible to have a one-liner that runs under a dependency\ncontext::\n\n    $ python -m rwt -q requests -- -c \"import requests; print(requests.get('https://pypi.org/project/rwt').status_code)\"\n    200\n\nScript Runner\n-------------\n\nLet's say you have a script that has a one-off purpose. It's either not\npart of a library, where dependencies are normally declared, or it is\nnormally executed outside the context of that library. Still, that script\nprobably has dependencies, say on `requests\n<https://pypi.org/project/requests>`_. Here's how you can use rwt to\ndeclare the dependencies and launch the script in a context where\nthose dependencies have been resolved.\n\nFirst, add a ``__requires__`` directive at the head of the script::\n\n    #!/usr/bin/env python\n\n    __requires__ = ['requests']\n\n    import requests\n\n    req = requests.get('https://pypi.org/project/rwt')\n    print(req.status_code)\n\nThen, simply invoke that script with rwt::\n\n    $ python -m rwt -q -- myscript.py\n    200\n\nThe format for requirements must follow `PEP 508 <https://www.python.org/dev/peps/pep-0508/>`_.\n\nNote that URLs specifiers are not supported by pip, but ``rwt`` supports a\nglobal ``__dependency_links__`` attribute which can be used, for example, to\ninstall requirement from a project VCS URL::\n\n    #!/usr/bin/env python\n\n    __requires__ = ['foo==0.42']\n    __dependency_links__ = ['git+ssh://git@example.com/repo.git#egg=foo-0.42']\n\n    [...]\n\n``rwt`` also recognizes a global ``__index_url__`` attribute. If present,\nthis value will supply ``--index-url`` to pip with the attribute value,\nallowing a script to specify a custom package index::\n\n    #!/usr/bin/env python\n\n    __requires__ = ['my_private_package']\n    __index_url__ = 'https://my.private.index/'\n\n    import my_private_package\n    ...\n\nReplacing setup_requires\n------------------------\n\nFollowing the script example, you can make your setup.py file\ncompatible with ``rwt`` by declaring your depenedencies in\nthe ``__requires__`` directive::\n\n    #!/usr/bin/env python\n\n    __requires__ = ['setuptools', 'setuptools_scm']\n\n    import setuptools\n\n    setuptools.setup(\n        ...\n        setup_requires=__requires__,\n    )\n\nWhen invoked with rwt, the dependencies will be assured before\nthe script is run, or if run with setuptools, the dependencies\nwill be loaded using the older technique, so the script is\nbackward compatible.\n\nReplacing tests_require\n-----------------------\n\nAlthough this example is included for completeness,\nbecause the technique is somewhat clumsy, the\nauthor currently recommends using ``tox`` for running\ntests except in extremely lean environments.\n\nYou can also replace tests_require. Consider a package that\nruns tests using ``setup.py test`` and relies on the\n``tests_require`` directive to resolve dependencies needed\nduring testing. Simply declare your dependencies in a\nseparate file, e.g. \"tests/requirements.txt\"::\n\n    cat > tests/requiremenst.txt\n    pytest\n\nFor compatibility, expose those same requirements as\ntests_require in setup.py::\n\n    with io.open('tests/requirements.txt') as tr:\n        tests_require = [\n        \tline.rstrip()\n        \tfor line in tr\n        \tif re.match('\\w+', line)\n        ]\n\n    setuptools.setup(\n        ...\n        tests_require=tests_require,\n    )\n\nThen invoke tests with rwt::\n\n    $ python -m rwt -r tests/requirements.txt -- setup.py test\n\nWhile still supporting the old technique::\n\n    $ python setup.py test\n\nHow Does It Work\n================\n\nRWT effectively does the following:\n\n- ``pip install -t $TMPDIR``\n- ``PYTHONPATH=$TMPDIR python``\n- cleanup\n\nFor specifics, see `rwt.run()\n<https://github.com/jaraco/rwt/blob/master/rwt/__init__.py#L9-L16>`_.\n\nIntegration\n===========\n\nThe author created this package with the intention of demonstrating\nthe capability before integrating it directly with pip in a command\nsuch as ``pip run``. After proposing the change, the idea was largely\nrejected in `pip 3971 <https://github.com/pypa/pip/issues/3971>`_.\n\nIf you would like to see this functionality made available in pip,\nplease upvote or comment in that ticket.\n\nVersioning\n==========\n\nRWT uses semver, so you can use this library with\nconfidence about the stability of the interface, even\nduring periods of great flux.\n\nTesting\n=======\n\nInvoke tests with ``tox``.\n\n\n",
+    "description": ".. image:: https://img.shields.io/pypi/v/rwt.svg\n   :target: https://pypi.org/project/rwt\n\n.. image:: https://img.shields.io/pypi/pyversions/rwt.svg\n\n.. image:: https://img.shields.io/travis/jaraco/rwt/master.svg\n   :target: https://travis-ci.org/jaraco/rwt\n\n.. image:: https://readthedocs.org/projects/rwt/badge/?version=latest\n   :target: https://rwt.readthedocs.io/en/latest/?badge=latest\n\n/ru\u02d0t/\n\nRWT (Run With This) provides on-demand dependency resolution,\nmaking packages available for the duration of an interpreter\nsession.\n\n- Allows declaration of dependencies at runtime.\n- Downloads missing dependencies and makes their packages available for import.\n- Installs packages to a special staging location such that they're not installed after the process exits.\n- Relies on pip to cache downloads of such packages for reuse.\n- Supersedes installed packages when required.\n- Relies on packages already satisfied [1]_.\n- Re-uses the pip tool chain for package installation.\n\nRWT is not intended to solve production dependency management, but does aim to address the other, one-off scenarios around dependency management:\n\n- build setup\n- test runners\n- just in time script running\n- interactive development\n\nRWT is a compliment to Pip and Virtualenv and Setuptools, intended to more\nreadily address the on-demand needs and supersede some\nfeatures like ``setup_requires``.\n\n.. [1] Except when a requirements file is used.\n\nUsage\n=====\n\n- as script launcher\n- as runtime dependency context manager\n- as interactive interpreter in dependency context\n- as module launcher (akin to `python -m`)\n\nInvoke ``rwt`` from the command-line using the console entry\nscript (simply ``rwt``) or using the module executable (\n``python -m rwt``).\n\nParameters following rwt are passed directly to ``pip install``,\nso ``rwt numpy`` will install ``numpy`` (reporting any work done\nduring the install) and ``rwt -q -r requirements.txt`` will quietly\ninstall all the requirements listed in a file called requirements.txt.\n\nFollowing the parameters to ``pip install``, one may optionally\ninclude a ``--`` after which any parameters will be passed\nto a Python interpreter in the context.\n\nExamples\n========\n\nThe ``examples`` folder in this project includes some examples demonstrating\nthe power and usefulness of the project. Read the docs on those examples\nfor instructions.\n\nIn many of these examples, the option ``-q`` is passed to ``rwt``\nto suppress the output from pip.\n\nInteractive Interpreter\n-----------------------\n\nRWT also offers a painless way to run a Python interactive\ninterpreter in the context of certain dependencies::\n\n    $ /clean-install/python -m rwt -q boto\n    >>> import boto\n    >>>\n\n\nCommand Runner\n--------------\n\nNote that everything after the -- is passed to the python invocation,\nso it's possible to have a one-liner that runs under a dependency\ncontext::\n\n    $ python -m rwt -q requests -- -c \"import requests; print(requests.get('https://pypi.org/project/rwt').status_code)\"\n    200\n\nScript Runner\n-------------\n\nLet's say you have a script that has a one-off purpose. It's either not\npart of a library, where dependencies are normally declared, or it is\nnormally executed outside the context of that library. Still, that script\nprobably has dependencies, say on `requests\n<https://pypi.org/project/requests>`_. Here's how you can use rwt to\ndeclare the dependencies and launch the script in a context where\nthose dependencies have been resolved.\n\nFirst, add a ``__requires__`` directive at the head of the script::\n\n    #!/usr/bin/env python\n\n    __requires__ = ['requests']\n\n    import requests\n\n    req = requests.get('https://pypi.org/project/rwt')\n    print(req.status_code)\n\nThen, simply invoke that script with rwt::\n\n    $ python -m rwt -q -- myscript.py\n    200\n\nThe format for requirements must follow `PEP 508 <https://www.python.org/dev/peps/pep-0508/>`_.\n\nNote that URLs specifiers are not supported by pip, but ``rwt`` supports a\nglobal ``__dependency_links__`` attribute which can be used, for example, to\ninstall requirement from a project VCS URL::\n\n    #!/usr/bin/env python\n\n    __requires__ = ['foo==0.42']\n    __dependency_links__ = ['git+ssh://git@example.com/repo.git#egg=foo-0.42']\n\n    [...]\n\n``rwt`` also recognizes a global ``__index_url__`` attribute. If present,\nthis value will supply ``--index-url`` to pip with the attribute value,\nallowing a script to specify a custom package index::\n\n    #!/usr/bin/env python\n\n    __requires__ = ['my_private_package']\n    __index_url__ = 'https://my.private.index/'\n\n    import my_private_package\n    ...\n\nReplacing setup_requires\n------------------------\n\nFollowing the script example, you can make your setup.py file\ncompatible with ``rwt`` by declaring your depenedencies in\nthe ``__requires__`` directive::\n\n    #!/usr/bin/env python\n\n    __requires__ = ['setuptools', 'setuptools_scm']\n\n    import setuptools\n\n    setuptools.setup(\n        ...\n        setup_requires=__requires__,\n    )\n\nWhen invoked with rwt, the dependencies will be assured before\nthe script is run, or if run with setuptools, the dependencies\nwill be loaded using the older technique, so the script is\nbackward compatible.\n\nReplacing tests_require\n-----------------------\n\nAlthough this example is included for completeness,\nbecause the technique is somewhat clumsy, the\nauthor currently recommends using ``tox`` for running\ntests except in extremely lean environments.\n\nYou can also replace tests_require. Consider a package that\nruns tests using ``setup.py test`` and relies on the\n``tests_require`` directive to resolve dependencies needed\nduring testing. Simply declare your dependencies in a\nseparate file, e.g. \"tests/requirements.txt\"::\n\n    cat > tests/requiremenst.txt\n    pytest\n\nFor compatibility, expose those same requirements as\ntests_require in setup.py::\n\n    with io.open('tests/requirements.txt') as tr:\n        tests_require = [\n        \tline.rstrip()\n        \tfor line in tr\n        \tif re.match('\\w+', line)\n        ]\n\n    setuptools.setup(\n        ...\n        tests_require=tests_require,\n    )\n\nThen invoke tests with rwt::\n\n    $ python -m rwt -r tests/requirements.txt -- setup.py test\n\nWhile still supporting the old technique::\n\n    $ python setup.py test\n\nSupplying parameters to Pip\n---------------------------\n\nIf you've been using ``rwt``, you may have defined some requirements\nin the ``__requires__`` of a script, but now you wish to install those\nto a more permanent environment. rwt provides a routine to facilitate\nthis case:\n\n    $ python -m rwt.read-deps script.py\n    my_dependency\n\nIf you're on Unix, you may pipe this result directly to pip:\n\n    $ pip install $(python -m rwt.read-deps script.py)\n\nHow Does It Work\n================\n\nRWT effectively does the following:\n\n- ``pip install -t $TMPDIR``\n- ``PYTHONPATH=$TMPDIR python``\n- cleanup\n\nFor specifics, see `rwt.run()\n<https://github.com/jaraco/rwt/blob/master/rwt/__init__.py#L9-L16>`_.\n\nIntegration\n===========\n\nThe author created this package with the intention of demonstrating\nthe capability before integrating it directly with pip in a command\nsuch as ``pip run``. After proposing the change, the idea was largely\nrejected in `pip 3971 <https://github.com/pypa/pip/issues/3971>`_.\n\nIf you would like to see this functionality made available in pip,\nplease upvote or comment in that ticket.\n\nVersioning\n==========\n\nRWT uses semver, so you can use this library with\nconfidence about the stability of the interface, even\nduring periods of great flux.\n\nTesting\n=======\n\nInvoke tests with ``tox``.\n\n\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -26,10 +26,9 @@
     "name": "rwt",
     "platform": "",
     "project_url": "https://pypi.org/project/rwt/",
-    "release_url": "https://pypi.org/project/rwt/3.1/",
+    "release_url": "https://pypi.org/project/rwt/3.2/",
     "requires_dist": [
       "collective.checkdocs; extra == 'testing'",
-      "pytest-sugar; extra == 'testing'",
       "pytest (>=2.8); extra == 'testing'",
       "rst.linker (>=1.9); extra == 'docs'",
       "jaraco.packaging (>=3.2); extra == 'docs'",
@@ -38,7 +37,7 @@
     ],
     "requires_python": ">=2.7",
     "summary": "run with this",
-    "version": "3.1"
+    "version": "3.2"
   },
   "releases": {
     "1.0": [
@@ -856,40 +855,74 @@
         "upload_time": "2017-11-18T01:03:46",
         "url": "https://files.pythonhosted.org/packages/c6/dc/621e3a997bbbba3ff988f5dd4c7426b5f68beb2259a3929edc91bde6d888/rwt-3.1.tar.gz"
       }
+    ],
+    "3.2": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e49588a6ed77aa8692e2d3151063781b",
+          "sha256": "ab94049fd9058bdbdce7d3fe58d41ad9311ac0a438eedbbd3e44c6ccbbb23529"
+        },
+        "downloads": -1,
+        "filename": "rwt-3.2-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "e49588a6ed77aa8692e2d3151063781b",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 17817,
+        "upload_time": "2018-02-02T18:08:01",
+        "url": "https://files.pythonhosted.org/packages/26/44/7845542fef882e95ea606f729ecaeeab1e5f74adb7c358949a7b2e15b607/rwt-3.2-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "87a5f2d39064cdb4bfea4baf425fe66f",
+          "sha256": "91b3a496010a9c969f8c0c24f0145946ee50ca7a1a10e2b0199fb857bdc02d1c"
+        },
+        "downloads": -1,
+        "filename": "rwt-3.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "87a5f2d39064cdb4bfea4baf425fe66f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 17094,
+        "upload_time": "2018-02-02T18:08:05",
+        "url": "https://files.pythonhosted.org/packages/a7/f4/3e9ee373f35caa560d63b164e39bdbfe85431fece54b02f5068215dbc076/rwt-3.2.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "ce98f7cbd2a2073ddc9905d80e422484",
-        "sha256": "aede684408f2e2da38012e0608f61e8d820f90d31948f6ee44e7c619f96c14fa"
+        "md5": "e49588a6ed77aa8692e2d3151063781b",
+        "sha256": "ab94049fd9058bdbdce7d3fe58d41ad9311ac0a438eedbbd3e44c6ccbbb23529"
       },
       "downloads": -1,
-      "filename": "rwt-3.1-py2.py3-none-any.whl",
+      "filename": "rwt-3.2-py2.py3-none-any.whl",
       "has_sig": false,
-      "md5_digest": "ce98f7cbd2a2073ddc9905d80e422484",
+      "md5_digest": "e49588a6ed77aa8692e2d3151063781b",
       "packagetype": "bdist_wheel",
       "python_version": "py2.py3",
-      "size": 16402,
-      "upload_time": "2017-11-18T01:03:45",
-      "url": "https://files.pythonhosted.org/packages/0c/a2/111b8f98261942387c07e70cb31e6976a68a6094e7047266f16931d73d9e/rwt-3.1-py2.py3-none-any.whl"
+      "size": 17817,
+      "upload_time": "2018-02-02T18:08:01",
+      "url": "https://files.pythonhosted.org/packages/26/44/7845542fef882e95ea606f729ecaeeab1e5f74adb7c358949a7b2e15b607/rwt-3.2-py2.py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "03488dda519873aba03b389df2bc7da9",
-        "sha256": "ba9a9c0a8463f8cf1ef7a17982e73dc30787858961ae2de49484878f753b0f6c"
+        "md5": "87a5f2d39064cdb4bfea4baf425fe66f",
+        "sha256": "91b3a496010a9c969f8c0c24f0145946ee50ca7a1a10e2b0199fb857bdc02d1c"
       },
       "downloads": -1,
-      "filename": "rwt-3.1.tar.gz",
+      "filename": "rwt-3.2.tar.gz",
       "has_sig": false,
-      "md5_digest": "03488dda519873aba03b389df2bc7da9",
+      "md5_digest": "87a5f2d39064cdb4bfea4baf425fe66f",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 16629,
-      "upload_time": "2017-11-18T01:03:46",
-      "url": "https://files.pythonhosted.org/packages/c6/dc/621e3a997bbbba3ff988f5dd4c7426b5f68beb2259a3929edc91bde6d888/rwt-3.1.tar.gz"
+      "size": 17094,
+      "upload_time": "2018-02-02T18:08:05",
+      "url": "https://files.pythonhosted.org/packages/a7/f4/3e9ee373f35caa560d63b164e39bdbfe85431fece54b02f5068215dbc076/rwt-3.2.tar.gz"
     }
   ]
 }
