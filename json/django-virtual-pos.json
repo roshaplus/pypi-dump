@@ -1,34 +1,34 @@
 {
   "info": {
-    "author": "intelligenia S.L.",
-    "author_email": "diego@intelligenia.es",
+    "author": "intelligenia",
+    "author_email": "mario@intelligenia.es",
     "bugtrack_url": null,
     "classifiers": [
       "Development Status :: 5 - Production/Stable",
       "Framework :: Django",
       "License :: OSI Approved :: MIT License"
     ],
-    "description": "django-virtual-pos\n==================\n\nDjango module that abstracts the flow of several virtual points of sale\nincluding PayPal\n\nWhat's this?\n============\n\nThis module abstracts the use of the most used virtual points of sale in\nSpain.\n\nLicense\n=======\n\n`MIT LICENSE <LICENSE>`__.\n\nImplemented payment methods\n===========================\n\nPayPal\n------\n\nEasy integration with PayPal.\n\nSpanish Virtual Points of Sale\n------------------------------\n\nCeca\n~~~~\n\n`CECA <http://www.cajasdeahorros.es/>`__ is the Spanish confederation of\nsavings banks.\n\nRedSyS\n~~~~~~\n\n`RedSyS <http://www.redsys.es/>`__ gives payment services to several\nSpanish banks like CaixaBank or Caja Rural.\n\nSantander Elavon\n~~~~~~~~~~~~~~~~\n\n`Santander Elavon <https://www.santanderelavon.com/>`__ is one of the\npayment methods of the Spanish bank Santander.\n\nRequirements and Installation\n=============================\n\nRequirements\n------------\n\n-  Python 2.7 (Python 3 not tested, contributors wanted!)\n-  `Django <https://pypi.python.org/pypi/django>`__\n-  `BeautifulSoup4 <https://pypi.python.org/pypi/beautifulsoup4>`__\n-  `lxml <https://pypi.python.org/pypi/lxml>`__\n-  `pycrypto <https://pypi.python.org/pypi/pycrypto>`__\n-  `Pytz <https://pypi.python.org/pypi/pytz>`__\n-  `Requests <https://pypi.python.org/pypi/requests>`__\n\nType:\n\n.. code:: sh\n\n    $ pip install django beautifulsoup4 lxml pycrypto pytz\n\nInstallation\n------------\n\nFrom PyPi\n~~~~~~~~~\n\n.. code:: sh\n\n    $ pip install django-virtual-pos\n\nFrom master branch\n~~~~~~~~~~~~~~~~~~\n\nMaster branch will allways contain a working version of this module.\n\n.. code:: sh\n\n    $ pip install git+git://github.com/intelligenia/django-virtual-pos.git\n\nsettings.py\n~~~~~~~~~~~\n\nAdd the application djangovirtualpos to your settings.py:\n\n.. code:: python\n\n    INSTALLED_APPS = (\n        # ...\n        \"djangovirtualpos\",\n    )\n\nUse\n===\n\nSee this `manual <manual/COMMON.md>`__ (currently only in Spanish).\n\nNeeded models\n-------------\n\nYou will need to implement this skeleton view using your own **Payment**\nmodel.\n\nThis model has must have at least the following attributes: - **code**:\nsale code given by our system. - **operation\\_number**: bank operation\nnumber. - **status**: status of the payment: \"paid\", \"pending\"\n(**pending** is mandatory) or \"canceled\". - **amount**: amount to be\ncharged.\n\nAnd the following methods: - **online\\_confirm**: mark the payment as\npaid.\n\nIntegration examples\n--------------------\n\n-  `djshop <https://github.com/diegojromerolopez/djshop>`__\n\nNeeded views\n------------\n\nSale summary view\n~~~~~~~~~~~~~~~~~\n\n.. code:: python\n\n    def payment_summary(request, payment_id):\n        \"\"\"\n        Load a Payment object and show a summary of its contents to the user.\n        \"\"\"\n\n        payment = get_object_or_404(Payment, id=payment_id, status=\"pending\")\n        replacements = {\n            \"payment\": payment,\n            # ...\n        }\n        return render(request, '<sale summary template path>', replacements)\n\nNote that this payment summary view should load a JS file called\n**set\\_payment\\_attributes.js**.\n\nThis file is needed to set initial payment attributes according to which\nbank have the user selected.\n\nPayment\\_confirm view\n~~~~~~~~~~~~~~~~~~~~~\n\n.. code:: python\n\n    @csrf_exempt\n    def payment_confirmation(request, virtualpos_type):\n        \"\"\"\n        This view will be called by the bank.\n        \"\"\"\n        # Directly call to confirm_payment view\n\n        # Or implement the following actions\n\n        # Checking if the Point of Sale exists\n        virtual_pos = VirtualPointOfSale.receiveConfirmation(request, virtualpos_type=virtualpos_type)\n\n        if not virtual_pos:\n            # The VPOS does not exist, inform the bank with a cancel\n            # response if needed\n            return VirtualPointOfSale.staticResponseNok(virtualpos_type)\n\n        # Verify if bank confirmation is indeed from the bank\n        verified = virtual_pos.verifyConfirmation()\n        operation_number = virtual_pos.operation.operation_number\n\n        with transaction.atomic():\n            try:\n                # Getting your payment object from operation number\n                payment = Payment.objects.get(operation_number=operation_number, status=\"pending\")\n            except Payment.DoesNotExist:\n                return virtual_pos.responseNok(\"not_exists\")\n\n            if verified:\n                # Charge the money and answer the bank confirmation\n                try:\n                    response = virtual_pos.charge()\n                    # Implement the online_confirm method in your payment\n                    # this method will mark this payment as paid and will\n                    # store the payment date and time.\n                    payment.online_confirm()\n                except VPOSCantCharge as e:\n                    return virtual_pos.responseNok(extended_status=e)\n                except Exception as e:\n                    return virtual_pos.responseNok(\"cant_charge\")\n\n            else:\n                # Payment could not be verified\n                # signature is not right\n                response = virtual_pos.responseNok(\"verification_error\")\n\n            return response\n\nPayment ok view\n~~~~~~~~~~~~~~~\n\n.. code:: python\n\n    def payment_ok(request, sale_code):\n        \"\"\"\n        Informs the user that the payment has been made successfully\n        :param payment_code: Payment code.\n        :param request: request.\n        \"\"\"\n\n        # Load your Payment model given its code\n        payment =  get_object_or_404(Payment, code=sale_code, status=\"paid\")\n\n        context = {'pay_status': \"Done\", \"request\": request}\n        return render(request, '<payment_ok template>', {'context': context, 'payment': payment})\n\nPayment cancel view\n~~~~~~~~~~~~~~~~~~~\n\n.. code:: python\n\n    def payment_cancel(request, sale_code):\n        \"\"\"\n        Informs the user that the payment has been canceled\n        :param payment_code: Payment code.\n        :param request: request.\n        \"\"\"\n\n        # Load your Payment model given its code\n        payment =  get_object_or_404(Payment, code=sale_code, status=\"pending\")\n        # Mark this payment as canceled\n        payment.cancel()\n\n        context = {'pay_status': \"Done\", \"request\": request}\n        return render(request, '<payment_canceled template>', {'context': context, 'payment': payment})\n\nRefund view\n~~~~~~~~~~~\n\n.. code:: python\n\n    def refund(request, tpv, payment_code, amount, description):\n        \"\"\"\n        :param request:\n        :param tpv: TPV Id\n        :param payment_code: Payment code\n        :param amount: Refund Amount (Example 10.89).\n        :param description: Description of refund cause.\n        :return:\n        \"\"\"\n        \n        amount = Decimal(amount)\n        \n        try:\n            # Checking if the Point of Sale exists\n            tpv = VirtualPointOfSale.get(id=tpv)\n            # Checking if the Payment exists\n            payment = Payment.objects.get(code=payment_code, state=\"paid\")\n            \n        except Payment.DoesNotExist as e:\n            return http_bad_request_response_json_error(message=u\"Does not exist payment with code {0}\".format(payment_code))\n        \n        refund_status = tpv.refund(payment_code, amount, description)\n        \n        if refund_status:\n            message = u\"Refund successful\"\n        else:\n            message = u\"Refund with erros\"\n\n        return http_response_json_ok(message)\n\nAuthors\n=======\n\n-  Mario Barch\u00e9in marioREMOVETHIS@REMOVETHISintelligenia.com\n-  Diego J. Romero diegoREMOVETHIS@REMOVETHISintelligenia.com\n\nRemove REMOVETHIS to contact the authors.",
+    "description": "# django-virtual-pos\nDjango module that abstracts the flow of several virtual points of sale including PayPal\n\n\n# What's this?\n\nThis module abstracts the use of the most used virtual points of sale in Spain.\n\n# License\n\n[MIT LICENSE](LICENSE).\n\n# Implemented payment methods\n\n## PayPal\n\nEasy integration with PayPal.\n\n## Spanish Virtual Points of Sale\n\n### Ceca\n[CECA](http://www.cajasdeahorros.es/) is the Spanish confederation of savings banks.\n\n### RedSyS\n[RedSyS](http://www.redsys.es/) gives payment services to several Spanish banks like CaixaBank or Caja Rural.\n\n### Santander Elavon\n[Santander Elavon](https://www.santanderelavon.com/) is one of the payment methods of the Spanish bank Santander. \n\n\n# Requirements and Installation\n\n## Requirements\n\n- Python 2.7 (Python 3 not tested, contributors wanted!)\n- [Django](https://pypi.python.org/pypi/django)\n- [BeautifulSoup4](https://pypi.python.org/pypi/beautifulsoup4)\n- [lxml](https://pypi.python.org/pypi/lxml)\n- [pycrypto](https://pypi.python.org/pypi/pycrypto)\n- [Pytz](https://pypi.python.org/pypi/pytz)\n- [Requests](https://pypi.python.org/pypi/requests)\n\n\nType:\n````sh\n$ pip install django beautifulsoup4 lxml pycrypto pytz\n````\n\n## Installation\n\n\n### From PyPi\n\n````sh\n$ pip install django-virtual-pos\n````\n\n### From master branch\n\nMaster branch will allways contain a working version of this module. \n\n````sh\n$ pip install git+git://github.com/intelligenia/django-virtual-pos.git\n````\n\n\n### settings.py\n\nAdd the application djangovirtualpos to your settings.py:\n\n````python\nINSTALLED_APPS = (\n\t# ...\n\t\"djangovirtualpos\",\n)\n````\n\n# Use\n\nSee this [manual](manual/COMMON.md) (currently only in Spanish).\n\n## Needed models\n\nYou will need to implement this skeleton view using your own **Payment** model.\n\nThis model has must have at least the following attributes:\n - **code**: sale code given by our system.\n - **operation_number**: bank operation number.\n - **status**: status of the payment: \"paid\", \"pending\" (**pending** is mandatory) or \"canceled\".\n - **amount**: amount to be charged.\n\nAnd the following methods:\n - **online_confirm**: mark the payment as paid.\n\n## Integration examples\n- [djshop](https://github.com/diegojromerolopez/djshop)\n\n\n## Needed views\n### Sale summary view\n\n````python\ndef payment_summary(request, payment_id):\n\t\"\"\"\n\tLoad a Payment object and show a summary of its contents to the user.\n\t\"\"\"\n\n\tpayment = get_object_or_404(Payment, id=payment_id, status=\"pending\")\n\treplacements = {\n\t\t\"payment\": payment,\n\t\t# ...\n\t}\n\treturn render(request, '<sale summary template path>', replacements)\n\n````\n\nNote that this payment summary view should load a JS file called **set_payment_attributes.js**.\n\nThis file is needed to set initial payment attributes according to which bank have the user selected.\n\n\n### Payment_confirm view\n\n````python\n@csrf_exempt\ndef payment_confirmation(request, virtualpos_type):\n\t\"\"\"\n\tThis view will be called by the bank.\n\t\"\"\"\n\t# Directly call to confirm_payment view\n\n\t# Or implement the following actions\n\n\t# Checking if the Point of Sale exists\n\tvirtual_pos = VirtualPointOfSale.receiveConfirmation(request, virtualpos_type=virtualpos_type)\n\n\tif not virtual_pos:\n\t\t# The VPOS does not exist, inform the bank with a cancel\n\t\t# response if needed\n\t\treturn VirtualPointOfSale.staticResponseNok(virtualpos_type)\n\n\t# Verify if bank confirmation is indeed from the bank\n\tverified = virtual_pos.verifyConfirmation()\n\toperation_number = virtual_pos.operation.operation_number\n\n\twith transaction.atomic():\n\t\ttry:\n\t\t\t# Getting your payment object from operation number\n\t\t\tpayment = Payment.objects.get(operation_number=operation_number, status=\"pending\")\n\t\texcept Payment.DoesNotExist:\n\t\t\treturn virtual_pos.responseNok(\"not_exists\")\n\n\t\tif verified:\n\t\t\t# Charge the money and answer the bank confirmation\n\t\t\ttry:\n\t\t\t\tresponse = virtual_pos.charge()\n\t\t\t\t# Implement the online_confirm method in your payment\n\t\t\t\t# this method will mark this payment as paid and will\n\t\t\t\t# store the payment date and time.\n\t\t\t\tpayment.online_confirm()\n\t\t\texcept VPOSCantCharge as e:\n\t\t\t\treturn virtual_pos.responseNok(extended_status=e)\n\t\t\texcept Exception as e:\n\t\t\t\treturn virtual_pos.responseNok(\"cant_charge\")\n\n\t\telse:\n\t\t\t# Payment could not be verified\n\t\t\t# signature is not right\n\t\t\tresponse = virtual_pos.responseNok(\"verification_error\")\n\n\t\treturn response\n````\n\n### Payment ok view\n\n````python\ndef payment_ok(request, sale_code):\n\t\"\"\"\n\tInforms the user that the payment has been made successfully\n\t:param payment_code: Payment code.\n\t:param request: request.\n\t\"\"\"\n\n\t# Load your Payment model given its code\n\tpayment =  get_object_or_404(Payment, code=sale_code, status=\"paid\")\n\n\tcontext = {'pay_status': \"Done\", \"request\": request}\n\treturn render(request, '<payment_ok template>', {'context': context, 'payment': payment})\n````\n\n### Payment cancel view\n\n````python\ndef payment_cancel(request, sale_code):\n\t\"\"\"\n\tInforms the user that the payment has been canceled\n\t:param payment_code: Payment code.\n\t:param request: request.\n\t\"\"\"\n\n\t# Load your Payment model given its code\n\tpayment =  get_object_or_404(Payment, code=sale_code, status=\"pending\")\n\t# Mark this payment as canceled\n\tpayment.cancel()\n\n\tcontext = {'pay_status': \"Done\", \"request\": request}\n\treturn render(request, '<payment_canceled template>', {'context': context, 'payment': payment})\n````\n\n### Refund view\n\n````python\ndef refund(request, tpv, payment_code, amount, description):\n\t\"\"\"\n\t:param request:\n\t:param tpv: TPV Id\n\t:param payment_code: Payment code\n\t:param amount: Refund Amount (Example 10.89).\n\t:param description: Description of refund cause.\n\t:return:\n\t\"\"\"\n\t\n\tamount = Decimal(amount)\n\t\n\ttry:\n\t\t# Checking if the Point of Sale exists\n\t\ttpv = VirtualPointOfSale.get(id=tpv)\n\t\t# Checking if the Payment exists\n\t\tpayment = Payment.objects.get(code=payment_code, state=\"paid\")\n\t\t\n\texcept Payment.DoesNotExist as e:\n\t\treturn http_bad_request_response_json_error(message=u\"Does not exist payment with code {0}\".format(payment_code))\n\t\n\trefund_status = tpv.refund(payment_code, amount, description)\n\t\n\tif refund_status:\n\t\tmessage = u\"Refund successful\"\n\telse:\n\t\tmessage = u\"Refund with erros\"\n\n\treturn http_response_json_ok(message)\n````\n\n\n# Authors\n- Mario Barch\u00e9in marioREMOVETHIS@REMOVETHISintelligenia.com\n- Diego J. Romero diegoREMOVETHIS@REMOVETHISintelligenia.com\n\nRemove REMOVETHIS to contact the authors.",
     "docs_url": null,
-    "download_url": "UNKNOWN",
+    "download_url": "",
     "downloads": {
       "last_day": 0,
       "last_month": 0,
       "last_week": 0
     },
     "home_page": "https://github.com/intelligenia/django-virtual-pos",
-    "keywords": "virtual point-of-sale puchases online payments",
+    "keywords": "virtual,point-of-sale,puchases,online,payments",
     "license": "MIT",
-    "maintainer": null,
-    "maintainer_email": null,
+    "maintainer": "",
+    "maintainer_email": "",
     "name": "django-virtual-pos",
-    "platform": "UNKNOWN",
+    "platform": "",
     "project_url": "https://pypi.org/project/django-virtual-pos/",
-    "release_url": "https://pypi.org/project/django-virtual-pos/1.6.6/",
+    "release_url": "https://pypi.org/project/django-virtual-pos/1.6.8/",
     "requires_dist": [],
-    "requires_python": null,
-    "summary": "django-virtual-post is a module that abstracts the flow of paying in several virtual points of sale.",
-    "version": "1.6.6"
+    "requires_python": "",
+    "summary": "django-virtual-pos is a module that abstracts the flow of paying in several online payment platforms.",
+    "version": "1.6.8"
   },
   "releases": {
     "1.5": [
@@ -38,7 +38,7 @@
           "md5": "c04d1d5331d6b884c9dcdbe883e8b72f",
           "sha256": "975a8bd1409522b26554a39d2e45c26ec9380f1ef7fdf6e88c8cc307724bfddc"
         },
-        "downloads": 24,
+        "downloads": -1,
         "filename": "django-virtual-pos-1.5.tar.gz",
         "has_sig": false,
         "md5_digest": "c04d1d5331d6b884c9dcdbe883e8b72f",
@@ -56,7 +56,7 @@
           "md5": "1d24a9fedb4a4c5fae7f0005f935cb25",
           "sha256": "b60a2e19ce524481ea7760a378b8e4ba638ada30ddd968bb9d13714048eeaf9b"
         },
-        "downloads": 22,
+        "downloads": -1,
         "filename": "django-virtual-pos-1.6.tar.gz",
         "has_sig": false,
         "md5_digest": "1d24a9fedb4a4c5fae7f0005f935cb25",
@@ -74,7 +74,7 @@
           "md5": "1612314b3dc4534fabb1c5d5d7a84095",
           "sha256": "c3e10c1e137e4a8692dc2f3ba75edcca17fab8ffcb236c468602a7d50331b260"
         },
-        "downloads": 130,
+        "downloads": -1,
         "filename": "django-virtual-pos-1.6.1.tar.gz",
         "has_sig": false,
         "md5_digest": "1612314b3dc4534fabb1c5d5d7a84095",
@@ -92,7 +92,7 @@
           "md5": "4772f0eeceddd5e09ae274eedc5d88e2",
           "sha256": "147522bf10085d9b62f11b0a7c787362646900c2b193776a2036a6c4f2496997"
         },
-        "downloads": 9,
+        "downloads": -1,
         "filename": "django-virtual-pos-1.6.2.tar.gz",
         "has_sig": false,
         "md5_digest": "4772f0eeceddd5e09ae274eedc5d88e2",
@@ -110,7 +110,7 @@
           "md5": "46bedb763173bf71cc17db20d631a598",
           "sha256": "90f57919c13ccc7c797e6d01f82ebd02bb8ebb1982bc8a7906d15267dd37f6cb"
         },
-        "downloads": 9,
+        "downloads": -1,
         "filename": "django-virtual-pos-1.6.3.tar.gz",
         "has_sig": false,
         "md5_digest": "46bedb763173bf71cc17db20d631a598",
@@ -128,7 +128,7 @@
           "md5": "95cf7e1998c14449c14ccc01913b6231",
           "sha256": "d2c4c828e092a8cf125703003417f758aa2203cc2b9d3085df541e969572f3a7"
         },
-        "downloads": 11,
+        "downloads": -1,
         "filename": "django-virtual-pos-1.6.4.tar.gz",
         "has_sig": false,
         "md5_digest": "95cf7e1998c14449c14ccc01913b6231",
@@ -146,7 +146,7 @@
           "md5": "2586b6fa0bf2365813ba4548430766d5",
           "sha256": "7480659d6b08e34c90b865999099742dc606a2c26d14bb49b9094b0a1a98aa29"
         },
-        "downloads": 0,
+        "downloads": -1,
         "filename": "django-virtual-pos-1.6.6.tar.gz",
         "has_sig": false,
         "md5_digest": "2586b6fa0bf2365813ba4548430766d5",
@@ -156,24 +156,42 @@
         "upload_time": "2017-05-11T14:32:37",
         "url": "https://files.pythonhosted.org/packages/73/33/4c17b84aaec4406ea363faad67af566ea2c3dcfc337675c8967630528495/django-virtual-pos-1.6.6.tar.gz"
       }
+    ],
+    "1.6.8": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "3ef9029aad2163a799a9239f33651961",
+          "sha256": "dd14966fd6ff61ab8bb42e9b80824b9ac03dd1f36d7130e66c9fd897c180f946"
+        },
+        "downloads": -1,
+        "filename": "django-virtual-pos-1.6.8.tar.gz",
+        "has_sig": false,
+        "md5_digest": "3ef9029aad2163a799a9239f33651961",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 49787,
+        "upload_time": "2018-02-09T13:51:44",
+        "url": "https://files.pythonhosted.org/packages/48/15/f8c3f3cd686a5bd46254c30fd615b2f176e542087c7691dfb3203ee1f411/django-virtual-pos-1.6.8.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "2586b6fa0bf2365813ba4548430766d5",
-        "sha256": "7480659d6b08e34c90b865999099742dc606a2c26d14bb49b9094b0a1a98aa29"
+        "md5": "3ef9029aad2163a799a9239f33651961",
+        "sha256": "dd14966fd6ff61ab8bb42e9b80824b9ac03dd1f36d7130e66c9fd897c180f946"
       },
-      "downloads": 0,
-      "filename": "django-virtual-pos-1.6.6.tar.gz",
+      "downloads": -1,
+      "filename": "django-virtual-pos-1.6.8.tar.gz",
       "has_sig": false,
-      "md5_digest": "2586b6fa0bf2365813ba4548430766d5",
+      "md5_digest": "3ef9029aad2163a799a9239f33651961",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 89508,
-      "upload_time": "2017-05-11T14:32:37",
-      "url": "https://files.pythonhosted.org/packages/73/33/4c17b84aaec4406ea363faad67af566ea2c3dcfc337675c8967630528495/django-virtual-pos-1.6.6.tar.gz"
+      "size": 49787,
+      "upload_time": "2018-02-09T13:51:44",
+      "url": "https://files.pythonhosted.org/packages/48/15/f8c3f3cd686a5bd46254c30fd615b2f176e542087c7691dfb3203ee1f411/django-virtual-pos-1.6.8.tar.gz"
     }
   ]
 }

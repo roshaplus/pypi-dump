@@ -17,7 +17,7 @@
       "Programming Language :: Python :: 3.6",
       "Programming Language :: Python :: 3.7"
     ],
-    "description": "===============================\npip-compile-multi\n===============================\n\n.. image:: https://badge.fury.io/py/pip-compile-multi.png\n    :target: http://badge.fury.io/py/pip-compile-multi\n\n.. image:: https://travis-ci.org/peterdemin/pip-compile-multi.svg?branch=master\n    :target: https://travis-ci.org/peterdemin/pip-compile-multi\n\n.. image:: https://ci.appveyor.com/api/projects/status/1spvqh9hlqtv2a81?svg=true\n    :target: https://ci.appveyor.com/project/peterdemin/pip-compile-multi\n\n.. image:: https://img.shields.io/pypi/pyversions/pip-compile-multi.svg\n    :target: https://pypi.python.org/pypi/pip-compile-multi\n\n\nCompile multiple requirements files to lock dependency versions\n\nInstallation\n------------\n\n.. code-block:: shell\n\n    pip install pip-compile-multi\n\nBasic Usage\n-----------\n\n.. code-block:: shell\n\n    pip-compile-multi\n\nExample scenario\n----------------\n\nI will start from the very basics of dependency management and will go very slow,\nso if you feel bored, just scroll to the next section.\n\nSuppose you have a python project with following direct dependencies:\n\n.. code-block::\n\n    click\n    pip-tools\n\n(Yes I took pip-compile-multi as an example).\nLet's save them as-is in ``requirements/base.in``.\nThose are unpinned libraries, it means that whenever developer runs\n\n.. code-block:: shell\n\n    pip install -r requirements/base.in\n\nhe will get *some* version of these libraries.\nAnd chances are that if several developers do the same over some period in time,\nsome will have different dependency versions than others.\nAlso, if the project is online service, one day it may stop working after\nredeployment because some of the dependencies had backward incompatible release.\nThat kind of releases is more common than a newbie can think.\nMore or less every package with a version higher than ``2.0.0`` had them.\n\nTo avoid this problem Python developers are hard-pinning (aka locking) their dependencies.\nSo instead of a list of libraries, they have something like:\n\n.. code-block::\n\n    click==6.7\n    pip-tools==1.11.0\n\n(To keep things neat let's put this into ``requirements/base.txt``)\nThat's good for a starter. But there are two important drawbacks:\n\n1. Developers have to do non-trivial operations if they want to keep up with\n   newer versions (that have bug fixes and performance improvements).\n2. Indirect dependencies (that is dependencies of dependencies) may still have\n   backward-incompatible releases, that brake everything.\n\nLet's put aside point 1 and fight point 2. Let's do\n\n.. code-block:: shell\n\n    pip freeze > requirements/base.txt\n\nNow we have full heirarchy of dependencies hard-pinned:\n\n.. code-block::\n\n    click==6.7\n    first==2.0.1\n    pip-tools==1.11.0\n    six==1.11.0\n\nThat's great, and solves the main problem - service will be deployed exactly [1]\nthe same every single time and all developers will have identical environments.\n\nThis case is so common, that there already is a number of tools to solve it.\nTwo worth mentioning are:\n\n1. `Pip Tools`_ - a mature package that is enhanced by ``pip-compile-multi``.\n2. `PipEnv`_ - fresh approach that is going to become Python the standard\n   way of locking dependencies some day.\n\nBut what if the project uses some packages that are not required by the service itself?\nFor example ``pytest``, that is needed to run unit tests, but should never\nbe deployed to a production site. Or ``flake8`` - syntax checking tool.\nIf they are installed in the current virtual environment, they will get into\n``pip freeze`` output.\nThat's no good.\nAnd removing them manually from ``requirements/base.txt`` is not an option.\nBut still, these packages must be pinned to ensure, that tests are running\nthe same way by the whole team (and build server).\n\nSo let's get hands dirty and put all the testing stuff into ``requirements/test.in``:\n\n.. code-block::\n\n    -r base.in\n\n    prospector\n    pylint\n    flake8\n    mock\n    six\n\nNote, how I put ``-r base.in`` in the beginning, so that *test* dependencies are installed\nalong with the *base*.\n\nNow installation command is\n\n.. code-block:: shell\n\n    pip install -e requirements/test.in\n\nFor one single time (exceptionally to show how unacceptable is this task)\nlet's manually compose ``requirements/test.txt``.\nAfter installation, run freeze to bring the whole list of all locked packages:\n\n.. code-block:: shell\n\n    $ pip freeze\n    astroid==1.6.0\n    click==6.7\n    dodgy==0.1.9\n    first==2.0.1\n    flake8==3.5.0\n    flake8-polyfill==1.0.2\n    isort==4.2.15\n    lazy-object-proxy==1.3.1\n    mccabe==0.6.1\n    mock==2.0.0\n    pbr==3.1.1\n    pep8-naming==0.5.0\n    pip-tools==1.11.0\n    prospector==0.12.7\n    pycodestyle==2.0.0\n    pydocstyle==2.1.1\n    pyflakes==1.6.0\n    pylint==1.8.1\n    pylint-celery==0.3\n    pylint-common==0.2.5\n    pylint-django==0.7.2\n    pylint-flask==0.5\n    pylint-plugin-utils==0.2.6\n    PyYAML==3.12\n    requirements-detector==0.5.2\n    setoptconf==0.2.0\n    six==1.11.0\n    snowballstemmer==1.2.1\n    wrapt==1.10.11\n\nWow! That's quite a list! But we remember what goes into base.txt:\n\n1. click\n2. first\n3. pip-tools\n4. six\n\nGood, everything else can be put into ``requirements/test.txt``.\nBut wait, ``six`` is included in ``test.in`` and is missing in ``test.txt``.\nThat feels wrong... Ah, it's because we've moved ``six`` to the ``base.txt``.\nIt's good, that we didn't forget, that it should be in *base*.\nWe might forget next time though.\n\nWhy don't we automate it? That's what ``pip-compile-multi`` is for.\n\nManaging dependency versions in multiple environments\n-----------------------------------------------------\n\nLet's rehearse, example service has two groups of dependencies\n(or, as I call them, environments):\n\n.. code-block::\n\n    $ cat requirements/base.in \n    click\n    pip-tools\n\n    $ cat requirements/test.in \n    -r base.in\n    prospector\n    pylint\n    flake8\n    mock\n    six\n\nTo make automation even more appealing, let's add one more environment.\nI'll call it *local* - things that are needed during development, but are not\nrequired by tests, or service itself.\n\n.. code-block::\n\n    $ cat requirements/local.in \n    -r test.in\n    tox\n\nNow we want to put all *base* dependencies along with all their recursive dependencies\nin ``base.txt``,\nall recursive *test* dependencies except for *base* into ``test.txt``,\nand all recursive *local* dependencies except for *base* and *test* into ``local.txt``.\n\n.. code-block:: shell\n\n    $ pip-compile-multi\n    Locking requirements/base.in to requirements/base.txt. References: []\n    Locking requirements/test.in to requirements/test.txt. References: ['base']\n    Locking requirements/local.in to requirements/local.txt. References: ['base', 'test']\n\nYes, that's right. All the tedious dependency versions management job done with\na single command, that doesn't even have options.\n\nNow you can run ``git diff`` to review the changes and ``git commit`` to save them.\nTo install the new set of versions run:\n\n.. code-block:: shell\n\n    pip install -Ur requirements/local.txt\n\nIt's a perfect time to run all the tests and make sure, that updates were\nbackward compatible enough for your needs.\nMore often than I'd like in big projects, it's not so.\nLet's say new version of ``pylint`` dropped support of old Python version,\nthat you still need to support.\nThan you open ``test.in`` and soft-pin it with descriptive comment:\n\n.. code-block::\n\n    $ cat requirements/test.in \n    -r base.in\n    prospector\n    pylint<1.8  # Newer versions dropped support for Python 2.4\n    flake8\n    mock\n    six\n\nI know, this example is made up. But you get the idea.\nThat re-run ``pip-compile-multi`` to compile new ``test.txt`` and check new set.\n\nBenefits of using pip-compile-multi\n-----------------------------------\n\nI want to summarise, why you need to start using ``pip-compile-multi``.\nSome of the benefits are achievable with other methods, but I want to be general:\n\n1. Production will not suddenly brake after redeployment because of\n   backward incompatible dependency release.\n2. The whole team will use the same package versions and see the same outcomes.\n   No more \"works for me\" and \"I can not reproduce this\" [2].\n3. Service still uses most recent versions of packages.\n   And fresh means best here.\n4. Dependencies are upgraded when the time is suitable for the service,\n   not whenever they are released.\n5. Different environments are separated into different files.\n6. ``*.in`` files are small and manageable because they store only direct dependencies.\n7. ``*.txt`` files are exhaustive and precise (but you don't need to edit them).\n\nFeatures\n--------\n\n``pip-compile-multi`` supports a number of options to customize compilation.\n\nRequirements Directory\n======================\n\nWhile it's a common practice to put requirements files inside ``requirements`` directory,\nit's not always the case. The directory can be overridden with this option:\n\n.. code-block::\n\n    -d, --directory TEXT   Directory path with requirements files\n\nRequirements Files Extensions\n=============================\n\nBy default ``pip-compile-multi`` compiles ``*.txt`` from ``*.in`` files.\nWhile it's a sane choice, each project can use it's own:\n\n.. code-block::\n\n    -i, --in-ext TEXT      File extension of input files\n    -o, --out-ext TEXT     File extension of output files\n\nCompatible Releases\n===================\n\n`PEP-440`_ describes compatible release operator ``~=``.\nSometimes it's useful to have some of the dependencies pinned using this operator.\nFor example, rapidly changing internal libraries.\nFormat for this option is\n\n.. code-block::\n\n    -c, --compatible TEXT\n\nwhere TEXT is a `glob`_ pattern for library name.\nThis option can be supplied multiple times.\n\n\n.. _glob: https://en.wikipedia.org/wiki/Glob_(programming)\n.. _PEP-440: https://www.python.org/dev/peps/pep-0440/#compatible-release\n\nCustom Header\n=============\n\n``pip-compile-multi`` adds a brief header into generated files.\nOverride it with\n\n.. code-block::\n\n      -h, --header TEXT      File path with custom header text for generated files\n\nCheck that ``pip-compile-multi`` was run after changes in ``.in`` file.\n=======================================================================\n\n``pip-compile-multi`` adds a special line (before header) in the beginning of each generated file.\nThis line contains a SHA1 hash of the ``.in`` file's contents.\n\nCommand\n\n.. code-block::\n\n    $ pip-compile-multi verify\n    Verifying that requirements/base.txt was generated from requirements/base.in.\n    Success - comments match.\n    Verifying that requirements/test.txt was generated from requirements/test.in.\n    Success - comments match.\n    Verifying that requirements/local.txt was generated from requirements/local.in.\n    Success - comments match.\n\nrecalculates hashes for ``.in`` files and compares them with the stored values.\n\nIf verification fails, an error message is logged and exit code 1 is returned:\n\n.. code-block::\n\n    $ pip-compile-multi verify\n    Verifying that requirements/base.txt was generated from requirements/base.in.\n    Success - comments match.\n    Verifying that requirements/test.txt was generated from requirements/test.in.\n    FAILURE!\n    Expecting: # SHA1:c93d71964e14b04f3c8327d16dbc4d6b1bbc3b1d\n    Found:     # SHA1:6c2562322ca1bdc8309b08581a2aa4efbb5a4534\n    Verifying that requirements/local.txt was generated from requirements/local.in.\n    Success - comments match.\n\nHave fun!\n---------\n\nNow that occasional backward incompatible dependancy release can't ruin your day,\nyou can spread the word about ``pip-compile-multi``, ask for a new feature in a `GitHub issue`_,\nor even open a PR ;-).\n\n[1] That's not really true. Someone could re-upload broken package\nunder existing version on PyPI.\n\n[2] Yeah, yeah, there are still a lot of ways to have these problems.\n\n.. _Pip Tools: https://github.com/jazzband/pip-tools\n.. _PipEnv: https://github.com/pypa/pipenv\n.. _GitHub issue: https://github.com/peterdemin/pip-compile-multi/issues\n\n\nHistory\n=======\n\n1.1.7 (2017-01-25)\n------------------\n\n* Fixed comment justification\n\n1.1.6 (2017-01-19)\n------------------\n\n* Added ``pip-compile-multi verify`` command\n\n1.1.5 (2017-01-16)\n------------------\n\n* Omit future[s] packages for Python3\n\n1.1.0 (2017-01-12)\n------------------\n\n* Added files discovery.\n\n1.0.0 (2017-01-11)\n------------------\n\n* First release on PyPI.\n\n\n",
+    "description": "===============================\npip-compile-multi\n===============================\n\n.. image:: https://badge.fury.io/py/pip-compile-multi.png\n    :target: http://badge.fury.io/py/pip-compile-multi\n\n.. image:: https://travis-ci.org/peterdemin/pip-compile-multi.svg?branch=master\n    :target: https://travis-ci.org/peterdemin/pip-compile-multi\n\n.. image:: https://ci.appveyor.com/api/projects/status/1spvqh9hlqtv2a81?svg=true\n    :target: https://ci.appveyor.com/project/peterdemin/pip-compile-multi\n\n.. image:: https://img.shields.io/pypi/pyversions/pip-compile-multi.svg\n    :target: https://pypi.python.org/pypi/pip-compile-multi\n\n\nCompile multiple requirements files to lock dependency versions\n\nInstallation\n------------\n\n.. code-block:: shell\n\n    pip install pip-compile-multi\n\nBasic Usage\n-----------\n\n.. code-block:: shell\n\n    pip-compile-multi\n\nExample scenario\n----------------\n\nI will start from the very basics of dependency management and will go very slow,\nso if you feel bored, just scroll to the next section.\n\nSuppose you have a python project with following direct dependencies:\n\n.. code-block::\n\n    click\n    pip-tools\n\n(Yes I took pip-compile-multi as an example).\nLet's save them as-is in ``requirements/base.in``.\nThose are unpinned libraries, it means that whenever developer runs\n\n.. code-block:: shell\n\n    pip install -r requirements/base.in\n\nhe will get *some* version of these libraries.\nAnd chances are that if several developers do the same over some period in time,\nsome will have different dependency versions than others.\nAlso, if the project is online service, one day it may stop working after\nredeployment because some of the dependencies had backward incompatible release.\nThat kind of releases is more common than a newbie can think.\nMore or less every package with a version higher than ``2.0.0`` had them.\n\nTo avoid this problem Python developers are hard-pinning (aka locking) their dependencies.\nSo instead of a list of libraries, they have something like:\n\n.. code-block::\n\n    click==6.7\n    pip-tools==1.11.0\n\n(To keep things neat let's put this into ``requirements/base.txt``)\nThat's good for a starter. But there are two important drawbacks:\n\n1. Developers have to do non-trivial operations if they want to keep up with\n   newer versions (that have bug fixes and performance improvements).\n2. Indirect dependencies (that is dependencies of dependencies) may still have\n   backward-incompatible releases, that brake everything.\n\nLet's put aside point 1 and fight point 2. Let's do\n\n.. code-block:: shell\n\n    pip freeze > requirements/base.txt\n\nNow we have full heirarchy of dependencies hard-pinned:\n\n.. code-block::\n\n    click==6.7\n    first==2.0.1\n    pip-tools==1.11.0\n    six==1.11.0\n\nThat's great, and solves the main problem - service will be deployed exactly [1]\nthe same every single time and all developers will have identical environments.\n\nThis case is so common, that there already is a number of tools to solve it.\nTwo worth mentioning are:\n\n1. `Pip Tools`_ - a mature package that is enhanced by ``pip-compile-multi``.\n2. `PipEnv`_ - fresh approach that is going to become Python the standard\n   way of locking dependencies some day.\n\nBut what if the project uses some packages that are not required by the service itself?\nFor example ``pytest``, that is needed to run unit tests, but should never\nbe deployed to a production site. Or ``flake8`` - syntax checking tool.\nIf they are installed in the current virtual environment, they will get into\n``pip freeze`` output.\nThat's no good.\nAnd removing them manually from ``requirements/base.txt`` is not an option.\nBut still, these packages must be pinned to ensure, that tests are running\nthe same way by the whole team (and build server).\n\nSo let's get hands dirty and put all the testing stuff into ``requirements/test.in``:\n\n.. code-block::\n\n    -r base.in\n\n    prospector\n    pylint\n    flake8\n    mock\n    six\n\nNote, how I put ``-r base.in`` in the beginning, so that *test* dependencies are installed\nalong with the *base*.\n\nNow installation command is\n\n.. code-block:: shell\n\n    pip install -e requirements/test.in\n\nFor one single time (exceptionally to show how unacceptable is this task)\nlet's manually compose ``requirements/test.txt``.\nAfter installation, run freeze to bring the whole list of all locked packages:\n\n.. code-block:: shell\n\n    $ pip freeze\n    astroid==1.6.0\n    click==6.7\n    dodgy==0.1.9\n    first==2.0.1\n    flake8==3.5.0\n    flake8-polyfill==1.0.2\n    isort==4.2.15\n    lazy-object-proxy==1.3.1\n    mccabe==0.6.1\n    mock==2.0.0\n    pbr==3.1.1\n    pep8-naming==0.5.0\n    pip-tools==1.11.0\n    prospector==0.12.7\n    pycodestyle==2.0.0\n    pydocstyle==2.1.1\n    pyflakes==1.6.0\n    pylint==1.8.1\n    pylint-celery==0.3\n    pylint-common==0.2.5\n    pylint-django==0.7.2\n    pylint-flask==0.5\n    pylint-plugin-utils==0.2.6\n    PyYAML==3.12\n    requirements-detector==0.5.2\n    setoptconf==0.2.0\n    six==1.11.0\n    snowballstemmer==1.2.1\n    wrapt==1.10.11\n\nWow! That's quite a list! But we remember what goes into base.txt:\n\n1. click\n2. first\n3. pip-tools\n4. six\n\nGood, everything else can be put into ``requirements/test.txt``.\nBut wait, ``six`` is included in ``test.in`` and is missing in ``test.txt``.\nThat feels wrong... Ah, it's because we've moved ``six`` to the ``base.txt``.\nIt's good, that we didn't forget, that it should be in *base*.\nWe might forget next time though.\n\nWhy don't we automate it? That's what ``pip-compile-multi`` is for.\n\nManaging dependency versions in multiple environments\n-----------------------------------------------------\n\nLet's rehearse, example service has two groups of dependencies\n(or, as I call them, environments):\n\n.. code-block::\n\n    $ cat requirements/base.in \n    click\n    pip-tools\n\n    $ cat requirements/test.in \n    -r base.in\n    prospector\n    pylint\n    flake8\n    mock\n    six\n\nTo make automation even more appealing, let's add one more environment.\nI'll call it *local* - things that are needed during development, but are not\nrequired by tests, or service itself.\n\n.. code-block::\n\n    $ cat requirements/local.in \n    -r test.in\n    tox\n\nNow we want to put all *base* dependencies along with all their recursive dependencies\nin ``base.txt``,\nall recursive *test* dependencies except for *base* into ``test.txt``,\nand all recursive *local* dependencies except for *base* and *test* into ``local.txt``.\n\n.. code-block:: shell\n\n    $ pip-compile-multi\n    Locking requirements/base.in to requirements/base.txt. References: []\n    Locking requirements/test.in to requirements/test.txt. References: ['base']\n    Locking requirements/local.in to requirements/local.txt. References: ['base', 'test']\n\nYes, that's right. All the tedious dependency versions management job done with\na single command, that doesn't even have options.\n\nNow you can run ``git diff`` to review the changes and ``git commit`` to save them.\nTo install the new set of versions run:\n\n.. code-block:: shell\n\n    pip install -Ur requirements/local.txt\n\nIt's a perfect time to run all the tests and make sure, that updates were\nbackward compatible enough for your needs.\nMore often than I'd like in big projects, it's not so.\nLet's say new version of ``pylint`` dropped support of old Python version,\nthat you still need to support.\nThan you open ``test.in`` and soft-pin it with descriptive comment:\n\n.. code-block::\n\n    $ cat requirements/test.in \n    -r base.in\n    prospector\n    pylint<1.8  # Newer versions dropped support for Python 2.4\n    flake8\n    mock\n    six\n\nI know, this example is made up. But you get the idea.\nThat re-run ``pip-compile-multi`` to compile new ``test.txt`` and check new set.\n\nBenefits of using pip-compile-multi\n-----------------------------------\n\nI want to summarise, why you need to start using ``pip-compile-multi``.\nSome of the benefits are achievable with other methods, but I want to be general:\n\n1. Production will not suddenly brake after redeployment because of\n   backward incompatible dependency release.\n2. The whole team will use the same package versions and see the same outcomes.\n   No more \"works for me\" and \"I can not reproduce this\" [2].\n3. Service still uses most recent versions of packages.\n   And fresh means best here.\n4. Dependencies are upgraded when the time is suitable for the service,\n   not whenever they are released.\n5. Different environments are separated into different files.\n6. ``*.in`` files are small and manageable because they store only direct dependencies.\n7. ``*.txt`` files are exhaustive and precise (but you don't need to edit them).\n\nFeatures\n--------\n\n``pip-compile-multi`` supports a number of options to customize compilation.\n\nRequirements Directory\n======================\n\nWhile it's a common practice to put requirements files inside ``requirements`` directory,\nit's not always the case. The directory can be overridden with this option:\n\n.. code-block::\n\n    -d, --directory TEXT   Directory path with requirements files\n\nRequirements Files Extensions\n=============================\n\nBy default ``pip-compile-multi`` compiles ``*.txt`` from ``*.in`` files.\nWhile it's a sane choice, each project can use it's own:\n\n.. code-block::\n\n    -i, --in-ext TEXT      File extension of input files\n    -o, --out-ext TEXT     File extension of output files\n\nCompatible Releases\n===================\n\n`PEP-440`_ describes compatible release operator ``~=``.\nSometimes it's useful to have some of the dependencies pinned using this operator.\nFor example, rapidly changing internal libraries.\nFormat for this option is\n\n.. code-block::\n\n    -c, --compatible TEXT\n\nwhere TEXT is a `glob`_ pattern for library name.\nThis option can be supplied multiple times.\n\n\n.. _glob: https://en.wikipedia.org/wiki/Glob_(programming)\n.. _PEP-440: https://www.python.org/dev/peps/pep-0440/#compatible-release\n\nGenerate hashes\n===============\n\nPut package hash after pinned version for additional security.\nFormat for this option is\n\n.. code-block::\n\n  -g, --generate-hashes TEXT  Environment name (base, test, etc) that needs\n                              packages hashes. Can be supplied multiple times.\n\n\nExample invocation:\n\n.. code-block::\n\n    $ pip-compile-multi -g base -g docs\n\nExample output:\n\n.. code-block::\n\n    pip-tools==1.11.0 \\\n        --hash=sha256:50288eb066ce66dbef5401a21530712a93c659fe480c7d8d34e2379300555fa1 \\\n        --hash=sha256:ba427b68443466c389e3b0b0ef55f537ab39344190ea980dfebb333d0e6a50a3\n    first==2.0.1 \\\n        --hash=sha256:3bb3de3582cb27071cfb514f00ed784dc444b7f96dc21e140de65fe00585c95e \\\n        --hash=sha256:41d5b64e70507d0c3ca742d68010a76060eea8a3d863e9b5130ab11a4a91aa0e \\\n        # via pip-tools\n\n``pip`` requires all packages to have hashes if at least one has it.\n``pip-compile-multi`` will recursively propagate this option to all environments\nthat are referencing or referenced by passed environment name.\n\nCustom Header\n=============\n\n``pip-compile-multi`` adds a brief header into generated files.\nOverride it with\n\n.. code-block::\n\n    -h, --header TEXT      File path with custom header text for generated files\n\nLimit ``.in`` files\n===================\n\nBy default ``pip-compile-multi`` compiles all ``.in`` files in ``requirements`` directory.\nTo limit compilation to only a subset, use \n\n.. code-block::\n\n    -n, --only-name TEXT        Compile only for passed environment names and\n                                their references. Can be supplied multiple\n                                times.\n\nFor example, to compile one file under Python2.7 and another under Python3.6, run:\n\n.. code-block::\n\n    $ virtual-env27/bin/pip-compile-multi -n deps27\n    Locking requirements/deps27.in to requirements/deps27.txt. References: []\n    $ virtual-env36/bin/pip-compile-multi -n deps36\n    Locking requirements/deps36.in to requirements/deps36.txt. References: []\n\nCheck that ``pip-compile-multi`` was run after changes in ``.in`` file.\n=======================================================================\n\n``pip-compile-multi`` adds a special line (before header) in the beginning of each generated file.\nThis line contains a SHA1 hash of the ``.in`` file's contents.\n\nCommand\n\n.. code-block::\n\n    $ pip-compile-multi verify\n    Verifying that requirements/base.txt was generated from requirements/base.in.\n    Success - comments match.\n    Verifying that requirements/test.txt was generated from requirements/test.in.\n    Success - comments match.\n    Verifying that requirements/local.txt was generated from requirements/local.in.\n    Success - comments match.\n\nrecalculates hashes for ``.in`` files and compares them with the stored values.\n\nIf verification fails, an error message is logged and exit code 1 is returned:\n\n.. code-block::\n\n    $ pip-compile-multi verify\n    Verifying that requirements/base.txt was generated from requirements/base.in.\n    Success - comments match.\n    Verifying that requirements/test.txt was generated from requirements/test.in.\n    FAILURE!\n    Expecting: # SHA1:c93d71964e14b04f3c8327d16dbc4d6b1bbc3b1d\n    Found:     # SHA1:6c2562322ca1bdc8309b08581a2aa4efbb5a4534\n    Verifying that requirements/local.txt was generated from requirements/local.in.\n    Success - comments match.\n\nHave fun!\n---------\n\nNow that occasional backward incompatible dependancy release can't ruin your day,\nyou can spread the word about ``pip-compile-multi``, ask for a new feature in a `GitHub issue`_,\nor even open a PR ;-).\n\n[1] That's not really true. Someone could re-upload broken package\nunder existing version on PyPI.\n\n[2] Yeah, yeah, there are still a lot of ways to have these problems.\n\n.. _Pip Tools: https://github.com/jazzband/pip-tools\n.. _PipEnv: https://github.com/pypa/pipenv\n.. _GitHub issue: https://github.com/peterdemin/pip-compile-multi/issues\n\n\nHistory\n=======\n\n1.1.11 (2018-02-09)\n-------------------\n\n* Propagate --only-name option to references\n* Fixed extension override options\n\n1.1.10 (2018-02-09)\n-------------------\n\n* Added ``--generate-hashes`` option\n\n1.1.9 (2018-02-08)\n------------------\n\n* Fixed directory override option\n* Added --only-name option\n\n1.1.8 (2018-01-25)\n------------------\n\n* Fixed comment justification\n\n1.1.6 (2018-01-19)\n------------------\n\n* Added ``pip-compile-multi verify`` command\n\n1.1.5 (2018-01-16)\n------------------\n\n* Omit future[s] packages for Python3\n\n1.1.0 (2018-01-12)\n------------------\n\n* Added files discovery.\n\n1.0.0 (2018-01-11)\n------------------\n\n* First release on PyPI.\n\n\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -33,7 +33,7 @@
     "name": "pip-compile-multi",
     "platform": "",
     "project_url": "https://pypi.org/project/pip-compile-multi/",
-    "release_url": "https://pypi.org/project/pip-compile-multi/1.1.8/",
+    "release_url": "https://pypi.org/project/pip-compile-multi/1.1.11/",
     "requires_dist": [
       "toposort",
       "pip-tools",
@@ -41,7 +41,7 @@
     ],
     "requires_python": "",
     "summary": "Compile multiple requirements files to lock dependency versions",
-    "version": "1.1.8"
+    "version": "1.1.11"
   },
   "releases": {
     "1.0.0": [
@@ -230,6 +230,74 @@
         "size": 12432,
         "upload_time": "2018-01-15T18:42:16",
         "url": "https://files.pythonhosted.org/packages/94/ba/460432ab4a89f50c1050e8182b5f5cd52a886466eee50067aee1932d7b58/pip-compile-multi-1.1.1.tar.gz"
+      }
+    ],
+    "1.1.10": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "6d015f2f8433c1d409896359750e78ce",
+          "sha256": "3aeb0e26e6c755611a554b1e596485c57aeef95c332c69b35094dbea8b9d1805"
+        },
+        "downloads": -1,
+        "filename": "pip_compile_multi-1.1.10-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "6d015f2f8433c1d409896359750e78ce",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 18426,
+        "upload_time": "2018-02-09T17:47:57",
+        "url": "https://files.pythonhosted.org/packages/e8/61/a6146da55ae120ab87dba9751d56eed0b3677ec488cd943cfb4f838a30c3/pip_compile_multi-1.1.10-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "9abd4ccfabcc49f905f7c9dda4481baa",
+          "sha256": "4d65215d698eaf259bc5feb3d871f7c84a9813b067902eccc7ea2208393aa351"
+        },
+        "downloads": -1,
+        "filename": "pip-compile-multi-1.1.10.tar.gz",
+        "has_sig": false,
+        "md5_digest": "9abd4ccfabcc49f905f7c9dda4481baa",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 22132,
+        "upload_time": "2018-02-09T17:47:58",
+        "url": "https://files.pythonhosted.org/packages/f5/b6/09acb163a58087d2fd7571c54b9c351613d17f6f59cbeab6c01eb4a5e527/pip-compile-multi-1.1.10.tar.gz"
+      }
+    ],
+    "1.1.11": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "bfb5bce665270969cb26888c552be3ef",
+          "sha256": "6ca7c61eb3e3cdc421c8230162afb644b569ed6f4c3daccd2e1af2d8948c5b71"
+        },
+        "downloads": -1,
+        "filename": "pip_compile_multi-1.1.11-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "bfb5bce665270969cb26888c552be3ef",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 18486,
+        "upload_time": "2018-02-09T19:43:53",
+        "url": "https://files.pythonhosted.org/packages/db/07/d94694e0e1a891c118ba2e55cd3b3550f5b8b2829ce23ab5251aa80ddea0/pip_compile_multi-1.1.11-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d3699d4af4bb2148de690db43b8f6a8a",
+          "sha256": "782cd09c43fbd01b3a21a48f85c1a5eefef23593f7f91dd237770f91e578f7ea"
+        },
+        "downloads": -1,
+        "filename": "pip-compile-multi-1.1.11.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d3699d4af4bb2148de690db43b8f6a8a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 22193,
+        "upload_time": "2018-02-09T19:43:55",
+        "url": "https://files.pythonhosted.org/packages/71/82/80b18869b0582d272b04bbcfcf28b576f469abd5e9a224294b051da42eb4/pip-compile-multi-1.1.11.tar.gz"
       }
     ],
     "1.1.2": [
@@ -469,40 +537,74 @@
         "upload_time": "2018-01-26T01:14:36",
         "url": "https://files.pythonhosted.org/packages/f4/33/a5569011fa75bb9a9f84596574c51bb865ba6388a14f9981e6f38720e631/pip-compile-multi-1.1.8.tar.gz"
       }
+    ],
+    "1.1.9": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "ff054a032dfe78bfeeef4054b5d4a17b",
+          "sha256": "e8bd4031f26da114744aab8eff6c06c36549d09f43900005893bf9da0f80e8d9"
+        },
+        "downloads": -1,
+        "filename": "pip_compile_multi-1.1.9-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "ff054a032dfe78bfeeef4054b5d4a17b",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "size": 16888,
+        "upload_time": "2018-02-09T04:44:30",
+        "url": "https://files.pythonhosted.org/packages/9f/86/3bb76241343e2ef7074d4cd612c31279e930b85cdb0ce446ba401a1da681/pip_compile_multi-1.1.9-py2.py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "0ceadd9c7f81c648b25e4a679f34320e",
+          "sha256": "8105d44dff62a9e138ea7264f16979e40840548d340125840e7b5a6b4f1af7a8"
+        },
+        "downloads": -1,
+        "filename": "pip-compile-multi-1.1.9.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0ceadd9c7f81c648b25e4a679f34320e",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 18207,
+        "upload_time": "2018-02-09T04:44:32",
+        "url": "https://files.pythonhosted.org/packages/bb/c4/10459d55e78c77348f68687e29827b97309cc97e93377faa47dc58696e79/pip-compile-multi-1.1.9.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "4cc44d5289a1d76c2938263014617794",
-        "sha256": "bdda75c0277199a3fd2c4a875c22a9b79cfe98f425eef4034019ed6be9b9053a"
+        "md5": "bfb5bce665270969cb26888c552be3ef",
+        "sha256": "6ca7c61eb3e3cdc421c8230162afb644b569ed6f4c3daccd2e1af2d8948c5b71"
       },
       "downloads": -1,
-      "filename": "pip_compile_multi-1.1.8-py2.py3-none-any.whl",
+      "filename": "pip_compile_multi-1.1.11-py2.py3-none-any.whl",
       "has_sig": false,
-      "md5_digest": "4cc44d5289a1d76c2938263014617794",
+      "md5_digest": "bfb5bce665270969cb26888c552be3ef",
       "packagetype": "bdist_wheel",
       "python_version": "py2.py3",
-      "size": 16336,
-      "upload_time": "2018-01-26T01:14:34",
-      "url": "https://files.pythonhosted.org/packages/34/e4/29b46cdaa59f37af0ee29baea56821ea3ea64e19a62796ea83080a7ac26a/pip_compile_multi-1.1.8-py2.py3-none-any.whl"
+      "size": 18486,
+      "upload_time": "2018-02-09T19:43:53",
+      "url": "https://files.pythonhosted.org/packages/db/07/d94694e0e1a891c118ba2e55cd3b3550f5b8b2829ce23ab5251aa80ddea0/pip_compile_multi-1.1.11-py2.py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "71ba50514aa83fa84eb12bc570278268",
-        "sha256": "613cfae88748d60d513eca2e55881419547a82935365e1568fc3639a20aa9a43"
+        "md5": "d3699d4af4bb2148de690db43b8f6a8a",
+        "sha256": "782cd09c43fbd01b3a21a48f85c1a5eefef23593f7f91dd237770f91e578f7ea"
       },
       "downloads": -1,
-      "filename": "pip-compile-multi-1.1.8.tar.gz",
+      "filename": "pip-compile-multi-1.1.11.tar.gz",
       "has_sig": false,
-      "md5_digest": "71ba50514aa83fa84eb12bc570278268",
+      "md5_digest": "d3699d4af4bb2148de690db43b8f6a8a",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 16966,
-      "upload_time": "2018-01-26T01:14:36",
-      "url": "https://files.pythonhosted.org/packages/f4/33/a5569011fa75bb9a9f84596574c51bb865ba6388a14f9981e6f38720e631/pip-compile-multi-1.1.8.tar.gz"
+      "size": 22193,
+      "upload_time": "2018-02-09T19:43:55",
+      "url": "https://files.pythonhosted.org/packages/71/82/80b18869b0582d272b04bbcfcf28b576f469abd5e9a224294b051da42eb4/pip-compile-multi-1.1.11.tar.gz"
     }
   ]
 }

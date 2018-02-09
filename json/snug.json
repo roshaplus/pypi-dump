@@ -13,7 +13,7 @@
       "Programming Language :: Python :: 3.6",
       "Programming Language :: Python :: 3.7"
     ],
-    "description": "Snug\n====\n\n.. image:: https://img.shields.io/pypi/v/snug.svg\n    :target: https://pypi.python.org/pypi/snug\n\n.. image:: https://img.shields.io/pypi/l/snug.svg\n    :target: https://pypi.python.org/pypi/snug\n\n.. image:: https://img.shields.io/pypi/pyversions/snug.svg\n    :target: https://pypi.python.org/pypi/snug\n\n.. image:: https://travis-ci.org/ariebovenberg/snug.svg?branch=master\n    :target: https://travis-ci.org/ariebovenberg/snug\n\n.. image:: https://coveralls.io/repos/github/ariebovenberg/snug/badge.svg?branch=master\n    :target: https://coveralls.io/github/ariebovenberg/snug?branch=master\n\n.. image:: https://readthedocs.org/projects/snug/badge/?version=latest\n    :target: http://snug.readthedocs.io/en/latest/?badge=latest\n    :alt: Documentation Status\n\n.. image:: https://api.codeclimate.com/v1/badges/00312aa548eb87fe11b4/maintainability\n   :target: https://codeclimate.com/github/ariebovenberg/snug/maintainability\n   :alt: Maintainability\n\n\n**Snug** is a compact toolkit for wrapping web APIs.\n\n* Architecture agnostic (REST, RPC, GraphQL, ...)\n* Swappable HTTP clients (urllib, requests, aiohttp, ...)\n* Interchangeably sync/async\n\nQuickstart\n----------\n\n1. API interactions (\"queries\") are request/response generators:\n\n   .. code-block:: python\n\n    import json\n    import snug\n\n    def repo(name, owner):\n        \"\"\"a repo lookup by owner and name\"\"\"\n        request = snug.GET(f'https://api.github.com/repos/{owner}/{name}')\n        response = yield request\n        return json.loads(response.content)\n\n2. Queries can be executed:\n\n   .. code-block:: python\n\n    >>> query = repo('Hello-World', owner='octocat')\n    >>> snug.execute(query)\n    {\"description\": \"My first repository on Github!\", ...}\n\n3. That's it\n\n\nWhy another library?\n--------------------\n\nThere are plenty of tools for wrapping web APIs.\nHowever, these generally make far-reaching design decisions for you,\nmaking it awkward to bend it to the needs of a specific API.\n**Snug** aims only to provide a versatile base,\nso you can focus on what makes your API unique.\n\n\nInstallation\n------------\n\nThere are no required dependencies on python 3.5+. Installation is easy as:\n\n.. code-block:: bash\n\n   pip install snug\n\nAlthough snug includes basic sync and async HTTP clients,\nyou may wish to install `requests <http://docs.python-requests.org/>`_\nand/or `aiohttp <http://aiohttp.readthedocs.io/>`_.\n\n.. code-block:: bash\n\n   pip install requests\n   pip install aiohttp\n\nFeatures\n--------\n\n1. *Flexibility*. Since queries are just generators,\n   customizing them requires no special glue-code.\n   For example: add validation logic, or use any serialization method:\n\n   .. code-block:: python\n\n     from my_types import User, UserSchema\n\n     def user(name: str) -> snug.Query[User]:\n         \"\"\"lookup a user by their username\"\"\"\n         if len(name) == 0:\n             raise ValueError('username must have >0 characters')\n         request = snug.GET(f'https://api.github.com/users/{name}')\n         response = yield request\n         return UserSchema().load(json.loads(response.content))\n\n2. *Effortlessly async*. The same query can also be executed asynchronously:\n\n   .. code-block:: python\n\n      query = repo('Hello-World', owner='octocat')\n      repo = await snug.execute_async(query)\n\n3. *Pluggable clients*. Queries are fully agnostic of the HTTP client.\n   For example, to use `requests <http://docs.python-requests.org/>`_\n   instead of the standard library:\n\n   .. code-block:: python\n\n      import requests\n      execute = snug.executor(client=requests.Session())\n      execute(repo('Hello-World', owner='octocat'))\n      # {\"description\": \"My first repository on Github!\", ...}\n\n4. *Testable*. Since queries are just generators, we can run them\n   just fine without touching the network.\n   No need for complex mocks or monkeypatching.\n\n   .. code-block:: python\n\n      >>> query = iter(repo('Hello-World', owner='octocat'))\n      >>> next(query).url.endswith('/repos/octocat/Hello-World')\n      True\n      >>> query.send(snug.Response(200, b'...'))\n      StopIteration({\"description\": \"My first repository on Github!\", ...})\n\n5. *Swappable authentication*. Different credentials can be used to execute\n   the same query:\n\n   .. code-block:: python\n\n      def follow(name: str) -> snug.Query[bool]:\n          \"\"\"follow another user\"\"\"\n          req = snug.PUT('https://api.github.com/user/following/{name}')\n          return (yield req).status_code == 204\n\n      exec_as_me = snug.executor(auth=('me', 'password'))\n      exec_as_bob = snug.executor(auth=('bob', 'password'))\n\n      exec_as_me(follow('octocat'))\n      exec_as_bob(follow('octocat'))\n\n6. *Related queries*. Use class-based queries to create a chained API for related objects:\n\n   .. code-block:: python\n\n      class repo(snug.Query[dict]):\n          \"\"\"a repo lookup by owner and name\"\"\"\n          def __init__(self, name, owner): ...\n\n          def __iter__(self): ...  # query of the repo itself\n\n          def issue(self, num: int) -> snug.Query[dict]:\n              \"\"\"retrieve an issue in this repository by its number\"\"\"\n              r = snug.GET(f'/repos/{self.owner}/{self.name}/issues/{num}')\n              return json.loads((yield r).content)\n\n      hello_world_repo = repo('Hello-World', owner='octocat')\n      issue_348 = hello_world_repo.issue(348)\n      snug.execute(issue_348)\n      # {\"title\": \"Testing comments\", ...}\n\n      # we could take this as far as we like, eventually:\n      new_comments = (repo('Hello-World', owner='octocat')\n                      .issue(348)\n                      .comments(since=datetime(2018, 1, 1)))\n\n\n7. *Function- or class-based? You decide*.\n   Use class-based queries and inheritance to keep everything DRY:\n\n   .. code-block:: python\n\n      class BaseQuery(snug.Query):\n          \"\"\"base github query\"\"\"\n\n          def prepare(self, request): ...  # add url prefix, headers, etc.\n\n          def __iter__(self):\n              request = self.prepare(self.request)\n              return self.load(self.check_response((yield request)))\n\n          def check_response(self, result): ...\n\n      class repo(BaseQuery):\n          \"\"\"get a repo by owner and name\"\"\"\n          def __init__(self, name, owner):\n              self.request = snug.GET(f'/repos/{owner}/{name}')\n\n          def load(self, response):\n              return my_repo_loader(response.content)\n\n      class follow(BaseQuery):\n          \"\"\"follow another user\"\"\"\n          def __init__(self, name):\n              self.request = snug.PUT(f'/user/following/{name}')\n\n          def load(self, response):\n              return response.status_code == 204\n\n   Or, if you're comfortable with high-order functions and decorators,\n   make use of `gentools <http://gentools.readthedocs.io/>`_\n   to modify query ``yield``, ``send``, and ``return`` values:\n\n   .. code-block:: python\n\n      from gentools import (map_return, map_yield, map_send,\n                            compose, oneyield)\n\n      class Repository: ...\n\n      def my_repo_loader(...): ...\n\n      def my_error_checker(...): ...\n\n      def my_request_preparer(...): ...  # add url prefix, headers, etc.\n\n      basic_interaction = compose(map_send(my_error_checker),\n                                  map_yield(my_request_preparer))\n\n      @map_return(my_repo_loader)\n      @basic_interaction\n      @oneyield\n      def repo(owner: str, name: str) -> snug.Query[Repository]:\n          \"\"\"get a repo by owner and name\"\"\"\n          return snug.GET(f'/repos/{owner}/{name}')\n\n      @basic_interaction\n      def follow(name: str) -> snug.Query[bool]:\n          \"\"\"follow another user\"\"\"\n          response = yield snug.PUT(f'/user/following/{name}')\n          return response.status_code == 204\n\n\nFor more info, check out the `tutorial <http://snug.readthedocs.io/en/latest/tutorial.html>`_,\n`recipes <http://snug.readthedocs.io/en/latest/recipes.html>`_,\nor the examples (in the ``examples/`` directory)\n\n\nRelease history\n---------------\n\ndevelopment\n+++++++++++\n\n0.5.0 (2018-01-30)\n++++++++++++++++++\n\n- improvements to docs\n- rename Request/Response data->content\n- ``Relation`` query class\n\n0.4.0 (2018-01-24)\n++++++++++++++++++\n\n- removed generator utils and serialization logic (now seperate libraries)\n- improvements to docs\n\n0.3.0 (2018-01-14)\n++++++++++++++++++\n\n- generator-based queries\n\n0.1.2\n+++++\n\n- fixes to documentation\n\n0.1.1\n+++++\n\n- improvements to versioning info\n\n0.1.0\n+++++\n\n- implement basic resource and simple example\n\n\n",
+    "description": "Snug\n====\n\n.. image:: https://img.shields.io/pypi/v/snug.svg\n    :target: https://pypi.python.org/pypi/snug\n\n.. image:: https://img.shields.io/pypi/l/snug.svg\n    :target: https://pypi.python.org/pypi/snug\n\n.. image:: https://img.shields.io/pypi/pyversions/snug.svg\n    :target: https://pypi.python.org/pypi/snug\n\n.. image:: https://travis-ci.org/ariebovenberg/snug.svg?branch=master\n    :target: https://travis-ci.org/ariebovenberg/snug\n\n.. image:: https://codecov.io/gh/ariebovenberg/snug/branch/master/graph/badge.svg\n  :target: https://codecov.io/gh/ariebovenberg/snug\n\n.. image:: https://readthedocs.org/projects/snug/badge/?version=latest\n    :target: http://snug.readthedocs.io/en/latest/?badge=latest\n    :alt: Documentation Status\n\n.. image:: https://api.codeclimate.com/v1/badges/00312aa548eb87fe11b4/maintainability\n   :target: https://codeclimate.com/github/ariebovenberg/snug/maintainability\n   :alt: Maintainability\n\n\n**Snug** is a tiny toolkit for writing reusable interactions with web APIs.\n\nKey features:\n\n* Write once, run with different HTTP clients (sync *and* async)\n* Fits most API architectures (e.g. REST, RPC, GraphQL)\n* Simple and lightweight\n\nWhy?\n----\n\nWriting reusable web API interactions is difficult.\nConsider a typical example:\n\n.. code-block:: python\n\n    import json\n\n    def repo(name, owner):\n        \"\"\"get a github repo by owner and name\"\"\"\n        request = Request(f'https://api.github.com/repos/{owner}/{name}')\n        response = my_http_client.send(request)\n        return json.loads(response.content)\n\nNice and simple. But...\n\n* What about async? Do we write another function for that?\n* How do we write clean unittests for this?\n* What if we want to use another HTTP client or session?\n* How do we use this with different credentials?\n\n*Snug* allows you to write API interactions\nindependent of HTTP client, credentials, or whether they are run (a)synchronously.\n\nIn contrast to most API client toolkits,\n*snug* makes minimal assumptions and design decisions.\nIts simple, versatile foundation ensures\nyou can focus on what makes your API unique.\n\nQuickstart\n----------\n\n1. API interactions (\"queries\") are request/response generators.\n\n.. code-block:: python\n\n  import snug\n\n  def repo(name, owner):\n      \"\"\"get a github repo by owner and name\"\"\"\n      request = snug.GET(f'https://api.github.com/repos/{owner}/{name}')\n      response = yield request\n      return json.loads(response.content)\n\n2. Queries can be executed:\n\n.. code-block:: python\n\n  >>> query = repo('Hello-World', owner='octocat')\n  >>> snug.execute(query)\n  {\"description\": \"My first repository on Github!\", ...}\n\n3. That's it\n\nFeatures\n--------\n\n1. **Flexibility**. Since queries are just generators,\n   customizing them requires no special glue-code.\n   For example: add validation logic, or use any serialization method:\n\n   .. code-block:: python\n\n     from my_types import User, UserSchema\n\n     def user(name: str) -> snug.Query[User]:\n         \"\"\"lookup a user by their username\"\"\"\n         if len(name) == 0:\n             raise ValueError('username must have >0 characters')\n         request = snug.GET(f'https://api.github.com/users/{name}')\n         response = yield request\n         return UserSchema().load(json.loads(response.content))\n\n2. **Effortlessly async**. The same query can also be executed asynchronously:\n\n   .. code-block:: python\n\n      query = repo('Hello-World', owner='octocat')\n      repo = await snug.execute_async(query)\n\n3. **Pluggable clients**. Queries are fully agnostic of the HTTP client.\n   For example, to use `requests <http://docs.python-requests.org/>`_\n   instead of the standard library:\n\n   .. code-block:: python\n\n      import requests\n      query = repo('Hello-World', owner='octocat')\n      snug.execute(query, client=requests.Session())\n      # {\"description\": \"My first repository on Github!\", ...}\n\n4. **Testability**. Queries can easily be run without touching the network.\n   No need for complex mocks or monkeypatching.\n\n   .. code-block:: python\n\n      >>> query = repo('Hello-World', owner='octocat')\n      >>> next(query).url.endswith('/repos/octocat/Hello-World')\n      True\n      >>> query.send(snug.Response(200, b'...'))\n      StopIteration({\"description\": \"My first repository on Github!\", ...})\n\n5. **Swappable authentication**. Queries aren't tied to a session or credentials.\n   Use different credentials to execute the same query:\n\n   .. code-block:: python\n\n      def follow(name: str) -> snug.Query[bool]:\n          \"\"\"follow another user\"\"\"\n          req = snug.PUT('https://api.github.com/user/following/{name}')\n          return (yield req).status_code == 204\n\n      snug.execute(follow('octocat'), auth=('me', 'password'))\n      snug.execute(follow('octocat'), auth=('bob', 'hunter2'))\n\n6. **Related queries**. Use class-based queries to create an\n   expressive, chained API for related objects:\n\n   .. code-block:: python\n\n      class repo(snug.Query[dict]):\n          \"\"\"a repo lookup by owner and name\"\"\"\n          def __init__(self, name, owner): ...\n\n          def __iter__(self): ...  # query for the repo itself\n\n          def issue(self, num: int) -> snug.Query[dict]:\n              \"\"\"retrieve an issue in this repository by its number\"\"\"\n              r = snug.GET(f'/repos/{self.owner}/{self.name}/issues/{num}')\n              return json.loads((yield r).content)\n\n      my_issue = repo('Hello-World', owner='octocat').issue(348)\n      snug.execute(my_issue)\n      # {\"title\": \"Testing comments\", ...}\n\n\n7. **Function- or class-based? You decide**.\n   One option to keep everything DRY is to use\n   class-based queries and inheritance:\n\n   .. code-block:: python\n\n      class BaseQuery(snug.Query):\n          \"\"\"base github query\"\"\"\n\n          def prepare(self, request): ...  # add url prefix, headers, etc.\n\n          def __iter__(self):\n              \"\"\"the base query routine\"\"\"\n              request = self.prepare(self.request)\n              return self.load(self.check_response((yield request)))\n\n          def check_response(self, result): ...  # raise nice errors\n\n      class repo(BaseQuery):\n          \"\"\"get a repo by owner and name\"\"\"\n          def __init__(self, name, owner):\n              self.request = snug.GET(f'/repos/{owner}/{name}')\n\n          def load(self, response):\n              return my_repo_loader(response.content)\n\n      class follow(BaseQuery):\n          \"\"\"follow another user\"\"\"\n          def __init__(self, name):\n              self.request = snug.PUT(f'/user/following/{name}')\n\n          def load(self, response):\n              return response.status_code == 204\n\n   Or, if you're comfortable with high-order functions and decorators,\n   make use of `gentools <http://gentools.readthedocs.io/>`_\n   to modify query ``yield``, ``send``, and ``return`` values:\n\n   .. code-block:: python\n\n      from gentools import (map_return, map_yield, map_send,\n                            compose, oneyield)\n\n      class Repository: ...\n\n      def my_repo_loader(...): ...\n\n      def my_error_checker(...): ...\n\n      def my_request_preparer(...): ...  # add url prefix, headers, etc.\n\n      basic_interaction = compose(map_send(my_error_checker),\n                                  map_yield(my_request_preparer))\n\n      @map_return(my_repo_loader)\n      @basic_interaction\n      @oneyield\n      def repo(owner: str, name: str) -> snug.Query[Repository]:\n          \"\"\"get a repo by owner and name\"\"\"\n          return snug.GET(f'/repos/{owner}/{name}')\n\n      @basic_interaction\n      def follow(name: str) -> snug.Query[bool]:\n          \"\"\"follow another user\"\"\"\n          response = yield snug.PUT(f'/user/following/{name}')\n          return response.status_code == 204\n\n\nFor more info, check out the `tutorial <http://snug.readthedocs.io/en/latest/tutorial.html>`_,\n`recipes <http://snug.readthedocs.io/en/latest/recipes.html>`_,\nor `examples <http://snug.readthedocs.io/en/latest/examples.html>`_.\n\n\nInstallation\n------------\n\nThere are no required dependencies on python 3.5+. Installation is easy as:\n\n.. code-block:: bash\n\n   pip install snug\n\nAlthough snug includes basic sync and async HTTP clients,\nyou may wish to install `requests <http://docs.python-requests.org/>`_\nand/or `aiohttp <http://aiohttp.readthedocs.io/>`_.\n\n.. code-block:: bash\n\n   pip install requests\n   pip install aiohttp\n\n\nRelease history\n---------------\n\ndevelopment\n+++++++++++\n\n1.0.0 (2018-02-09)\n++++++++++++++++++\n\n- improvements to docs\n- added slack API example\n- ``related`` decorator replaces ``Relation`` query class\n- bugfixes\n\n0.5.0 (2018-01-30)\n++++++++++++++++++\n\n- improvements to docs\n- rename Request/Response data->content\n- ``Relation`` query class\n\n0.4.0 (2018-01-24)\n++++++++++++++++++\n\n- removed generator utils and serialization logic (now seperate libraries)\n- improvements to docs\n\n0.3.0 (2018-01-14)\n++++++++++++++++++\n\n- generator-based queries\n\n0.1.2\n+++++\n\n- fixes to documentation\n\n0.1.1\n+++++\n\n- improvements to versioning info\n\n0.1.0\n+++++\n\n- implement basic resource and simple example\n\n\n",
     "docs_url": null,
     "download_url": "",
     "downloads": {
@@ -22,20 +22,20 @@
       "last_week": 0
     },
     "home_page": "https://github.com/ariebovenberg/snug",
-    "keywords": "api,wrapper,rest,http",
+    "keywords": "api-wrapper,http,generators,async,graphql,rest,rpc",
     "license": "MIT",
     "maintainer": "",
     "maintainer_email": "",
     "name": "snug",
     "platform": "",
     "project_url": "https://pypi.org/project/snug/",
-    "release_url": "https://pypi.org/project/snug/0.5.0/",
+    "release_url": "https://pypi.org/project/snug/1.0.0/",
     "requires_dist": [
       "typing (>=3.6.2); python_version < \"3.5\""
     ],
     "requires_python": ">=3.4",
-    "summary": "A compact toolkit for wrapping web APIs",
-    "version": "0.5.0"
+    "summary": "Write reusable web API interactions",
+    "version": "1.0.0"
   },
   "releases": {
     "0.1.0": [
@@ -275,40 +275,74 @@
         "upload_time": "2018-01-30T17:56:17",
         "url": "https://files.pythonhosted.org/packages/30/f0/8ef53f13af22d4a81161cffeb34b467bf56a58c3becb21364c4d0661e5a2/snug-0.5.0.tar.gz"
       }
+    ],
+    "1.0.0": [
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "e2105f704a61436c8833b7f38a84d6d8",
+          "sha256": "6156377f493a7a2c40d6a9d59d2dadbfd129370b4edb016f32c71d3ad9123e19"
+        },
+        "downloads": -1,
+        "filename": "snug-1.0.0-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "e2105f704a61436c8833b7f38a84d6d8",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "size": 12716,
+        "upload_time": "2018-02-09T07:49:22",
+        "url": "https://files.pythonhosted.org/packages/60/8c/d8b56a1f77eb58d84dc93617ac1d6579f310b2d964042f9a6e5b8f9776c3/snug-1.0.0-py3-none-any.whl"
+      },
+      {
+        "comment_text": "",
+        "digests": {
+          "md5": "d349f0584a00459e00b795254dbdbd89",
+          "sha256": "ebd976484f2835d9d78fb3a6668cbf3b82be2c56edda2a0d523e0a4d2cd51e8b"
+        },
+        "downloads": -1,
+        "filename": "snug-1.0.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d349f0584a00459e00b795254dbdbd89",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "size": 12852,
+        "upload_time": "2018-02-09T07:49:24",
+        "url": "https://files.pythonhosted.org/packages/b1/6a/1c18eb42d83ab6db6f9c09fdb53c00f41a1ef0748ad71a25b17c0b253e54/snug-1.0.0.tar.gz"
+      }
     ]
   },
   "urls": [
     {
       "comment_text": "",
       "digests": {
-        "md5": "b815fee1f680c18dde860982d8837415",
-        "sha256": "774a861c3cfa22221c9220178b85dcd0283823b5cf39158e76536e239aee0bc4"
+        "md5": "e2105f704a61436c8833b7f38a84d6d8",
+        "sha256": "6156377f493a7a2c40d6a9d59d2dadbfd129370b4edb016f32c71d3ad9123e19"
       },
       "downloads": -1,
-      "filename": "snug-0.5.0-py3-none-any.whl",
+      "filename": "snug-1.0.0-py3-none-any.whl",
       "has_sig": false,
-      "md5_digest": "b815fee1f680c18dde860982d8837415",
+      "md5_digest": "e2105f704a61436c8833b7f38a84d6d8",
       "packagetype": "bdist_wheel",
       "python_version": "py3",
-      "size": 18699,
-      "upload_time": "2018-01-30T17:56:16",
-      "url": "https://files.pythonhosted.org/packages/40/5b/e15cc3b2e43a227fcdb9be1d1f90f0cc4946fd6f8a2ba57e35a9b5054409/snug-0.5.0-py3-none-any.whl"
+      "size": 12716,
+      "upload_time": "2018-02-09T07:49:22",
+      "url": "https://files.pythonhosted.org/packages/60/8c/d8b56a1f77eb58d84dc93617ac1d6579f310b2d964042f9a6e5b8f9776c3/snug-1.0.0-py3-none-any.whl"
     },
     {
       "comment_text": "",
       "digests": {
-        "md5": "de1f5c965a1128c64b3c389f0a62129c",
-        "sha256": "0d64d128621f0c7c5d240e07c5062431bd887c5c1b5f5c09f4720bf8cb02d44a"
+        "md5": "d349f0584a00459e00b795254dbdbd89",
+        "sha256": "ebd976484f2835d9d78fb3a6668cbf3b82be2c56edda2a0d523e0a4d2cd51e8b"
       },
       "downloads": -1,
-      "filename": "snug-0.5.0.tar.gz",
+      "filename": "snug-1.0.0.tar.gz",
       "has_sig": false,
-      "md5_digest": "de1f5c965a1128c64b3c389f0a62129c",
+      "md5_digest": "d349f0584a00459e00b795254dbdbd89",
       "packagetype": "sdist",
       "python_version": "source",
-      "size": 15622,
-      "upload_time": "2018-01-30T17:56:17",
-      "url": "https://files.pythonhosted.org/packages/30/f0/8ef53f13af22d4a81161cffeb34b467bf56a58c3becb21364c4d0661e5a2/snug-0.5.0.tar.gz"
+      "size": 12852,
+      "upload_time": "2018-02-09T07:49:24",
+      "url": "https://files.pythonhosted.org/packages/b1/6a/1c18eb42d83ab6db6f9c09fdb53c00f41a1ef0748ad71a25b17c0b253e54/snug-1.0.0.tar.gz"
     }
   ]
 }
